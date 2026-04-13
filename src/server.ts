@@ -3,10 +3,13 @@ import { logger } from './logger';
 import { ollamaHealthCheck } from './ollama';
 import { downloadQueue, guardQueue } from './queue';
 import { EddyError, NotFoundError } from './errors';
+import { requestsRouter } from './modules/requests/index';
 
 export const app = express();
 
 app.use(express.json());
+
+app.use('/requests', requestsRouter);
 
 app.get('/health', async (_req: Request, res: Response) => {
   const ollamaResult = await ollamaHealthCheck();

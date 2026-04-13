@@ -2,6 +2,7 @@ import 'dotenv/config';
 import { config } from './config';
 import { logger } from './logger';
 import { runMigrations } from './db/migrate';
+import { seedUsers } from './db/seed';
 import { app } from './server';
 import { closeQueues } from './queue';
 
@@ -10,6 +11,7 @@ async function start(): Promise<void> {
 
   // Run DB migrations before accepting traffic
   runMigrations();
+  seedUsers();
   logger.info('Database ready');
 
   const server = app.listen(config.PORT, () => {

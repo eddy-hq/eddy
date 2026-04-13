@@ -13,6 +13,14 @@ const schema = z.object({
   BACKUP_SSH_USER: z.string(),
   BACKUP_SSH_HOST: z.string(),
   BACKUP_DEST_PATH: z.string(),
+  // Users
+  USER_NAME_STEVE: z.string().default('Steve'),
+  USER_NAME_SON1: z.string().default('Son 1'),
+  USER_NAME_SON2: z.string().default('Son 2'),
+  USER_NAME_PARTNER: z.string().default('Partner'),
+  USER_ID_STEVE: z.string().uuid(),
+  USER_ID_SON1: z.string().uuid(),
+  USER_ID_SON2: z.string().uuid(),
   // ntfy — optional until Phase 1 setup
   NTFY_BASE_URL: z.string().optional(),
   NTFY_TOPIC_STEVE: z.string().optional(),
