@@ -3,6 +3,7 @@ import { useSearchParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { AnimatePresence } from 'framer-motion';
 import { Card, type CardData } from '../components/Card';
+import { Logo } from '../components/Logo';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -122,9 +123,7 @@ export function Feed() {
         borderBottom: '1px solid var(--border-subtle)',
         position: 'sticky', top: 0, background: 'var(--bg-primary)', zIndex: 10,
       }}>
-        <h1 style={{ fontFamily: 'var(--font-serif)', fontSize: 'var(--text-2xl)', fontWeight: 300 }}>
-          Eddy
-        </h1>
+        <Logo />
       </header>
 
       <main style={{ maxWidth: 640, margin: '0 auto', padding: 'var(--space-4)' }}>

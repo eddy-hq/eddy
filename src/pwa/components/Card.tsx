@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { Bookmark, X, Play, RotateCcw } from 'lucide-react';
@@ -34,25 +34,70 @@ const STATUS_LABEL: Record<string, string> = {
   rejected:      'Not available',
 };
 
+interface PollResult { pct: number | null; done: boolean; }
+
+// Poll /requests/:id every 2s while downloading — returns progress and whether it's finished
+function useDownloadProgress(requestId: string, active: boolean): PollResult {
+  const [result, setResult] = useState<PollResult>({ pct: null, done: false });
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(() => {
+    if (!active) {
+      setResult({ pct: null, done: false });
+      return;
+    }
+
+    async function poll() {
+      try {
+        const resp = await fetch(`/requests/${requestId}`);
+        if (!resp.ok) return;
+        const data = await resp.json() as { status?: string; progress?: number | null };
+        const done = data.status === 'ready' || data.status === 'watched';
+        setResult({ pct: typeof data.progress === 'number' ? data.progress : null, done });
+        if (done && timerRef.current) clearInterval(timerRef.current);
+      } catch {
+        // best-effort
+      }
+    }
+
+    void poll();
+    timerRef.current = setInterval(() => void poll(), 2000);
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current);
+    };
+  }, [requestId, active]);
+
+  return result;
+}
+
 export function Card({ data, onDismiss, onSave }: CardProps) {
   const navigate = useNavigate();
-  const isLive    = ['ready', 'watched'].includes(data.status) && data.fileState === 'live' && !!data.nginxUrl;
+  const isLive     = ['ready', 'watched'].includes(data.status) && data.fileState === 'live' && !!data.nginxUrl;
   const isRecycled = ['ready', 'watched'].includes(data.status) && data.fileState === 'recycled';
-  const isGone    = data.fileState === 'gone';
+  const isGone     = data.fileState === 'gone';
   const isRejected = data.status === 'rejected';
-  const isWatched = !!data.watchedAt;
-  const isSaved   = !!data.savedAt;
-  const isInProgress = ['downloading', 'guard_review', 'parent_review', 'pending', 'approved'].includes(data.status);
+  const isWatched  = !!data.watchedAt;
+  const isSaved    = !!data.savedAt;
+  const isDownloading = data.status === 'downloading';
+  const isInProgress  = ['downloading', 'guard_review', 'parent_review', 'pending', 'approved'].includes(data.status);
 
   const dimmed = isRecycled || isGone || isRejected;
+
+  const { pct, done: downloadDone } = useDownloadProgress(data.requestId, isDownloading);
+
+  // If our 2s poll detected ready before the feed 10s refresh, treat locally as live
+  const effectivelyLive = isLive || downloadDone;
 
   const thumbnail = data.youtubeId
     ? `https://i.ytimg.com/vi/${data.youtubeId}/hqdefault.jpg`
     : null;
 
   function handleTap() {
-    if (isLive) navigate(`/watch/${data.requestId}`);
+    if (effectivelyLive) navigate(`/watch/${data.requestId}`);
   }
+
+  // How much of the right side is still grey (0% = full colour, 100% = full grey)
+  const greyRight = pct === null ? 100 : Math.max(0, 100 - pct);
 
   return (
     <motion.article
@@ -61,14 +106,14 @@ export function Card({ data, onDismiss, onSave }: CardProps) {
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, y: -8, scale: 0.97 }}
       transition={{ duration: 0.25, ease: [0.33, 1, 0.68, 1] }}
-      whileTap={isLive ? { scale: 0.97 } : undefined}
+      whileTap={effectivelyLive ? { scale: 0.97 } : undefined}
       onClick={handleTap}
       style={{
         background: 'var(--bg-surface)',
         borderRadius: 'var(--radius-lg)',
         boxShadow: 'var(--shadow-card)',
         overflow: 'hidden',
-        cursor: isLive ? 'pointer' : 'default',
+        cursor: effectivelyLive ? 'pointer' : 'default',
         opacity: dimmed ? 0.55 : 1,
         border: '1px solid var(--border-subtle)',
       }}
@@ -76,12 +121,61 @@ export function Card({ data, onDismiss, onSave }: CardProps) {
       {/* Thumbnail */}
       {thumbnail && (
         <div style={{ position: 'relative', aspectRatio: '16/9', background: 'var(--bg-elevated)' }}>
+
+          {/* Grey base — always shown */}
           <img
             src={thumbnail}
             alt=""
-            style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+            style={{
+              position: 'absolute', inset: 0,
+              width: '100%', height: '100%', objectFit: 'cover',
+              filter: isDownloading && !downloadDone ? 'grayscale(100%)' : 'none',
+              transition: 'filter 0.6s ease',
+            }}
             loading="lazy"
           />
+
+          {/* Colour reveal — clips in from the left as pct rises */}
+          {isDownloading && !downloadDone && (
+            <img
+              src={thumbnail}
+              alt=""
+              aria-hidden
+              style={{
+                position: 'absolute', inset: 0,
+                width: '100%', height: '100%', objectFit: 'cover',
+                clipPath: `inset(0 ${greyRight}% 0 0)`,
+                transition: 'clip-path 0.8s ease',
+              }}
+            />
+          )}
+
+          {/* Progress bar */}
+          {isDownloading && !downloadDone && (
+            <div style={{
+              position: 'absolute', bottom: 0, left: 0, right: 0,
+              height: 6, background: 'rgba(0,0,0,0.3)',
+            }}>
+              <div style={{
+                height: '100%',
+                width: `${pct ?? 0}%`,
+                background: '#6366f1',
+                transition: 'width 0.8s ease',
+              }} />
+            </div>
+          )}
+
+          {/* Progress percentage label */}
+          {isDownloading && !downloadDone && (
+            <div style={{
+              position: 'absolute', bottom: 'var(--space-3)', left: 'var(--space-2)',
+              background: 'rgba(0,0,0,0.6)', color: '#fff',
+              fontSize: 'var(--text-xs)', fontWeight: 600,
+              padding: '2px 8px', borderRadius: 'var(--radius-sm)',
+            }}>
+              {pct !== null ? `${pct}%` : 'Starting…'}
+            </div>
+          )}
 
           {/* Content type badge */}
           <div style={{
@@ -115,7 +209,7 @@ export function Card({ data, onDismiss, onSave }: CardProps) {
           </div>
 
           {/* Play overlay */}
-          {isLive && (
+          {effectivelyLive && (
             <div style={{
               position: 'absolute', inset: 0,
               display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -191,7 +285,7 @@ export function Card({ data, onDismiss, onSave }: CardProps) {
           <span style={{
             fontSize: 'var(--text-xs)',
             color: isRejected ? 'var(--dismiss)'
-              : isLive ? 'var(--accent)'
+              : effectivelyLive ? 'var(--accent)'
               : isInProgress ? 'var(--text-tertiary)'
               : 'var(--text-tertiary)',
           }}>

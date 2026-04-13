@@ -9,12 +9,44 @@ import { sendVideoReady } from '../notifications';
 
 export const requestsRouter = Router();
 
-const YOUTUBE_REGEX = /^https?:\/\/(www\.)?(youtube\.com\/watch\?.*v=|youtu\.be\/)[\w-]+/;
+const YOUTUBE_REGEX = /^https?:\/\/((www\.|m\.)?youtube\.com\/(watch\?.*v=|shorts\/|live\/)|youtu\.be\/)[\w-]+/;
+
+// Extract first http(s) URL from share-sheet text (iOS sends "Source: YouTube\nhttps://...")
+function extractUrlFromText(text: string): string {
+  const m = text.match(/https?:\/\/\S+/);
+  return m ? m[0] : text.trim();
+}
+
+// Follow redirects to resolve short/share URLs (share.google, youtu.be, etc.)
+async function resolveUrl(raw: string): Promise<string> {
+  const url = extractUrlFromText(raw);
+  if (url.match(YOUTUBE_REGEX)) return url;
+  try {
+    // GET + follow HTTP redirects
+    const resp = await fetch(url, {
+      method: 'GET',
+      redirect: 'follow',
+      signal: AbortSignal.timeout(8000),
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Eddy/1.0)' },
+    });
+    // If final URL after HTTP redirects is already YouTube, use it
+    if (resp.url.match(YOUTUBE_REGEX)) return resp.url;
+    // share.google JS-redirects — scan body for YouTube URLs
+    const body = await resp.text();
+    const m = body.match(/https?:\/\/(?:www\.)?youtube\.com\/watch\?[^\s"'\\]+|https?:\/\/youtu\.be\/[\w-]+/);
+    if (m) return m[0].replace(/\\u0026/g, '&');
+    return resp.url;
+  } catch {
+    return url;
+  }
+}
 
 function extractYoutubeId(url: string): string | null {
   const patterns = [
     /[?&]v=([\w-]{11})/,
     /youtu\.be\/([\w-]{11})/,
+    /\/shorts\/([\w-]{11})/,
+    /\/live\/([\w-]{11})/,
   ];
   for (const p of patterns) {
     const m = url.match(p);
@@ -30,7 +62,10 @@ requestsRouter.post('/', async (req: Request, res: Response) => {
   if (!url || typeof url !== 'string') {
     throw new ValidationError('url is required');
   }
-  if (!url.match(YOUTUBE_REGEX)) {
+
+  const resolvedUrl = await resolveUrl(url);
+  if (!resolvedUrl.match(YOUTUBE_REGEX)) {
+    logger.warn({ raw: url, resolved: resolvedUrl }, 'Rejected URL — not a YouTube URL');
     throw new ValidationError('url must be a YouTube URL');
   }
 
@@ -52,7 +87,7 @@ requestsRouter.post('/', async (req: Request, res: Response) => {
     throw new NotFoundError(`user ${lookupValue}`);
   }
 
-  const youtubeId = extractYoutubeId(url);
+  const youtubeId = extractYoutubeId(resolvedUrl);
 
   // Dedup: if this user already has an active request for the same video, return it
   if (youtubeId) {
@@ -92,14 +127,14 @@ requestsRouter.post('/', async (req: Request, res: Response) => {
     request_id: requestId,
     user_id: user.user_id,
     source: 'share_sheet',
-    url,
+    url: resolvedUrl,
     youtube_id: youtubeId,
     now,
   });
 
-  logger.info({ requestId, userId: user.user_id, url }, 'Request received');
+  logger.info({ requestId, userId: user.user_id, url: resolvedUrl }, 'Request received');
 
-  const jobData: DownloadJobData = { requestId, youtubeId: youtubeId ?? '', url };
+  const jobData: DownloadJobData = { requestId, youtubeId: youtubeId ?? '', url: resolvedUrl };
   await downloadQueue.add('download', jobData, { jobId: requestId });
 
   res.status(202).json({
