@@ -85,9 +85,9 @@ requestsRouter.post('/', async (req: Request, res: Response) => {
   // Phase 1: auto-approve and immediately mark downloading (worker picks it up momentarily)
   db.prepare(`
     INSERT INTO requests
-      (request_id, user_id, source, url, youtube_id, status, decided_by, decided_at, requested_at)
+      (request_id, user_id, source, url, youtube_id, status, decided_by, decided_at, requested_at, added_at)
     VALUES
-      (@request_id, @user_id, @source, @url, @youtube_id, 'downloading', 'auto', @now, @now)
+      (@request_id, @user_id, @source, @url, @youtube_id, 'downloading', 'auto', @now, @now, @now)
   `).run({
     request_id: requestId,
     user_id: user.user_id,
@@ -107,6 +107,71 @@ requestsRouter.post('/', async (req: Request, res: Response) => {
     status: 'downloading',
     message: `Got it${user.role === 'kid' ? `, ${user.display_name}` : ''}. Working on it.`,
   });
+});
+
+// GET /feed?user=... — timeline feed, day-grouped, anchored by added_at
+// Returns: { days: [{ date: 'YYYY-MM-DD', label: 'Today'|'Yesterday'|'Mon 7 Apr', sections?: [...], cards: [...] }] }
+requestsRouter.get('/feed', (req: Request, res: Response) => {
+  const { userId, user: userName } = req.query as { userId?: string; user?: string };
+  const lookupValue = userId ?? userName;
+  if (!lookupValue) throw new ValidationError('userId or user query param required');
+
+  const isUuid = /^[0-9a-f-]{36}$/.test(lookupValue);
+  const found = (isUuid
+    ? db.prepare('SELECT user_id FROM users WHERE user_id = ?').get(lookupValue)
+    : db.prepare('SELECT user_id FROM users WHERE lower(display_name) = lower(?)').get(lookupValue)
+  ) as { user_id: string } | undefined;
+  if (!found) throw new NotFoundError(`user ${lookupValue}`);
+
+  const rows = db.prepare(`
+    SELECT
+      request_id, url, youtube_id, title, channel, status, file_state,
+      rejection_reason, nginx_url, requested_at, added_at,
+      watched_at, saved_at, source
+    FROM requests
+    WHERE user_id = ?
+      AND status NOT IN ('dismissed')
+    ORDER BY added_at DESC
+    LIMIT 200
+  `).all(found.user_id) as Array<{
+    request_id: string; url: string; youtube_id: string | null;
+    title: string | null; channel: string | null; status: string; file_state: string;
+    rejection_reason: string | null; nginx_url: string | null;
+    requested_at: string; added_at: string; watched_at: string | null;
+    saved_at: string | null; source: string;
+  }>;
+
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const yesterdayStr = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
+
+  const dayMap = new Map<string, typeof rows>();
+  for (const row of rows) {
+    const day = (row.added_at ?? row.requested_at).slice(0, 10);
+    if (!dayMap.has(day)) dayMap.set(day, []);
+    dayMap.get(day)!.push(row);
+  }
+
+  function dayLabel(date: string): string {
+    if (date === todayStr) return 'Today';
+    if (date === yesterdayStr) return 'Yesterday';
+    const d = new Date(date + 'T12:00:00Z');
+    return d.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
+  }
+
+  const days = Array.from(dayMap.entries()).map(([date, cards]) => {
+    const base = { date, label: dayLabel(date), cards };
+    if (date !== todayStr) return base;
+    return {
+      ...base,
+      sections: [
+        { id: 'requests', label: 'My requests', cards: cards.filter((c) => c.source === 'share_sheet') },
+        { id: 'channels', label: 'From your channels', cards: cards.filter((c) => c.source === 'channel') },
+        { id: 'recommended', label: 'Picked for you', cards: cards.filter((c) => c.source === 'recommended') },
+      ],
+    };
+  });
+
+  res.json({ days });
 });
 
 // GET /requests/:id — polled by PWA to check status
@@ -144,6 +209,22 @@ requestsRouter.post('/:id/watched', (req: Request, res: Response) => {
   db.prepare(
     `UPDATE requests SET status = 'watched', watched_at = ? WHERE request_id = ? AND status = 'ready'`
   ).run(new Date().toISOString(), req.params['id']);
+  res.status(204).end();
+});
+
+// POST /requests/:id/save — PWA bookmarks a card
+requestsRouter.post('/:id/save', (req: Request, res: Response) => {
+  db.prepare(
+    `UPDATE requests SET saved_at = ? WHERE request_id = ? AND saved_at IS NULL`
+  ).run(new Date().toISOString(), req.params['id']);
+  res.status(204).end();
+});
+
+// DELETE /requests/:id/save — PWA removes bookmark
+requestsRouter.delete('/:id/save', (req: Request, res: Response) => {
+  db.prepare(
+    `UPDATE requests SET saved_at = NULL WHERE request_id = ?`
+  ).run(req.params['id']);
   res.status(204).end();
 });
 

@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { ArrowLeft } from 'lucide-react';
@@ -33,12 +33,6 @@ export function Watch() {
     enabled: !!requestId,
   });
 
-  // Mark watched once video starts playing (best effort — no body needed)
-  useEffect(() => {
-    if (data?.status === 'ready') {
-      fetch(`/requests/${requestId}/watched`, { method: 'POST' }).catch(() => {});
-    }
-  }, [data?.status, requestId]);
 
   if (isLoading) return <Screen><Spinner /></Screen>;
   if (isError || !data) return <Screen><Message text="Request not found." /></Screen>;
@@ -51,7 +45,7 @@ export function Watch() {
     );
   }
 
-  if (data.status !== 'ready' || !data.videoUrl) {
+  if (!['ready', 'watched'].includes(data.status) || !data.videoUrl) {
     return (
       <Screen>
         <div style={{ textAlign: 'center' }}>
@@ -103,6 +97,7 @@ export function Watch() {
             {data.title}
           </h1>
         )}
+
       </div>
     </div>
   );
