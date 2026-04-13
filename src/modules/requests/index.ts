@@ -3,11 +3,16 @@ import { v7 as uuidv7 } from 'uuid';
 import { db } from '../../db/client';
 import { logger } from '../../logger';
 import { ValidationError, NotFoundError } from '../../errors';
+import { config } from '../../config';
 import { downloadQueue, redis } from '../../queue';
 import type { DownloadJobData } from '../content';
 import { sendVideoReady } from '../notifications';
 
 export const requestsRouter = Router();
+
+function pwaFeedUrl(userId: string): string {
+  return `http://${config.TAILSCALE_IP}:${config.PORT}/feed?userId=${userId}`;
+}
 
 const YOUTUBE_REGEX = /^https?:\/\/((www\.|m\.)?youtube\.com\/(watch\?.*v=|shorts\/|live\/)|youtu\.be\/)[\w-]+/;
 
@@ -110,6 +115,7 @@ requestsRouter.post('/', async (req: Request, res: Response) => {
         requestId: existing.request_id,
         status: existing.status,
         message: `Got it${user.role === 'kid' ? `, ${user.display_name}` : ''}. Working on it.`,
+        pwaUrl: pwaFeedUrl(user.user_id),
       });
     }
   }
@@ -141,6 +147,7 @@ requestsRouter.post('/', async (req: Request, res: Response) => {
     requestId,
     status: 'downloading',
     message: `Got it${user.role === 'kid' ? `, ${user.display_name}` : ''}. Working on it.`,
+    pwaUrl: pwaFeedUrl(user.user_id),
   });
 });
 
