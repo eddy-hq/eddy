@@ -1,0 +1,18 @@
+# ntfy server config — runs on Ubuntu, Tailscale-internal only
+# Docs: https://docs.ntfy.sh/config/
+
+# Forward tiny poll-request messages to ntfy.sh so iOS gets instant push
+# (Apple APNs requires a registered account; ntfy.sh provides that bridge)
+# Message content stays local — only opaque message IDs transit ntfy.sh
+upstream-base-url: "https://ntfy.sh"
+
+# Where ntfy is reachable (used in self-links; Tailscale address)
+base-url: "http://100.95.170.27:2586"
+
+# Cache messages for 12h so devices that were offline can catch up
+cache-duration: "12h"
+cache-file: "/var/cache/ntfy/cache.db"
+
+# Auth — per-user ACL so kids can't read each other's topics
+auth-file: "/var/cache/ntfy/auth.db"
+auth-default-access: "deny-all"

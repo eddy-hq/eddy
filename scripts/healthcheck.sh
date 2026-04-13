@@ -114,19 +114,31 @@ if [[ "$SSH_OK" == true ]]; then
 
   # ntfy
   NTFY_URL="${NTFY_BASE_URL:-http://100.95.170.27:2586}"
-  if ssh $SSH_OPTS "${SSH_USER}@${SSH_HOST}" "curl -sf --max-time 3 '${NTFY_URL}/v1/health' > /dev/null 2>&1" 2>/dev/null; then
+  if docker exec eddy-ntfy wget -qO- http://localhost:80/v1/health &>/dev/null 2>/dev/null ||
+     ssh $SSH_OPTS "${SSH_USER}@${SSH_HOST}" "docker exec eddy-ntfy wget -qO- http://localhost:80/v1/health > /dev/null 2>&1" 2>/dev/null; then
     check "ntfy" "ok"
   else
-    check "ntfy" "skip" "not set up yet (Phase 1)"
+    check "ntfy" "fail" "run: deploy/setup-ubuntu.sh"
   fi
 
-  # nginx
+  # nginx — a 200, 403 (no listing) or 404 from the host all confirm nginx is up
   NGINX_URL="${NGINX_VIDEO_BASE_URL:-http://100.95.170.27/videos}"
   NGINX_HOST=$(echo "$NGINX_URL" | python3 -c "import sys; from urllib.parse import urlparse; u=urlparse(sys.stdin.read().strip()); print(f'{u.scheme}://{u.netloc}')")
-  if ssh $SSH_OPTS "${SSH_USER}@${SSH_HOST}" "curl -sf --max-time 3 '${NGINX_HOST}/' > /dev/null 2>&1 || curl -sf --max-time 3 '${NGINX_HOST}/' -o /dev/null -w '%{http_code}' 2>/dev/null | grep -qE '^[23]|403|404'" 2>/dev/null; then
+  NGINX_STATUS=$(ssh $SSH_OPTS "${SSH_USER}@${SSH_HOST}" \
+    "curl -s -o /dev/null -w '%{http_code}' --max-time 3 '${NGINX_HOST}/videos/' 2>/dev/null" 2>/dev/null || echo "")
+  if echo "${NGINX_STATUS}" | grep -qE '^(200|403|404)$'; then
     check "nginx" "ok"
   else
-    check "nginx" "skip" "not set up yet (Phase 1)"
+    check "nginx" "fail" "run: deploy/setup-ubuntu.sh"
+  fi
+
+  # Eddy worker systemd service
+  WORKER_STATE=$(ssh $SSH_OPTS "${SSH_USER}@${SSH_HOST}" \
+    "systemctl is-active eddy-worker 2>/dev/null" 2>/dev/null || echo "unknown")
+  if [[ "${WORKER_STATE}" == "active" ]]; then
+    check "Eddy worker (systemd)" "ok"
+  else
+    check "Eddy worker (systemd)" "fail" "run: deploy/setup-ubuntu.sh (state: ${WORKER_STATE})"
   fi
 
   # Plex
@@ -143,6 +155,7 @@ else
   check "Video path" "skip" "SSH unavailable"
   check "ntfy" "skip" "SSH unavailable"
   check "nginx" "skip" "SSH unavailable"
+  check "Eddy worker (systemd)" "skip" "SSH unavailable"
   check "Plex API" "skip" "SSH unavailable"
 fi
 
