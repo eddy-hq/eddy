@@ -2,49 +2,54 @@ import React from 'react';
 
 export function Logo() {
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-      {/* Eddy mark — three layered waves suggesting a current/swirl */}
-      <svg
-        width="38"
-        height="26"
-        viewBox="0 0 38 26"
-        fill="none"
-        aria-hidden
-      >
-        {/* Top wave — lightest */}
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+      {/*
+        Leaf in the wind —
+        Leaf body: two bezier curves sharing tip + base, tilted ~20° as if caught mid-gust.
+        Center vein runs tip to stem.
+        Stem curls gently at the base.
+        Two light wind arcs trail to the upper-right.
+      */}
+      <svg width="32" height="36" viewBox="0 0 32 36" fill="none" aria-hidden>
+        {/* Wind arcs — barely-there, suggest air passing */}
         <path
-          d="M2 7 C6 2, 14 2, 19 7 C24 12, 32 12, 36 7"
-          stroke="#6366f1"
-          strokeWidth="2"
-          strokeLinecap="round"
-          opacity="0.3"
+          d="M 22 5 C 27 7, 29 11, 27 15"
+          stroke="#6366f1" strokeWidth="1.1" strokeLinecap="round" opacity="0.22"
         />
-        {/* Mid wave */}
         <path
-          d="M2 13 C6 8, 14 8, 19 13 C24 18, 32 18, 36 13"
-          stroke="#6366f1"
-          strokeWidth="2.2"
-          strokeLinecap="round"
-          opacity="0.6"
+          d="M 25 10 C 30 12, 31 17, 29 21"
+          stroke="#6366f1" strokeWidth="1.1" strokeLinecap="round" opacity="0.15"
         />
-        {/* Bottom wave — boldest */}
+
+        {/* Leaf body — tilted, soft fill */}
         <path
-          d="M2 19 C6 14, 14 14, 19 19 C24 24, 32 24, 36 19"
-          stroke="#6366f1"
-          strokeWidth="2.5"
-          strokeLinecap="round"
+          d="M 17 2 C 27 6, 28 20, 11 30 C 2 20, 4 6, 17 2 Z"
+          fill="#6366f1" fillOpacity="0.1"
+          stroke="#6366f1" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"
+        />
+
+        {/* Center vein */}
+        <path
+          d="M 17 2 C 15 12, 13 21, 11 30"
+          stroke="#6366f1" strokeWidth="1" strokeLinecap="round" opacity="0.5"
+        />
+
+        {/* Stem with gentle curl */}
+        <path
+          d="M 11 30 C 9 33, 7 34, 6 32"
+          stroke="#6366f1" strokeWidth="1.4" strokeLinecap="round" opacity="0.7"
         />
       </svg>
 
       <span style={{
         fontFamily: 'var(--font-serif)',
-        fontSize: '1.6rem',
+        fontSize: '1.45rem',
         fontWeight: 300,
-        letterSpacing: '-0.01em',
-        color: 'var(--text-primary)',
+        letterSpacing: '0.04em',
+        color: 'var(--text-secondary)',
         lineHeight: 1,
       }}>
-        Eddy
+        eddy
       </span>
     </div>
   );
