@@ -1,3 +1,4 @@
+import path from 'path';
 import express, { NextFunction, Request, Response } from 'express';
 import { logger } from './logger';
 import { ollamaHealthCheck } from './ollama';
@@ -55,7 +56,14 @@ app.get('/health', async (_req: Request, res: Response) => {
   });
 });
 
-// 404 handler
+// PWA — serve built assets; fall back to index.html for client-side routing
+const pwaDir = path.join(__dirname, '../dist/pwa');
+app.use(express.static(pwaDir));
+app.get(/^\/(?!api|requests|internal|action|health).*/, (_req: Request, res: Response) => {
+  res.sendFile(path.join(pwaDir, 'index.html'));
+});
+
+// 404 handler (API routes only reach here)
 app.use((_req: Request, _res: Response, next: NextFunction) => {
   next(new NotFoundError('route'));
 });

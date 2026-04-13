@@ -3,6 +3,7 @@ import crypto from 'crypto';
 import { db } from '../../db/client';
 import { logger } from '../../logger';
 import { config } from '../../config';
+import { sendVideoReady } from '../notifications';
 
 export const internalRouter = Router();
 
@@ -59,7 +60,7 @@ internalRouter.post('/videos/:youtube_id/downloaded', (req: Request, res: Respon
 
   const { requestId, filePath, nginxUrl, title, channel, description, durationSecs, transcript } = payload;
 
-  db.prepare(`
+  const row = db.prepare(`
     UPDATE requests
     SET status        = 'ready',
         title         = @title,
@@ -71,7 +72,8 @@ internalRouter.post('/videos/:youtube_id/downloaded', (req: Request, res: Respon
         nginx_url     = @nginx_url,
         downloaded_at = @downloaded_at
     WHERE request_id = @request_id
-  `).run({
+    RETURNING user_id
+  `).get({
     title,
     channel,
     description,
@@ -81,9 +83,13 @@ internalRouter.post('/videos/:youtube_id/downloaded', (req: Request, res: Respon
     nginx_url: nginxUrl,
     downloaded_at: new Date().toISOString(),
     request_id: requestId,
-  });
+  }) as { user_id: string } | undefined;
 
   logger.info({ requestId, youtubeId: req.params['youtube_id'] }, 'Request marked ready');
+
+  if (row?.user_id) {
+    void sendVideoReady(row.user_id, requestId, title);
+  }
 
   res.status(204).end();
 });

@@ -1,0 +1,36 @@
+/* Design tokens — Phase 2 will expand these */
+:root {
+  --bg-primary: #FAFAF8;
+  --bg-surface: #FFFFFF;
+  --text-primary: #1A1916;
+  --text-secondary: #6B6860;
+  --text-tertiary: #A8A59E;
+  --accent: #3D6B6B;
+  --border-subtle: rgba(26, 25, 22, 0.08);
+  --radius-md: 12px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg-primary: #1A1916;
+    --bg-surface: #222220;
+    --text-primary: #F0EFE9;
+    --text-secondary: #9A9890;
+  }
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: 'DM Sans', system-ui, sans-serif;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  min-height: 100dvh;
+  -webkit-font-smoothing: antialiased;
+}
+
+a { color: var(--accent); text-decoration: none; }
