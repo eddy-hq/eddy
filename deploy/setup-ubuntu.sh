@@ -65,11 +65,14 @@ done
 
 create_ntfy_user() {
   local user="$1" pass="$2" topic="$3"
-  # Create user (ignore error if already exists)
-  docker exec eddy-ntfy ntfy user add --role=user "${user}" 2>/dev/null || true
-  docker exec eddy-ntfy ntfy user change-pass "${user}" <<< "${pass}"$'\n'"${pass}" 2>/dev/null || true
-  # Grant read+write on their own topic only
-  docker exec eddy-ntfy ntfy access "${user}" "${topic}" rw 2>/dev/null || true
+  # Add user (pipe password twice for the prompt + confirm)
+  # If user already exists ntfy exits non-zero — handle with change-pass instead
+  if ! printf '%s\n%s\n' "${pass}" "${pass}" | docker exec -i eddy-ntfy ntfy user add --role=user "${user}" 2>/dev/null; then
+    printf '%s\n%s\n' "${pass}" "${pass}" | docker exec -i eddy-ntfy ntfy user change-pass "${user}"
+  fi
+  # Reset all topic permissions for this user then grant only their current topic
+  docker exec eddy-ntfy ntfy access --reset "${user}" 2>/dev/null || true
+  docker exec eddy-ntfy ntfy access "${user}" "${topic}" rw
   check "ntfy user: ${user} → ${topic}"
 }
 
@@ -77,15 +80,17 @@ create_ntfy_user() {
 parse_creds() { echo "${1%%:*}"; }
 parse_pass()  { echo "${1#*:}"; }
 
-if [[ -n "${NTFY_CREDS_STEVE:-}" && -n "${NTFY_TOPIC_STEVE:-}" ]]; then
-  create_ntfy_user "$(parse_creds "${NTFY_CREDS_STEVE}")" "$(parse_pass "${NTFY_CREDS_STEVE}")" "${NTFY_TOPIC_STEVE}"
-fi
-if [[ -n "${NTFY_CREDS_BOY1:-}" && -n "${NTFY_TOPIC_BOY1:-}" ]]; then
-  create_ntfy_user "$(parse_creds "${NTFY_CREDS_BOY1}")" "$(parse_pass "${NTFY_CREDS_BOY1}")" "${NTFY_TOPIC_BOY1}"
-fi
-if [[ -n "${NTFY_CREDS_BOY2:-}" && -n "${NTFY_TOPIC_BOY2:-}" ]]; then
-  create_ntfy_user "$(parse_creds "${NTFY_CREDS_BOY2}")" "$(parse_pass "${NTFY_CREDS_BOY2}")" "${NTFY_TOPIC_BOY2}"
-fi
+for var_prefix in STEVE BOY1 BOY2; do
+  creds_var="NTFY_CREDS_${var_prefix}"
+  topic_var="NTFY_TOPIC_${var_prefix}"
+  creds="${!creds_var:-}"
+  topic="${!topic_var:-}"
+  if [[ -z "$creds" || -z "$topic" ]]; then
+    warn "${creds_var} or ${topic_var} not set in .env — skipping"
+    continue
+  fi
+  create_ntfy_user "$(parse_creds "$creds")" "$(parse_pass "$creds")" "$topic"
+done
 
 # ── 4. nginx ──────────────────────────────────────────────────────────────────
 info "nginx"
@@ -114,15 +119,45 @@ check "nginx configured and running"
 # ── 5. Eddy worker systemd service ───────────────────────────────────────────
 info "Eddy worker systemd service"
 
-# Ensure Node is available at the path the unit expects
-if ! command -v npm &>/dev/null; then
+# Resolve npm path — nvm installs to ~/.nvm, not /usr/bin
+NPM_PATH="$(bash -lc 'which npm' 2>/dev/null || command -v npm 2>/dev/null || true)"
+if [[ -z "${NPM_PATH}" ]]; then
   warn "npm not found — install Node LTS first (nvm recommended)"
   exit 1
 fi
+TSX_PATH="${REPO_DIR}/node_modules/.bin/tsx"
+if [[ ! -x "${TSX_PATH}" ]]; then
+  warn "tsx not found at ${TSX_PATH} — run: npm install (in ${REPO_DIR})"
+  exit 1
+fi
 
-# Point unit at this repo
-sudo cp "${DEPLOY_DIR}/systemd/eddy-worker.service" /etc/systemd/system/eddy-worker.service
-sudo sed -i "s|WorkingDirectory=.*|WorkingDirectory=${REPO_DIR}|" /etc/systemd/system/eddy-worker.service
+# Node bin dir (nvm) — needed so tsx can find node at runtime
+NODE_BIN_DIR="$(dirname "${NPM_PATH}")"
+
+# Write the service file directly with all paths resolved
+sudo tee /etc/systemd/system/eddy-worker.service > /dev/null <<EOF
+[Unit]
+Description=Eddy download worker
+After=network.target docker.service
+Wants=docker.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=${USER}
+WorkingDirectory=${REPO_DIR}
+Environment=PATH=${NODE_BIN_DIR}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=${TSX_PATH} ${REPO_DIR}/src/workers/download.ts
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=eddy-worker
+EnvironmentFile=${REPO_DIR}/.env
+
+[Install]
+WantedBy=multi-user.target
+EOF
 sudo systemctl daemon-reload
 sudo systemctl enable eddy-worker
 sudo systemctl restart eddy-worker

@@ -499,8 +499,8 @@ One topic per user, named with a UUID component so guessing is infeasible:
 
 - `eddy-steve-{uuid}`
 - `eddy-partner-{uuid}`
-- `eddy-son1-{uuid}`
-- `eddy-son2-{uuid}`
+- `eddy-boy1-{uuid}`
+- `eddy-boy2-{uuid}`
 
 ntfy basic auth + ACL configured per user. Each user's iOS app stores credentials for their own topic only. Pipeline failures and other admin events go to parent topics with `high` priority — no separate system topic.
 
