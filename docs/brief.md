@@ -220,8 +220,14 @@ Downloads run on Ubuntu via a dedicated Node worker process sharing the BullMQ q
 
 ### yt-dlp invocation
 
+YouTube has been progressively gating downloads behind PO Tokens (cryptographic proof-of-origin). yt-dlp can't generate these itself — they require a browser/mobile attestation runner. The official yt-dlp wiki recommends installing a PO Token Provider plugin to handle this transparently.
+
+**Plugin:** [bgutil-ytdlp-pot-provider](https://github.com/Brainicism/bgutil-ytdlp-pot-provider) installed on Ubuntu alongside yt-dlp. It generates PO tokens via a Node.js attestation runner. yt-dlp picks it up automatically when present.
+
 ```
 yt-dlp \
+  --extractor-args "youtube:player_client=default,mweb" \
+  --sleep-interval 5 --max-sleep-interval 10 \
   --format "bestvideo[height<=1080][vcodec^=avc1]+bestaudio[ext=m4a]/best[height<=1080][vcodec^=avc1]" \
   --concurrent-fragments 4 \
   --write-auto-sub --sub-lang en \
@@ -230,10 +236,23 @@ yt-dlp \
   {url}
 ```
 
+- **PO token plugin handles attestation transparently.** No flag needed once installed — yt-dlp discovers it on PATH.
+- **`--extractor-args "youtube:player_client=default,mweb"`** — falls back to the `mweb` (mobile web) client which the plugin generates tokens for. Most reliable current path.
+- **`--sleep-interval 5 --max-sleep-interval 10`** — randomised delay between requests. YouTube rate-limits aggressive download patterns; this keeps Eddy a polite citizen and avoids tripping the "this content isn't available, try again later" gate.
 - **H.264 + AAC forced** — native browser playback, no transcoding, Plex direct-play on TVs. ffmpeg runs only to mux the streams (stream copy, no re-encode). Verify with `--verbose` that ffmpeg logs `Stream mapping` with `(copy)` on both streams — if it shows `(encode)`, the format selector is wrong and CPU is being burned for nothing.
 - **`--concurrent-fragments 4`** — YouTube serves video in fragments; pulling them in parallel is typically 2-3× faster on modern sources.
 - **`--no-part`** — writes directly to the final filename. Cheap on local disk, avoids a rename step.
 - Metadata and auto-subs stored in SQLite for guard + hook generation.
+
+### No Google credentials in the kids' download path
+
+The above invocation runs **anonymously** — no cookies, no Google account. This is deliberate:
+
+- Preserves the privacy principle (no Google credentials stored on Ubuntu)
+- Removes the "throwaway account got banned" failure mode
+- Age-restricted, members-only, and private content will fail — and that's the right outcome for kids. The guard's error mapping turns these into kid-readable rejections with appeal paths ("This is age-restricted on YouTube — ask a grown-up?").
+
+If an adult later wants to download age-restricted content for themselves, that's a separate code path with its own throwaway-account cookie file. The kids' path stays anonymous. Out of scope for v1.
 
 ### Queue configuration
 
@@ -254,29 +273,71 @@ yt-dlp \
 - New videos go through the same guard pipeline as requests — same rules, same escalation.
 - Approved channel content appears in the feed tagged as "from channels you follow."
 
-### Deletion
+### Storage recycling (not deletion)
 
-- **Watched** → delete within 24 hours. Frees space quickly.
-- **Storage threshold** (configurable, default 80% full) → oldest-unwatched first, skipping anything saved, dismissed, or added in the last 48h.
-- **Dismissed** → not deleted immediately, but first in line when threshold hits. Deprioritised, not punished.
+The feed is a forever timeline (see Section 8). Content items are never removed from SQLite — only the underlying video files are recycled when disk pressure requires it. The card remains in the timeline with a restore affordance.
 
-Deletion runs as a scheduled job on Ubuntu (the file owner), triggered by the M4. Deletion log kept in SQLite.
+**When files are recycled:**
+
+- Only at storage threshold (configurable, default 80% full). Not time-based. A watched video may sit on disk for weeks if there's no pressure.
+- Priority order (first-to-recycle → last):
+  1. Dismissed items (explicit negative signal)
+  2. Watched items, oldest first
+  3. Unwatched items, oldest first, skipping anything added in the last 48 hours
+  4. Saved items — never recycled
+
+**When a file is recycled:**
+
+- `file_state` transitions from `live` to `recycled`
+- `file_path` and `nginx_url` cleared
+- SQLite row preserved with all metadata, thumbnail URL, personal hook
+- Card renders in timeline with restore affordance (see Section 8)
+
+**Restore (one tap):**
+
+- Kid taps a recycled card → card shows "Getting it again — about 3 minutes"
+- Same yt-dlp pipeline re-runs. Original guard verdict is preserved — no re-triage, no re-escalation. If it was approved once, it's approved.
+- File returns to `live` state. Card plays as normal. Card stays in its original position in the timeline — doesn't jump to today.
+
+**Non-restorable content:**
+
+- YouTube has removed the source video, channel has been taken down, geo-block has kicked in
+- `file_state` transitions to `gone`
+- Card renders with "No longer available" treatment — offers to find similar via search
+- Distinct visual tier from `recycled` so the kid understands the difference
+
+Recycling runs as a scheduled job on Ubuntu (the file owner), triggered by the M4. Recycling log kept in SQLite.
 
 ### Reliability & operations
 
-YouTube ships breaking changes to yt-dlp every 1-3 months on average; the yt-dlp community typically fixes within 24-48 hours. Tube Archivist would not protect against this — it uses the same engine. The mitigation is operational, not architectural:
+YouTube is in an active arms race with download tools. There are three failure modes to plan for, all operational rather than architectural:
 
-- **Auto-update yt-dlp weekly** via cron on Ubuntu (`pip install -U yt-dlp`). Stale installs are the single biggest reliability factor.
-- **Pipeline health check** — BullMQ job every 15 minutes. If >50% of last 10 downloads failed, send a single ntfy notification to Steve with two actions: `[Update & retry]` (runs `pip install -U yt-dlp` on Ubuntu then retries failed jobs from the last 24h) and `[Investigate]` (opens the admin queue view in the PWA). One alert per failure cluster, not per failure. Steve triggers the remediation, not the system — keeps the human in the loop for the cases where the upstream fix isn't out yet.
+**1. yt-dlp itself breaks.** YouTube ships a breaking change roughly every 1-3 months. yt-dlp community fixes within 24-48 hours.
+
+**2. PO Token plugin breaks.** Same dynamic — when YouTube changes attestation, the plugin authors patch quickly but there's a window. Plugin is independently maintained and updated.
+
+**3. Rate-limiting / IP soft-ban.** Manifests as *"This content isn't available, try again later"*. Recovery is to back off, not retry. Sleep intervals in the invocation reduce likelihood; weekly volume of a household is well under YouTube's anonymous limits (~300 videos/hour).
+
+**Mitigations:**
+
+- **Auto-update yt-dlp and the PO token plugin weekly** via cron on Ubuntu:
+  ```
+  pip install -U yt-dlp bgutil-ytdlp-pot-provider
+  ```
+  Stale installs are the single biggest reliability factor for both components.
+- **Pipeline health check** — BullMQ job every 15 minutes. If >50% of last 10 downloads failed, send a single ntfy notification to Steve with two actions: `[Update & retry]` (runs the pip update on Ubuntu then retries failed jobs from the last 24h) and `[Investigate]` (opens the admin queue view in the PWA). One alert per failure cluster.
+- **Rate-limit detection** — if multiple consecutive jobs return the "try again later" signature, pause the queue for an hour and notify Steve. Don't burn through retries against a soft-ban.
 - **Manual retry button** in the PWA admin view as a fallback path.
 - **Error mapping** — yt-dlp returns structured errors. Map common cases to kid-readable reasons:
   - `age-restricted` → *"This one's age-restricted on YouTube. Ask a grown-up?"*
+  - `members-only` → *"This is for channel members only."*
   - `private` / `removed` / `unavailable` → *"This video isn't available any more."*
   - `geo-blocked` → *"This video isn't available in our country."*
-  - `members-only` → *"This is for channel members only."*
+  - rate-limit signature → *"Eddy needs a short break — trying again in an hour."* (queue paused, not per-video)
+  - PO token failure → *"Eddy hit a problem — trying again later."* (logged, plugin probably needs update)
   - Anything unrecognised → *"Eddy hit a problem — trying again later."* (logged for Steve)
 
-The kid never sees a silent failure. Worst case (YouTube breaks yt-dlp overnight) is a ~24h delay on requests, with the queue intact and Steve one push notification away from a one-tap fix.
+The kid never sees a silent failure. Worst case (YouTube breaks both yt-dlp *and* the plugin overnight) is a ~24h delay on requests, with the queue intact and Steve one notification away from a one-tap fix.
 
 ### Tracking subscribed channels
 
@@ -301,56 +362,124 @@ Eddy fetches metadata and links only. No content extraction, no scraping. Cards 
 
 ---
 
-## 8. The feed (PWA)
+## 8. The feed — a timeline
 
-The feed is the ambient second surface — the primary interaction is the request flow. But it matters, because it's where the kids and adults spend non-request time.
+The feed is a reverse-chronological record of attention, anchored by **added date** — the day a card first appeared for this user. It persists forever. Watched items don't disappear; recycled files don't erase history. The feed is the primary surface for browsing Eddy between requests, and the raw material Drift draws on (Section 10).
+
+### Anchor: added date
+
+Every card sits in exactly one day — the day it was added to this user's feed. A video shared via Shortcut on Monday and watched on Friday lives in Monday's section, with a secondary "Watched Friday" indicator on the card. The anchor doesn't move.
+
+This keeps two concepts separate: *what was offered to me* (the feed) and *what did I do with it* (Drift). The feed is a diary of what came in; Drift is the mirror on what was consumed. Conflating them ruins both.
 
 ### Structure
 
-Same card component for every content type. Content type badge distinguishes them. Tap destinations vary:
+```
+┌─ Today ────────────────────────────────────────────┐
+│                                                    │
+│   My requests      — shared via Shortcut,          │
+│                      queued/downloading/ready      │
+│                                                    │
+│   From your channels  — new drops from             │
+│                         subscribed channels        │
+│                                                    │
+│   Picked for you   — pipeline-surfaced             │
+│                      recommendations               │
+│                                                    │
+├─ Yesterday ────────────────────────────────────────┤
+│   [unified list of everything added yesterday]     │
+│                                                    │
+├─ Tuesday 8 April ──────────────────────────────────┤
+│   [...]                                            │
+│                                                    │
+│   ...continuous scroll back through history...     │
+└────────────────────────────────────────────────────┘
+```
 
-- Video (ready) → inline PWA playback, HTML5 full-screen
+**Today** is the only day with sub-sections, because it's the only day still being written. The three sub-sections give structure while content is in flight:
+
+- **My requests** (top) — anything the user shared via Shortcut, in pipeline state. Visible as *queued*, *downloading*, *ready*, or *waiting for a grown-up*. Highest priority because the user is actively waiting.
+- **From your channels** — today's drops from subscribed channels, post-guard.
+- **Picked for you** — pipeline-surfaced recommendations, post-guard.
+
+**Past days** are unified lists of everything added that day — no sub-grouping. The urgency is gone; the day is a completed page.
+
+### Back in time
+
+Continuous scroll only in v1. Day headers separate sections. Scrolling back reveals older days indefinitely, paginated as needed. No date picker, no calendar, no time-jump — deliberately. If this proves painful, add explicit navigation later.
+
+### Card states
+
+Three visual tiers reflect the file's storage state, independent of when the card was added:
+
+- **Live** — file on disk, immediately playable. Full colour, standard treatment.
+- **Recycled** — storage pressure removed the file, but the record remains. Slightly dimmed thumbnail, a small restore icon replaces the duration line. One tap re-downloads via the same pipeline (no re-triage — original guard verdict preserved). Card stays in its original position in the timeline; it doesn't jump to today.
+- **Gone** — YouTube removed the source, channel taken down, geo-block. Heavily dimmed. "No longer available" replaces controls. Tap offers to find similar via search.
+
+Watched state is an additional overlay on any of these — a small tick and "Watched Xh ago" replacing duration, applied regardless of file state.
+
+### iPad layouts
+
+iPad shows more of the timeline at once. More days visible simultaneously is the goal — scanning the week is the common case.
+
+- **Portrait (≥768px)** — two-column grid of cards within each day. Day headers span both columns. Today's three sub-sections render as a two-column grid per sub-section.
+- **Landscape (≥1024px)** — three-column grid of cards within each day. Left sidebar holds topic filter and search. Day headers span all three columns.
+
+Magazine mode (single hero card with page-turn) is iPhone-only. On iPad, the default is always grid — the whole point of the larger canvas is seeing multiple days at once.
+
+### Same card component everywhere
+
+Content type badge distinguishes video / article / podcast / paper. Tap destinations:
+
+- Video (live) → inline PWA playback, HTML5 full-screen
+- Video (recycled) → restore → play
+- Video (gone) → find similar
 - Article → Safari
 - Podcast → podcast app deep link, fallback to browser
 - Paper → Safari
 
-Card shows: image/thumbnail, topic pill, source, headline, **one-sentence personal hook** (why this item for this user, generated by Gemma at scoring time), duration/read time.
+Card shows: thumbnail, topic pill, source, headline, **one-sentence personal hook**, duration/read time. On past days, the card also shows *"Watched Xh later"* if applicable.
 
 ### Personal hook
 
-Every card has a hook line beneath the headline. Max 15 words, direct, specific not generic. Generated by Gemma in batches (not per-card-on-demand — 10-20 items per inference call, far cheaper). Falls back to a one-line description if generation fails.
+Every card has a hook line beneath the headline. Max 15 words, direct, specific not generic. Generated by Gemma in batches (10-20 items per inference call). Falls back to a one-line description if generation fails.
 
-This is where the "no recommendation without a visible reason" rule lives. If the hook says something generic like "You might like this," the system has failed and should fall back to the description.
-
-### Feed modes
-
-- **Magazine** (default) — single hero card, page-turn to advance. Feels editorial.
-- **List** — denser, faster scanning, hook truncated to one line.
-
-Toggle persisted per user. Finishing the feed is a valid state — no infinite scroll, no "more suggestions for you" below the last item.
-
-### iPad layouts
-
-- ≥768px (portrait) — two-column editorial spread
-- ≥1024px (landscape) — editorial with left sidebar topic filter
+Where the "no recommendation without a visible reason" rule lives. If the hook ever says something generic like "You might like this," the system has failed and should fall back to the description.
 
 ### Interactions
 
-- **Tap** → open/play. Primary action, only action for most.
-- **🔖 Bookmark** → save for later. Small, top-right of card. Quiet pulse, card stays.
-- **✕ Dismiss** → not interested. Small, top-right. Card fades, slides away. Negative signal for storage priority, not instant delete.
+- **Tap** → open/play (or restore → play for recycled). Primary action.
+- **🔖 Bookmark** → save for later. Small, top-right. Saved items are immune to recycling.
+- **✕ Dismiss** → not interested. Small, top-right. Card dims in place but stays in the timeline. First in line when recycling hits.
 - **Long press** → more options (share, more like this, why this).
-- **Dwell** — IntersectionObserver tracks >5s visibility without dismiss = positive signal, silent.
+- **Dwell** — IntersectionObserver tracks >5s visibility without dismiss as a positive signal. Silent.
 
-No swipe-as-primary. No gesture demands. The system reads the quiet signals.
+No swipe-as-primary. No gesture demands. Dismissal is a quiet opt-out, not a purge.
 
 ### Cover splash
 
-On app open, a brief cover — date, count, top story image. One second, then feed. First run shows a welcome instead. Sets the tone: curated, not a scroll.
+On app open, a brief cover — date, count, top story image. One second, transitions into today. First run shows a welcome.
 
 ### Search
 
-yt-dlp metadata search. Kid types a query, sees titles/channels/durations/thumbnails, taps request. Covers the "something came up at school" case. Channel search works the same way — request to follow a channel, approved by parent (kids) or auto-approved (adults).
+Full-text search across the whole timeline via SQLite FTS5. Searches match title, personal hook, channel name, and topic. Results rendered as a flat list ordered by relevance, with the card's original date shown beneath.
+
+Search also powers the "find similar" affordance on gone-forever cards.
+
+**v1 search is text-only** — filters (saved-only, channel, date range, topic) come in a later polish pass once real usage reveals which filters are actually used.
+
+### Saved (separate surface)
+
+Saved items appear in the timeline in their original position *and* in a dedicated Saved tab in bottom nav. The Saved tab is a forever list of saved items, reverse-chronological by save date. Saved items are never recycled, regardless of storage pressure.
+
+---
+
+## 8a. New-user search and channel discovery
+
+Separate from the timeline because it's how content *enters* the system, not how it's browsed.
+
+- **Video search** — yt-dlp metadata search. User types a query, sees titles/channels/durations/thumbnails, taps request. Covers the "something came up at school" case. Request goes through guard pipeline as normal.
+- **Channel search** — same interface, request to follow. Approved by parent (kids) or auto-approved (adults). Once followed, the channel's RSS is polled every 6 hours.
 
 ---
 
@@ -410,6 +539,12 @@ Every Sunday evening, Eddy generates a one-page summary:
 No number. No target. No comparison to a prior week's score. A streak counter exists but it tracks *diversity of topics* (stretching, not concentrating) rather than volume — and it's always optional to view.
 
 The kid can tap any row for a one-sentence explanation of what Eddy is noticing. Over months, the kid learns the vocabulary of their own attention.
+
+### Linking to the timeline
+
+Drift and the feed timeline (Section 8) are the same data seen two ways. Every Drift observation links into the timeline filtered to show the evidence: *"You watched 12 things this week — 8 were Minecraft"* taps through to a filtered timeline view of those eight items. The summary isn't a separate document the kid has to take on trust; it's a guided tour of the week they can already see.
+
+This is the moment Eddy stops being a media app and becomes a record of attention the kid can learn from.
 
 ### For parents
 
@@ -499,8 +634,8 @@ One topic per user, named with a UUID component so guessing is infeasible:
 
 - `eddy-steve-{uuid}`
 - `eddy-partner-{uuid}`
-- `eddy-boy1-{uuid}`
-- `eddy-boy2-{uuid}`
+- `eddy-son1-{uuid}`
+- `eddy-son2-{uuid}`
 
 ntfy basic auth + ACL configured per user. Each user's iOS app stores credentials for their own topic only. Pipeline failures and other admin events go to parent topics with `high` priority — no separate system topic.
 
@@ -642,17 +777,34 @@ CREATE TABLE content_items (
   content_type  TEXT,     -- video|article|podcast|paper
   title         TEXT,
   source        TEXT,
+  channel       TEXT,     -- for videos/podcasts, duplicated for search
   url           TEXT,
   topic         TEXT,
   score         REAL,
   personal_hook TEXT,     -- Gemma-generated, <=15 words
+  thumbnail_url TEXT,     -- persisted so recycled cards still render
+  duration_secs INTEGER,
+  file_path     TEXT,     -- null when recycled or non-video
+  nginx_url     TEXT,     -- null when recycled or non-video
+  file_state    TEXT DEFAULT 'live',  -- live|recycled|gone|na (non-video)
+  added_section TEXT,     -- my_request|channel|recommendation — for today's sub-sections
   tapped        BOOLEAN DEFAULT 0,
   saved         BOOLEAN DEFAULT 0,
   dismissed     BOOLEAN DEFAULT 0,
   completed     BOOLEAN DEFAULT 0,
   dwell_secs    INTEGER DEFAULT 0,
-  added_at      TIMESTAMP,
-  tapped_at     TIMESTAMP
+  added_at      TIMESTAMP,       -- anchor for timeline position; immutable
+  tapped_at     TIMESTAMP,
+  watched_at    TIMESTAMP,
+  saved_at      TIMESTAMP,
+  dismissed_at  TIMESTAMP,
+  recycled_at   TIMESTAMP
+);
+
+-- Full-text search over the timeline
+CREATE VIRTUAL TABLE content_items_fts USING fts5(
+  title, personal_hook, channel, topic,
+  content='content_items', content_rowid='rowid'
 );
 
 CREATE TABLE topics (
@@ -828,26 +980,36 @@ Eight phases. Sequential. Each ends with something the family uses.
 - `POST /requests` endpoint on M4 — enqueues download job on Redis
 - **Download worker on Ubuntu** (`src/workers/download.ts`) — pulls jobs, runs yt-dlp + ffmpeg locally, writes to `/mnt/ssd/eddy/videos/`, POSTs result to M4's internal API
 - systemd service for the worker, auto-restart on failure
-- yt-dlp with `--concurrent-fragments 4`, `--no-part`, H.264 format selector
+- **yt-dlp + bgutil-ytdlp-pot-provider plugin** installed via pip on Ubuntu. Test on a normal video and a recently-released video to confirm PO token path works.
+- yt-dlp invocation with `--extractor-args "youtube:player_client=default,mweb"`, `--sleep-interval 5 --max-sleep-interval 10`, `--concurrent-fragments 4`, `--no-part`, H.264 format selector
+- Weekly cron on Ubuntu: `pip install -U yt-dlp bgutil-ytdlp-pot-provider`
+- Rate-limit detection in worker — pause queue for an hour on consecutive "try again later" responses
 - nginx on Ubuntu serving the videos directory to PWA
 - Plex library configured, API-triggered scan from Ubuntu worker on download complete
 - Simplest PWA — two routes: `/request?url=...` (landing for Shortcut) and `/my-requests` (list with states)
 - "Video ready" ntfy notification working end-to-end
 - **No guard yet** — everything auto-approves in this phase. Steve watches the queue and rejects anything bad manually.
 
-**Ends with:** kids can share a YouTube link to Eddy and it comes back watchable, fast, with a notification on their phone. No WiFi round-trip for video bytes.
+**Ends with:** kids can share a YouTube link to Eddy and it comes back watchable, fast, with a notification on their phone. No WiFi round-trip for video bytes. PO token path verified working.
 
 ### Phase 2 — The feed (2 sessions)
 
 - Card component, design tokens, all named animations
-- Feed layout — magazine mode, list mode, iPad portrait + landscape
+- **Timeline feed** — reverse-chronological, day-grouped, anchored by `added_at`
+- **Today section** with three sub-groups: My requests, From your channels, Picked for you
+- **Past days** as unified lists, continuous scroll back through history
+- **Three card states** — live, recycled (one-tap restore), gone (find similar)
+- **iPad layouts** — two-column grid (portrait ≥768px), three-column grid (landscape ≥1024px)
+- **iPhone magazine mode** — single hero, page-turn advance — as an alternative iPhone-only layout
 - Inline video player (HTML5, full-screen, state machine)
-- Search via yt-dlp metadata
+- Watched indicator on cards — tick + "Watched Xh ago" timestamp
+- Saved tab in bottom nav — forever list, never recycled
+- Search via yt-dlp metadata (new content) and FTS5 over the timeline (existing content)
 - Channel subscriptions — kids pick a handful of channels; periodic RSS check adds new videos to their feed, going through the same request pipeline
 - Cover splash, topic filter, bottom nav
 - `/design-reference` route as living design doc
 
-**Ends with:** a proper feed PWA with search, subscriptions, and inline playback. Still no automated guard — subscribed-channel new-videos go to parent review queue.
+**Ends with:** a timeline PWA showing every card ever added, with restore for recycled files and search across history. Still no automated guard — subscribed-channel new-videos go to parent review queue.
 
 ### Phase 3 — The guard (1-2 sessions)
 
@@ -930,14 +1092,14 @@ Resolve before or during the relevant phase.
 
 1. **Shortcuts availability on Son 2's iPhone.** Screen Time may restrict Shortcut installation. Verify this week before committing to Phase 1 primary path.
 2. **Plex scan trigger latency.** Plex API `library.refresh` may not reliably pick up a single new file — may need to scan the whole "Other Videos" library each time. Measure in Phase 1.
-3. **SMB vs SSH mount from M4 to Ubuntu SSD.** yt-dlp writing over the network — measure throughput, choose simpler option.
-4. **Gemma inference throughput on M4 with 16GB RAM.** Can it handle scoring + hook generation + triage on a busy day without swap? Instrument in Phase 3, adjust batch sizes if needed.
-5. **Whole-house DNS coverage (Phase 6 decision).** BT Home Hub 2 cannot push DNS to DHCP clients, so Pi-hole only reaches Tailscale-joined devices. Options if whole-house coverage is wanted: (a) try Pi-hole as DHCP server with HH2 DHCP disabled — fragile but free; (b) replace HH2 with a UniFi Cloud Gateway Ultra (~£140) or similar, putting HH2 in modem mode if BT line allows. Decide at start of Phase 6 — Tailscale-only coverage may prove sufficient once kids are using share-sheet for most requests.
-6. **yt-dlp auto-update strategy.** Weekly cron is the baseline. Consider: check version on each download attempt and update if >7 days stale, vs simple weekly cron. Decide in Phase 1 once we see actual failure rate.
+3. **Gemma inference throughput on M4 with 16GB RAM.** Can it handle scoring + hook generation + triage on a busy day without swap? Instrument in Phase 3, adjust batch sizes if needed.
+4. **Whole-house DNS coverage (Phase 6 decision).** BT Home Hub 2 cannot push DNS to DHCP clients, so Pi-hole only reaches Tailscale-joined devices. Options if whole-house coverage is wanted: (a) try Pi-hole as DHCP server with HH2 DHCP disabled — fragile but free; (b) replace HH2 with a UniFi Cloud Gateway Ultra (~£140) or similar, putting HH2 in modem mode if BT line allows. Decide at start of Phase 6 — Tailscale-only coverage may prove sufficient once kids are using share-sheet for most requests.
+5. **yt-dlp auto-update cadence.** Weekly cron is the baseline. Consider: check version on each download attempt and update if >7 days stale, vs simple weekly cron. Decide in Phase 1 once we see actual failure rate.
 
 ### Known dependencies
 
 - **ntfy.sh upstream** is required for instant iOS push delivery (poll-request forwarding). Their uptime has been good but it is a single point of failure outside our control. If it becomes a real problem, the alternative is a £79/year Apple Developer account and a custom iOS app — significant effort for a low-probability mitigation. Live with the dependency for now.
+- **yt-dlp + bgutil-ytdlp-pot-provider** are in an active arms race with YouTube. Both are well-maintained open-source projects with fast response times to YouTube changes (typically 24-48h). The dependency is real but the alternative — building our own YouTube extraction — is not credible. Mitigation is operational (weekly auto-update, health-check notification, one-tap remediation) rather than architectural. If both projects ever became unmaintained, a fallback path would be a hosted extraction service (cobalt.tools etc.), which violates the privacy principle and is therefore a Phase-N+ concern only.
 
 ---
 
