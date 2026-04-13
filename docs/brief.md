@@ -91,45 +91,66 @@ Two machines, already configured.
 
 ## 4. Architecture
 
-One Node process, one database, one PWA. Kept deliberately boring.
+One Node codebase, one database, one PWA. Two processes — one on each machine — sharing a Redis queue.
+
+**Principle: Ubuntu moves bytes, M4 thinks.** The M4 runs over WiFi; Ubuntu is on Ethernet next to the router. Anything that shifts large payloads runs on Ubuntu so video doesn't cross WiFi twice. Anything that reasons or serves small responses runs on the M4.
 
 ```
-┌─────────────────────── M4 Mac Mini ──────────────────────────┐
+┌─────────────────────── M4 Mac Mini (WiFi) ───────────────────┐
 │                                                              │
-│  Node process (Express + modules)                            │
+│  Node process — API, PWA, reasoning                          │
 │    ├── profiles                                              │
-│    ├── requests      (kid request flow, pipeline)            │
-│    ├── content       (yt-dlp wrapper, downloads, deletion)   │
-│    ├── sources       (RSS, podcasts, papers)                 │
+│    ├── requests      (kid request flow, orchestration)       │
+│    ├── sources       (RSS, podcasts, papers — small fetches) │
 │    ├── feed          (aggregation, scoring, hook generation) │
-│    ├── guard         (Gemma; later: frontier escalation)     │
+│    ├── guard         (Gemma)                                 │
 │    ├── drift         (weekly literacy summary)               │
 │    ├── overrides     (Pi-hole API, override lifecycle)       │
-│    ├── notifications (ntfy client)                            │
+│    ├── notifications (ntfy client)                           │
 │    └── mcp           (MCP server for Claude.ai control)      │
 │                                                              │
-│  SQLite (single file)                                        │
-│  Redis (BullMQ queue only)                                   │
+│  SQLite (single file, owned by M4)                           │
 │  Ollama + Gemma 4 E4B                                        │
 │  PWA (React, built by Vite, served by Express)               │
 │                                                              │
 └──────────────────────────────────────────────────────────────┘
                             │
-                            │  Tailscale
+                            │  Tailscale (small payloads only)
                             ▼
-┌──────────────────── Ubuntu Server ───────────────────────────┐
+┌─────────────────── Ubuntu Server (Ethernet) ─────────────────┐
 │                                                              │
-│  nginx   — serves /mnt/ssd/eddy/videos/ to PWA               │
-│  Plex    — scans same directory, serves to TVs               │
-│  ntfy    — notification delivery to all family devices       │
+│  Download worker — Node process, same codebase               │
+│    ├── yt-dlp         (download + transcript fetch)          │
+│    ├── ffmpeg         (mux, stream copy, no re-encode)       │
+│    └── callback       (POSTs results back to M4 API)         │
+│                                                              │
+│  Redis  — BullMQ queue (on Ethernet for low-latency pulls)   │
+│  nginx  — serves /mnt/ssd/eddy/videos/ to PWA                │
+│  Plex   — scans same directory, serves to TVs                │
+│  ntfy   — notification delivery to all family devices        │
 │  Pi-hole (later) — DNS blocking for Tailscale clients        │
 │                                                              │
 └──────────────────────────────────────────────────────────────┘
 ```
 
-No microservices. Module boundaries are TypeScript files, not network hops. The MCP server is another module bound to a different port, sharing the same process and database.
+### Why this split
 
-**Language:** TypeScript / Node.js throughout. No Python in Eddy itself — yt-dlp is a CLI shell-out.
+The M4 is in the back room on WiFi. Ubuntu is next to the router on Ethernet. If downloads ran on the M4, every video would cross the WiFi link twice — once inbound from YouTube to M4, once outbound from M4 to Ubuntu's SSD. The second hop competes with the first for the same airtime, roughly halving effective bandwidth. Moving the worker to Ubuntu makes the path single-hop on Ethernet and eliminates the WiFi bottleneck entirely.
+
+Side effect: Gemma 4 E4B (~10GB resident) stops competing with yt-dlp+ffmpeg for memory and CPU on the 16GB M4. Inference stays fast, the PWA stays snappy.
+
+### Process topology
+
+- **M4 Node process** — API, PWA, MCP, all modules listed above. Enqueues download jobs, writes SQLite on callback.
+- **Ubuntu Node process** — download worker only. Same codebase, different entry point (`src/workers/download.ts`). Connects to Redis on Ubuntu. Pulls download jobs, runs yt-dlp + ffmpeg to local disk, POSTs to M4 API on completion.
+- **Redis on Ubuntu** — queue lives next to the worker that consumes from it. M4 pushes jobs over Tailscale (small payloads).
+- **SQLite on M4** — single source of truth. Ubuntu worker never writes SQLite directly; it reports results via M4's internal API.
+
+### Module boundaries
+
+No microservices, but two processes. Modules are TypeScript files, not network hops. Shared code lives in `src/` and is compiled once; both entry points import from the same modules. The boundary between processes is *the BullMQ queue* and one internal callback endpoint (`POST /internal/videos/:id/downloaded` with HMAC auth).
+
+**Language:** TypeScript / Node.js throughout. No Python — yt-dlp is a binary shell-out on Ubuntu.
 
 ---
 
@@ -189,30 +210,47 @@ Some requests can't wait — livestreams, football matches, reaction content whe
 
 ## 6. Content pipeline (downloads)
 
-yt-dlp directly. No Tube Archivist.
+yt-dlp directly, running on Ubuntu. No Tube Archivist.
 
-**Per video:**
+### Where the work happens
+
+Downloads run on Ubuntu via a dedicated Node worker process sharing the BullMQ queue with the M4's API. The M4 enqueues a job with the URL and metadata; the Ubuntu worker pulls it, runs yt-dlp + ffmpeg to local disk, and POSTs back to the M4's internal API on completion. See Section 4 for the full topology and rationale.
+
+**M4 never touches video files.** It holds nginx URLs in SQLite and that's all.
+
+### yt-dlp invocation
 
 ```
 yt-dlp \
   --format "bestvideo[height<=1080][vcodec^=avc1]+bestaudio[ext=m4a]/best[height<=1080][vcodec^=avc1]" \
+  --concurrent-fragments 4 \
   --write-auto-sub --sub-lang en \
+  --no-part \
   -o /mnt/ssd/eddy/videos/{id}.mp4 \
   {url}
 ```
 
-H.264 + AAC forced — native browser playback, no transcoding, Plex direct-play on TVs. Metadata and auto-subs stored in SQLite for guard + hook generation.
+- **H.264 + AAC forced** — native browser playback, no transcoding, Plex direct-play on TVs. ffmpeg runs only to mux the streams (stream copy, no re-encode). Verify with `--verbose` that ffmpeg logs `Stream mapping` with `(copy)` on both streams — if it shows `(encode)`, the format selector is wrong and CPU is being burned for nothing.
+- **`--concurrent-fragments 4`** — YouTube serves video in fragments; pulling them in parallel is typically 2-3× faster on modern sources.
+- **`--no-part`** — writes directly to the final filename. Cheap on local disk, avoids a rename step.
+- Metadata and auto-subs stored in SQLite for guard + hook generation.
 
-**BullMQ workers** handle download jobs. Concurrency 2 (respects bandwidth, leaves Ollama room). Retries 3× with backoff.
+### Queue configuration
 
-**Plex integration:**
+- **Concurrency 2** on the Ubuntu worker — room for two downloads in parallel without saturating the uplink or the SSD.
+- **Retries 3×** with exponential backoff.
+- **Job payload is small** — URL, youtube_id, user_id, destination filename. No binary data on the queue.
+
+### Plex integration
+
 - Plex library configured as "Other Videos" type (no agent matching) pointing at `/mnt/ssd/eddy/videos/`.
-- On download completion, Eddy triggers a partial Plex scan via Plex API — video on TV within ~30s of being ready.
+- On download completion, the Ubuntu worker triggers a partial Plex scan via Plex API — video on TV within ~30s of being ready.
 - Plex is pure reader. No metadata writing, no deletion from Plex — all file operations are Eddy's.
 
-**Subscriptions** (light layer, not the heartbeat):
+### Subscriptions (light layer, not the heartbeat)
+
 - Each kid picks a handful of channels they actually follow.
-- Every 6 hours, yt-dlp checks channel RSS feeds for new videos.
+- Every 6 hours, a scheduled job on the M4 checks channel RSS feeds and enqueues download jobs for any new videos.
 - New videos go through the same guard pipeline as requests — same rules, same escalation.
 - Approved channel content appears in the feed tagged as "from channels you follow."
 
@@ -222,14 +260,14 @@ H.264 + AAC forced — native browser playback, no transcoding, Plex direct-play
 - **Storage threshold** (configurable, default 80% full) → oldest-unwatched first, skipping anything saved, dismissed, or added in the last 48h.
 - **Dismissed** → not deleted immediately, but first in line when threshold hits. Deprioritised, not punished.
 
-Deletion log kept in SQLite for debugging and so the kid can see "what happened to the video I was going to watch" if asked.
+Deletion runs as a scheduled job on Ubuntu (the file owner), triggered by the M4. Deletion log kept in SQLite.
 
 ### Reliability & operations
 
 YouTube ships breaking changes to yt-dlp every 1-3 months on average; the yt-dlp community typically fixes within 24-48 hours. Tube Archivist would not protect against this — it uses the same engine. The mitigation is operational, not architectural:
 
-- **Auto-update yt-dlp weekly** via cron (`pip install -U yt-dlp`). Stale installs are the single biggest reliability factor.
-- **Pipeline health check** — BullMQ job every 15 minutes. If >50% of last 10 downloads failed, send a single push notification to Steve with two inline actions: `[Update & retry]` (runs `pip install -U yt-dlp` then retries failed jobs from the last 24h) and `[Investigate]` (opens the admin queue view in the PWA). One alert per failure cluster, not per failure. Steve triggers the remediation, not the system — keeps the human in the loop for the cases where the upstream fix isn't out yet.
+- **Auto-update yt-dlp weekly** via cron on Ubuntu (`pip install -U yt-dlp`). Stale installs are the single biggest reliability factor.
+- **Pipeline health check** — BullMQ job every 15 minutes. If >50% of last 10 downloads failed, send a single ntfy notification to Steve with two actions: `[Update & retry]` (runs `pip install -U yt-dlp` on Ubuntu then retries failed jobs from the last 24h) and `[Investigate]` (opens the admin queue view in the PWA). One alert per failure cluster, not per failure. Steve triggers the remediation, not the system — keeps the human in the loop for the cases where the upstream fix isn't out yet.
 - **Manual retry button** in the PWA admin view as a fallback path.
 - **Error mapping** — yt-dlp returns structured errors. Map common cases to kid-readable reasons:
   - `age-restricted` → *"This one's age-restricted on YouTube. Ask a grown-up?"*
@@ -770,30 +808,34 @@ Eight phases. Sequential. Each ends with something the family uses.
 
 ### Phase 0 — Foundation (1 session)
 
-- Single-package repo, TypeScript, Express, SQLite, BullMQ + Redis, Ollama installed with `gemma4:e4b`
+- Single TypeScript repo, two entry points planned: `src/server.ts` (M4) and `src/workers/download.ts` (Ubuntu)
 - Schema + migrations
-- Config (.env with all variables, .env.example committed)
+- Config (.env with all variables, .env.example committed, zod-validated)
 - Logger, error types, Ollama wrapper, BullMQ queue setup
-- Hello-world route on M4, accessible via Tailscale
-- Nightly SQLite backup script to Ubuntu
+- **Redis on Ubuntu** via Docker, reachable from M4 over Tailscale
+- **SQLite on M4**, nightly backup script to Ubuntu
+- Hello-world route on M4, reachable over Tailscale
+- HMAC-authed internal API endpoint stub for worker → M4 callbacks
 
-**Ends with:** a Node process running on the M4, reachable over Tailscale, database initialised, Ollama responding.
+**Ends with:** M4 Node process running, Redis on Ubuntu reachable from M4, database initialised, Ollama responding.
 
 ### Phase 1 — The request flow, minimum viable (2 sessions)
 
 - **ntfy** Docker container on Ubuntu, configured with upstream forwarding for iOS instant delivery
 - ntfy iOS app installed on each family device, topics configured per user, credentials stored in user profiles
 - `notifications` module in Eddy with thin ntfy client, signed-token URL pattern for action endpoints
-- iOS Shortcut installer — documented setup, one Shortcut per kid's device
-- `POST /requests` endpoint
-- yt-dlp wrapper with H.264 download to `/mnt/ssd/eddy/videos/`
-- nginx config on Ubuntu serving that directory
-- Plex library configured, API-triggered scan on download complete
+- iOS Shortcut installer — documented setup, one Shortcut per kid's device (pin as share-sheet Favourite)
+- `POST /requests` endpoint on M4 — enqueues download job on Redis
+- **Download worker on Ubuntu** (`src/workers/download.ts`) — pulls jobs, runs yt-dlp + ffmpeg locally, writes to `/mnt/ssd/eddy/videos/`, POSTs result to M4's internal API
+- systemd service for the worker, auto-restart on failure
+- yt-dlp with `--concurrent-fragments 4`, `--no-part`, H.264 format selector
+- nginx on Ubuntu serving the videos directory to PWA
+- Plex library configured, API-triggered scan from Ubuntu worker on download complete
 - Simplest PWA — two routes: `/request?url=...` (landing for Shortcut) and `/my-requests` (list with states)
-- "Video ready" notification working end-to-end
+- "Video ready" ntfy notification working end-to-end
 - **No guard yet** — everything auto-approves in this phase. Steve watches the queue and rejects anything bad manually.
 
-**Ends with:** kids can share a YouTube link to Eddy and it comes back watchable, with a notification on their phone. The family can actually use this.
+**Ends with:** kids can share a YouTube link to Eddy and it comes back watchable, fast, with a notification on their phone. No WiFi round-trip for video bytes.
 
 ### Phase 2 — The feed (2 sessions)
 

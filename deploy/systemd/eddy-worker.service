@@ -1,0 +1,21 @@
+[Unit]
+Description=Eddy download worker
+After=network.target docker.service
+Wants=docker.service
+
+[Service]
+Type=simple
+User=steveu
+WorkingDirectory=/home/steveu/eddy
+ExecStart=/usr/bin/npm run worker
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=eddy-worker
+
+# Environment file — same .env as the M4 but with Ubuntu-specific overrides
+EnvironmentFile=/home/steveu/eddy/.env
+
+[Install]
+WantedBy=multi-user.target

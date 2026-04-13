@@ -46,8 +46,6 @@ export async function fetchMetadata(url: string): Promise<VideoMetadata> {
     '--dump-json',
     '--no-playlist',
     '--skip-download',
-    '--write-auto-sub',
-    '--sub-lang', 'en',
     '--no-write-playlist-metafiles',
     url,
   ]).catch((err: NodeJS.ErrnoException & { stderr?: string }) => {
@@ -109,20 +107,22 @@ export async function downloadVideo(
   url: string,
   onProgress?: (pct: number) => void,
 ): Promise<string> {
-  const tempDir = config.VIDEO_TEMP_PATH ?? '/tmp/eddy-downloads';
-  const outputPath = path.join(tempDir, `${youtubeId}.mp4`);
+  const outputDir = config.VIDEO_OUTPUT_PATH;
+  const outputPath = path.join(outputDir, `${youtubeId}.mp4`);
 
   logger.info({ youtubeId, outputPath }, 'Starting yt-dlp download');
 
   return new Promise((resolve, reject) => {
     const args = [
-      '--format', 'bestvideo[height<=1080][vcodec^=avc1]+bestaudio[ext=m4a]/best[height<=1080][vcodec^=avc1]/best',
+      '--format', 'bestvideo[height<=1080][vcodec^=avc1]+bestaudio[ext=m4a]/best[height<=1080][vcodec^=avc1]',
+      '--concurrent-fragments', '4',
+      '--write-auto-sub', '--sub-lang', 'en',
+      '--no-part',
       '--no-playlist',
-      '--output', outputPath,
-      '--no-write-playlist-metafiles',
       '--merge-output-format', 'mp4',
       '--extractor-args', 'youtube:player_client=default,mweb',
-      '--newline', // one progress line per stdout line
+      '--newline',
+      '--output', outputPath,
       url,
     ];
 

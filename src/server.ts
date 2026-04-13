@@ -1,41 +1,57 @@
 import express, { NextFunction, Request, Response } from 'express';
 import { logger } from './logger';
 import { ollamaHealthCheck } from './ollama';
-import { downloadQueue, guardQueue } from './queue';
+import { downloadQueue } from './queue';
+import { db } from './db/client';
 import { EddyError, NotFoundError } from './errors';
 import { requestsRouter } from './modules/requests/index';
+import { internalRouter } from './modules/internal/index';
 
 export const app = express();
 
-app.use(express.json());
+// Capture raw body for HMAC verification on /internal routes.
+// The verify callback runs before JSON parsing; rawBody is attached to the request.
+app.use(
+  express.json({
+    verify: (req: Request & { rawBody?: Buffer }, _res, buf) => {
+      req.rawBody = buf;
+    },
+  })
+);
 
 app.use('/requests', requestsRouter);
+app.use('/internal', internalRouter);
 
 app.get('/health', async (_req: Request, res: Response) => {
+  // DB — synchronous probe; throws if SQLite is broken
+  let dbOk = false;
+  try {
+    db.prepare('SELECT 1').get();
+    dbOk = true;
+  } catch {
+    // falls through with dbOk = false
+  }
+
   const ollamaResult = await ollamaHealthCheck();
 
-  const getQueueCounts = async (queue: typeof downloadQueue) => {
-    try {
-      return await queue.getJobCounts();
-    } catch {
-      return null;
-    }
-  };
-
-  const [downloadCounts, guardCounts] = await Promise.all([
-    getQueueCounts(downloadQueue),
-    getQueueCounts(guardQueue),
-  ]);
+  // Redis/queue — M4 uses this only as a producer (Ubuntu worker consumes)
+  let downloadCounts: Awaited<ReturnType<typeof downloadQueue.getJobCounts>> | null = null;
+  try {
+    downloadCounts = await downloadQueue.getJobCounts();
+  } catch {
+    // falls through with downloadCounts = null
+  }
 
   const redisOk = downloadCounts !== null;
+  const allOk = dbOk && redisOk;
 
-  res.status(redisOk ? 200 : 503).json({
-    status: redisOk ? 'ok' : 'degraded',
+  res.status(allOk ? 200 : 503).json({
+    status: allOk ? 'ok' : 'degraded',
     uptime: Math.floor(process.uptime()),
-    db: 'ok',
+    db: dbOk ? 'ok' : 'error',
     ollama: { ok: ollamaResult.ok, models: ollamaResult.models },
     redis: redisOk ? 'ok' : 'unavailable',
-    queues: redisOk ? { downloads: downloadCounts, guard: guardCounts } : null,
+    downloads: redisOk ? downloadCounts : null,
   });
 });
 

@@ -3,8 +3,7 @@ import { v7 as uuidv7 } from 'uuid';
 import { db } from '../../db/client';
 import { logger } from '../../logger';
 import { ValidationError, NotFoundError } from '../../errors';
-import { downloadQueue } from '../../queue';
-import { getDownloadProgress } from '../content';
+import { downloadQueue, redis } from '../../queue';
 import type { DownloadJobData } from '../content';
 
 export const requestsRouter = Router();
@@ -76,36 +75,35 @@ requestsRouter.post('/', async (req: Request, res: Response) => {
   const requestId = uuidv7();
   const now = new Date().toISOString();
 
+  // Phase 1: auto-approve and immediately mark downloading (worker picks it up momentarily)
   db.prepare(`
     INSERT INTO requests
-      (request_id, user_id, source, url, youtube_id, status, requested_at)
+      (request_id, user_id, source, url, youtube_id, status, decided_by, decided_at, requested_at)
     VALUES
-      (@request_id, @user_id, @source, @url, @youtube_id, @status, @requested_at)
+      (@request_id, @user_id, @source, @url, @youtube_id, 'downloading', 'auto', @now, @now)
   `).run({
     request_id: requestId,
     user_id: user.user_id,
     source: 'share_sheet',
     url,
     youtube_id: youtubeId,
-    status: 'pending',
-    requested_at: now,
+    now,
   });
 
   logger.info({ requestId, userId: user.user_id, url }, 'Request received');
 
-  // Enqueue download job
   const jobData: DownloadJobData = { requestId, youtubeId: youtubeId ?? '', url };
   await downloadQueue.add('download', jobData, { jobId: requestId });
 
   res.status(202).json({
     requestId,
-    status: 'pending',
+    status: 'downloading',
     message: `Got it${user.role === 'kid' ? `, ${user.display_name}` : ''}. Working on it.`,
   });
 });
 
 // GET /requests/:id — polled by PWA to check status
-requestsRouter.get('/:id', (req: Request, res: Response) => {
+requestsRouter.get('/:id', async (req: Request, res: Response) => {
   const row = db.prepare(
     'SELECT request_id, status, title, rejection_reason, nginx_url FROM requests WHERE request_id = ?'
   ).get(req.params['id']) as
@@ -114,9 +112,15 @@ requestsRouter.get('/:id', (req: Request, res: Response) => {
 
   if (!row) throw new NotFoundError('request');
 
-  const progress = row.status === 'downloading'
-    ? getDownloadProgress(row.request_id)
-    : null;
+  let progress: number | null = null;
+  if (row.status === 'downloading') {
+    try {
+      const val = await redis.get(`eddy:progress:${row.request_id}`);
+      progress = val !== null ? parseInt(val, 10) : null;
+    } catch {
+      // Redis unavailable — omit progress rather than failing the request
+    }
+  }
 
   res.json({
     requestId: row.request_id,

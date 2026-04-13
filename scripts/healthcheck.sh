@@ -44,14 +44,6 @@ echo "────────────────────────�
 # ── M4 local services ────────────────────────────────────────────────────────
 printf "\n${BOLD}M4 — Local services${RESET}\n"
 
-# Redis
-if docker compose -f "${SCRIPT_DIR}/../docker-compose.yml" ps --format json 2>/dev/null \
-    | python3 -c "import json,sys; s=[json.loads(l) for l in sys.stdin]; exit(0 if any(s['State']=='running' and s.get('Health','')!='unhealthy' for s in s) else 1)" 2>/dev/null; then
-  check "Redis (Docker)" "ok"
-else
-  check "Redis (Docker)" "fail" "run: docker compose up -d"
-fi
-
 # Ollama
 if curl -sf --max-time 3 "${OLLAMA_URL:-http://localhost:11434}/api/tags" > /dev/null 2>&1; then
   check "Ollama" "ok"
@@ -66,13 +58,6 @@ if curl -sf --max-time 3 "${OLLAMA_URL:-http://localhost:11434}/api/tags" 2>/dev
   check "Guard model (${GUARD_MODEL})" "ok"
 else
   check "Guard model (${GUARD_MODEL})" "fail" "run: ollama pull ${GUARD_MODEL}"
-fi
-
-# yt-dlp
-if command -v yt-dlp > /dev/null 2>&1; then
-  check "yt-dlp" "ok" "$(yt-dlp --version 2>/dev/null)"
-else
-  check "yt-dlp" "fail" "run: pip3 install yt-dlp"
 fi
 
 # Eddy server
@@ -102,8 +87,25 @@ else
 fi
 
 if [[ "$SSH_OK" == true ]]; then
+  # Redis — ping via docker exec (avoids needing redis-cli or nc on the host)
+  if ssh $SSH_OPTS "${SSH_USER}@${SSH_HOST}" "docker exec eddy-redis redis-cli ping 2>/dev/null | grep -q PONG" 2>/dev/null; then
+    check "Redis" "ok"
+  else
+    check "Redis" "fail" "run: docker start eddy-redis (on Ubuntu)"
+  fi
+
+  # yt-dlp — non-interactive SSH won't load .profile, so check common paths
+  YTDLP_VER=$(ssh $SSH_OPTS "${SSH_USER}@${SSH_HOST}" \
+    "for p in /usr/local/bin/yt-dlp \$HOME/.local/bin/yt-dlp; do [ -x \"\$p\" ] && \$p --version 2>/dev/null && break; done" \
+    2>/dev/null || echo "")
+  if [[ -n "$YTDLP_VER" ]]; then
+    check "yt-dlp" "ok" "${YTDLP_VER}"
+  else
+    check "yt-dlp" "fail" "not found at /usr/local/bin or ~/.local/bin (on Ubuntu)"
+  fi
+
   # Video path
-  REMOTE_PATH="${VIDEO_REMOTE_PATH:-/home/steveu/eddy/videos}"
+  REMOTE_PATH="${VIDEO_OUTPUT_PATH:-/home/steveu/eddy/videos}"
   if ssh $SSH_OPTS "${SSH_USER}@${SSH_HOST}" "test -w '${REMOTE_PATH}'" 2>/dev/null; then
     check "Video path (${REMOTE_PATH})" "ok"
   else
@@ -136,6 +138,8 @@ if [[ "$SSH_OK" == true ]]; then
     check "Plex API" "fail" "check PLEX_URL / PLEX_TOKEN in .env"
   fi
 else
+  check "Redis" "skip" "SSH unavailable"
+  check "yt-dlp" "skip" "SSH unavailable"
   check "Video path" "skip" "SSH unavailable"
   check "ntfy" "skip" "SSH unavailable"
   check "nginx" "skip" "SSH unavailable"
