@@ -5,6 +5,7 @@ import { logger } from '../../logger';
 import { ValidationError, NotFoundError } from '../../errors';
 import { downloadQueue, redis } from '../../queue';
 import type { DownloadJobData } from '../content';
+import { sendVideoReady } from '../notifications';
 
 export const requestsRouter = Router();
 
@@ -64,6 +65,12 @@ requestsRouter.post('/', async (req: Request, res: Response) => {
 
     if (existing) {
       logger.info({ requestId: existing.request_id, youtubeId }, 'Returning existing request');
+      // Re-send the ready notification in case the user missed it
+      if (existing.status === 'ready') {
+        const row = db.prepare('SELECT title FROM requests WHERE request_id = ?')
+          .get(existing.request_id) as { title: string | null } | undefined;
+        void sendVideoReady(user.user_id, existing.request_id, row?.title ?? youtubeId ?? '');
+      }
       return res.status(202).json({
         requestId: existing.request_id,
         status: existing.status,
@@ -132,21 +139,48 @@ requestsRouter.get('/:id', async (req: Request, res: Response) => {
   });
 });
 
-// GET /requests?userId=... — list requests for a user
+// POST /requests/:id/watched — PWA marks video as watched
+requestsRouter.post('/:id/watched', (req: Request, res: Response) => {
+  db.prepare(
+    `UPDATE requests SET status = 'watched', watched_at = ? WHERE request_id = ? AND status = 'ready'`
+  ).run(new Date().toISOString(), req.params['id']);
+  res.status(204).end();
+});
+
+// POST /requests/:id/dismiss — PWA dismisses a request
+requestsRouter.post('/:id/dismiss', (req: Request, res: Response) => {
+  db.prepare(
+    `UPDATE requests SET status = 'dismissed' WHERE request_id = ? AND status NOT IN ('downloading', 'guard_review', 'parent_review')`
+  ).run(req.params['id']);
+  res.status(204).end();
+});
+
+// GET /requests?userId=... or ?user=... — list requests for a user
 requestsRouter.get('/', (req: Request, res: Response) => {
-  const { userId } = req.query as { userId?: string };
-  if (!userId) throw new ValidationError('userId query param required');
+  const { userId, user: userName } = req.query as { userId?: string; user?: string };
+  const lookupValue = userId ?? userName;
+  if (!lookupValue) throw new ValidationError('userId or user query param required');
+
+  const isUuid = /^[0-9a-f-]{36}$/.test(lookupValue);
+  const found = (isUuid
+    ? db.prepare('SELECT user_id FROM users WHERE user_id = ?').get(lookupValue)
+    : db.prepare('SELECT user_id FROM users WHERE lower(display_name) = lower(?)').get(lookupValue)
+  ) as { user_id: string } | undefined;
+
+  if (!found) throw new NotFoundError(`user ${lookupValue}`);
+  const resolvedUserId = found.user_id;
 
   const rows = db.prepare(`
-    SELECT request_id, url, youtube_id, title, status, rejection_reason, nginx_url, requested_at
+    SELECT request_id, url, youtube_id, title, channel, status, rejection_reason, nginx_url, requested_at
     FROM requests
     WHERE user_id = ?
+      AND status NOT IN ('watched', 'dismissed')
     ORDER BY requested_at DESC
     LIMIT 50
-  `).all(userId) as Array<{
+  `).all(resolvedUserId) as Array<{
     request_id: string; url: string; youtube_id: string | null;
-    title: string | null; status: string; rejection_reason: string | null;
-    nginx_url: string | null; requested_at: string;
+    title: string | null; channel: string | null; status: string;
+    rejection_reason: string | null; nginx_url: string | null; requested_at: string;
   }>;
 
   res.json({ requests: rows });

@@ -92,7 +92,22 @@ for var_prefix in STEVE BOY1 BOY2; do
   create_ntfy_user "$(parse_creds "$creds")" "$(parse_pass "$creds")" "$topic"
 done
 
-# ── 4. nginx ──────────────────────────────────────────────────────────────────
+# ── 4. Tailscale cert (for ntfy HTTPS) ───────────────────────────────────────
+info "Tailscale TLS cert"
+
+NTFY_HOSTNAME="mediaserver.tail1b6462.ts.net"
+SSL_DIR="/etc/ssl/eddy"
+sudo mkdir -p "${SSL_DIR}"
+sudo tailscale cert \
+  --cert-file "${SSL_DIR}/ntfy.crt" \
+  --key-file  "${SSL_DIR}/ntfy.key" \
+  "${NTFY_HOSTNAME}"
+# nginx needs to read the key
+sudo chmod 640 "${SSL_DIR}/ntfy.key"
+sudo chgrp www-data "${SSL_DIR}/ntfy.key"
+check "Tailscale cert written to ${SSL_DIR}"
+
+# ── 5. nginx ──────────────────────────────────────────────────────────────────
 info "nginx"
 
 if ! command -v nginx &>/dev/null; then
@@ -100,10 +115,12 @@ if ! command -v nginx &>/dev/null; then
   sudo apt-get update -qq && sudo apt-get install -y nginx
 fi
 
-sudo cp "${DEPLOY_DIR}/nginx/eddy-videos.conf" /etc/nginx/sites-available/eddy-videos
-if [[ ! -L /etc/nginx/sites-enabled/eddy-videos ]]; then
-  sudo ln -s /etc/nginx/sites-available/eddy-videos /etc/nginx/sites-enabled/eddy-videos
-fi
+for conf in eddy-videos eddy-ntfy; do
+  sudo cp "${DEPLOY_DIR}/nginx/${conf}.conf" "/etc/nginx/sites-available/${conf}"
+  if [[ ! -L "/etc/nginx/sites-enabled/${conf}" ]]; then
+    sudo ln -s "/etc/nginx/sites-available/${conf}" "/etc/nginx/sites-enabled/${conf}"
+  fi
+done
 
 # Remove default site if it conflicts on port 80
 if [[ -L /etc/nginx/sites-enabled/default ]]; then
@@ -114,9 +131,9 @@ fi
 sudo nginx -t
 sudo systemctl enable nginx
 sudo systemctl reload nginx
-check "nginx configured and running"
+check "nginx configured and running (HTTP :80 videos, HTTPS :443 ntfy)"
 
-# ── 5. Eddy worker systemd service ───────────────────────────────────────────
+# ── 6. Eddy worker systemd service ───────────────────────────────────────────
 info "Eddy worker systemd service"
 
 # Resolve npm path — nvm installs to ~/.nvm, not /usr/bin

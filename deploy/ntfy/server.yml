@@ -6,8 +6,10 @@
 # Message content stays local — only opaque message IDs transit ntfy.sh
 upstream-base-url: "https://ntfy.sh"
 
-# Where ntfy is reachable (used in self-links; Tailscale address)
-base-url: "http://100.95.170.27:2586"
+# Where ntfy is reachable — must be HTTPS for iOS push registration to work.
+# nginx proxies 443 → localhost:2586 using the Tailscale MagicDNS cert.
+base-url: "https://mediaserver.tail1b6462.ts.net"
+behind-proxy: true
 
 # Cache messages for 12h so devices that were offline can catch up
 cache-duration: "12h"

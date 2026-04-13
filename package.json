@@ -15,18 +15,22 @@
     "worker": "tsx src/workers/download.ts"
   },
   "dependencies": {
+    "@tanstack/react-query": "^5.99.0",
     "better-sqlite3": "^12.9.0",
     "bullmq": "^5.12.0",
     "dotenv": "^17.4.2",
     "express": "^4.19.2",
+    "framer-motion": "^12.38.0",
     "ioredis": "^5.3.2",
+    "lucide-react": "^1.8.0",
     "pino": "^9.2.0",
     "pino-pretty": "^11.2.0",
     "react": "^19.2.5",
     "react-dom": "^19.2.5",
     "react-router-dom": "^7.14.0",
     "uuid": "^10.0.0",
-    "zod": "^3.23.8"
+    "zod": "^3.23.8",
+    "zustand": "^5.0.12"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.11",
