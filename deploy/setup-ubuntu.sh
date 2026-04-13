@@ -151,6 +151,14 @@ fi
 # Node bin dir (nvm) — needed so tsx can find node at runtime
 NODE_BIN_DIR="$(dirname "${NPM_PATH}")"
 
+# yt-dlp — pip installs to ~/.local/bin which systemd doesn't include in PATH
+YTDLP_PATH="$(command -v yt-dlp 2>/dev/null || echo "${HOME}/.local/bin/yt-dlp")"
+if [[ ! -x "${YTDLP_PATH}" ]]; then
+  warn "yt-dlp not found — install with: pip install yt-dlp"
+  exit 1
+fi
+check "yt-dlp found at ${YTDLP_PATH}"
+
 # Write the service file directly with all paths resolved
 sudo tee /etc/systemd/system/eddy-worker.service > /dev/null <<EOF
 [Unit]
@@ -164,6 +172,7 @@ Type=simple
 User=${USER}
 WorkingDirectory=${REPO_DIR}
 Environment=PATH=${NODE_BIN_DIR}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=YTDLP_BIN=${YTDLP_PATH}
 ExecStart=${TSX_PATH} ${REPO_DIR}/src/workers/download.ts
 Restart=on-failure
 RestartSec=10

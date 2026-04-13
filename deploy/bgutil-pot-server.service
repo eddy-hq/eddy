@@ -1,0 +1,18 @@
+[Unit]
+Description=bgutil yt-dlp PO Token provider
+After=network.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=steveu
+WorkingDirectory=/home/steveu/bgutil-ytdlp-pot-provider/server
+ExecStart=/home/steveu/.nvm/versions/node/v24.14.1/bin/node build/main.js
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=bgutil-pot
+
+[Install]
+WantedBy=multi-user.target

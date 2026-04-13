@@ -7,6 +7,21 @@ import { logger } from '../../logger';
 const execFileAsync = promisify(execFile);
 
 const YTDLP_BIN = process.env['YTDLP_BIN'] ?? 'yt-dlp';
+// Node binary for yt-dlp JS challenge solving (signature/n-challenge).
+// Falls back to 'node' if not explicitly set — systemd PATH includes nvm bin dir.
+const NODE_BIN = process.env['NODE_BIN'] ?? 'node';
+
+// Args shared across all yt-dlp invocations.
+// mweb client + bgutil PO token provider (bgutil-ytdlp-pot-provider pip plugin +
+// HTTP server on 127.0.0.1:4416) handles bot-detection without cookies.
+// node JS runtime handles signature/n-challenges.
+function baseArgs(): string[] {
+  return [
+    '--js-runtimes', `node:${NODE_BIN}`,
+    '--remote-components', 'ejs:github',
+    '--extractor-args', 'youtube:player_client=mweb',
+  ];
+}
 
 // Matches: [download]  45.2% of ~  2.34GiB at  5.67MiB/s ETA 03:12
 const PROGRESS_RE = /\[download\]\s+([\d.]+)%/;
@@ -38,17 +53,22 @@ export function mapYtdlpError(stderr: string): string | null {
   if (/members.?only|join this channel/i.test(stderr)) {
     return "This video is for channel members only.";
   }
+  // Bot detection is transient — return null so BullMQ retries with backoff
+  if (/sign in to confirm|bot detection|please sign in/i.test(stderr)) {
+    return null;
+  }
   return null;
 }
 
 export async function fetchMetadata(url: string): Promise<VideoMetadata> {
   const { stdout, stderr } = await execFileAsync(YTDLP_BIN, [
+    ...baseArgs(),
     '--dump-json',
     '--no-playlist',
     '--skip-download',
     '--no-write-playlist-metafiles',
     url,
-  ]).catch((err: NodeJS.ErrnoException & { stderr?: string }) => {
+  ], { maxBuffer: 50 * 1024 * 1024 }).catch((err: NodeJS.ErrnoException & { stderr?: string }) => {
     const errOutput = err.stderr ?? '';
     const reason = mapYtdlpError(errOutput);
     if (reason) {
@@ -114,13 +134,15 @@ export async function downloadVideo(
 
   return new Promise((resolve, reject) => {
     const args = [
+      ...baseArgs(),
       '--format', 'bestvideo[height<=1080][vcodec^=avc1]+bestaudio[ext=m4a]/best[height<=1080][vcodec^=avc1]',
       '--concurrent-fragments', '4',
       '--write-auto-sub', '--sub-lang', 'en',
       '--no-part',
       '--no-playlist',
       '--merge-output-format', 'mp4',
-      '--extractor-args', 'youtube:player_client=default,mweb',
+      '--sleep-interval', '5',
+      '--max-sleep-interval', '10',
       '--newline',
       '--output', outputPath,
       url,

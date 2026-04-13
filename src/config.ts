@@ -32,6 +32,7 @@ const schema = z.object({
   // Video — written locally by the Ubuntu worker
   VIDEO_OUTPUT_PATH: z.string().default('/home/steveu/eddy/videos'),
   NGINX_VIDEO_BASE_URL: z.string().optional(),
+  YTDLP_COOKIES_FILE: z.string().optional(), // path to cookies.txt; enables age-restricted downloads
   // Internal M4 ↔ Ubuntu worker callback
   INTERNAL_HMAC_SECRET: z.string().min(32, 'INTERNAL_HMAC_SECRET must be at least 32 characters'),
   M4_INTERNAL_URL: z.string().optional(), // set on Ubuntu worker; not required on M4
