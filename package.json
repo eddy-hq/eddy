@@ -9,7 +9,8 @@
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src",
-    "test": "vitest run --passWithNoTests"
+    "test": "vitest run --passWithNoTests",
+    "health": "bash scripts/healthcheck.sh"
   },
   "dependencies": {
     "better-sqlite3": "^12.9.0",
