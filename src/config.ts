@@ -29,8 +29,12 @@ const schema = z.object({
   NTFY_CREDS_STEVE: z.string().optional(),
   NTFY_CREDS_SON1: z.string().optional(),
   NTFY_CREDS_SON2: z.string().optional(),
-  // Video / nginx — optional until Phase 1
-  VIDEO_OUTPUT_PATH: z.string().optional(),
+  // Video — SSH transfer to media server
+  VIDEO_SSH_USER: z.string().optional(),
+  VIDEO_SSH_HOST: z.string().optional(),
+  VIDEO_SSH_KEY: z.string().optional(),
+  VIDEO_REMOTE_PATH: z.string().optional(),
+  VIDEO_TEMP_PATH: z.string().default('/tmp/eddy-downloads'),
   NGINX_VIDEO_BASE_URL: z.string().optional(),
   // Plex — optional until Phase 1
   PLEX_URL: z.string().optional(),

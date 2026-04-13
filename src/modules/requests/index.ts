@@ -3,6 +3,9 @@ import { v7 as uuidv7 } from 'uuid';
 import { db } from '../../db/client';
 import { logger } from '../../logger';
 import { ValidationError, NotFoundError } from '../../errors';
+import { downloadQueue } from '../../queue';
+import { getDownloadProgress } from '../content';
+import type { DownloadJobData } from '../content';
 
 export const requestsRouter = Router();
 
@@ -21,7 +24,7 @@ function extractYoutubeId(url: string): string | null {
 }
 
 // POST /requests — called by iOS Shortcut
-requestsRouter.post('/', (req: Request, res: Response) => {
+requestsRouter.post('/', async (req: Request, res: Response) => {
   const { url, userId, user: userName } = req.body as { url?: string; userId?: string; user?: string };
 
   if (!url || typeof url !== 'string') {
@@ -50,6 +53,26 @@ requestsRouter.post('/', (req: Request, res: Response) => {
   }
 
   const youtubeId = extractYoutubeId(url);
+
+  // Dedup: if this user already has an active request for the same video, return it
+  if (youtubeId) {
+    const existing = db.prepare(`
+      SELECT request_id, status FROM requests
+      WHERE user_id = ? AND youtube_id = ?
+        AND status NOT IN ('rejected', 'dismissed', 'watched')
+      ORDER BY requested_at DESC LIMIT 1
+    `).get(user.user_id, youtubeId) as { request_id: string; status: string } | undefined;
+
+    if (existing) {
+      logger.info({ requestId: existing.request_id, youtubeId }, 'Returning existing request');
+      return res.status(202).json({
+        requestId: existing.request_id,
+        status: existing.status,
+        message: `Got it${user.role === 'kid' ? `, ${user.display_name}` : ''}. Working on it.`,
+      });
+    }
+  }
+
   const requestId = uuidv7();
   const now = new Date().toISOString();
 
@@ -68,7 +91,11 @@ requestsRouter.post('/', (req: Request, res: Response) => {
     requested_at: now,
   });
 
-  logger.info({ requestId, userId: user.display_name, url }, 'Request received');
+  logger.info({ requestId, userId: user.user_id, url }, 'Request received');
+
+  // Enqueue download job
+  const jobData: DownloadJobData = { requestId, youtubeId: youtubeId ?? '', url };
+  await downloadQueue.add('download', jobData, { jobId: requestId });
 
   res.status(202).json({
     requestId,
@@ -87,9 +114,14 @@ requestsRouter.get('/:id', (req: Request, res: Response) => {
 
   if (!row) throw new NotFoundError('request');
 
+  const progress = row.status === 'downloading'
+    ? getDownloadProgress(row.request_id)
+    : null;
+
   res.json({
     requestId: row.request_id,
     status: row.status,
+    progress,
     title: row.title,
     rejectionReason: row.rejection_reason,
     videoUrl: row.nginx_url,
