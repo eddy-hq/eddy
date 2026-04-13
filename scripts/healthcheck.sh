@@ -76,7 +76,7 @@ else
 fi
 
 # Eddy server
-PORT="${PORT:-3000}"
+PORT="${PORT:-3737}"
 if curl -sf --max-time 3 "http://localhost:${PORT}/health" > /dev/null 2>&1; then
   check "Eddy server (port ${PORT})" "ok"
 else

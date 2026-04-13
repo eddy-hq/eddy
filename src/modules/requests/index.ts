@@ -22,7 +22,7 @@ function extractYoutubeId(url: string): string | null {
 
 // POST /requests — called by iOS Shortcut
 requestsRouter.post('/', (req: Request, res: Response) => {
-  const { url, userId } = req.body as { url?: string; userId?: string };
+  const { url, userId, user: userName } = req.body as { url?: string; userId?: string; user?: string };
 
   if (!url || typeof url !== 'string') {
     throw new ValidationError('url is required');
@@ -30,17 +30,23 @@ requestsRouter.post('/', (req: Request, res: Response) => {
   if (!url.match(YOUTUBE_REGEX)) {
     throw new ValidationError('url must be a YouTube URL');
   }
-  if (!userId || typeof userId !== 'string') {
-    throw new ValidationError('userId is required');
+
+  // Accept either userId (UUID) or user (display name, case-insensitive) for Shortcut convenience
+  const lookupValue = userId ?? userName;
+  if (!lookupValue) {
+    throw new ValidationError('userId or user is required');
   }
 
-  // Verify user exists
-  const user = db.prepare('SELECT user_id, display_name, role FROM users WHERE user_id = ?').get(userId) as
+  const isUuid = /^[0-9a-f-]{36}$/.test(lookupValue);
+  const user = (isUuid
+    ? db.prepare('SELECT user_id, display_name, role FROM users WHERE user_id = ?').get(lookupValue)
+    : db.prepare('SELECT user_id, display_name, role FROM users WHERE lower(display_name) = lower(?)').get(lookupValue)
+  ) as
     | { user_id: string; display_name: string; role: string }
     | undefined;
 
   if (!user) {
-    throw new NotFoundError(`user ${userId}`);
+    throw new NotFoundError(`user ${lookupValue}`);
   }
 
   const youtubeId = extractYoutubeId(url);
@@ -54,7 +60,7 @@ requestsRouter.post('/', (req: Request, res: Response) => {
       (@request_id, @user_id, @source, @url, @youtube_id, @status, @requested_at)
   `).run({
     request_id: requestId,
-    user_id: userId,
+    user_id: user.user_id,
     source: 'share_sheet',
     url,
     youtube_id: youtubeId,
