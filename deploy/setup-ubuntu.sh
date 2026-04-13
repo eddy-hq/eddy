@@ -18,7 +18,8 @@ echo "────────────────────────�
 # ── 1. Video directory ────────────────────────────────────────────────────────
 info "Video directory"
 VIDEO_PATH="/mnt/ssd/eddy/videos"
-mkdir -p "${VIDEO_PATH}"
+sudo mkdir -p "${VIDEO_PATH}"
+sudo chown -R "${USER}:${USER}" "/mnt/ssd/eddy"
 check "Video path ready: ${VIDEO_PATH}"
 
 # ── 2. Docker services (Redis + ntfy) ────────────────────────────────────────
@@ -32,6 +33,13 @@ fi
 # Copy ntfy config into place alongside docker-compose
 mkdir -p "${DEPLOY_DIR}/ntfy"
 cp -n "${DEPLOY_DIR}/ntfy/server.yml" "${DEPLOY_DIR}/ntfy/server.yml" 2>/dev/null || true
+
+# Stop and remove any containers started outside of compose so compose can own them
+for container in eddy-redis eddy-ntfy; do
+  if docker ps -a --format '{{.Names}}' | grep -q "^${container}$"; then
+    docker rm -f "${container}" > /dev/null
+  fi
+done
 
 docker compose -f "${DEPLOY_DIR}/docker-compose.ubuntu.yml" up -d
 check "Redis + ntfy containers running"
@@ -72,11 +80,11 @@ parse_pass()  { echo "${1#*:}"; }
 if [[ -n "${NTFY_CREDS_STEVE:-}" && -n "${NTFY_TOPIC_STEVE:-}" ]]; then
   create_ntfy_user "$(parse_creds "${NTFY_CREDS_STEVE}")" "$(parse_pass "${NTFY_CREDS_STEVE}")" "${NTFY_TOPIC_STEVE}"
 fi
-if [[ -n "${NTFY_CREDS_SON1:-}" && -n "${NTFY_TOPIC_SON1:-}" ]]; then
-  create_ntfy_user "$(parse_creds "${NTFY_CREDS_SON1}")" "$(parse_pass "${NTFY_CREDS_SON1}")" "${NTFY_TOPIC_SON1}"
+if [[ -n "${NTFY_CREDS_BOY1:-}" && -n "${NTFY_TOPIC_BOY1:-}" ]]; then
+  create_ntfy_user "$(parse_creds "${NTFY_CREDS_BOY1}")" "$(parse_pass "${NTFY_CREDS_BOY1}")" "${NTFY_TOPIC_BOY1}"
 fi
-if [[ -n "${NTFY_CREDS_SON2:-}" && -n "${NTFY_TOPIC_SON2:-}" ]]; then
-  create_ntfy_user "$(parse_creds "${NTFY_CREDS_SON2}")" "$(parse_pass "${NTFY_CREDS_SON2}")" "${NTFY_TOPIC_SON2}"
+if [[ -n "${NTFY_CREDS_BOY2:-}" && -n "${NTFY_TOPIC_BOY2:-}" ]]; then
+  create_ntfy_user "$(parse_creds "${NTFY_CREDS_BOY2}")" "$(parse_pass "${NTFY_CREDS_BOY2}")" "${NTFY_TOPIC_BOY2}"
 fi
 
 # ── 4. nginx ──────────────────────────────────────────────────────────────────

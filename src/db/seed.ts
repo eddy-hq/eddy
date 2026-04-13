@@ -5,8 +5,8 @@ import { logger } from '../logger';
 export function seedUsers(): void {
   const users = [
     { user_id: config.USER_ID_STEVE, display_name: config.USER_NAME_STEVE, role: 'parent', age_gate: 1 },
-    { user_id: config.USER_ID_SON1,  display_name: config.USER_NAME_SON1,  role: 'kid',    age_gate: 0 },
-    { user_id: config.USER_ID_SON2,  display_name: config.USER_NAME_SON2,  role: 'kid',    age_gate: 0 },
+    { user_id: config.USER_ID_BOY1,  display_name: config.USER_NAME_BOY1,  role: 'kid',    age_gate: 0 },
+    { user_id: config.USER_ID_BOY2,  display_name: config.USER_NAME_BOY2,  role: 'kid',    age_gate: 0 },
   ];
 
   const upsert = db.prepare(`

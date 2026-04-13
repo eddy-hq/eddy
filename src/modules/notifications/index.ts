@@ -13,8 +13,8 @@ interface UserNtfyConfig {
 function ntfyConfigForUser(userId: string): UserNtfyConfig | null {
   const pairs: Array<{ id: string; topic?: string; creds?: string }> = [
     { id: config.USER_ID_STEVE, topic: config.NTFY_TOPIC_STEVE, creds: config.NTFY_CREDS_STEVE },
-    { id: config.USER_ID_SON1,  topic: config.NTFY_TOPIC_SON1,  creds: config.NTFY_CREDS_SON1 },
-    { id: config.USER_ID_SON2,  topic: config.NTFY_TOPIC_SON2,  creds: config.NTFY_CREDS_SON2 },
+    { id: config.USER_ID_BOY1,  topic: config.NTFY_TOPIC_BOY1,  creds: config.NTFY_CREDS_BOY1 },
+    { id: config.USER_ID_BOY2,  topic: config.NTFY_TOPIC_BOY2,  creds: config.NTFY_CREDS_BOY2 },
   ];
 
   const match = pairs.find((p) => p.id === userId);
