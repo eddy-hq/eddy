@@ -33,6 +33,7 @@ No Python in Eddy — yt-dlp is a binary shell-out.
 
 ## Conventions
 
+- **No PII in commit messages, code comments, or log strings.** Kids are Boy1 / Boy2. No real names, IDs, IPs, or tokens in anything that goes to git.
 - All config via `.env`, validated with zod on startup. Update `.env.example` when adding vars.
 - Errors: typed classes, throw don't return tuples.
 - Logging: structured (pino). No `console.log` in committed code.
