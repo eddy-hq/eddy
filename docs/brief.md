@@ -152,6 +152,17 @@ No microservices, but two processes. Modules are TypeScript files, not network h
 
 **Language:** TypeScript / Node.js throughout. No Python — yt-dlp is a binary shell-out on Ubuntu.
 
+### Client-agnostic contracts
+
+Every client-facing interaction is a plain HTTP call with a clean JSON contract. No PWA-only cleverness in the data layer. No shared JS context assumed between client and server. This is deliberate: a future native iOS client (see Section 21) will hit the same endpoints the same way. The signed-token pattern for notification actions is designed the same way — the URL works whether a PWA or a native app consumes it.
+
+**Canonical URL paths** are documented once and used everywhere. The protocol is variable:
+
+- `https://eddy.tail-xxxx.ts.net/request/{id}` — PWA today
+- `eddy://request/{id}` — native app when it ships
+
+Both forms use the same paths. Switching consumers is a matter of changing the protocol prefix, not rewriting routes.
+
 ---
 
 ## 5. The request flow
@@ -172,6 +183,14 @@ No case is silent. No case is punitive.
 ### The two entry points
 
 **Primary: iOS Shortcut as share target.** Installed once per kid's device. Appears in the iOS share sheet alongside "Copy", "Messages", etc. Tapping it POSTs the URL to Eddy and opens the PWA deep-linked to the pending item. Two taps from any app: *share → Eddy*.
+
+**Shortcut structure:**
+
+1. Receive shared URL from share sheet
+2. `POST [base]/requests` with the URL — response includes `{ "path": "/request/{id}" }`
+3. `Open URL [base][path]`
+
+`[base]` is a Shortcut variable the user sets once: `https://eddy.tail-xxxx.ts.net` today. When the native app ships (Section 21), `[base]` flips to `eddy://` and the same Shortcut works unchanged. One Shortcut, two modes.
 
 **Safety net: DNS-block landing page.** When Pi-hole is live (later phase), blocked YouTube domains resolve to a tiny local page on the Ubuntu box: *"Looks like you're trying to watch something. Open in Eddy?"* URL prefilled, one tap submits the request. Turns every block into a redirect, not a wall.
 
@@ -673,6 +692,18 @@ Single-use prevents replay. Short TTL bounds the window. The PWA admin view show
 - Install ntfy iOS app on each family device, configure default server to the Tailscale URL of the Ubuntu box, subscribe to the user's topic
 - Build a thin notification adapter in Eddy's `notifications` module — single ntfy client used by every other module that needs to send
 
+### Swap-ready interface
+
+The notifications module exposes one function:
+
+```typescript
+notify(user_id: string, event: EventType, payload: EventPayload): Promise<void>
+```
+
+Everything else in the codebase calls this. Today the implementation is ntfy. When the native iOS app ships (Section 21), the implementation becomes direct APNs — same function signature, same callers, no changes elsewhere.
+
+This is a narrow interface, not a full abstraction layer. Don't build a "notification provider" plugin architecture speculatively. One implementation at a time; swap when needed.
+
 ---
 
 ## 13. MCP (Claude as control plane)
@@ -1079,10 +1110,12 @@ Eight phases. Sequential. Each ends with something the family uses.
 - TikTok replacement (blocked via Pi-hole, no pipeline)
 - Plex-to-Jellyfin migration
 - Hosted / SaaS version
-- Mobile native apps
+- Android support — household is iOS-only
 - Fire OS / Fire Stick app — parent grants by local IP
 - Kids' sources beyond video (Phase N+1, after the video flow is bedded in)
 - Automated profile tuning from Drift signals (suggestions only, always manual apply)
+
+Native iOS app is explicit v2 — see Section 21.
 
 ---
 
@@ -1095,10 +1128,11 @@ Resolve before or during the relevant phase.
 3. **Gemma inference throughput on M4 with 16GB RAM.** Can it handle scoring + hook generation + triage on a busy day without swap? Instrument in Phase 3, adjust batch sizes if needed.
 4. **Whole-house DNS coverage (Phase 6 decision).** BT Home Hub 2 cannot push DNS to DHCP clients, so Pi-hole only reaches Tailscale-joined devices. Options if whole-house coverage is wanted: (a) try Pi-hole as DHCP server with HH2 DHCP disabled — fragile but free; (b) replace HH2 with a UniFi Cloud Gateway Ultra (~£140) or similar, putting HH2 in modem mode if BT line allows. Decide at start of Phase 6 — Tailscale-only coverage may prove sufficient once kids are using share-sheet for most requests.
 5. **yt-dlp auto-update cadence.** Weekly cron is the baseline. Consider: check version on each download attempt and update if >7 days stale, vs simple weekly cron. Decide in Phase 1 once we see actual failure rate.
+6. **Eddy domain name.** Tailscale's `ts.net` subdomains can't serve `apple-app-site-association` files, so universal links will eventually need a proper domain (e.g. `eddy.yourdomain.com`) pointed at the Tailscale address via CNAME. Not needed until native ships. Worth picking the domain now so nothing gets stamped in the wrong name.
 
 ### Known dependencies
 
-- **ntfy.sh upstream** is required for instant iOS push delivery (poll-request forwarding). Their uptime has been good but it is a single point of failure outside our control. If it becomes a real problem, the alternative is a £79/year Apple Developer account and a custom iOS app — significant effort for a low-probability mitigation. Live with the dependency for now.
+- **ntfy.sh upstream** is required for instant iOS push delivery (poll-request forwarding). Their uptime has been good but it is a single point of failure outside our control. Native iOS (Section 21) removes this dependency by moving to direct APNs. Live with the dependency for now.
 - **yt-dlp + bgutil-ytdlp-pot-provider** are in an active arms race with YouTube. Both are well-maintained open-source projects with fast response times to YouTube changes (typically 24-48h). The dependency is real but the alternative — building our own YouTube extraction — is not credible. Mitigation is operational (weekly auto-update, health-check notification, one-tap remediation) rather than architectural. If both projects ever became unmaintained, a fallback path would be a hosted extraction service (cobalt.tools etc.), which violates the privacy principle and is therefore a Phase-N+ concern only.
 
 ---
@@ -1109,4 +1143,78 @@ Resolve before or during the relevant phase.
 - **Weekly summary name:** Drift.
 - **Repo:** `eddy-hq/eddy`
 - **Licence:** MIT
-- **Open source:** when stable (post-Phase 5). The universal problem means community improvements to the guard and profile system would help more families than solo development could.
+- **Open source:** when stable (post-Phase 5). The universal problem means community improvements to the guard and profile system would help more families than solo development could. Per-household native builds require per-household Apple Developer accounts — this is philosophically consistent with the self-hosted ethos.
+
+---
+
+## 21. V2 horizon: native iOS
+
+Not committed, but named. The PWA is the right choice for Phase 1-8, and may remain sufficient. But three surfaces push toward native over time, and the architectural decisions above are made with native in mind so that when we build it, it's additive rather than a rewrite.
+
+### Drivers
+
+**1. Request flow quality.** The load-bearing feature per Section 1. The PWA's share-sheet → Safari tab → cold boot → render path is 2-3 seconds of friction per request. Native with a proper deep-link handler (`eddy://`) makes it feel instant. This is the strongest argument.
+
+**2. Notification reliability.** Web Push on iOS is fragile — storage clearance after inactivity, throttling, patchy action-button rendering, can't bypass Focus modes. Parent approvals are the time-sensitive part of the system and the most exposed to these limitations. Direct APNs via a native app removes all of this.
+
+**3. Shortcuts integration quality.** Native apps can expose App Intents (first-class Shortcuts actions, Siri triggers) and proper share extensions (one-tap save from any app with custom UI). Both are iOS-only concepts that React Native bridges awkwardly and Swift handles natively.
+
+### Framework: Swift, not React Native
+
+All three drivers benefit from deep iOS integration. The household is iOS-only — no Android path to future-proof against. React Native would pay the cross-platform tax for a single-platform problem, and would still require Swift for the share extension and App Intent extensions. Swift + SwiftUI is the right choice.
+
+### Shape: thin shell over the existing PWA
+
+The first native build is not a rewrite. It is:
+
+- APNs push handling with proper lock-screen action buttons
+- Deep-link registration (`eddy://` URL scheme + universal links for `https://eddy.yourdomain.com/*`)
+- Share extension with native UI (one-tap request, optional per-kid picker for parents)
+- App Intent exposing "Request in Eddy" as a Shortcuts action
+- WKWebView hosting the existing PWA for feed, timeline, playback, Drift, search, settings
+
+The PWA stays the primary reading surface. Native handles the parts where platform integration matters. Estimated 2-3 sessions to first TestFlight build.
+
+Later, if earned: native timeline view, Live Activities for download progress, Lock Screen widget for pending approvals, Home Screen widget for Drift.
+
+### Distribution: TestFlight only, permanent
+
+No App Store. Reasoning:
+
+- **Avoids the YouTube policing question.** Apple has historically been willing to approve YouTube-adjacent apps if carefully framed, and occasionally pulled them when Google complains. TestFlight is considered pre-release / internal-use and Apple doesn't meaningfully police it for third-party ToS compliance. Eddy stays invisible to Google.
+- **100-tester limit is irrelevant** for a family of four.
+- **90-day re-invite** is a single button click.
+- **No public visibility, no marketing copy, no App Store review cycle, no screenshots, no ASO.** Eddy shouldn't be public anyway — it's a household system that happens to be open source.
+- **Open-source + per-household builds.** Anyone self-hosting Eddy stands up their own Apple Developer account and builds from source. £79/year per household is fine for the homelab audience and philosophically consistent.
+
+### Framing
+
+Throughout the native codebase and TestFlight metadata, Eddy is framed as a family media space, not a YouTube tool:
+
+- App name: **Eddy**. Not "Eddy for YouTube" or similar.
+- Bundle identifier: `hq.eddy.app` (or similar). No YouTube reference.
+- TestFlight build notes describe the family / curation / literacy purpose.
+- No user-visible UI text says "download YouTube videos." Kid-facing strings talk about "getting" content and "requesting" videos.
+
+This isn't defensive — it's accurate. Eddy genuinely isn't about YouTube; it's about attention and family. The framing reflects that.
+
+### Triggers to start
+
+Not a phase-numbered commitment. Start when observed reality warrants it:
+
+- Phase 1-2 has been running for 2-3 weeks of real family use
+- Primary request-flow friction (tab accumulation, cold-boot delay, losing app context) is a daily irritation
+- **OR** parent approvals are being missed because ntfy delivery is flaky
+- **OR** kids have found the PWA install-to-home-screen workflow brittle
+
+Most likely trigger: request-flow friction becomes annoying within a month of real use. The notification reliability problem may resolve itself or may not — either way, the request-flow argument stands.
+
+### What NOT to do now
+
+- Enrol in Apple Developer Program (wait until ready to ship)
+- Set up Xcode project, APNs certificates, provisioning profiles
+- Design widgets, Live Activities, or Dynamic Island behaviour
+- Build a "notification provider" abstraction layer
+- Register a domain for universal links (but decide which domain you'd use — see Open Question 6)
+
+All of that is wasted effort until the native decision is made. The current v1 investments — clean HTTP contracts, swap-ready notifications module, canonical URL paths, signed-token pattern — are the only native-ready work worth doing now.
