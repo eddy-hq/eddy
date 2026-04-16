@@ -173,6 +173,7 @@ User=${USER}
 WorkingDirectory=${REPO_DIR}
 Environment=PATH=${NODE_BIN_DIR}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 Environment=YTDLP_BIN=${YTDLP_PATH}
+ExecStartPre=/bin/bash -c 'until docker exec eddy-redis redis-cli ping 2>/dev/null | grep -q PONG; do sleep 2; done'
 ExecStart=${TSX_PATH} ${REPO_DIR}/src/workers/download.ts
 Restart=on-failure
 RestartSec=10
@@ -188,6 +189,19 @@ sudo systemctl daemon-reload
 sudo systemctl enable eddy-worker
 sudo systemctl restart eddy-worker
 check "eddy-worker service enabled and started"
+
+# ── 7. bgutil PO-token server ─────────────────────────────────────────────────
+info "bgutil PO-token server"
+BGUTIL_SERVICE="${DEPLOY_DIR}/bgutil-pot-server.service"
+if [[ ! -f "${BGUTIL_SERVICE}" ]]; then
+  warn "bgutil-pot-server.service not found at ${BGUTIL_SERVICE} — skipping"
+else
+  sudo cp "${BGUTIL_SERVICE}" /etc/systemd/system/bgutil-pot-server.service
+  sudo systemctl daemon-reload
+  sudo systemctl enable bgutil-pot-server
+  sudo systemctl restart bgutil-pot-server
+  check "bgutil-pot-server enabled and started"
+fi
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 echo ""
