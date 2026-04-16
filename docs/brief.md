@@ -180,7 +180,7 @@ Shortcut structure:
 
 `[base]` is a Shortcut variable. Today: `https://eddy.tail-xxxx.ts.net`. When native ships: `eddy://`. Same Shortcut, two modes.
 
-**Safety net (Phase 6): DNS-block landing page.** Blocked YouTube domains resolve to a local page: *"Looks like you're trying to watch something. Open in Eddy?"* URL prefilled, one tap submits. Every block becomes a redirect, not a wall.
+**Safety net (Phase 9): DNS-block landing page.** Blocked YouTube domains resolve to a local page: *"Looks like you're trying to watch something. Open in Eddy?"* URL prefilled, one tap submits. Every block becomes a redirect, not a wall.
 
 ### Pipeline
 
@@ -391,7 +391,7 @@ Books have a read-state beyond the usual: `reading_status` — *want to read*, *
 
 Books live in the timeline like any other card. They also appear in a dedicated "Reading list" view alongside Saved, filtered by `reading_status`.
 
-Kids do not get book discovery in v1. Kids' book discovery is a worthwhile later problem (Phase 9+).
+Kids do not get book discovery in v1. Kids' book discovery is a worthwhile later problem (Phase 12+).
 
 ### Papers
 
@@ -432,7 +432,7 @@ The feed is *what was offered to me*. Drift is *what did I do with it*. Differen
 ┌─ Today ────────────────────────────────────────────┐
 │   My requests           (shared via Shortcut)      │
 │   From people you follow (new outputs from them)   │
-│   Picked for you        (Phase 2.5 — discovery)    │
+│   Picked for you        (Phase 5 — discovery)      │
 ├─ Yesterday ────────────────────────────────────────┤
 │   [unified list]                                   │
 ├─ Tuesday 8 April ──────────────────────────────────┤
@@ -461,7 +461,7 @@ More of the timeline visible at once is the goal.
 - **Portrait (≥768px)** — two-column grid within each day
 - **Landscape (≥1024px)** — three-column grid, left sidebar with topic filter and search
 
-Magazine mode (single hero, page-turn) is iPhone-only. iPad default is always grid.
+iPhone uses the same grid, denser. No magazine mode.
 
 ### Card component
 
@@ -490,7 +490,7 @@ Where the "no recommendation without a visible reason" rule lives. Generic hooks
 - **Tap** → open/play (or restore → play). Primary action.
 - **🔖 Bookmark** → save for later. Small, top-right. Saved items immune to recycling.
 - **✕ Dismiss** → card dims in place but stays in the timeline. First in line when recycling hits.
-- **"Why this?"** (Phase 2.5+) → dedicated small affordance on discovery-surfaced cards. Shows reasoning in one sentence.
+- **"Why this?"** (Phase 5+) → dedicated small affordance on discovery-surfaced cards. Shows reasoning in one sentence.
 - **Long press** → more options (share, more like this).
 - **Dwell** — IntersectionObserver tracks >5s visibility without dismiss as positive signal. Silent.
 
@@ -523,7 +523,7 @@ Separate from the timeline — how content *enters* the system:
 
 ## 9. The guard
 
-Gemma 4 E4B as triage, parent as adjudicator. Frontier model as optional future middle-tier (Phase 8).
+Gemma 4 E4B as triage, parent as adjudicator. Frontier model as optional future middle-tier (Phase 11).
 
 ### Three outcomes
 
@@ -543,17 +543,19 @@ For every kid request (Shortcut, output drop, search-and-request):
 
 ### Evaluation
 
-Build eval set before tuning. 100 labelled examples per kid from real requests, labelled by Steve. Tune Gemma until:
+Eval set is built from real household traffic in Phase 3 (shadow mode), not in a separate labelling exercise. Gemma scores every request from Phase 3 onward; Steve labels verdicts periodically via CLI. By Phase 6, hundreds of labelled decisions across real requests exist.
+
+Tune Gemma until:
 
 - **Clear-yes precision ≥95%** — false yes = unsafe content reaching kid
 - **Clear-no precision ≥90%** — false no = good content wrongly rejected
 - **Uncertain rate 10-30%** — higher = parent overload, lower = overconfident
 
-Until thresholds hit, everything escalates to parent. First month after go-live, parent reviews a sample of clear-yes decisions too.
+Phases 3–5 run shadow mode: Gemma scores, verdicts are logged, downloads auto-approve regardless. Phase 6 flips the default once thresholds hit. First month after go-live, parent reviews a sample of clear-yes decisions too via the admin surface.
 
-### Frontier escalation (Phase 8, optional)
+### Frontier escalation (Phase 11, optional)
 
-Once ~200 parent decisions are in SQLite, evaluate whether Claude API calls on uncertain cases reliably match parent judgement. If yes, route uncertain → Claude API → if still uncertain → parent.
+Once ~200 parent decisions from Phase 6 are in SQLite, evaluate whether Claude API calls on uncertain cases reliably match parent judgement. If yes, route uncertain → Claude API → if still uncertain → parent.
 
 ### Appeals
 
@@ -589,7 +591,7 @@ If Gemma can't explain why, the item doesn't surface.
 
 ### Discovery sources
 
-v1 (Phase 2.5):
+v1 (Phase 5):
 
 - **New outputs from people you follow** — their YouTube uploads, Substack posts, podcast appearances, book releases. Strongest signal.
 - **Recommendations from people you follow** — Gemma detects pointers in their text output (book mentions, linked essays), surfaces as candidates with recommender attribution.
@@ -660,7 +662,7 @@ Topics are named interests with a set of yt-dlp search strings. The `search_term
 
 **Two sources:**
 
-**Seed list (`source = 'seed'`)** — a static JSON file shipped as a DB migration at Phase 2.5. Aim for 60–80 topics grouped by category:
+**Seed list (`source = 'seed'`)** — a static JSON file shipped as a DB migration at Phase 5. Aim for 60–80 topics grouped by category:
 
 | Category | Examples |
 |---|---|
@@ -678,7 +680,7 @@ Age-gate anything warranting it (combat sports, some political commentary). The 
 
 **Onboarding topic picker:** On first setup, show a categorised pill grid — topics grouped by category, scrollable. Kids see age-appropriate categories; adults see the full set. Tap to add; weight defaults to `1.0`. Minimum viable onboarding: ≥1 topic and ≥1 followed person. Without both, discovery has nothing to work with.
 
-**Channel → topic inference (Phase 2.5):** When a user subscribes to a channel, Gemma reads the channel description and recent titles and suggests 1–2 existing topics to link to it. This is a mapping from `channel_id` to existing `topic_id` — not topic creation. Behavioural weight flows from there naturally.
+**Channel → topic inference (Phase 5):** When a user subscribes to a channel, Gemma reads the channel description and recent titles and suggests 1–2 existing topics to link to it. This is a mapping from `channel_id` to existing `topic_id` — not topic creation. Behavioural weight flows from there naturally.
 
 ---
 
@@ -721,7 +723,7 @@ First 3-4 weeks per user shows "Getting to know you" instead of Drift content.
 
 ---
 
-## 11. Overrides & blocking (Phase 6, gated)
+## 11. Overrides & blocking (Phase 9, gated)
 
 Not built until partner is bought in.
 
@@ -860,7 +862,7 @@ Tested with integration tests. Any MCP response that fails the privacy filter th
 | Adult Drift summary | ✓ | ✓ |
 | System status, queue depth | ✓ | ✓ |
 
-No automated external calls in v1. Claude API usage (Phase 8, optional) requires explicit config and logs every call.
+No automated external calls in v1. Claude API usage (Phase 11, optional) requires explicit config and logs every call.
 
 ---
 
@@ -1088,14 +1090,17 @@ CREATE TABLE drift (
 );
 
 CREATE TABLE guard_eval (
-  eval_id        TEXT PRIMARY KEY,
-  request_id     TEXT,
-  url            TEXT,
-  gemma_verdict  TEXT,
-  gemma_reason   TEXT,
-  human_verdict  TEXT,                -- labelled by Steve
-  human_notes    TEXT,
-  created_at     TIMESTAMP
+  eval_id            TEXT PRIMARY KEY,
+  request_id         TEXT,
+  url                TEXT,
+  gemma_verdict      TEXT,                -- clear_yes|clear_no|uncertain
+  gemma_reason       TEXT,
+  gemma_confidence   REAL,                -- 0.0–1.0
+  prompt_version     TEXT,                -- tag, so verdicts are attributable to a prompt
+  scored_at          TIMESTAMP,
+  human_verdict      TEXT,                -- labelled by Steve; null until reviewed
+  human_notes        TEXT,
+  human_labelled_at  TIMESTAMP            -- null until reviewed
 );
 
 CREATE TABLE used_tokens (
@@ -1191,7 +1196,6 @@ Person cards are simple; the value is routing, not content.
 - Card tap — scale 1.0 → 0.97 → 1.0, ease-spring, 80ms/200ms
 - Dismiss — fade to 0.3 over 200ms, slide up, next card rises
 - Save — bookmark fills with accent pulse, 200ms ease-spring
-- Page turn (magazine) — 350ms ease-in-out, slight parallax on image
 - Cover splash — 600ms stagger, auto-transition
 - `prefers-reduced-motion` — all animations disabled
 
@@ -1205,52 +1209,95 @@ A single `/design-reference` route in the PWA shows every component in every sta
 
 ## 17. Build plan
 
-Nine phases. Sequential. Each ends with something the family uses.
+Eleven phases. Sequential. Each ends with something the household uses — for the family, or for Steve as the person tuning the system.
+
+A session is a focused working block of a few hours ending with the system runnable, committable, typecheck/lint/tests green. Estimates below are rough and will shift as reality lands.
 
 - **Phase 0 ✅** — Foundation
-- **Phase 1 ✅** — Request flow (videos download via Shortcut, play in PWA)
-- **Phase 2 🔨** — The feed (in progress)
-- **Phase 2.5** — People-first discovery engine
-- **Phase 3** — The guard
-- **Phase 4** — Sources beyond video (articles, recipes, podcasts, books, papers)
-- **Phase 5** — Drift
-- **Phase 6** — Overrides & blocking (gated on partner)
-- **Phase 7** — MCP
-- **Phase 8** — Frontier escalation (optional)
+- **Phase 1 ✅** — Request flow
+- **Phase 2 🔨** — Feed (core)
+- **Phase 3** — Guard in shadow mode
+- **Phase 4** — Channels, subscriptions, search
+- **Phase 5** — Discovery
+- **Phase 6** — Guard live
+- **Phase 7** — Adult sources
+- **Phase 8** — Drift
+- **Phase 9** — Overrides & blocking (gated on partner buy-in)
+- **Phase 10** — MCP
+- **Phase 11** — Frontier escalation (optional)
 
-### Phase 2 — The feed
+### Phase 0 ✅ — Foundation
 
-Builds the timeline per Section 8. Today section renders **two** sub-groups: My requests, From people you follow. "Picked for you" is stubbed / empty — populated in Phase 2.5.
+Monorepo, TypeScript strict, two Node entry points (M4 API, Ubuntu worker), shared modules, SQLite bootstrap, BullMQ + Redis, ntfy self-hosted, HMAC-auth'd internal callback, `.env` validation, Tailscale wiring end-to-end.
 
-- Card component, design tokens, named animations
-- Timeline feed (reverse-chron, day-grouped, `added_at` anchor)
-- Past days as unified lists, continuous scroll
-- Three card states (live / recycled / gone), one-tap restore
-- iPad layouts (two-column portrait, three-column landscape)
-- iPhone magazine mode
-- Inline video player (HTML5, full-screen, state machine)
+### Phase 1 ✅ — Request flow
+
+Kid shares a YouTube link via iOS share sheet → Shortcut POSTs to M4 → job enqueued → Ubuntu worker pulls, yt-dlp downloads to `/mnt/ssd/eddy/videos/` → callback to M4 marks ready → kid gets ntfy → opens PWA, plays.
+
+No feed yet. No guard — everything auto-approves. Signed-token pattern in place for notification actions.
+
+### Phase 2 🔨 — Feed (core)
+
+Spec in Section 8. ~3-4 sessions.
+
+- Card component + design system (tokens, spacing, typography, state colours)
+- Timeline view — every card ever added, reverse-chronological, day-grouped on `added_at`
+- Three card states: live / recycled / gone, with one-tap restore
+- iPad layouts (two-column portrait, three-column landscape). iPhone uses the same grid, denser. No magazine mode.
+- Inline HTML5 player, full-screen, state machine
 - Watched indicator
 - Saved tab (bottom nav, never recycled)
-- Search via yt-dlp metadata + FTS5 over timeline
-- **Person follow** (kids): initially one YouTube channel = one person. Pick a handful. RSS every 6h, pipeline-processed.
-- Cover splash, topic filter, bottom nav
+- Cover splash
+- Topic filter (flat list)
+- Bottom nav
 - `/design-reference` route
 
-**Ends with:** a timeline PWA showing every card ever added, restore for recycled files, search across history. No automated guard yet.
+Default-allow pipeline: every request auto-approves and downloads. `requests.status` and `requests.decided_by` fields exist but `decided_by` is always `auto_approve`. Schema is correct for Phase 3 onward; no retrofit needed.
 
-### Phase 2.5 — People-first discovery engine
+No channels, no subscriptions, no search, no discovery, no guard. Those are later phases.
 
-Specs in Sections 4a and 9a. 2-3 sessions.
+**Ends with:** a timeline PWA showing every card ever added, restore for recycled files. Kids request, it appears, they watch it.
 
-- `people`, `person_outputs`, `followed_people`, `person_recommendations` tables
-- Person search + follow flow (propose candidate outputs, user confirms subscriptions)
-- Four-layer profile (behavioural signal capture, per-person trust weights, `inferred_affinities`)
-- `candidate_pool` table with person attribution
+### Phase 3 — Guard in shadow mode
+
+Spec in Section 9. ~2 sessions.
+
+Gemma scores every request. Verdicts are logged, not acted on. Downloads still auto-approve. The purpose of this phase is to build an eval set from real household traffic before putting Gemma in the critical path.
+
+- `guard_eval` table populated on every request (see Section 15)
+- Guard runs **before download** — same position it'll occupy in Phase 6, so Phase 6 is a default flip not a refactor
+- Prompt designed properly now, not as throwaway scaffolding. Phase 6 tunes against the dataset Phase 3 builds, so the prompt needs to be close to the one that ships.
+- CLI labelling tool (`npm run label-guard`): iterates unlabelled verdicts, shows URL + title + channel + Gemma's verdict + reasoning, accepts `a`/`d`/`s`/`q`. If disagree, follow-up for correct verdict. Writes `human_verdict` and `human_labelled_at`.
+- No kid-facing change. No parent ntfy. No review surface. Downloads still auto-approve regardless of verdict.
+
+**Ends with:** every request scored by Gemma. Steve labels verdicts periodically via CLI. After a few months, a real eval set exists. Family sees no change.
+
+### Phase 4 — Channels, subscriptions, search
+
+Specs in Sections 4a and 8. ~3 sessions.
+
+- `people`, `person_outputs`, `followed_people` tables (kids' v1: one YouTube channel = one person)
+- Person search + follow flow
+- RSS polling per followed channel, 6h interval
+- New channel outputs flow through the same request pipeline — including the shadow guard, so channel-originated items contribute to the eval set
+- Today's feed gains a "From people you follow" section
+- Full-text search via FTS5 over titles, personal hooks, person names, topics
+- Search UI in the PWA
+
+**Ends with:** kids follow channels, new videos appear automatically, search works across the whole library.
+
+### Phase 5 — Discovery
+
+Specs in Sections 4a and 9a. ~2-3 sessions.
+
+- `person_recommendations`, `candidate_pool`, `inferred_affinities` tables
+- Four-layer profile (behavioural signal capture, per-person trust weights, inferred affinities)
 - Discovery sources: new outputs from people followed, recommendations extracted from their text outputs, topic search (gap-filler), related-people expansion (for follow suggestions, not direct surfacing)
-- Gemma scoring with person-trust-weight as a primary input, batched
+- Gemma scoring with person-trust-weight as primary input, batched
+- Shadow guard continues to run on discovered items the same way it runs on requested items
 - Daily cap enforcement with surplus carry-forward
 - "Picked for you" section in Today, with "That's it for today — more tomorrow"
-- "Why this?" affordance on every discovery card, routing through person attribution where possible
+- "Why this?" affordance on every discovery card, naming a specific person where possible
 - Balance prompt (>70% concentration, max once per 1-2 weeks)
 - Cold start handling
 - BullMQ repeatable job, early morning on M4
@@ -1258,27 +1305,29 @@ Specs in Sections 4a and 9a. 2-3 sessions.
 - Seed topics JSON → DB migration (~60–80 topics, categorised, age-gated where needed)
 - Onboarding topic picker (categorised pill grid, ≥1 topic + ≥1 person required to proceed)
 - User-added topic flow (Gemma generates `search_terms` from free-text input)
-- Channel → topic inference on subscribe (Gemma suggests existing topic mappings, not new topics)
+- Channel → topic inference on subscribe
 
-**Ends with:** Today's feed has a populated Picked for you section with visible reasoning, most of which names a specific person. Adults can follow across media types; kids follow people via YouTube channels (v1). Scarcity principle honoured.
+**Ends with:** Today has a populated "Picked for you" with visible reasoning, mostly naming a specific person. Adults can follow across media types; kids follow people via YouTube channels (v1). Scarcity principle honoured. Guard still shadow-mode.
 
-### Phase 3 — The guard
+### Phase 6 — Guard live
 
-Spec in Section 9. 1-2 sessions.
+Spec in Section 9. ~2 sessions.
 
-- Gemma prompts for triage
-- Eval set: 100 labelled examples per kid from real Phase 1-2 data
-- Tune until thresholds hit (95% / 90% / 10-30%)
-- Wire into request pipeline
-- Uncertain → parent ntfy with approve/deny actions
-- Appeal flow
-- First month: parent reviews sample of clear-yes too
+By now the eval set from Phases 3–5 is substantial. This phase puts the guard in the critical path.
 
-**Ends with:** ~70-80% of requests auto-handled, parents only see uncertain + appeals.
+- Tune prompts against the labelled dataset until thresholds hit (95% clear-yes precision, 90% clear-no precision, 10–30% uncertain rate)
+- Flip `decided_by` default: clear_yes auto-approves, clear_no auto-rejects with reason, uncertain escalates
+- `/admin/guard-review` surface — lists uncertain items plus recent clear-yes/clear-no for spot-checking, one-tap labelling continues to feed the eval set
+- Parent ntfy for uncertain verdicts with approve/deny actions (signed-token pattern)
+- Appeal flow — kid taps "ask again" on a rejection, Gemma re-evaluates with the appeal context, still-uncertain escalates to parent
+- Kid-facing rejection reasons (age-appropriate phrasing, not raw Gemma output)
+- First month: parent reviews a sample of clear-yes too via admin view
 
-### Phase 4 — Sources beyond video
+**Ends with:** ~70–80% of requests auto-handled. Parents only see uncertain + appeals. Rejection paths exist with reasons and appeals.
 
-Specs in Sections 7 and 9a. 2-3 sessions.
+### Phase 7 — Adult sources
+
+Specs in Sections 7 and 9a. ~2-3 sessions.
 
 - Generalised fetcher interface; adapters per output type
 - RSS ingestion for articles, papers (arXiv/PubMed), Substack/blogs
@@ -1291,20 +1340,20 @@ Specs in Sections 7 and 9a. 2-3 sessions.
 
 **Ends with:** adult feed is a proper daily read across all media types, driven by people you follow and their recommendations. Partner can get a real cooking + travel feed. Kids unchanged (video-only, channel-as-person).
 
-### Phase 5 — Drift
+### Phase 8 — Drift
 
-Spec in Section 10. 1 session.
+Spec in Section 10. ~1 session.
 
 - BullMQ repeatable Sunday evening job
 - Kid view (no number, qualitative person observations), adult view, parent view
 - Baseline period for first 3-4 weeks
 - Tap-through to filtered timeline for evidence
 
-**Ends with:** weekly literacy surface working.
+**Ends with:** weekly literacy surface working for all household members.
 
-### Phase 6 — Overrides & blocking
+### Phase 9 — Overrides & blocking
 
-Spec in Section 11. 1-2 sessions. **Gated on partner buy-in.**
+Spec in Section 11. ~1-2 sessions. **Gated on partner buy-in.**
 
 - Pi-hole Docker, configured but disabled
 - Override lifecycle (request → grant → expiry)
@@ -1314,9 +1363,9 @@ Spec in Section 11. 1-2 sessions. **Gated on partner buy-in.**
 
 **Ends with:** DNS blocking live, landing page redirecting to Eddy.
 
-### Phase 7 — MCP
+### Phase 10 — MCP
 
-Spec in Section 13. 1 session.
+Spec in Section 13. ~1 session.
 
 - MCP server module in M4 Node process
 - All tools including people management
@@ -1325,9 +1374,10 @@ Spec in Section 13. 1 session.
 
 **Ends with:** Steve manages Eddy from Claude.ai in plain language.
 
-### Phase 8 — Frontier escalation (optional)
+### Phase 11 — Frontier escalation (optional)
 
-Only if 6+ months of parent-decision data justifies it. Spec in Section 9.
+Only if 6+ months of parent-decision data from Phase 6 justifies it. Spec in Section 9.
+
 
 ---
 
@@ -1354,11 +1404,11 @@ Native iOS app is explicit v2. See `docs/decisions.md`.
 
 Resolve before or during the relevant phase.
 
-1. **Gemma inference throughput on M4 with 16GB RAM.** Can it handle scoring + hook generation + triage + recommendation detection on a busy day without swap? Instrument in Phase 2.5/3, adjust batch sizes if needed.
-2. **Whole-house DNS coverage (Phase 6 decision).** HH2 can't push DNS to DHCP clients. Tailscale-only may be sufficient once kids are using share-sheet for most requests. If not: Pi-hole-as-DHCP (fragile but free) or router replacement (~£140 for UniFi Cloud Gateway Ultra). Decide at start of Phase 6.
+1. **Gemma inference throughput on M4 with 16GB RAM.** Can it handle scoring + hook generation + triage + recommendation detection on a busy day without swap? Instrument in Phase 3, adjust batch sizes if needed.
+2. **Whole-house DNS coverage (Phase 9 decision).** HH2 can't push DNS to DHCP clients. Tailscale-only may be sufficient once kids are using share-sheet for most requests. If not: Pi-hole-as-DHCP (fragile but free) or router replacement (~£140 for UniFi Cloud Gateway Ultra). Decide at start of Phase 9.
 3. **Eddy domain name.** Registered or pending. Needed properly when native ships (for universal links — `.ts.net` can't serve `apple-app-site-association`). Current working DNS: `eddy.tail-xxxx.ts.net`.
-4. **Recommendation detection quality.** Gemma extracting book/article/podcast recommendations from a person's text output is the novel piece in Phase 2.5/4. Signal quality unknown until tested on real data. If poor, fall back to "new outputs only" for followed-person discovery and revisit.
-5. **Kid person-level UI tone.** "You've been really into this creator lately" is the intended register. Exact phrasing matters — reviewing with kids during Phase 2.5 is part of the work, not an afterthought.
+4. **Recommendation detection quality.** Gemma extracting book/article/podcast recommendations from a person's text output is the novel piece in Phase 5/7. Signal quality unknown until tested on real data. If poor, fall back to "new outputs only" for followed-person discovery and revisit.
+5. **Kid person-level UI tone.** "You've been really into this creator lately" is the intended register. Exact phrasing matters — reviewing with kids during Phase 5 is part of the work, not an afterthought.
 
 ### Known dependencies
 
@@ -1373,4 +1423,4 @@ Resolve before or during the relevant phase.
 - **Weekly summary name:** Drift
 - **Repo:** `eddy-hq/eddy`
 - **Licence:** MIT
-- **Open source:** when stable (post-Phase 5). Per-household native builds require per-household Apple Developer accounts — consistent with self-hosted ethos.
+- **Open source:** when stable (post-Phase 8). Per-household native builds require per-household Apple Developer accounts — consistent with self-hosted ethos.
