@@ -136,8 +136,10 @@ check "nginx configured and running (HTTP :80 videos, HTTPS :443 ntfy)"
 # ── 6. Eddy worker systemd service ───────────────────────────────────────────
 info "Eddy worker systemd service"
 
-# Resolve npm path — nvm installs to ~/.nvm, not /usr/bin
-NPM_PATH="$(bash -lc 'which npm' 2>/dev/null || command -v npm 2>/dev/null || true)"
+# Resolve npm path — nvm init lives in .bashrc (not login shell), so source it explicitly
+NPM_PATH="$(bash -c '. ~/.bashrc 2>/dev/null; which npm 2>/dev/null' || \
+           ls ~/.nvm/versions/node/*/bin/npm 2>/dev/null | sort -V | tail -1 || \
+           command -v npm 2>/dev/null || true)"
 if [[ -z "${NPM_PATH}" ]]; then
   warn "npm not found — install Node LTS first (nvm recommended)"
   exit 1
