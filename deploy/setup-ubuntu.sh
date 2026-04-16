@@ -136,22 +136,22 @@ check "nginx configured and running (HTTP :80 videos, HTTPS :443 ntfy)"
 # ── 6. Eddy worker systemd service ───────────────────────────────────────────
 info "Eddy worker systemd service"
 
-# Resolve npm path — nvm init lives in .bashrc (not login shell), so source it explicitly
-NPM_PATH="$(bash -c '. ~/.bashrc 2>/dev/null; which npm 2>/dev/null' || \
-           ls ~/.nvm/versions/node/*/bin/npm 2>/dev/null | sort -V | tail -1 || \
-           command -v npm 2>/dev/null || true)"
-if [[ -z "${NPM_PATH}" ]]; then
-  warn "npm not found — install Node LTS first (nvm recommended)"
+# Resolve Node bin dir — prefer nvm's latest installed version, fall back to PATH
+NODE_BIN_DIR="$(ls -d ~/.nvm/versions/node/*/bin 2>/dev/null | sort -V | tail -1)"
+if [[ -z "${NODE_BIN_DIR}" || ! -x "${NODE_BIN_DIR}/node" ]]; then
+  NODE_BIN_DIR="$(dirname "$(command -v node 2>/dev/null || true)")"
+fi
+if [[ -z "${NODE_BIN_DIR}" || ! -x "${NODE_BIN_DIR}/node" ]]; then
+  warn "node not found — install Node LTS first (nvm recommended)"
   exit 1
 fi
+check "Node found at ${NODE_BIN_DIR}/node"
+
 TSX_PATH="${REPO_DIR}/node_modules/.bin/tsx"
 if [[ ! -x "${TSX_PATH}" ]]; then
   warn "tsx not found at ${TSX_PATH} — run: npm install (in ${REPO_DIR})"
   exit 1
 fi
-
-# Node bin dir (nvm) — needed so tsx can find node at runtime
-NODE_BIN_DIR="$(dirname "${NPM_PATH}")"
 
 # yt-dlp — pip installs to ~/.local/bin which systemd doesn't include in PATH
 YTDLP_PATH="$(command -v yt-dlp 2>/dev/null || echo "${HOME}/.local/bin/yt-dlp")"
