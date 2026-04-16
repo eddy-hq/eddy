@@ -496,10 +496,6 @@ Where the "no recommendation without a visible reason" rule lives. Generic hooks
 
 No swipe-as-primary. Dismissal is a quiet opt-out.
 
-### Cover splash
-
-On app open: brief cover — date, count, top story image. One second, transitions to Today. First run shows a welcome.
-
 ### Search
 
 Full-text across the whole timeline via SQLite FTS5. Matches title, personal hook, person/channel, topic. Flat results list ordered by relevance, card's original date shown beneath. Also powers "find similar" for gone cards.
@@ -1196,7 +1192,6 @@ Person cards are simple; the value is routing, not content.
 - Card tap — scale 1.0 → 0.97 → 1.0, ease-spring, 80ms/200ms
 - Dismiss — fade to 0.3 over 200ms, slide up, next card rises
 - Save — bookmark fills with accent pulse, 200ms ease-spring
-- Cover splash — 600ms stagger, auto-transition
 - `prefers-reduced-motion` — all animations disabled
 
 ### Frontend stack
@@ -1247,7 +1242,6 @@ Spec in Section 8. ~3-4 sessions.
 - Inline HTML5 player, full-screen, state machine
 - Watched indicator
 - Saved tab (bottom nav, never recycled)
-- Cover splash
 - Topic filter (flat list)
 - Bottom nav
 - `/design-reference` route
