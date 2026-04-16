@@ -20,27 +20,30 @@ The first two are real. The third is a dopamine engine. Standard household respo
 
 Adults have the adult version of the same problem: Flipboard, YouTube, X, engineered to catch you on your way somewhere else.
 
+And there is a second shift happening underneath all of this. As AI-generated content volume goes vertical, the scarce resource stops being content and starts being *trusted human judgement*. People increasingly organise their media diet around specific humans whose taste they trust, not topics or platforms. Eddy is built for that shift.
+
 ### What Eddy is
 
-A family media space that honours real requests and quietly removes engagement traps.
+A family media space that honours real requests, quietly removes engagement traps, and organises attention around the humans whose judgement is worth your time.
 
 - **For kids** — a service that's on their side. Shared links come back watchable within minutes. Rejections come with reasons and an appeal path. They feel looked-after, not watched.
-- **For adults** — a daily read. Articles, podcasts, papers, video, laid out like a magazine. No feed designed to keep them past what they came for.
+- **For adults** — a daily read. Articles, podcasts, papers, video, books, laid out like a magazine. No feed designed to keep them past what they came for.
 - **For the household** — one place where media lives, one set of controls, managed in plain language.
 
-### Three goods, in order
+### Four goods, in order
 
 1. **Serve the real request.** If someone asks for something, the default is yes. The only reasons not to are concrete and visible.
 2. **Replace the dopamine loop with something that earns its time.** No autoplay, no infinite scroll, no "you might also like" engineered to catch an impulse. Finishing the feed is a valid state.
-3. **Build media literacy, not dependence.** Over a year, a kid using Eddy should understand more about their own media consumption than they did at the start.
+3. **Route attention through humans, not algorithms.** Eddy organises subscriptions around people — not channels, not feeds, not topics. Following someone means following their output across media and (over time) the things they recommend. The algorithm's job is to route between people you trust and you, not to decide what's good.
+4. **Build media literacy, not dependence.** Over a year, a kid using Eddy should understand more about who is shaping their attention than they did at the start. The long-term goal is children who grow up able to name the humans influencing their worldview, notice when those humans change, and choose deliberately.
 
 ### Non-negotiable rules
 
 - **The kid's experience is never punitive.** Rejections come with reasons and an appeal path. Waiting is explained. Nothing is silent.
-- **No surveillance surfaces on kids' screens.** Streaks and summaries exist to help the kid understand themselves.
+- **No surveillance surfaces on kids' screens.** Streaks and summaries exist to help the kid understand themselves. Person-level transparency for kids is qualitative and observational, never quantitative or ranked.
 - **No automated recommendation without a visible reason.** Every suggested item shows, in one line, why.
 - **Private by default.** Kids' consumption never leaves the house.
-- **Infrastructure serves experience.** Blocker, guard, pipeline exist to deliver the three goods.
+- **Infrastructure serves experience.** Blocker, guard, pipeline exist to deliver the four goods.
 
 If any decision below contradicts these rules, the decision is wrong.
 
@@ -84,8 +87,8 @@ One codebase, two Node processes, one database.
 ```
 ┌─────────────────────── M4 Mac Mini (WiFi) ───────────────────┐
 │  Node process — API, PWA, reasoning                          │
-│    profiles · requests · sources · feed · guard · drift      │
-│    overrides · notifications · mcp                           │
+│    profiles · people · requests · sources · feed · guard     │
+│    drift · overrides · notifications · mcp                   │
 │                                                              │
 │  SQLite (single file, owned by M4, nightly backup to Ubuntu) │
 │  Ollama + Gemma 4 E4B                                        │
@@ -122,6 +125,32 @@ Every client-facing interaction is plain HTTP with a clean JSON contract. No PWA
 - `eddy://request/{id}` — native app when it ships
 
 Same paths both forms. Switching consumers is a protocol prefix change, not a route rewrite.
+
+---
+
+## 4a. People as the subscription unit
+
+The subscription model in Eddy is built around **people**, not channels, shows, or feeds.
+
+A *person* in Eddy is an identity — an individual creator, a duo, or a studio treated as a single entity. A person has one or more *outputs* they produce: a YouTube channel, a Substack, a podcast, books, a blog. Following a person subscribes you to all of their outputs in one action.
+
+A person also has *recommendations* — things they've pointed at but didn't make. When someone you follow praises a book, links to an essay, or appears as a podcast guest, that pointer becomes a candidate for your feed with their name attached.
+
+**Why people, not channels or feeds:**
+
+Trusted human judgement is becoming the scarce resource (see Section 1). Organising around people makes the trust relationship the first-class concept, and the media types secondary. You follow Tyler Cowen; Eddy handles whether his latest output is a blog post, a podcast appearance, or a book — same subscription, different fetchers.
+
+It also makes Eddy's reasoning honest. Gemma isn't deciding what's good; the people you've chosen to trust are. Gemma's job is routing between their output and you, filtered lightly for relevance.
+
+**For adults,** a person usually has three or four outputs across media. Following Tyler means his blog, his podcast, his books, and the things he recommends.
+
+**For kids in v1,** a person's outputs are effectively just a YouTube channel — a 10-year-old follows MrBeast, and under the hood it's a channel subscription. The data model is uniform across ages; the UI complexity for kids is deliberately thin. As a kid grows into other media, the infrastructure is already there.
+
+Most YouTube channels a kid follows *are* a person — MrBeast, DanTDM, Dream. A few are collections (Dude Perfect, family channels). A `person_type` flag (individual, duo, group, studio) handles the distinction; mechanics don't change.
+
+**Person-level transparency is a literacy tool.** Kids see: who they follow, when they started following, roughly how often they've engaged. Qualitative and observational ("you've been really into this creator lately") never quantitative and ranked ("Dream: 312 hours"). Adults see richer detail on their own following. The rule against surveillance surfaces on kids' screens applies.
+
+Where the design calls for a channel, feed, or subscription in the rest of this document, the underlying unit is a person. An output (the actual RSS feed or channel) is an implementation detail.
 
 ---
 
@@ -224,11 +253,15 @@ Kids download anonymously. No cookies, no account. Age-restricted and members-on
 - On download completion, Ubuntu worker triggers partial Plex scan via API
 - Plex is pure reader. All file operations are Eddy's.
 
-### Subscriptions
+### New outputs from people you follow
 
-- Each kid picks a handful of channels they actually follow
-- Every 6 hours, M4 checks channel RSS feeds and enqueues download jobs for new videos
+Subscriptions are on *people* (Section 4a), not channels. For video specifically:
+
+- Each person has zero or one YouTube channel as an output
+- Every 6 hours, Eddy polls the channel RSS for each followed person
 - New videos go through the same guard pipeline as requests
+- For kids in v1, this is the dominant output type per person — a followed person is effectively their YouTube channel
+- For adults, a person's YouTube channel is one output among several
 
 ### Storage recycling
 
@@ -276,23 +309,110 @@ YouTube is in an active arms race with download tools. Three failure modes, all 
 
 Kid never sees a silent failure. Worst case (yt-dlp *and* plugin both break overnight) is a 24h delay, queue intact, Steve one tap from a fix.
 
-### Tracking subscribed channels
+### Tracking seen items per output
 
-`seen_videos` table — `(channel_id, video_id, seen_at)`. yt-dlp pulls channel RSS; items already in `seen_videos` are skipped.
+`seen_videos` table — `(output_id, video_id, seen_at)`. yt-dlp pulls channel RSS for each output; items already in `seen_videos` are skipped. The same pattern extends to non-video outputs (podcast episodes, Substack posts, etc.) via a generalised `seen_items` table keyed by output.
 
 ---
 
 ## 7. Sources beyond YouTube
 
-Adult feed primarily. Kids get a lightweight version later.
+Eddy handles multiple media types. All of them route through the same people-first subscription model (Section 4a) and the same discovery engine (Section 9a). Media type is a rendering concern, not a pipeline concern.
 
-- RSS feeds — articles, Substack, blogs — fetched hourly
-- Podcast RSS — episode metadata only, no download
-- arXiv / PubMed RSS — for AI, fitness, nutrition topics
+### Fetchers, not sources
 
-Eddy fetches metadata and links only. No scraping. Cards link to original source — Safari for articles, podcast app for episodes. Video is the only content type Eddy hosts locally.
+Each output a person has is served by a *fetcher* — a small adapter that knows how to read that output's feed:
 
-Kids' sources (BBC Newsround, Nat Geo Kids, etc.) added once the YouTube flow is bedded in.
+- **YouTube channel fetcher** — RSS → yt-dlp metadata
+- **Podcast RSS fetcher** — standard podcast RSS
+- **Substack / blog fetcher** — RSS, with full-text where the feed provides it
+- **Podcast RSS fetcher** — episode metadata only, never audio
+- **arXiv / PubMed fetcher** — RSS + API metadata
+- **Book-recommendation detection** — Gemma reads a person's text output and extracts book mentions into `person_recommendations`
+
+Adding a new fetcher is a new file, not a new system.
+
+### Articles (adult feed primarily)
+
+Cards link to original source. Safari Reader is the reading experience. Eddy is a pointer, not a reader. Dwell signal captured (tap + didn't-come-back-quickly).
+
+Kids' article sources (BBC Newsround, Nat Geo Kids, etc.) added once the YouTube flow is bedded in.
+
+### Recipes — partial extraction (schema.org only)
+
+Food blogs are the one case where link-out is meaningfully worse than inline: the recipe is buried under 1500 words of personal essay, and the author has usually published the structured data themselves for Google.
+
+Recipe extraction rules:
+
+- Only when the page has `Recipe` schema.org JSON-LD
+- Render the structured fields as the card interior: ingredients as a list, steps as a list, yield, timings
+- No extraction of surrounding prose
+- Link to original always available
+- If no `Recipe` markup: link-out card, no extraction attempted
+
+This pattern — "use the author's own structured data, fall back to link-out" — may extend to `Event`, `Product`, or `HowTo` markup in later phases if the need emerges. It is deliberately *not* general article extraction. The brief's "no scraping" position stands for everything else.
+
+### Podcasts — discovery-only
+
+Podcasts do not use the subscription model. Household members already use podcast apps (Apple Podcasts, Overcast); Eddy re-surfacing shows they already follow is noise.
+
+Eddy's podcast value is finding single episodes worth your time from shows you *don't* follow — the gap podcast apps fail to address.
+
+Mechanics:
+
+- Per-user curated list of ~50 high-quality podcasts across their topics (seed + expand over time)
+- Every 6 hours, Eddy polls each show's RSS for new episodes
+- Gemma classifies each new episode against the user's profile using title, category, and show notes (three-bucket classification: clear-match / clear-reject / uncertain)
+- Uncertain drops silently. A good episode Eddy missed is invisible; a bad episode surfaced erodes trust in "why this?"
+- Clear matches flow to the discovery surface with a generated "why this?" line
+- Tap → user's preferred podcast app (settings-configurable deep link, fallback to show's web page)
+
+Where a guest is someone the user follows as a person (Section 4a), that's a heavy positive signal in scoring. Transcript-based deep scoring happens opportunistically for the subset of shows that publish transcripts — better signal when available, not required.
+
+Every classification (match, reject, uncertain) is logged for evaluation. Same pattern as `guard_eval`.
+
+No Shortcut path for podcasts. No podcast search-and-request. Episodes are ephemeral and discovered, not requested.
+
+### Books
+
+Books are a content type in Eddy, discovery-driven via people you follow (Section 4a).
+
+Sources:
+
+- **Explicit recommendations in a person's output** — Gemma detects book mentions in blog posts, Substack, show notes ("books I read this year", linked Amazon/Bookshop URLs, in-line praise)
+- **Author-on-podcast signal** — when podcast discovery surfaces an episode, and the guest has a recent book, the book becomes a candidate with the episode as evidence
+- **Crossover signal** — when multiple people a user follows point at the same book, score jumps
+
+No book catalogue ingestion, no general book search, no Goodreads/Amazon feed polling. Discovery is driven entirely by *who recommended it*.
+
+The book card shows: cover, title, author, recommender(s), one-line hook, length (pages or audiobook hours), "why this?" Tap → user-configurable destination (Amazon UK, Bookshop.org, library, Libby, Kindle).
+
+Books have a read-state beyond the usual: `reading_status` — *want to read*, *reading now*, *finished*. A one-tap "did this land?" on finish captures signal for future recommendations.
+
+Books live in the timeline like any other card. They also appear in a dedicated "Reading list" view alongside Saved, filtered by `reading_status`.
+
+Kids do not get book discovery in v1. Kids' book discovery is a worthwhile later problem (Phase 9+).
+
+### Papers
+
+arXiv and PubMed via their RSS / API. Metadata and abstract only — the abstract becomes the card hook. Tap opens the PDF in Safari. Niche but directly serves adult AI/fitness/nutrition interests.
+
+### Direct creator support (surfacing only)
+
+Every person card shows their direct-support links: Substack subscription, Patreon, Amazon author page, Bookshop.org affiliate, Bandcamp, Ko-fi, etc.
+
+Eddy surfaces these. Eddy does **not** process payments. The regulatory overhead of being a money transmitter is disproportionate for household scale, and creators already have payment infrastructure that works. The ethical signal ("Eddy makes the direct-support path visible") is captured without the operational cost.
+
+Later phases may add a year-end "where did my attention go" view reflecting engagement back to the user with an invitation to allocate support. Still no payment processing in Eddy.
+
+### What Eddy explicitly doesn't do for non-video content
+
+- Eddy never hosts audio (podcasts, music). Deep-link to the user's real podcast app.
+- Eddy never hosts article text (except schema.org-extracted recipes). Safari Reader is the reading experience for articles.
+- Eddy never hosts books.
+- Eddy never hosts video outside its own pipeline — no embedding third-party players.
+
+Video is the only content type Eddy hosts locally, and only because the guard and file-state model require it.
 
 ---
 
@@ -311,7 +431,7 @@ The feed is *what was offered to me*. Drift is *what did I do with it*. Differen
 ```
 ┌─ Today ────────────────────────────────────────────┐
 │   My requests           (shared via Shortcut)      │
-│   From your channels    (subscribed channel drops) │
+│   From people you follow (new outputs from them)   │
 │   Picked for you        (Phase 2.5 — discovery)    │
 ├─ Yesterday ────────────────────────────────────────┤
 │   [unified list]                                   │
@@ -326,7 +446,7 @@ The feed is *what was offered to me*. Drift is *what did I do with it*. Differen
 
 ### Card states
 
-Three visual tiers reflecting file state:
+Three visual tiers reflecting file state (video only; other types skip this):
 
 - **Live** — file on disk, immediately playable. Full colour.
 - **Recycled** — record remains, file recycled. Dimmed thumbnail, restore icon. One tap re-downloads.
@@ -345,17 +465,19 @@ Magazine mode (single hero, page-turn) is iPhone-only. iPad default is always gr
 
 ### Card component
 
-Content type badge distinguishes video / article / podcast / paper.
+Content type badge distinguishes video / article / podcast / paper / book / recipe.
 
 Tap destinations:
 - Video (live) → inline PWA playback, HTML5 full-screen
 - Video (recycled) → restore → play
 - Video (gone) → find similar
 - Article → Safari
-- Podcast → podcast app deep link, fallback to browser
+- Recipe (schema.org-extracted) → inline view, with original-source link
+- Podcast → user's configured podcast app, fallback to browser
 - Paper → Safari
+- Book → user-configured destination (Amazon/Bookshop/library/Libby/Kindle)
 
-Card shows: thumbnail, topic pill, source, headline, one-sentence personal hook, duration/read time. Past-day cards also show "Watched Xh later" if applicable.
+Card shows: thumbnail, topic pill, source (person name where known), headline, one-sentence personal hook, duration/read time/page count. Past-day cards also show "Watched Xh later" if applicable.
 
 ### Personal hook
 
@@ -380,20 +502,22 @@ On app open: brief cover — date, count, top story image. One second, transitio
 
 ### Search
 
-Full-text across the whole timeline via SQLite FTS5. Matches title, personal hook, channel, topic. Flat results list ordered by relevance, card's original date shown beneath. Also powers "find similar" for gone cards.
+Full-text across the whole timeline via SQLite FTS5. Matches title, personal hook, person/channel, topic. Flat results list ordered by relevance, card's original date shown beneath. Also powers "find similar" for gone cards.
 
-Text-only in v1. Filters (saved, channel, date range, topic) come in a later polish pass.
+Text-only in v1. Filters (saved, person, date range, topic) come in a later polish pass.
 
-### Saved
+### Saved and Reading list
 
 Saved items appear in the timeline in original position *and* in a dedicated Saved tab. Saved tab is a forever list, reverse-chronological by save date. Saved items never recycled.
+
+Books additionally appear in a Reading list view filterable by `reading_status`.
 
 ### New-content entry points
 
 Separate from the timeline — how content *enters* the system:
 
 - **Video search** — yt-dlp metadata search. Type query, see titles/channels/durations/thumbnails, tap request.
-- **Channel search** — same interface, request to follow. Parent-approved for kids, auto-approved for adults.
+- **Person search** — add a person to follow. User searches by name; Eddy proposes candidate outputs (YouTube channel, Substack, podcast) and the user confirms which to subscribe to. Parent-approved for kids, auto-approved for adults.
 
 ---
 
@@ -403,7 +527,7 @@ Gemma 4 E4B as triage, parent as adjudicator. Frontier model as optional future 
 
 ### Three outcomes
 
-For every request (Shortcut, channel drop, search-and-request):
+For every kid request (Shortcut, output drop, search-and-request):
 
 - **Clear-yes** → approve, queue download
 - **Clear-no** → reject with one-sentence reason + appeal button
@@ -413,7 +537,7 @@ For every request (Shortcut, channel drop, search-and-request):
 
 - Title, channel, description
 - Auto-generated transcript (when available)
-- Channel reputation (past approvals/rejections in SQLite)
+- Person / channel reputation (past approvals/rejections in SQLite)
 - Keyword hard-exclusions from kid's profile
 - Age-appropriate framing for kid's age
 
@@ -441,33 +565,41 @@ Every reject shows reason + one-tap "Ask a grown-up" button. Parent sees URL, Ge
 
 Eddy proactively finds content worth surfacing. Small number of genuinely good picks per day, not an endless feed. Scarcity is a feature.
 
-### Profile: three layers
+### Profile: four layers
 
-**Layer 1 — Explicit.** Topics with weights, subscribed channels, hard exclusions (kids' invisible to them), duration preferences.
+**Layer 1 — Explicit.** Topics with weights, followed people (Section 4a), hard exclusions (kids' invisible to them), duration preferences.
 
-**Layer 2 — Behavioural.** Completion rate per topic/channel/duration-band, save rate, dwell-before-dismiss, re-watch count, requested-and-finished rate.
+**Layer 2 — Behavioural.** Completion rate per topic/person/duration-band, save rate, dwell-before-dismiss, re-watch count, requested-and-finished rate.
 
-**Layer 3 — Inferred affinities.** Gemma-generated sentences describing shape of preference: *"Likes long-form technical explainers, not short listicles."* Internal only v1 — not exposed in UI. Kids see Layer 3 indirectly via "why this?" on picks.
+**Layer 3 — Person-level trust.** Per-person trust weights inferred from engagement. Completing most of a person's outputs across media → high trust. Dismissing consistently → low trust. Drives heavy scoring input.
+
+**Layer 4 — Inferred affinities.** Gemma-generated sentences describing shape of preference: *"Likes long-form technical explainers, not short listicles."* Internal only v1 — not exposed in UI. Kids see Layer 4 indirectly via "why this?" on picks.
 
 ### "Why this?"
 
-Every item surfaced by discovery (not subscribed drops, not requests) has a small "why this?" affordance. Tap to see a user-appropriate one-sentence explanation.
+Every item surfaced by discovery (not requests, not direct outputs from people you follow — those are self-explanatory) has a small "why this?" affordance. Tap to see a user-appropriate one-sentence explanation.
 
-Adult: *"You finished 5 of 7 videos on this channel last month, and this is their new upload."*
+Where a followed person is involved, the reasoning routes through them wherever possible:
 
-Kid: *"You watched loads of Minecraft redstone stuff last week and this channel makes the same kind of thing."*
+Adult: *"Tyler recommended this book twice in the last six months, and it's on a topic you've been reading about."*
+
+Kid: *"DanTDM doesn't usually make redstone videos, but this one's exactly the kind of thing you finished last week."*
 
 If Gemma can't explain why, the item doesn't surface.
 
 ### Discovery sources
 
 v1 (Phase 2.5):
-- Subscribed channels (already exists)
-- Topic search — daily `ytsearch20:'topic keywords'` for top-weighted topics
-- Related-channel expansion — from last week's engaged items, pull channel metadata for collaborators and adjacent channels
+
+- **New outputs from people you follow** — their YouTube uploads, Substack posts, podcast appearances, book releases. Strongest signal.
+- **Recommendations from people you follow** — Gemma detects pointers in their text output (book mentions, linked essays), surfaces as candidates with recommender attribution.
+- **Topic search** — daily `ytsearch20:'topic keywords'` for top-weighted topics. Used when person-sourced candidates are thin.
+- **Related-people expansion** — from engaged items, identify adjacent people (guests, collaborators, frequently-mentioned). Candidates for suggesting new follows, not for direct surfacing without confirmation.
+- **Podcast discovery** — episode-level scoring across a curated per-user podcast list (Section 7).
 
 v2 deferred:
 - Curated external lists (Reddit, HackerNews, Awesome-X repos). Ship without; add if discovery quality proves thin.
+- Social signal (Twitter/X posts by followed people, shared links).
 
 **Not using:** YouTube Data API. Keeps discovery yt-dlp-only, avoids Google Cloud entanglement.
 
@@ -478,14 +610,15 @@ Daily BullMQ job, runs early morning so Today is populated by breakfast:
 ```
 For each active user:
   1. Refresh candidate pool
-       - Pull subscribed channels
-       - Run topic searches for top-N topics
-       - Related-channel expansion on last week's engaged items
-       - Dedupe against seen_videos and content_items
+       - Pull new outputs from followed people
+       - Scan followed people's text outputs for recommendations
+       - Run topic searches for top-N topics (fill gaps)
+       - Poll curated podcast list
+       - Dedupe against seen_items and content_items
   2. Score candidates with Gemma
        - Batches of 10-20
-       - Relevance × quality × popularity × freshness
-       - Reject dismissed-pattern matches, blocked channels, hard-exclusions
+       - Person-trust-weight × relevance × quality × freshness
+       - Reject dismissed-pattern matches, blocked people, hard-exclusions
   3. Guard pipeline for kids
        - Clear-yes → surface. Uncertain → parent queue. Clear-no → logged.
   4. Apply daily cap
@@ -509,15 +642,17 @@ Kids see this too. Noticing your own patterns in real time is part of the litera
 
 ### Kid transparency
 
-Kids see: their own topics/channels/durations, watch history via timeline, "why this?" on every surfaced item, balance prompts.
+Kids see: their own topics/people followed/durations, watch history via timeline, "why this?" on every surfaced item, balance prompts.
 
-Kids don't see: hard exclusions (gaming risk), parent-only notes, raw confidence numbers, full Gemma reasoning on clear-no rejections, pipeline/queue internals.
+Person-level observation for kids is qualitative: *"You've been really into this creator lately."* Never quantitative or ranked.
+
+Kids don't see: hard exclusions (gaming risk), parent-only notes, raw confidence numbers, full Gemma reasoning on clear-no rejections, pipeline/queue internals, cross-person hour tallies.
 
 Adults see everything about their own profile. Parents see full detail of kid profiles except real-time viewing (that would be surveillance).
 
 ### Cold start
 
-First 3-4 weeks, behavioural signal is thin. "Picked for you" shows *"Eddy is still figuring out what you like — tell it more"* with a prompt to subscribe and rate. Aligns with Drift's "Getting to know you" baseline.
+First 3-4 weeks, behavioural signal is thin. "Picked for you" shows *"Eddy is still figuring out what you like — tell it more"* with a prompt to follow people and rate. Aligns with Drift's "Getting to know you" baseline.
 
 ---
 
@@ -530,7 +665,8 @@ Weekly. Not a score to optimise. A mirror to read.
 Every Sunday evening, Eddy generates a one-page summary:
 
 - **How you spent your time this week** — topic breakdown, visual bars
-- **What you kept watching** — completion rate, favourite creators
+- **Who you spent it with** — people you followed and engaged with, qualitative
+- **What you kept watching** — completion rate, favourites
 - **What you asked for and got** — requested vs pipeline-surfaced
 - **One observation** — Gemma-written sentence: *"You watched a lot of Minecraft tutorials this week and finished most of them — looks like you're learning something specific."*
 
@@ -538,14 +674,14 @@ No number. No target. No week-on-week comparison. Optional streak counter tracks
 
 Each row taps through to a filtered timeline view of the evidence. Drift is a guided tour of the week the kid can already see.
 
-Observations may reference inferred affinities that drove discovery picks: *"You finished all 5 of the redstone tutorials Eddy picked this week — looks like that hunch was right."* The feedback loop is visible.
+Observations may reference inferred affinities or person-level patterns: *"You finished all five redstone tutorials Eddy picked this week — looks like that hunch was right."* or *"You started watching a new creator this week — how's that going?"* The feedback loop is visible.
 
 ### For parents
 
 Same data, richer view:
 - All kid-facing signals
 - Request approval/rejection summary
-- Channels trending up/down
+- People trending up/down
 - Profile adjustment candidates — *"Son 1 dismissed 8/10 football videos this week; suggest reducing football weight?"* Never auto-applied.
 - Red-flag surface (sharp diversity drop, late-night request spike) as a quiet notification, not a push
 
@@ -660,6 +796,7 @@ Adults only.
 | Tool | Purpose |
 |---|---|
 | `get_profile` / `update_profile` | Read/write adult profiles |
+| `get_followed_people` / `follow_person` / `unfollow_person` | Manage people subscriptions |
 | `get_kid_summary` | Kid's Drift (visual signals only, no consumption detail) |
 | `get_requests_queue` | Pending, approved, rejected |
 | `approve_request` / `deny_request` | Action from Claude.ai |
@@ -693,7 +830,7 @@ Tested with integration tests. Any MCP response that fails the privacy filter th
 | Video titles, channels, watch history | ✓ | ✗ |
 | Kids' profiles, consumption, Drift detail | ✓ | ✗ (ever) |
 | Article tap history | ✓ | ✗ |
-| Adult profile topics | ✓ | ✓ |
+| Adult profile topics and followed people | ✓ | ✓ |
 | Adult Drift summary | ✓ | ✓ |
 | System status, queue depth | ✓ | ✓ |
 
@@ -703,7 +840,7 @@ No automated external calls in v1. Claude API usage (Phase 8, optional) requires
 
 ## 15. Data model
 
-SQLite, single file on M4, nightly backup to Ubuntu. All tables have `user_id`.
+SQLite, single file on M4, nightly backup to Ubuntu. All tables have `user_id` where relevant.
 
 ```sql
 CREATE TABLE users (
@@ -723,10 +860,56 @@ CREATE TABLE devices (
   device_type   TEXT                 -- phone|tablet|tv|desktop
 );
 
+-- People as the subscription unit (Section 4a)
+
+CREATE TABLE people (
+  person_id     TEXT PRIMARY KEY,
+  display_name  TEXT,
+  person_type   TEXT,                -- individual|duo|group|studio
+  photo_url     TEXT,
+  bio           TEXT,
+  support_urls  TEXT,                -- JSON: {substack, patreon, bookshop, etc.}
+  created_at    TIMESTAMP
+);
+
+CREATE TABLE person_outputs (
+  output_id     TEXT PRIMARY KEY,
+  person_id     TEXT,
+  output_type   TEXT,                -- youtube|podcast|substack|blog|arxiv|author
+  fetcher_type  TEXT,                -- which fetcher adapter handles this
+  feed_url      TEXT,                -- RSS URL, channel ID, etc.
+  external_id   TEXT,                -- e.g. YouTube channel ID
+  active        BOOLEAN DEFAULT 1,
+  last_polled   TIMESTAMP
+);
+
+CREATE TABLE followed_people (
+  user_id       TEXT,
+  person_id     TEXT,
+  trust_weight  REAL DEFAULT 1.0,    -- Layer 3 of profile
+  followed_at   TIMESTAMP,
+  followed_via  TEXT,                -- manual|suggestion|guest_crossover
+  PRIMARY KEY (user_id, person_id)
+);
+
+CREATE TABLE person_recommendations (
+  rec_id        TEXT PRIMARY KEY,
+  person_id     TEXT,                -- who made the recommendation
+  content_type  TEXT,                -- book|article|podcast|video|paper
+  target_url    TEXT,
+  target_title  TEXT,
+  target_author TEXT,                -- for books etc.
+  source_output_id TEXT,             -- which output carried the recommendation
+  framing       TEXT,                -- the recommender's own words, where extractable
+  detected_at   TIMESTAMP
+);
+
+-- Requests (kid-initiated, share-sheet flow)
+
 CREATE TABLE requests (
   request_id       TEXT PRIMARY KEY,
   user_id          TEXT,
-  source           TEXT,              -- share_sheet|search|channel_subscription|dns_landing
+  source           TEXT,              -- share_sheet|search|output_drop|dns_landing
   url              TEXT,
   youtube_id       TEXT,
   title            TEXT,
@@ -748,26 +931,32 @@ CREATE TABLE requests (
 CREATE TABLE content_items (
   item_id          TEXT PRIMARY KEY,
   user_id          TEXT,
-  content_type     TEXT,              -- video|article|podcast|paper
+  content_type     TEXT,              -- video|article|podcast|paper|book|recipe
   title            TEXT,
-  source           TEXT,
-  channel          TEXT,
+  person_id        TEXT,              -- attributed to a person where known
+  source_output_id TEXT,              -- which output produced this
+  recommender_id   TEXT,              -- person_id who recommended, if applicable
+  author           TEXT,              -- for books, papers
   url              TEXT,
   topic            TEXT,
   score            REAL,
   personal_hook    TEXT,              -- Gemma-generated, <=15 words
-  why_this         TEXT,              -- Gemma reasoning for discovery picks; null for requests/subs
-  thumbnail_url    TEXT,              -- persisted so recycled cards still render
-  duration_secs    INTEGER,
+  why_this         TEXT,              -- Gemma reasoning for discovery picks
+  thumbnail_url    TEXT,
+  duration_secs    INTEGER,           -- video, podcast
+  page_count       INTEGER,           -- books
   file_path        TEXT,              -- null when recycled or non-video
   nginx_url        TEXT,              -- null when recycled or non-video
-  file_state       TEXT DEFAULT 'live', -- live|recycled|gone|na (non-video)
-  added_section    TEXT,              -- my_request|channel|recommendation
-  discovery_source TEXT,              -- null|topic_search|related_channel|external_list
+  file_state       TEXT DEFAULT 'na', -- live|recycled|gone|na (non-video)
+  added_section    TEXT,              -- my_request|from_people|recommendation
+  discovery_source TEXT,              -- null|person_output|person_recommendation|topic_search|related_person
+  structured_data  TEXT,              -- JSON for schema.org-extracted types (recipes)
   tapped           BOOLEAN DEFAULT 0,
   saved            BOOLEAN DEFAULT 0,
   dismissed        BOOLEAN DEFAULT 0,
   completed        BOOLEAN DEFAULT 0,
+  reading_status   TEXT,              -- books only: want|reading|finished
+  landed           TEXT,              -- books only: yes|no|null after finish
   dwell_secs       INTEGER DEFAULT 0,
   re_watch_count   INTEGER DEFAULT 0,
   added_at         TIMESTAMP,         -- anchor for timeline position; immutable
@@ -779,7 +968,7 @@ CREATE TABLE content_items (
 );
 
 CREATE VIRTUAL TABLE content_items_fts USING fts5(
-  title, personal_hook, channel, topic,
+  title, personal_hook, author, topic,
   content='content_items', content_rowid='rowid'
 );
 
@@ -788,10 +977,11 @@ CREATE TABLE candidate_pool (
   user_id          TEXT,
   content_type     TEXT,
   url              TEXT,
-  youtube_id       TEXT,
+  external_id      TEXT,              -- youtube_id, episode guid, etc.
   title            TEXT,
-  channel          TEXT,
-  discovery_source TEXT,              -- topic_search|related_channel|external_list
+  person_id        TEXT,
+  recommender_id   TEXT,
+  discovery_source TEXT,              -- person_output|person_recommendation|topic_search|related_person|podcast_scan
   discovered_at    TIMESTAMP,
   scored_at        TIMESTAMP,
   score            REAL,
@@ -799,6 +989,17 @@ CREATE TABLE candidate_pool (
   surfaced_at      TIMESTAMP,
   rejected         BOOLEAN DEFAULT 0,
   rejection_reason TEXT
+);
+
+CREATE TABLE podcast_scoring_log (
+  log_id        TEXT PRIMARY KEY,
+  user_id       TEXT,
+  episode_url   TEXT,
+  show_name     TEXT,
+  episode_title TEXT,
+  verdict       TEXT,                 -- match|reject|uncertain
+  reason        TEXT,
+  scored_at     TIMESTAMP
 );
 
 CREATE TABLE inferred_affinities (
@@ -878,11 +1079,11 @@ CREATE TABLE used_tokens (
   used_at    TIMESTAMP
 );
 
-CREATE TABLE seen_videos (
-  channel_id  TEXT,
-  video_id    TEXT,
+CREATE TABLE seen_items (
+  output_id   TEXT,
+  external_id TEXT,                   -- video ID, episode guid, post slug, etc.
   seen_at     TIMESTAMP,
-  PRIMARY KEY (channel_id, video_id)
+  PRIMARY KEY (output_id, external_id)
 );
 ```
 
@@ -938,7 +1139,7 @@ Deliberate, restrained, editorial. CSS custom properties consumed directly. No T
 │   [image 16:9]         [🔖][✕] │   Icons top-right, small, --text-tertiary
 │   [content type badge]          │   Top-left of image, semi-transparent
 ├─────────────────────────────────┤
-│  [topic pill]  ·  [source]      │   DM Sans --text-xs, uppercase
+│  [topic pill]  ·  [person]      │   DM Sans --text-xs, uppercase
 │  Headline wraps to two lines    │   Source Serif 4 --text-lg
 │  "Personal hook, one sentence." │   Source Serif 4 italic --text-base, --text-secondary
 │  4 min  ·  2 hours ago          │   DM Sans --text-xs, --text-tertiary
@@ -946,6 +1147,18 @@ Deliberate, restrained, editorial. CSS custom properties consumed directly. No T
 ```
 
 Tap targets 44×44 minimum despite small visual icons.
+
+### Person card
+
+People are a first-class surface. Following someone, tapping their name on a content card, or browsing "people you follow" all land on a person view:
+
+- Photo, name, bio (one sentence)
+- Outputs list (each tappable to filter feed to just that output)
+- Recent items surfaced from them
+- Direct-support links (see Section 7)
+- Follow / unfollow action
+
+Person cards are simple; the value is routing, not content.
 
 ### Named motion
 
@@ -971,9 +1184,9 @@ Nine phases. Sequential. Each ends with something the family uses.
 - **Phase 0 ✅** — Foundation
 - **Phase 1 ✅** — Request flow (videos download via Shortcut, play in PWA)
 - **Phase 2 🔨** — The feed (in progress)
-- **Phase 2.5** — Discovery engine
+- **Phase 2.5** — People-first discovery engine
 - **Phase 3** — The guard
-- **Phase 4** — Sources & scoring (adult RSS/podcasts/papers)
+- **Phase 4** — Sources beyond video (articles, recipes, podcasts, books, papers)
 - **Phase 5** — Drift
 - **Phase 6** — Overrides & blocking (gated on partner)
 - **Phase 7** — MCP
@@ -981,7 +1194,7 @@ Nine phases. Sequential. Each ends with something the family uses.
 
 ### Phase 2 — The feed
 
-Builds the timeline per Section 8. Today section renders **two** sub-groups: My requests, From your channels. "Picked for you" is stubbed / empty — populated in Phase 2.5.
+Builds the timeline per Section 8. Today section renders **two** sub-groups: My requests, From people you follow. "Picked for you" is stubbed / empty — populated in Phase 2.5.
 
 - Card component, design tokens, named animations
 - Timeline feed (reverse-chron, day-grouped, `added_at` anchor)
@@ -993,30 +1206,31 @@ Builds the timeline per Section 8. Today section renders **two** sub-groups: My 
 - Watched indicator
 - Saved tab (bottom nav, never recycled)
 - Search via yt-dlp metadata + FTS5 over timeline
-- Channel subscriptions (kids pick, RSS every 6h, pipeline-processed)
+- **Person follow** (kids): initially one YouTube channel = one person. Pick a handful. RSS every 6h, pipeline-processed.
 - Cover splash, topic filter, bottom nav
 - `/design-reference` route
 
 **Ends with:** a timeline PWA showing every card ever added, restore for recycled files, search across history. No automated guard yet.
 
-### Phase 2.5 — Discovery engine
+### Phase 2.5 — People-first discovery engine
 
-Spec in Section 9a. Two sessions.
+Specs in Sections 4a and 9a. 2-3 sessions.
 
-- Three-layer profile model (behavioural signal capture, `re_watch_count`)
-- `inferred_affinities` table, Gemma generates sentences from behaviour
-- `candidate_pool` table
-- Discovery sources: topic search, related-channel expansion
-- Gemma scoring, batched
+- `people`, `person_outputs`, `followed_people`, `person_recommendations` tables
+- Person search + follow flow (propose candidate outputs, user confirms subscriptions)
+- Four-layer profile (behavioural signal capture, per-person trust weights, `inferred_affinities`)
+- `candidate_pool` table with person attribution
+- Discovery sources: new outputs from people followed, recommendations extracted from their text outputs, topic search (gap-filler), related-people expansion (for follow suggestions, not direct surfacing)
+- Gemma scoring with person-trust-weight as a primary input, batched
 - Daily cap enforcement with surplus carry-forward
 - "Picked for you" section in Today, with "That's it for today — more tomorrow"
-- "Why this?" affordance on every discovery card
+- "Why this?" affordance on every discovery card, routing through person attribution where possible
 - Balance prompt (>70% concentration, max once per 1-2 weeks)
 - Cold start handling
 - BullMQ repeatable job, early morning on M4
 - Cleanup job: prune unsurfaced candidates >30 days old
 
-**Ends with:** Today's feed has a populated Picked for you section with visible reasoning, respecting the scarcity principle.
+**Ends with:** Today's feed has a populated Picked for you section with visible reasoning, most of which names a specific person. Adults can follow across media types; kids follow people via YouTube channels (v1). Scarcity principle honoured.
 
 ### Phase 3 — The guard
 
@@ -1032,23 +1246,27 @@ Spec in Section 9. 1-2 sessions.
 
 **Ends with:** ~70-80% of requests auto-handled, parents only see uncertain + appeals.
 
-### Phase 4 — Sources & scoring
+### Phase 4 — Sources beyond video
 
-1 session.
+Specs in Sections 7 and 9a. 2-3 sessions.
 
-- RSS ingestion (articles, podcasts, papers)
-- Gemma scoring against profile + hook generation (batched)
-- Unified feed rendering (video + article + podcast + paper cards)
-- Dismiss/save/dwell signal capture
+- Generalised fetcher interface; adapters per output type
+- RSS ingestion for articles, papers (arXiv/PubMed), Substack/blogs
+- Podcast discovery engine (per-user curated show list, episode-level Gemma scoring, three-bucket classification, `podcast_scoring_log`)
+- Book content type: recommendation detection in followed people's text outputs, author-from-podcast signal, crossover scoring, reading list view, `reading_status` and `landed` fields
+- Recipe extraction (schema.org JSON-LD only) — structured card interior, fall-through to link-out
+- Direct-support link surfacing on person cards
+- Unified feed rendering (video + article + podcast + paper + book + recipe cards)
+- Dismiss/save/dwell signal capture across all types
 
-**Ends with:** adult feed is a proper daily read.
+**Ends with:** adult feed is a proper daily read across all media types, driven by people you follow and their recommendations. Partner can get a real cooking + travel feed. Kids unchanged (video-only, channel-as-person).
 
 ### Phase 5 — Drift
 
 Spec in Section 10. 1 session.
 
 - BullMQ repeatable Sunday evening job
-- Kid view (no number), adult view, parent view
+- Kid view (no number, qualitative person observations), adult view, parent view
 - Baseline period for first 3-4 weeks
 - Tap-through to filtered timeline for evidence
 
@@ -1060,7 +1278,7 @@ Spec in Section 11. 1-2 sessions. **Gated on partner buy-in.**
 
 - Pi-hole Docker, configured but disabled
 - Override lifecycle (request → grant → expiry)
-- ntfy actions for parent approval (replaces "Web Push" — all notifications go through ntfy per Section 12)
+- ntfy actions for parent approval
 - DNS-block landing page on Ubuntu nginx
 - Go-live checklist
 
@@ -1071,7 +1289,7 @@ Spec in Section 11. 1-2 sessions. **Gated on partner buy-in.**
 Spec in Section 13. 1 session.
 
 - MCP server module in M4 Node process
-- All tools
+- All tools including people management
 - Privacy enforcement layer with integration tests
 - Holiday mode
 
@@ -1091,8 +1309,12 @@ Only if 6+ months of parent-decision data justifies it. Spec in Section 9.
 - Hosted / SaaS version
 - Android support — household is iOS-only
 - Fire OS / Fire Stick app — parent grants by local IP
-- Kids' sources beyond video — after YouTube flow is bedded in
+- Kids following people across media (v1 = YouTube channel per person); kids' book discovery; kids' non-video sources generally — after YouTube flow is bedded in
 - Automated profile tuning from Drift signals — suggestions only, always manual apply
+- Direct payment processing in Eddy (surfacing support links only — see Section 7)
+- General article extraction beyond schema.org recipes
+- Book catalogue ingestion or general book search (discovery via followed people only)
+- Annual support-allocation/budget view (tempting, deferred)
 
 Native iOS app is explicit v2. See `docs/decisions.md`.
 
@@ -1102,9 +1324,11 @@ Native iOS app is explicit v2. See `docs/decisions.md`.
 
 Resolve before or during the relevant phase.
 
-1. **Gemma inference throughput on M4 with 16GB RAM.** Can it handle scoring + hook generation + triage on a busy day without swap? Instrument in Phase 2.5/3, adjust batch sizes if needed.
+1. **Gemma inference throughput on M4 with 16GB RAM.** Can it handle scoring + hook generation + triage + recommendation detection on a busy day without swap? Instrument in Phase 2.5/3, adjust batch sizes if needed.
 2. **Whole-house DNS coverage (Phase 6 decision).** HH2 can't push DNS to DHCP clients. Tailscale-only may be sufficient once kids are using share-sheet for most requests. If not: Pi-hole-as-DHCP (fragile but free) or router replacement (~£140 for UniFi Cloud Gateway Ultra). Decide at start of Phase 6.
 3. **Eddy domain name.** Registered or pending. Needed properly when native ships (for universal links — `.ts.net` can't serve `apple-app-site-association`). Current working DNS: `eddy.tail-xxxx.ts.net`.
+4. **Recommendation detection quality.** Gemma extracting book/article/podcast recommendations from a person's text output is the novel piece in Phase 2.5/4. Signal quality unknown until tested on real data. If poor, fall back to "new outputs only" for followed-person discovery and revisit.
+5. **Kid person-level UI tone.** "You've been really into this creator lately" is the intended register. Exact phrasing matters — reviewing with kids during Phase 2.5 is part of the work, not an afterthought.
 
 ### Known dependencies
 
