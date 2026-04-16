@@ -654,6 +654,32 @@ Adults see everything about their own profile. Parents see full detail of kid pr
 
 First 3-4 weeks, behavioural signal is thin. "Picked for you" shows *"Eddy is still figuring out what you like — tell it more"* with a prompt to follow people and rate. Aligns with Drift's "Getting to know you" baseline.
 
+### Topics
+
+Topics are named interests with a set of yt-dlp search strings. The `search_terms` JSON array is what does the work — `ytsearch20:'minecraft redstone tutorial'` runs daily as a gap-filler when person-sourced candidates are thin. The label and emoji are purely display.
+
+**Two sources:**
+
+**Seed list (`source = 'seed'`)** — a static JSON file shipped as a DB migration at Phase 2.5. Aim for 60–80 topics grouped by category:
+
+| Category | Examples |
+|---|---|
+| Gaming | Minecraft, Roblox, Pokémon, Zelda |
+| Sport | Football, Running, Cycling, Tennis |
+| Science | Space, Biology, Physics, Chemistry |
+| Tech | Programming, AI, Electronics |
+| Arts | Drawing, Music production, Photography |
+| Food | Cooking, Baking |
+| Fitness | Gym, Yoga, Martial arts |
+
+Age-gate anything warranting it (combat sports, some political commentary). The `age_gate` flag means it never surfaces in a kid's topic picker. The seed list doesn't need to be exhaustive on day one — `user_added` is the safety valve.
+
+**User-added (`source = 'user_added'`)** — user types a topic Eddy doesn't have. One Gemma call generates the `search_terms` array. Prompt: *"Generate 4 YouTube search queries that would find good videos about {topic}. Return a JSON array only."* Store and treat identically to seed topics from that point.
+
+**Onboarding topic picker:** On first setup, show a categorised pill grid — topics grouped by category, scrollable. Kids see age-appropriate categories; adults see the full set. Tap to add; weight defaults to `1.0`. Minimum viable onboarding: ≥1 topic and ≥1 followed person. Without both, discovery has nothing to work with.
+
+**Channel → topic inference (Phase 2.5):** When a user subscribes to a channel, Gemma reads the channel description and recent titles and suggests 1–2 existing topics to link to it. This is a mapping from `channel_id` to existing `topic_id` — not topic creation. Behavioural weight flows from there naturally.
+
 ---
 
 ## 10. Drift — the literacy surface
@@ -1229,6 +1255,10 @@ Specs in Sections 4a and 9a. 2-3 sessions.
 - Cold start handling
 - BullMQ repeatable job, early morning on M4
 - Cleanup job: prune unsurfaced candidates >30 days old
+- Seed topics JSON → DB migration (~60–80 topics, categorised, age-gated where needed)
+- Onboarding topic picker (categorised pill grid, ≥1 topic + ≥1 person required to proceed)
+- User-added topic flow (Gemma generates `search_terms` from free-text input)
+- Channel → topic inference on subscribe (Gemma suggests existing topic mappings, not new topics)
 
 **Ends with:** Today's feed has a populated Picked for you section with visible reasoning, most of which names a specific person. Adults can follow across media types; kids follow people via YouTube channels (v1). Scarcity principle honoured.
 
