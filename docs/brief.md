@@ -773,8 +773,8 @@ One topic per user, UUID-suffixed so guessing is infeasible:
 
 - `eddy-steve-{uuid}`
 - `eddy-partner-{uuid}`
-- `eddy-son1-{uuid}`
-- `eddy-son2-{uuid}`
+- `eddy-boy1-{uuid}`
+- `eddy-boy2-{uuid}`
 
 Basic auth + ACL per user. Each iOS app stores credentials for its own topic only.
 
