@@ -31,6 +31,11 @@ interface CallbackPayload {
   transcript: string | null;
 }
 
+interface RejectPayload {
+  requestId: string;
+  reason: string;
+}
+
 function signBody(body: string): string {
   return `sha256=${crypto
     .createHmac('sha256', config.INTERNAL_HMAC_SECRET)
@@ -63,6 +68,31 @@ async function postCallback(payload: CallbackPayload): Promise<void> {
   }
 }
 
+async function postRejectCallback(payload: RejectPayload): Promise<void> {
+  const baseUrl = config.M4_INTERNAL_URL;
+  if (!baseUrl) {
+    logger.warn('M4_INTERNAL_URL not set — skipping reject callback');
+    return;
+  }
+
+  const url = `${baseUrl}/internal/requests/${payload.requestId}/rejected`;
+  const body = JSON.stringify(payload);
+
+  const resp = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Eddy-Signature': signBody(body),
+    },
+    body,
+    signal: AbortSignal.timeout(15_000),
+  });
+
+  if (!resp.ok) {
+    throw new Error(`M4 reject callback returned ${resp.status}`);
+  }
+}
+
 async function processJob(job: Job<DownloadJobData>): Promise<void> {
   const { requestId, youtubeId, url } = job.data;
   const log = logger.child({ requestId, youtubeId });
@@ -76,7 +106,13 @@ async function processJob(job: Job<DownloadJobData>): Promise<void> {
   } catch (err: unknown) {
     const isTerminal = (err as { terminal?: boolean }).terminal === true;
     log.warn({ err, isTerminal }, 'Metadata fetch failed');
-    if (isTerminal) return; // BullMQ will not retry; request stays in downloading
+    if (isTerminal) {
+      const reason = (err as Error).message;
+      await postRejectCallback({ requestId, reason }).catch((cbErr: unknown) =>
+        log.error({ cbErr }, 'Failed to post rejection callback')
+      );
+      return;
+    }
     throw err;
   }
 
@@ -93,7 +129,13 @@ async function processJob(job: Job<DownloadJobData>): Promise<void> {
     await redis.del(PROGRESS_KEY(requestId));
     const isTerminal = (err as { terminal?: boolean }).terminal === true;
     log.warn({ err, isTerminal }, 'Download failed');
-    if (isTerminal) return;
+    if (isTerminal) {
+      const reason = (err as Error).message;
+      await postRejectCallback({ requestId, reason }).catch((cbErr: unknown) =>
+        log.error({ cbErr }, 'Failed to post rejection callback')
+      );
+      return;
+    }
     throw err;
   }
 

@@ -51,6 +51,34 @@ export async function sendVideoReady(
   logger.info({ userId, requestId }, 'Video-ready notification sent');
 }
 
+// Sent to Steve when the watchdog detects a stuck or re-enqueued download.
+export async function sendDownloadAlert(opts: {
+  requestId: string;
+  title: string;
+  stuckMins: number;
+  action: 'alert' | 're-enqueued' | 'failed';
+}): Promise<void> {
+  const ntfy = ntfyConfigForUser(config.USER_ID_STEVE);
+  if (!ntfy) return;
+
+  const actionLabel =
+    opts.action === 're-enqueued' ? 'Re-enqueued automatically' :
+    opts.action === 'failed'      ? 'Marked failed — needs manual retry' :
+                                    'Still active — check Ubuntu worker';
+
+  await sendNtfy({
+    topic: ntfy.topic,
+    credentials: ntfy.credentials,
+    title: `Stuck download (${opts.stuckMins}m)`,
+    message: `${opts.title}\n${actionLabel}`,
+    priority: opts.action === 'failed' ? 'high' : 'default',
+    tags: opts.action === 'failed' ? ['warning'] : ['arrows_counterclockwise'],
+    clickUrl: pwaUrl(`/admin/requests/${opts.requestId}`),
+  });
+
+  logger.info({ requestId: opts.requestId, action: opts.action }, 'Download alert sent');
+}
+
 // Sent to parents when a kid's request needs a decision.
 export async function sendParentReview(opts: {
   parentUserId: string;

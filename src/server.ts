@@ -14,6 +14,7 @@ export const app = express();
 // The verify callback runs before JSON parsing; rawBody is attached to the request.
 app.use(
   express.json({
+    limit: '2mb',
     verify: (req: Request & { rawBody?: Buffer }, _res, buf) => {
       req.rawBody = buf;
     },

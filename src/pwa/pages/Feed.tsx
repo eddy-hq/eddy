@@ -1,9 +1,11 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 import { AnimatePresence } from 'framer-motion';
 import { Card, type CardData } from '../components/Card';
-import { Logo } from '../components/Logo';
+import { VideoDetailSheet } from '../components/VideoDetailSheet';
+import { BottomNav } from '../components/BottomNav';
+import { AppHeader } from '../components/AppHeader';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -24,22 +26,14 @@ interface FeedCard {
   source: string;
 }
 
-interface Section {
-  id: string;
-  label: string;
-  cards: FeedCard[];
-}
-
 interface Day {
   date: string;
   label: string;
   cards: FeedCard[];
-  sections?: Section[];
+  sections?: { id: string; label: string; cards: FeedCard[] }[];
 }
 
-interface FeedResponse {
-  days: Day[];
-}
+interface FeedResponse { days: Day[]; }
 
 // ── API ──────────────────────────────────────────────────────────────────────
 
@@ -49,8 +43,6 @@ async function fetchFeed(user: string): Promise<FeedResponse> {
   if (!res.ok) throw new Error('Failed to load');
   return res.json() as Promise<FeedResponse>;
 }
-
-// ── Card adapter ─────────────────────────────────────────────────────────────
 
 function toCardData(row: FeedCard): CardData {
   return {
@@ -68,13 +60,37 @@ function toCardData(row: FeedCard): CardData {
   };
 }
 
+// ── Scroll-direction hook ────────────────────────────────────────────────────
+
+function useScrollDirection(threshold = 6) {
+  const [chipsVisible, setChipsVisible] = useState(true);
+  const lastY = useRef(0);
+
+  useEffect(() => {
+    function onScroll() {
+      const y = window.scrollY;
+      const delta = y - lastY.current;
+      lastY.current = y;
+      if (delta > threshold && y > 80) setChipsVisible(false);
+      if (delta < -threshold) setChipsVisible(true);
+    }
+    window.addEventListener('scroll', onScroll, { passive: true });
+    return () => window.removeEventListener('scroll', onScroll);
+  }, [threshold]);
+
+  return chipsVisible;
+}
+
 // ── Component ────────────────────────────────────────────────────────────────
+
+const CHIPS_H = 54; // px — padding 12 top/bottom + chip ~30
 
 export function Feed() {
   const [params] = useSearchParams();
+  const [activeChip, setActiveChip] = useState('All');
+  const [selectedCard, setSelectedCard] = useState<CardData | null>(null);
+  const chipsVisible = useScrollDirection();
   const user = params.get('userId') ?? params.get('user') ?? '';
-  const queryClient = useQueryClient();
-  const [dismissed, setDismissed] = useState<Set<string>>(new Set());
 
   const { data, isLoading, isError } = useQuery({
     queryKey: ['feed', user],
@@ -83,145 +99,150 @@ export function Feed() {
     refetchInterval: 10_000,
   });
 
-  const dismissMutation = useMutation({
-    mutationFn: async (requestId: string) => {
-      await fetch(`/requests/${requestId}/dismiss`, { method: 'POST' });
-    },
-    onSuccess: (_data, requestId) => {
-      setDismissed((prev) => new Set([...prev, requestId]));
-    },
-  });
-
-  const saveMutation = useMutation({
-    mutationFn: async ({ requestId, saved }: { requestId: string; saved: boolean }) => {
-      await fetch(`/requests/${requestId}/save`, { method: saved ? 'DELETE' : 'POST' });
-    },
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['feed', user] });
-    },
-  });
-
   if (!user) return <Empty text="No user selected." />;
   if (isLoading) return <Empty text="Loading…" />;
   if (isError) return <Empty text="Could not load." />;
 
-  const days = (data?.days ?? []).map((day) => ({
-    ...day,
-    cards: day.cards.filter((c) => !dismissed.has(c.request_id)),
-    sections: day.sections?.map((s) => ({
-      ...s,
-      cards: s.cards.filter((c) => !dismissed.has(c.request_id)),
-    })),
-  })).filter((day) => day.cards.length > 0);
-
+  const days = (data?.days ?? []).filter((d) => d.cards.length > 0 || d.sections?.some(s => s.cards.length));
   const hasContent = days.length > 0;
+
+  function dayCards(day: Day): FeedCard[] {
+    if (day.sections?.length) return day.sections.flatMap(s => s.cards);
+    return day.cards;
+  }
 
   return (
     <div style={{ minHeight: '100dvh', background: 'var(--bg-primary)' }}>
-      <header style={{
-        padding: 'var(--space-6) var(--space-4) var(--space-3)',
-        borderBottom: '1px solid var(--border-subtle)',
-        position: 'sticky', top: 0, background: 'var(--bg-primary)', zIndex: 10,
-      }}>
-        <Logo />
-      </header>
 
-      <main style={{ maxWidth: 640, margin: '0 auto', padding: 'var(--space-4)' }}>
+      {/* Sticky chrome */}
+      <div style={{ position: 'sticky', top: 0, zIndex: 10, background: 'var(--bg-primary)' }}>
+
+        {/* App header — always visible */}
+        <AppHeader borderBottom={!chipsVisible} />
+
+        {/* Topic chips — collapses on scroll-down */}
+        <div style={{
+          maxHeight: chipsVisible ? CHIPS_H : 0,
+          opacity: chipsVisible ? 1 : 0,
+          overflow: 'hidden',
+          transition: 'max-height 240ms ease, opacity 180ms ease',
+          borderBottom: '1px solid var(--border-subtle)',
+        }}>
+          <div style={{
+            padding: '12px 18px',
+            overflowX: 'auto', scrollbarWidth: 'none',
+            display: 'flex', gap: 7, alignItems: 'center',
+            WebkitOverflowScrolling: 'touch',
+          }}>
+            {['All', 'Minecraft', 'Science', 'Football', 'Space', 'Music'].map((chip) => (
+              <button
+                key={chip}
+                onClick={() => setActiveChip(chip)}
+                style={{
+                  flexShrink: 0,
+                  fontSize: 12, fontWeight: activeChip === chip ? 600 : 500,
+                  letterSpacing: '0.01em',
+                  padding: '7px 13px', borderRadius: 20,
+                  background: activeChip === chip ? 'var(--accent)' : 'transparent',
+                  color: activeChip === chip ? '#fff' : 'var(--text-secondary)',
+                  border: `1px solid ${activeChip === chip ? 'var(--accent)' : 'var(--border-subtle)'}`,
+                  cursor: 'pointer', whiteSpace: 'nowrap',
+                }}
+              >
+                {chip}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* Feed content */}
+      <main style={{ paddingBottom: 100 }}>
         {!hasContent ? (
-          <div style={{ paddingTop: 'var(--space-16)', textAlign: 'center' }}>
+          <div style={{ paddingTop: 64, textAlign: 'center' }}>
             <p style={{ color: 'var(--text-secondary)', fontSize: 'var(--text-base)' }}>
               Nothing here yet. Share a YouTube link to get started.
             </p>
           </div>
         ) : (
-          days.map((day) => (
+          days.map((day, i) => (
             <DayGroup
               key={day.date}
               day={day}
-              dismissed={dismissed}
-              onDismiss={(id) => dismissMutation.mutate(id)}
-              onSave={(id, saved) => saveMutation.mutate({ requestId: id, saved })}
+              cards={dayCards(day)}
+              showDivider={i > 0}
+              selectedId={selectedCard?.requestId ?? null}
+              onSelect={setSelectedCard}
             />
           ))
         )}
       </main>
+
+      <BottomNav />
+
+      <AnimatePresence>
+        {selectedCard && (
+          <VideoDetailSheet
+            key={selectedCard.requestId}
+            card={selectedCard}
+            onClose={() => setSelectedCard(null)}
+          />
+        )}
+      </AnimatePresence>
     </div>
   );
 }
 
 // ── Day group ────────────────────────────────────────────────────────────────
 
-function DayGroup({ day, dismissed, onDismiss, onSave }: {
+function DayGroup({
+  day, cards, showDivider, selectedId, onSelect,
+}: {
   day: Day;
-  dismissed: Set<string>;
-  onDismiss: (id: string) => void;
-  onSave: (id: string, saved: boolean) => void;
-}) {
-  const isToday = !!day.sections;
-
-  return (
-    <section style={{ marginBottom: 'var(--space-8)' }}>
-      <h2 style={{
-        fontFamily: 'var(--font-sans)',
-        fontSize: 'var(--text-xs)',
-        fontWeight: 600,
-        letterSpacing: '0.08em',
-        textTransform: 'uppercase',
-        color: 'var(--text-tertiary)',
-        padding: 'var(--space-3) 0 var(--space-3)',
-        borderBottom: '1px solid var(--border-subtle)',
-        marginBottom: 'var(--space-4)',
-      }}>
-        {day.label}
-      </h2>
-
-      {isToday ? (
-        day.sections!.map((section) => {
-          const visible = section.cards.filter((c) => !dismissed.has(c.request_id));
-          if (!visible.length) return null;
-          return (
-            <div key={section.id} style={{ marginBottom: 'var(--space-6)' }}>
-              <p style={{
-                fontSize: 'var(--text-xs)',
-                color: 'var(--text-tertiary)',
-                marginBottom: 'var(--space-3)',
-                fontWeight: 500,
-              }}>
-                {section.label}
-              </p>
-              <CardList cards={visible} onDismiss={onDismiss} onSave={onSave} />
-            </div>
-          );
-        })
-      ) : (
-        <CardList
-          cards={day.cards.filter((c) => !dismissed.has(c.request_id))}
-          onDismiss={onDismiss}
-          onSave={onSave}
-        />
-      )}
-    </section>
-  );
-}
-
-function CardList({ cards, onDismiss, onSave }: {
   cards: FeedCard[];
-  onDismiss: (id: string) => void;
-  onSave: (id: string, saved: boolean) => void;
+  showDivider: boolean;
+  selectedId: string | null;
+  onSelect: (data: CardData) => void;
 }) {
+  const lbl = day.label;
+  const dateObj = new Date(day.date + 'T12:00:00');
+  const isToday     = lbl.toLowerCase() === 'today';
+  const isYesterday = lbl.toLowerCase() === 'yesterday';
+  const formattedDate = dateObj.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
+
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
-      <AnimatePresence mode="popLayout">
-        {cards.map((row) => (
-          <Card
-            key={row.request_id}
-            data={toCardData(row)}
-            onDismiss={onDismiss}
-            onSave={(id) => onSave(id, !!row.saved_at)}
-          />
-        ))}
-      </AnimatePresence>
-    </div>
+    <section>
+      {showDivider && (
+        <div style={{ margin: '4px 20px 16px', height: 1, background: 'var(--border-subtle)' }} />
+      )}
+      <div style={{ padding: '22px 20px 14px', display: 'flex', alignItems: 'baseline', gap: 10 }}>
+        <span style={{ fontSize: 11, fontWeight: 600, letterSpacing: '0.09em', textTransform: 'uppercase', color: 'var(--text-primary)' }}>
+          {lbl}
+        </span>
+        {(isToday || isYesterday) && (
+          <span style={{ fontSize: 11, fontWeight: 500, letterSpacing: '0.02em', color: 'var(--text-tertiary)' }}>
+            {formattedDate}
+          </span>
+        )}
+        {isToday && cards.length > 0 && (
+          <span style={{ marginLeft: 'auto', fontSize: 11, fontWeight: 500, color: 'var(--text-tertiary)', letterSpacing: '0.02em' }}>
+            {cards.length} {cards.length === 1 ? 'request' : 'requests'}
+          </span>
+        )}
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 14, padding: '0 16px' }}>
+        <AnimatePresence mode="popLayout">
+          {cards.map((row) => (
+            <Card
+              key={row.request_id}
+              data={toCardData(row)}
+              onSelect={onSelect}
+              isSelected={selectedId === row.request_id}
+            />
+          ))}
+        </AnimatePresence>
+      </div>
+    </section>
   );
 }
 

@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { Bookmark, X, Play, RotateCcw } from 'lucide-react';
 
 export interface CardData {
   requestId: string;
@@ -9,18 +8,12 @@ export interface CardData {
   channel: string | null;
   youtubeId: string | null;
   status: string;
-  fileState: string;           // live | recycled | gone
+  fileState: string;
   nginxUrl: string | null;
   requestedAt: string;
   rejectionReason: string | null;
   watchedAt: string | null;
   savedAt: string | null;
-}
-
-interface CardProps {
-  data: CardData;
-  onDismiss?: (id: string) => void;
-  onSave?: (id: string) => void;
 }
 
 const STATUS_LABEL: Record<string, string> = {
@@ -29,23 +22,17 @@ const STATUS_LABEL: Record<string, string> = {
   parent_review: 'Waiting for approval',
   pending:       'Pending',
   approved:      'Approved',
-  ready:         'Ready',
-  watched:       'Watched',
   rejected:      'Not available',
 };
 
 interface PollResult { pct: number | null; done: boolean; }
 
-// Poll /requests/:id every 2s while downloading — returns progress and whether it's finished
 function useDownloadProgress(requestId: string, active: boolean): PollResult {
   const [result, setResult] = useState<PollResult>({ pct: null, done: false });
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
-    if (!active) {
-      setResult({ pct: null, done: false });
-      return;
-    }
+    if (!active) { setResult({ pct: null, done: false }); return; }
 
     async function poll() {
       try {
@@ -55,92 +42,98 @@ function useDownloadProgress(requestId: string, active: boolean): PollResult {
         const done = data.status === 'ready' || data.status === 'watched';
         setResult({ pct: typeof data.progress === 'number' ? data.progress : null, done });
         if (done && timerRef.current) clearInterval(timerRef.current);
-      } catch {
-        // best-effort
-      }
+      } catch { /* best-effort */ }
     }
 
     void poll();
     timerRef.current = setInterval(() => void poll(), 2000);
-    return () => {
-      if (timerRef.current) clearInterval(timerRef.current);
-    };
+    return () => { if (timerRef.current) clearInterval(timerRef.current); };
   }, [requestId, active]);
 
   return result;
 }
 
-export function Card({ data, onDismiss, onSave }: CardProps) {
+export function Card({
+  data,
+  onSelect,
+  isSelected = false,
+}: {
+  data: CardData;
+  onSelect?: (data: CardData) => void;
+  isSelected?: boolean;
+}) {
   const navigate = useNavigate();
-  const isLive     = ['ready', 'watched'].includes(data.status) && data.fileState === 'live' && !!data.nginxUrl;
-  const isRecycled = ['ready', 'watched'].includes(data.status) && data.fileState === 'recycled';
-  const isGone     = data.fileState === 'gone';
-  const isRejected = data.status === 'rejected';
-  const isWatched  = !!data.watchedAt;
-  const isSaved    = !!data.savedAt;
+
+  const isLive        =['ready', 'watched'].includes(data.status) && data.fileState === 'live' && !!data.nginxUrl;
+  const isRecycled    = ['ready', 'watched'].includes(data.status) && data.fileState === 'recycled';
+  const isGone        = data.fileState === 'gone';
+  const isRejected    = data.status === 'rejected';
+  const isWatched     = !!data.watchedAt;
   const isDownloading = data.status === 'downloading';
   const isInProgress  = ['downloading', 'guard_review', 'parent_review', 'pending', 'approved'].includes(data.status);
 
-  const dimmed = isRecycled || isGone || isRejected;
-
   const { pct, done: downloadDone } = useDownloadProgress(data.requestId, isDownloading);
-
-  // If our 2s poll detected ready before the feed 10s refresh, treat locally as live
   const effectivelyLive = isLive || downloadDone;
 
   const thumbnail = data.youtubeId
     ? `https://i.ytimg.com/vi/${data.youtubeId}/hqdefault.jpg`
     : null;
 
+  const greyRight = pct === null ? 100 : Math.max(0, 100 - pct);
+
   function handleTap() {
-    if (effectivelyLive) navigate(`/watch/${data.requestId}`);
+    if (!effectivelyLive) return;
+    if (onSelect) onSelect(data);
+    else navigate(`/watch/${data.requestId}`);
   }
 
-  // How much of the right side is still grey (0% = full colour, 100% = full grey)
-  const greyRight = pct === null ? 100 : Math.max(0, 100 - pct);
+  const cardOpacity = isGone ? 0.72 : 1;
 
   return (
     <motion.article
       layout
       initial={{ opacity: 0, y: 12 }}
-      animate={{ opacity: 1, y: 0 }}
+      animate={{ opacity: isSelected ? 0 : cardOpacity, y: 0 }}
       exit={{ opacity: 0, y: -8, scale: 0.97 }}
-      transition={{ duration: 0.25, ease: [0.33, 1, 0.68, 1] }}
+      transition={{ duration: 0.3, ease: [0.33, 1, 0.68, 1] }}
       whileTap={effectivelyLive ? { scale: 0.97 } : undefined}
       onClick={handleTap}
       style={{
         background: 'var(--bg-surface)',
-        borderRadius: 'var(--radius-lg)',
+        borderRadius: 16,
         boxShadow: 'var(--shadow-card)',
         overflow: 'hidden',
         cursor: effectivelyLive ? 'pointer' : 'default',
-        opacity: dimmed ? 0.55 : 1,
         border: '1px solid var(--border-subtle)',
       }}
     >
-      {/* Thumbnail */}
+      {/* ── Thumbnail ── */}
       {thumbnail && (
-        <div style={{ position: 'relative', aspectRatio: '16/9', background: 'var(--bg-elevated)' }}>
+        <motion.div
+          layoutId={`thumb-${data.requestId}`}
+          transition={{ duration: 0.3, ease: [0.33, 1, 0.68, 1] }}
+          style={{ position: 'relative', aspectRatio: '16/9', background: 'var(--bg-elevated)', display: 'block', overflow: 'hidden' }}
+        >
 
-          {/* Grey base — always shown */}
+          {/* Base image — greyscale when recycled or downloading */}
           <img
-            src={thumbnail}
-            alt=""
+            src={thumbnail} alt=""
             style={{
               position: 'absolute', inset: 0,
               width: '100%', height: '100%', objectFit: 'cover',
-              filter: isDownloading && !downloadDone ? 'grayscale(100%)' : 'none',
+              filter: (isRecycled || (isDownloading && !downloadDone))
+                ? 'grayscale(1) opacity(0.4)'
+                : isGone ? 'grayscale(1) opacity(0.2)'
+                : 'none',
               transition: 'filter 0.6s ease',
             }}
             loading="lazy"
           />
 
-          {/* Colour reveal — clips in from the left as pct rises */}
+          {/* Colour reveal during download */}
           {isDownloading && !downloadDone && (
             <img
-              src={thumbnail}
-              alt=""
-              aria-hidden
+              src={thumbnail} alt="" aria-hidden
               style={{
                 position: 'absolute', inset: 0,
                 width: '100%', height: '100%', objectFit: 'cover',
@@ -150,129 +143,113 @@ export function Card({ data, onDismiss, onSave }: CardProps) {
             />
           )}
 
-          {/* Progress bar */}
-          {isDownloading && !downloadDone && (
-            <div style={{
-              position: 'absolute', bottom: 0, left: 0, right: 0,
-              height: 6, background: 'rgba(0,0,0,0.3)',
+          {/* Content-type badge (top-left) */}
+          {!isDownloading && (
+            <span style={{
+              position: 'absolute', top: 9, left: 9,
+              fontSize: 9, fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase',
+              color: 'rgba(255,255,255,0.92)', background: 'rgba(0,0,0,0.48)',
+              backdropFilter: 'blur(6px)', padding: '3px 7px', borderRadius: 5,
             }}>
-              <div style={{
-                height: '100%',
-                width: `${pct ?? 0}%`,
-                background: '#6366f1',
-                transition: 'width 0.8s ease',
-              }} />
-            </div>
+              Video
+            </span>
           )}
 
-          {/* Progress percentage label */}
+          {/* Download progress */}
           {isDownloading && !downloadDone && (
-            <div style={{
-              position: 'absolute', bottom: 'var(--space-3)', left: 'var(--space-2)',
-              background: 'rgba(0,0,0,0.6)', color: '#fff',
-              fontSize: 'var(--text-xs)', fontWeight: 600,
-              padding: '2px 8px', borderRadius: 'var(--radius-sm)',
-            }}>
-              {pct !== null ? `${pct}%` : 'Starting…'}
-            </div>
-          )}
-
-          {/* Content type badge */}
-          <div style={{
-            position: 'absolute', top: 'var(--space-2)', left: 'var(--space-2)',
-            background: 'rgba(0,0,0,0.55)', color: '#fff',
-            fontSize: 'var(--text-xs)', fontWeight: 600, letterSpacing: '0.04em',
-            padding: '2px 8px', borderRadius: 'var(--radius-sm)', textTransform: 'uppercase',
-          }}>
-            Video
-          </div>
-
-          {/* Action icons */}
-          <div style={{
-            position: 'absolute', top: 'var(--space-2)', right: 'var(--space-2)',
-            display: 'flex', gap: 'var(--space-1)',
-          }}>
-            {onSave && !isRejected && (
-              <IconButton
-                label={isSaved ? 'Remove bookmark' : 'Bookmark'}
-                onClick={(e) => { e.stopPropagation(); onSave(data.requestId); }}
-                icon={<Bookmark size={14} fill={isSaved ? 'currentColor' : 'none'} />}
-              />
-            )}
-            {onDismiss && (
-              <IconButton
-                label="Dismiss"
-                onClick={(e) => { e.stopPropagation(); onDismiss(data.requestId); }}
-                icon={<X size={14} />}
-              />
-            )}
-          </div>
-
-          {/* Play overlay */}
-          {effectivelyLive && (
-            <div style={{
-              position: 'absolute', inset: 0,
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-            }}>
-              <div style={{
-                width: 48, height: 48, borderRadius: '50%',
-                background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(4px)',
-                display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff',
+            <>
+              <span style={{
+                position: 'absolute', top: 9, left: 9,
+                fontSize: 9, fontWeight: 700, color: '#fff',
+                background: 'rgba(0,0,0,0.55)', padding: '3px 7px', borderRadius: 5,
               }}>
-                <Play size={20} fill="currentColor" />
+                {pct !== null ? `${pct}%` : 'Starting…'}
+              </span>
+              <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, height: 3, background: 'rgba(255,255,255,0.14)' }}>
+                <div style={{ height: '100%', width: `${pct ?? 0}%`, background: 'var(--accent)', transition: 'width 0.8s ease' }} />
               </div>
-            </div>
+            </>
           )}
 
-          {/* Recycled overlay */}
+          {/* Watched overlay */}
+          {isWatched && !isDownloading && (
+            <>
+              <div style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.28)', display: 'flex', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none' }}>
+                <div style={{ width: 36, height: 36, borderRadius: '50%', background: 'rgba(61,107,107,0.82)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+                    <polyline points="4,9 7.5,13 14,5.5" stroke="#fff" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/>
+                  </svg>
+                </div>
+              </div>
+              <span style={{
+                position: 'absolute', top: 8, left: 8,
+                fontSize: 10, fontWeight: 600, color: '#fff',
+                padding: '3px 8px', borderRadius: 20,
+                background: 'rgba(61,107,107,0.88)', backdropFilter: 'blur(4px)',
+              }}>
+                {watchedAgo(data.watchedAt!)}
+              </span>
+              <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, height: 3, background: 'rgba(255,255,255,0.14)' }}>
+                <div style={{ height: '100%', width: '100%', background: 'var(--accent)' }} />
+              </div>
+            </>
+          )}
+
+          {/* Recycled overlay — gradient + restore CTA */}
           {isRecycled && (
-            <div style={{
-              position: 'absolute', inset: 0,
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              background: 'rgba(0,0,0,0.35)',
-            }}>
-              <div style={{
-                display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, color: '#fff',
-              }}>
-                <RotateCcw size={20} />
-                <span style={{ fontSize: 11, fontWeight: 600 }}>Tap to restore</span>
+            <>
+              <div style={{ position: 'absolute', inset: 0, background: 'linear-gradient(180deg, rgba(0,0,0,0) 0%, rgba(0,0,0,0.18) 60%, rgba(0,0,0,0.42) 100%)', pointerEvents: 'none' }} />
+              <div style={{ position: 'absolute', inset: 'auto 0 0 0', padding: '10px 12px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, zIndex: 2 }}>
+                <span style={{ fontSize: 10, fontWeight: 600, color: 'rgba(255,255,255,0.9)', letterSpacing: '0.04em', display: 'flex', alignItems: 'center', gap: 5, background: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(6px)', padding: '4px 8px', borderRadius: 14 }}>
+                  <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
+                    <path d="M2 5a3 3 0 016 0M5 8V5"/><circle cx="5" cy="8.5" r="0.7" fill="currentColor"/>
+                  </svg>
+                  Recycled
+                </span>
+                <button
+                  onClick={(e) => { e.stopPropagation(); }}
+                  style={{ fontSize: 11, fontWeight: 600, color: '#fff', background: 'var(--accent)', border: 'none', padding: '6px 12px', borderRadius: 14, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 5 }}
+                >
+                  <svg width="11" height="11" viewBox="0 0 11 11" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M1.5 5.5a4 4 0 118 0M9.5 3v2.5H7"/>
+                  </svg>
+                  Restore
+                </button>
               </div>
-            </div>
+            </>
           )}
 
-          {/* Watched tick */}
-          {isWatched && (
-            <div style={{
-              position: 'absolute', bottom: 'var(--space-2)', left: 'var(--space-2)',
-              background: 'rgba(0,0,0,0.55)', color: '#fff',
-              fontSize: 'var(--text-xs)', padding: '2px 8px',
-              borderRadius: 'var(--radius-sm)', display: 'flex', alignItems: 'center', gap: 4,
-            }}>
-              ✓ {watchedAgo(data.watchedAt!)}
-            </div>
+          {/* Gone overlay */}
+          {isGone && (
+            <>
+              <div style={{ position: 'absolute', inset: 0, background: 'rgba(10,10,10,0.52)', pointerEvents: 'none' }} />
+              <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8, zIndex: 2, color: 'rgba(255,255,255,0.88)' }}>
+                <svg width="22" height="22" viewBox="0 0 22 22" fill="none" stroke="rgba(255,255,255,0.75)" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="11" cy="11" r="8"/><path d="M5 5l12 12"/>
+                </svg>
+                <span style={{ fontSize: 10, fontWeight: 600, letterSpacing: '0.06em', textTransform: 'uppercase' }}>No longer available</span>
+              </div>
+            </>
           )}
-        </div>
+        </motion.div>
       )}
 
-      {/* Body */}
-      <div style={{ padding: 'var(--space-3) var(--space-4)' }}>
+      {/* ── Body ── */}
+      <div style={{ padding: '13px 14px 15px' }}>
+
+        {/* Meta — channel */}
         {data.channel && (
-          <p style={{
-            fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)',
-            textTransform: 'uppercase', letterSpacing: '0.06em',
-            marginBottom: 'var(--space-1)',
-          }}>
-            {data.channel}
-          </p>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
+            <span style={{ fontSize: 11, fontWeight: 500, color: 'var(--text-tertiary)' }}>{data.channel}</span>
+          </div>
         )}
 
+        {/* Title */}
         <h2 style={{
           fontFamily: 'var(--font-serif)',
-          fontSize: 'var(--text-md)',
-          fontWeight: 400,
-          lineHeight: 1.35,
-          color: isGone ? 'var(--text-tertiary)' : 'var(--text-primary)',
-          marginBottom: 'var(--space-2)',
+          fontSize: 18, fontWeight: 600,
+          lineHeight: 1.3, letterSpacing: '-0.01em', marginBottom: 8,
+          color: (isWatched || isRecycled) ? 'var(--text-secondary)' : isGone ? 'var(--text-tertiary)' : 'var(--text-primary)',
           display: '-webkit-box',
           WebkitLineClamp: 2,
           WebkitBoxOrient: 'vertical',
@@ -281,61 +258,33 @@ export function Card({ data, onDismiss, onSave }: CardProps) {
           {isGone ? 'No longer available' : data.title}
         </h2>
 
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        {/* Footer */}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
           <span style={{
-            fontSize: 'var(--text-xs)',
-            color: isRejected ? 'var(--dismiss)'
-              : effectivelyLive ? 'var(--accent)'
-              : isInProgress ? 'var(--text-tertiary)'
-              : 'var(--text-tertiary)',
+            fontSize: 11, fontWeight: 500,
+            color: isRejected ? 'var(--dismiss)' : 'var(--text-tertiary)',
           }}>
-            {isGone ? 'No longer available' : (STATUS_LABEL[data.status] ?? data.status)}
-          </span>
-          <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)' }}>
-            {timeAgo(data.requestedAt)}
+            {isInProgress && !effectivelyLive
+              ? (STATUS_LABEL[data.status] ?? data.status)
+              : isRejected
+              ? (data.rejectionReason ?? 'Not available')
+              : timeAgo(data.requestedAt)}
           </span>
         </div>
-
-        {isRejected && data.rejectionReason && (
-          <p style={{ marginTop: 'var(--space-2)', fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)' }}>
-            {data.rejectionReason}
-          </p>
-        )}
       </div>
     </motion.article>
-  );
-}
-
-function IconButton({ label, onClick, icon }: {
-  label: string;
-  onClick: (e: React.MouseEvent) => void;
-  icon: React.ReactNode;
-}) {
-  return (
-    <button
-      aria-label={label}
-      onClick={onClick}
-      style={{
-        width: 28, height: 28, borderRadius: '50%',
-        background: 'rgba(0,0,0,0.55)', color: '#fff',
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-        minHeight: 44, minWidth: 44,
-        margin: -8, padding: 8,
-      }}
-    >
-      {icon}
-    </button>
   );
 }
 
 function timeAgo(iso: string): string {
   const diff = Date.now() - new Date(iso).getTime();
   const mins = Math.floor(diff / 60_000);
-  if (mins < 1) return 'just now';
-  if (mins < 60) return `${mins}m ago`;
+  if (mins < 1) return 'added just now';
+  if (mins < 60) return `added ${mins}m ago`;
   const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs}h ago`;
-  return `${Math.floor(hrs / 24)}d ago`;
+  if (hrs < 24) return `added ${hrs}h ago`;
+  const days = Math.floor(hrs / 24);
+  return `added ${days}d ago`;
 }
 
 function watchedAgo(iso: string): string {

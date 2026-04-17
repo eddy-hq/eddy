@@ -5,6 +5,7 @@ import { runMigrations } from './db/migrate';
 import { seedUsers } from './db/seed';
 import { app } from './server';
 import { closeQueues } from './queue';
+import { startWatchdog, stopWatchdog } from './modules/watchdog';
 
 async function start(): Promise<void> {
   logger.info({ env: config.NODE_ENV }, 'Starting Eddy');
@@ -12,6 +13,8 @@ async function start(): Promise<void> {
   runMigrations();
   seedUsers();
   logger.info('Database ready');
+
+  startWatchdog();
 
   const server = app.listen(config.PORT, () => {
     logger.info(
@@ -22,6 +25,7 @@ async function start(): Promise<void> {
 
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'Shutting down');
+    stopWatchdog();
     server.close(() => logger.info('HTTP server closed'));
     await closeQueues();
     logger.info('Shutdown complete');

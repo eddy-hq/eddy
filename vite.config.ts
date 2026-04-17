@@ -13,6 +13,7 @@ export default defineConfig({
     emptyOutDir: true,
   },
   server: {
+    host: true,
     port: 5173,
     proxy: {
       '/requests': 'http://localhost:3737',

@@ -65,6 +65,7 @@ requestsRouter.post('/', async (req: Request, res: Response) => {
   const { url, userId, user: userName } = req.body as { url?: string; userId?: string; user?: string };
 
   if (!url || typeof url !== 'string') {
+    logger.warn({ bodyKeys: Object.keys(req.body ?? {}), contentType: req.headers['content-type'] }, 'POST /requests missing url');
     throw new ValidationError('url is required');
   }
 
@@ -216,6 +217,79 @@ requestsRouter.get('/feed', (req: Request, res: Response) => {
   res.json({ days });
 });
 
+// GET /requests/admin/pipeline — active + recent rejected requests across all users
+requestsRouter.get('/admin/pipeline', async (_req: Request, res: Response) => {
+  const active = db.prepare(`
+    SELECT r.request_id, r.url, r.youtube_id, r.title, r.status,
+           r.rejection_reason, r.requested_at, u.display_name AS user_name
+    FROM requests r
+    JOIN users u ON r.user_id = u.user_id
+    WHERE r.status IN ('downloading', 'guard_review', 'parent_review', 'pending', 'approved')
+    ORDER BY r.requested_at ASC
+  `).all() as Array<{
+    request_id: string; url: string; youtube_id: string | null;
+    title: string | null; status: string; rejection_reason: string | null;
+    requested_at: string; user_name: string;
+  }>;
+
+  const recentRejected = db.prepare(`
+    SELECT r.request_id, r.url, r.youtube_id, r.title, r.status,
+           r.rejection_reason, r.requested_at, u.display_name AS user_name
+    FROM requests r
+    JOIN users u ON r.user_id = u.user_id
+    WHERE r.status = 'rejected'
+      AND r.requested_at > datetime('now', '-24 hours')
+    ORDER BY r.requested_at DESC
+    LIMIT 20
+  `).all() as Array<{
+    request_id: string; url: string; youtube_id: string | null;
+    title: string | null; status: string; rejection_reason: string | null;
+    requested_at: string; user_name: string;
+  }>;
+
+  const activeWithJobState = await Promise.all(
+    active.map(async (r) => {
+      let jobState: string | null = null;
+      let progress: number | null = null;
+      try {
+        const job = await downloadQueue.getJob(r.request_id);
+        jobState = job ? await job.getState() : null;
+      } catch { /* Redis unavailable */ }
+      if (r.status === 'downloading') {
+        try {
+          const val = await redis.get(`eddy:progress:${r.request_id}`);
+          progress = val !== null ? parseInt(val, 10) : null;
+        } catch { /* Redis unavailable */ }
+      }
+      return { ...r, jobState, progress };
+    })
+  );
+
+  res.json({ active: activeWithJobState, recentRejected });
+});
+
+// DELETE /requests/:id — hard-delete a request record
+requestsRouter.delete('/:id', async (req: Request, res: Response) => {
+  const requestId = req.params['id'];
+
+  const row = db.prepare(`SELECT status FROM requests WHERE request_id = ?`).get(requestId) as
+    | { status: string } | undefined;
+  if (!row) throw new NotFoundError('request');
+
+  // If still active, cancel queue job first
+  if (['downloading', 'guard_review', 'parent_review', 'pending', 'approved'].includes(row.status)) {
+    try {
+      const job = await downloadQueue.getJob(requestId);
+      await job?.remove();
+    } catch { /* best-effort */ }
+    try { await redis.del(`eddy:progress:${requestId}`); } catch { /* best-effort */ }
+  }
+
+  db.prepare(`DELETE FROM requests WHERE request_id = ?`).run(requestId);
+  logger.info({ requestId }, 'Request deleted');
+  res.status(204).end();
+});
+
 // GET /requests/:id — polled by PWA to check status
 requestsRouter.get('/:id', async (req: Request, res: Response) => {
   const row = db.prepare(
@@ -267,6 +341,41 @@ requestsRouter.delete('/:id/save', (req: Request, res: Response) => {
   db.prepare(
     `UPDATE requests SET saved_at = NULL WHERE request_id = ?`
   ).run(req.params['id']);
+  res.status(204).end();
+});
+
+// POST /requests/:id/cancel — PWA cancels an in-progress download
+requestsRouter.post('/:id/cancel', async (req: Request, res: Response) => {
+  const requestId = req.params['id'];
+
+  const row = db.prepare(
+    `SELECT status FROM requests WHERE request_id = ?`
+  ).get(requestId) as { status: string } | undefined;
+
+  if (!row) throw new NotFoundError('request');
+
+  const cancellable = ['downloading', 'guard_review', 'parent_review', 'pending', 'approved'];
+  if (!cancellable.includes(row.status)) {
+    return res.status(409).json({ error: 'INVALID_STATE', message: `Cannot cancel a request in status '${row.status}'` });
+  }
+
+  // Remove BullMQ job if still queued; ignore errors (job may be active or already gone)
+  try {
+    const job = await downloadQueue.getJob(requestId);
+    await job?.remove();
+  } catch { /* best-effort */ }
+
+  // Clean up progress key
+  try {
+    await redis.del(`eddy:progress:${requestId}`);
+  } catch { /* best-effort */ }
+
+  db.prepare(`
+    UPDATE requests SET status = 'rejected', rejection_reason = 'Cancelled'
+    WHERE request_id = ? AND status IN ('downloading', 'guard_review', 'parent_review', 'pending', 'approved')
+  `).run(requestId);
+
+  logger.info({ requestId }, 'Request cancelled');
   res.status(204).end();
 });
 

@@ -1,0 +1,1877 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Eddy — Phase 2 Mockup</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:ital,opsz,wght@0,8..60,300;0,8..60,400;0,8..60,600;1,8..60,300;1,8..60,400;1,8..60,500&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&display=swap" rel="stylesheet">
+<style>
+/* ══════════════════════════════════════════════════════════════
+   DESIGN TOKENS — Section 16 of brief
+   ══════════════════════════════════════════════════════════════ */
+:root {
+  --text-xs: 11px;  --text-sm: 13px;  --text-base: 15px;  --text-md: 17px;
+  --text-lg: 20px;  --text-xl: 24px;  --text-2xl: 30px;   --text-3xl: 38px;
+
+  --radius-sm: 6px; --radius-md: 12px; --radius-lg: 16px; --radius-xl: 24px;
+
+  --shadow-card: 0 2px 12px rgba(0,0,0,0.06), 0 1px 3px rgba(0,0,0,0.04);
+  --shadow-modal: 0 8px 48px rgba(0,0,0,0.18), 0 4px 12px rgba(0,0,0,0.10);
+
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --duration-fast: 150ms; --duration-normal: 250ms;
+}
+
+.light {
+  --bg-primary: #FAFAF8;   --bg-surface: #FFFFFF;     --bg-elevated: #F5F4F1;
+  --text-primary: #1A1916; --text-secondary: #6B6860; --text-tertiary: #A8A59E;
+  --accent: #3D6B6B;       --accent-subtle: rgba(61,107,107,0.10);
+  --save: #3A7D5A;         --dismiss: #B85450;
+  --border-subtle: rgba(26,25,22,0.08);
+}
+.dark {
+  --bg-primary: #1A1916;   --bg-surface: #242422;     --bg-elevated: #2A2A28;
+  --text-primary: #F0EFE9; --text-secondary: #9A9890; --text-tertiary: #5C5A56;
+  --accent: #4E8A8A;       --accent-subtle: rgba(78,138,138,0.13);
+  --save: #5A9D7A;         --dismiss: #D4706C;
+  --border-subtle: rgba(240,239,233,0.07);
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; -webkit-font-smoothing: antialiased; }
+
+body {
+  min-height: 100vh;
+  background: #D4D0C8;
+  background-image:
+    radial-gradient(ellipse 70% 50% at 15% 20%, rgba(61,107,107,0.08) 0%, transparent 60%),
+    radial-gradient(ellipse 50% 40% at 85% 75%, rgba(61,107,107,0.05) 0%, transparent 60%);
+  font-family: 'DM Sans', sans-serif;
+  padding: 48px 24px 80px;
+}
+
+/* ══════════════════════════════════════════════════════════════
+   PAGE LAYOUT
+   ══════════════════════════════════════════════════════════════ */
+.page-hdr {
+  max-width: 1400px; margin: 0 auto 48px;
+  padding: 0 16px;
+}
+.page-hdr h1 {
+  font-family: 'Source Serif 4', serif;
+  font-size: 34px; font-weight: 400; letter-spacing: -0.02em;
+  color: #1A1916; margin-bottom: 10px;
+}
+.page-hdr .sub {
+  font-size: 13px; color: #6B6860; line-height: 1.5; max-width: 680px;
+  font-weight: 500;
+}
+.section-hdr {
+  max-width: 1400px; margin: 56px auto 28px;
+  padding: 0 16px;
+  display: flex; align-items: baseline; gap: 14px;
+  border-top: 1px solid rgba(0,0,0,0.08); padding-top: 28px;
+}
+.section-hdr:first-of-type { border-top: none; padding-top: 0; margin-top: 0; }
+.section-hdr h2 {
+  font-family: 'Source Serif 4', serif;
+  font-size: 22px; font-weight: 500; letter-spacing: -0.01em;
+  color: #1A1916;
+}
+.section-hdr .note {
+  font-size: 12px; color: #8A8880; font-weight: 500; line-height: 1.5;
+}
+
+.grid {
+  display: flex; flex-wrap: wrap; gap: 56px 40px;
+  max-width: 1400px; margin: 0 auto;
+  justify-content: center;
+}
+
+.ph-wrap { display: flex; flex-direction: column; align-items: center; gap: 14px; }
+.ph-lbl {
+  font-size: 11px; font-weight: 600; letter-spacing: .09em;
+  text-transform: uppercase; color: #5A5850;
+  text-align: center; max-width: 340px;
+}
+.ph-lbl .desc {
+  color: #8A8880; font-weight: 500; letter-spacing: 0.02em;
+  text-transform: none; font-size: 11px; margin-top: 4px; display: block;
+}
+
+/* ══════════════════════════════════════════════════════════════
+   PHONE / TABLET SHELL
+   ══════════════════════════════════════════════════════════════ */
+.phone {
+  width: 375px; height: 812px;
+  border-radius: 52px;
+  position: relative; overflow: hidden; flex-shrink: 0;
+}
+.phone.light {
+  background: var(--bg-primary);
+  box-shadow: 0 0 0 1px rgba(0,0,0,0.13), 0 0 0 8px #1C1C1E,
+              0 0 0 9px rgba(255,255,255,0.07),
+              0 32px 80px rgba(0,0,0,0.25), 0 8px 24px rgba(0,0,0,0.14);
+}
+.phone.dark {
+  background: #1A1916;
+  box-shadow: 0 0 0 1px rgba(255,255,255,0.05), 0 0 0 8px #0e0e0d,
+              0 0 0 9px rgba(255,255,255,0.04),
+              0 32px 80px rgba(0,0,0,0.55), 0 8px 24px rgba(0,0,0,0.36);
+}
+.phone::before {
+  content: ''; position: absolute; left: -11px; top: 120px;
+  width: 4px; height: 34px; border-radius: 3px 0 0 3px;
+}
+.phone.light::before { background: #2a2a2c; box-shadow: 0 48px 0 #2a2a2c, 0 90px 0 #2a2a2c; }
+.phone.dark::before  { background: #181816; box-shadow: 0 48px 0 #181816, 0 90px 0 #181816; }
+.phone::after {
+  content: ''; position: absolute; right: -11px; top: 160px;
+  width: 4px; height: 68px; border-radius: 0 3px 3px 0;
+}
+.phone.light::after { background: #2a2a2c; }
+.phone.dark::after  { background: #181816; }
+
+.screen {
+  width: 100%; height: 100%;
+  border-radius: 52px; overflow: hidden;
+  display: flex; flex-direction: column;
+  position: relative;
+  background: var(--bg-primary);
+}
+
+/* iPad */
+.tablet {
+  width: 720px; height: 960px;
+  border-radius: 36px; overflow: hidden; position: relative; flex-shrink: 0;
+}
+.tablet.light {
+  background: var(--bg-primary);
+  box-shadow: 0 0 0 1px rgba(0,0,0,0.14), 0 0 0 10px #1C1C1E,
+              0 32px 80px rgba(0,0,0,0.22), 0 8px 24px rgba(0,0,0,0.14);
+}
+.tablet.dark {
+  background: #1A1916;
+  box-shadow: 0 0 0 1px rgba(255,255,255,0.05), 0 0 0 10px #0e0e0d,
+              0 32px 80px rgba(0,0,0,0.55), 0 8px 24px rgba(0,0,0,0.36);
+}
+.tablet .screen {
+  border-radius: 26px; background: var(--bg-primary);
+}
+
+/* ══════════════════════════════════════════════════════════════
+   STATUS BAR
+   ══════════════════════════════════════════════════════════════ */
+.status-bar {
+  flex-shrink: 0; height: 50px;
+  display: flex; align-items: flex-end;
+  padding: 0 28px 8px; justify-content: space-between;
+  position: relative; z-index: 10;
+  background: var(--bg-primary);
+}
+.s-time { font-size: 15px; font-weight: 600; letter-spacing: -0.01em; color: var(--text-primary); }
+.d-island {
+  position: absolute; top: 12px; left: 50%; transform: translateX(-50%);
+  width: 120px; height: 34px; background: #000; border-radius: 20px;
+}
+.s-icons svg rect, .s-icons svg path { fill: var(--text-primary); stroke: var(--text-primary); }
+
+/* Tablet status bar */
+.tablet .status-bar {
+  height: 36px; padding: 0 32px 8px;
+}
+.tablet .d-island { display: none; }
+.tablet .s-time { font-size: 13px; }
+
+/* ══════════════════════════════════════════════════════════════
+   APP HEADER
+   ══════════════════════════════════════════════════════════════ */
+.app-hdr {
+  flex-shrink: 0; padding: 6px 22px 0;
+  background: var(--bg-primary);
+  border-bottom: 1px solid var(--border-subtle);
+}
+.hdr-row { display: flex; align-items: center; justify-content: space-between; padding-bottom: 13px; }
+.logomark { display: flex; align-items: flex-end; gap: 6px; line-height: 1; }
+.wm {
+  font-family: 'Source Serif 4', serif;
+  font-size: 26px; font-weight: 400; letter-spacing: -0.01em; line-height: 1;
+  color: var(--text-primary);
+}
+.pav { image-rendering: pixelated; image-rendering: crisp-edges; border-radius: 7px; flex-shrink: 0; }
+
+.hdr-right { display: flex; align-items: center; gap: 10px; }
+.hdr-btn {
+  width: 34px; height: 34px; border-radius: 50%;
+  background: transparent; border: none; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--text-secondary);
+}
+.hdr-btn:hover { background: var(--accent-subtle); }
+.hdr-btn.active { background: var(--accent-subtle); color: var(--accent); }
+
+.tablet .app-hdr { padding: 10px 32px 0; }
+.tablet .hdr-row { padding-bottom: 16px; }
+.tablet .wm { font-size: 30px; }
+
+/* ══════════════════════════════════════════════════════════════
+   TOPIC FILTER BAR
+   ══════════════════════════════════════════════════════════════ */
+.topic-bar {
+  flex-shrink: 0;
+  padding: 12px 18px;
+  background: var(--bg-primary);
+  border-bottom: 1px solid var(--border-subtle);
+  overflow-x: auto; scrollbar-width: none;
+  display: flex; gap: 7px; align-items: center;
+}
+.topic-bar::-webkit-scrollbar { display: none; }
+.tp-chip {
+  flex-shrink: 0;
+  font-size: 12px; font-weight: 500; letter-spacing: 0.01em;
+  padding: 7px 13px; border-radius: 20px;
+  background: transparent; color: var(--text-secondary);
+  border: 1px solid var(--border-subtle);
+  cursor: pointer; white-space: nowrap;
+  transition: all var(--duration-fast) ease-out;
+}
+.tp-chip:hover { border-color: var(--accent); color: var(--accent); }
+.tp-chip.active {
+  background: var(--accent); color: #fff; border-color: var(--accent);
+  font-weight: 600;
+}
+.dark .tp-chip.active { color: #1A1916; }
+
+.tablet .topic-bar { padding: 14px 32px; gap: 8px; }
+
+/* ══════════════════════════════════════════════════════════════
+   FEED SCROLL
+   ══════════════════════════════════════════════════════════════ */
+.feed {
+  flex: 1; overflow-y: auto; overflow-x: hidden;
+  -webkit-overflow-scrolling: touch; scrollbar-width: none;
+  padding-bottom: 100px;
+  background: var(--bg-primary);
+}
+.feed::-webkit-scrollbar { display: none; }
+
+/* Day label */
+.day-lbl {
+  padding: 22px 20px 14px;
+  display: flex; align-items: baseline; gap: 10px;
+}
+.day-main {
+  font-size: 11px; font-weight: 600; letter-spacing: 0.09em;
+  text-transform: uppercase; color: var(--text-primary);
+}
+.day-date {
+  font-size: 11px; font-weight: 500; letter-spacing: 0.02em;
+  color: var(--text-tertiary);
+}
+.day-count {
+  margin-left: auto; font-size: 11px; font-weight: 500;
+  color: var(--text-tertiary); letter-spacing: 0.02em;
+}
+
+.div-row {
+  margin: 4px 20px 16px; border: none; height: 1px;
+  background: var(--border-subtle);
+}
+
+.tablet .day-lbl { padding: 28px 32px 16px; }
+
+/* ══════════════════════════════════════════════════════════════
+   CARD — base
+   ══════════════════════════════════════════════════════════════ */
+.card {
+  margin: 0 16px 14px;
+  border-radius: 16px; overflow: hidden;
+  cursor: pointer; position: relative;
+  transition: transform 80ms var(--ease-spring);
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-card);
+  border: 1px solid var(--border-subtle);
+}
+.card:active { transform: scale(0.97); }
+.dark .card { box-shadow: 0 2px 16px rgba(0,0,0,0.32), 0 1px 4px rgba(0,0,0,0.22); }
+
+/* Thumbnail */
+.thumb {
+  width: 100%; aspect-ratio: 16/9;
+  position: relative; overflow: hidden; display: block;
+  background: var(--bg-elevated);
+}
+.thumb svg { width: 100%; height: 100%; display: block; }
+.t-badge {
+  position: absolute; top: 9px; left: 9px;
+  font-size: 9px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+  color: rgba(255,255,255,0.92); background: rgba(0,0,0,0.48);
+  backdrop-filter: blur(6px); padding: 3px 7px; border-radius: 5px;
+}
+.t-dur {
+  position: absolute; bottom: 8px; right: 8px;
+  font-size: 10px; font-weight: 700; color: #fff;
+  background: rgba(0,0,0,0.74); padding: 2px 6px; border-radius: 4px;
+}
+.t-btns {
+  position: absolute; top: 9px; right: 9px;
+  display: flex; gap: 5px; z-index: 5;
+}
+.t-btn {
+  width: 30px; height: 30px; border-radius: 50%;
+  backdrop-filter: blur(6px); border: none; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  transition: transform var(--duration-fast) var(--ease-spring);
+}
+.t-btn:hover { transform: scale(1.08); }
+.light .t-btn { background: rgba(255,255,255,0.9); color: #6B6860; }
+.dark .t-btn  { background: rgba(28,28,26,0.85); color: #9A9890;
+                border: 1px solid rgba(255,255,255,0.1); }
+.t-btn.saved { background: var(--save); color: #fff; }
+.t-btn svg { display: block; }
+
+/* Card body */
+.c-body { padding: 13px 14px 15px; }
+
+.c-meta {
+  display: flex; align-items: center; gap: 6px;
+  margin-bottom: 8px; flex-wrap: wrap;
+}
+.c-pill {
+  font-size: 9.5px; font-weight: 600; letter-spacing: 0.07em;
+  text-transform: uppercase;
+  padding: 2px 7px; border-radius: 20px;
+  color: var(--accent); background: var(--accent-subtle);
+}
+.c-dot { font-size: 9px; color: var(--text-tertiary); }
+.c-src { font-size: 11px; font-weight: 500; color: var(--text-tertiary); }
+
+.c-title {
+  font-family: 'Source Serif 4', serif;
+  font-size: 18px; font-weight: 600;
+  line-height: 1.3; letter-spacing: -0.01em; margin-bottom: 7px;
+  color: var(--text-primary);
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+
+.c-hook {
+  font-family: 'Source Serif 4', serif;
+  font-size: 15px; font-style: italic; font-weight: 400;
+  line-height: 1.5; margin-bottom: 11px;
+  color: var(--text-secondary);
+}
+
+.c-foot {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 8px;
+}
+.c-time {
+  font-size: 11px; font-weight: 500;
+  color: var(--text-tertiary);
+}
+
+/* Dimmed variants for past-day / recycled / gone */
+.c-title.dim, .c-hook.dim { color: var(--text-tertiary); }
+.c-title.dim { color: var(--text-secondary); }
+
+/* ══════════════════════════════════════════════════════════════
+   CARD STATE — RECYCLED
+   file gone from disk, record stays. Dimmed thumb + restore CTA.
+   ══════════════════════════════════════════════════════════════ */
+.card.recycled .thumb svg { filter: grayscale(1) opacity(0.4); }
+.card.recycled .thumb::before {
+  content: ''; position: absolute; inset: 0;
+  background: linear-gradient(180deg, rgba(0,0,0,0) 0%, rgba(0,0,0,0.18) 60%, rgba(0,0,0,0.42) 100%);
+  pointer-events: none;
+}
+.rc-panel {
+  position: absolute; inset: auto 0 0 0;
+  padding: 10px 12px;
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  z-index: 2;
+}
+.rc-label {
+  font-size: 10px; font-weight: 600; color: rgba(255,255,255,0.9);
+  letter-spacing: 0.04em; display: flex; align-items: center; gap: 5px;
+  background: rgba(0,0,0,0.5); backdrop-filter: blur(6px);
+  padding: 4px 8px; border-radius: 14px;
+}
+.rc-restore {
+  font-size: 11px; font-weight: 600; color: #fff;
+  background: var(--accent); border: none; padding: 6px 12px;
+  border-radius: 14px; cursor: pointer;
+  display: flex; align-items: center; gap: 5px;
+  backdrop-filter: blur(6px);
+}
+.rc-restore:hover { filter: brightness(1.08); }
+.dark .rc-restore { color: #1A1916; }
+
+/* ══════════════════════════════════════════════════════════════
+   CARD STATE — GONE
+   YouTube removed. Heavy dim, locked, no restore.
+   ══════════════════════════════════════════════════════════════ */
+.card.gone { opacity: 0.72; }
+.card.gone .thumb svg { filter: grayscale(1) opacity(0.2); }
+.card.gone .thumb::after {
+  content: ''; position: absolute; inset: 0;
+  background: rgba(10,10,10,0.52);
+  pointer-events: none;
+}
+.gn-center {
+  position: absolute; inset: 0;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 8px; z-index: 2; color: rgba(255,255,255,0.88);
+}
+.gn-center svg { stroke: rgba(255,255,255,0.75); }
+.gn-label {
+  font-size: 10px; font-weight: 600; letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.card.gone .c-title, .card.gone .c-hook { color: var(--text-tertiary); }
+.card.gone .t-btns { display: none; }
+.card.gone .t-dur { display: none; }
+
+/* ══════════════════════════════════════════════════════════════
+   WATCHED OVERLAY — additive across any state
+   ══════════════════════════════════════════════════════════════ */
+.w-overlay {
+  position: absolute; inset: 0;
+  background: rgba(0,0,0,0.28);
+  display: flex; align-items: center; justify-content: center;
+  pointer-events: none;
+}
+.w-check {
+  width: 36px; height: 36px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(61,107,107,0.82);
+}
+.dark .w-check { background: rgba(78,138,138,0.82); }
+.w-badge {
+  position: absolute; top: 8px; left: 8px;
+  font-size: 10px; font-weight: 600; color: #fff;
+  padding: 3px 8px; border-radius: 20px;
+  background: rgba(61,107,107,0.88);
+  backdrop-filter: blur(4px);
+}
+.dark .w-badge { background: rgba(78,138,138,0.85); }
+.w-bar {
+  position: absolute; bottom: 0; left: 0; right: 0; height: 3px;
+  background: rgba(255,255,255,0.14);
+}
+.w-fill { height: 100%; background: var(--accent); }
+
+/* ══════════════════════════════════════════════════════════════
+   SAVED TAB — reverse-chron list by save date
+   ══════════════════════════════════════════════════════════════ */
+.saved-hdr {
+  padding: 10px 22px 4px;
+  display: flex; align-items: baseline; justify-content: space-between;
+  background: var(--bg-primary);
+}
+.saved-title {
+  font-family: 'Source Serif 4', serif;
+  font-size: 26px; font-weight: 400; letter-spacing: -0.01em;
+  color: var(--text-primary);
+}
+.saved-count {
+  font-size: 11px; font-weight: 500; color: var(--text-tertiary);
+  letter-spacing: 0.02em;
+}
+.saved-sub {
+  padding: 0 22px 14px;
+  font-size: 12px; color: var(--text-tertiary);
+  font-style: italic; font-family: 'Source Serif 4', serif;
+  background: var(--bg-primary);
+  border-bottom: 1px solid var(--border-subtle);
+  margin-bottom: 4px;
+}
+.saved-grp {
+  padding: 16px 20px 6px;
+  font-size: 10px; font-weight: 600; letter-spacing: 0.1em;
+  text-transform: uppercase; color: var(--text-tertiary);
+}
+
+/* ══════════════════════════════════════════════════════════════
+   BOTTOM NAV — Feed + Saved only (Phase 2)
+   ══════════════════════════════════════════════════════════════ */
+.b-nav {
+  position: absolute; bottom: 0; left: 0; right: 0;
+  height: 84px;
+  backdrop-filter: blur(22px); -webkit-backdrop-filter: blur(22px);
+  border-top: 1px solid var(--border-subtle);
+  display: flex; align-items: flex-start; padding-top: 10px;
+  z-index: 20;
+}
+.light .b-nav { background: rgba(250,250,248,0.92); }
+.dark  .b-nav { background: rgba(26,25,22,0.92); }
+
+.n-item {
+  flex: 1; display: flex; flex-direction: column; align-items: center; gap: 4px;
+  cursor: pointer; padding-top: 6px;
+}
+.n-icon {
+  width: 26px; height: 26px;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--text-tertiary);
+}
+.n-lbl {
+  font-size: 10px; font-weight: 500; color: var(--text-tertiary);
+  letter-spacing: 0.02em;
+}
+.n-item.on .n-icon { color: var(--accent); }
+.n-item.on .n-lbl { color: var(--accent); font-weight: 600; }
+
+/* ══════════════════════════════════════════════════════════════
+   INLINE PLAYER (full-screen state)
+   ══════════════════════════════════════════════════════════════ */
+.player {
+  position: absolute; inset: 0; z-index: 40;
+  background: #000;
+  display: flex; flex-direction: column;
+}
+.player-video {
+  flex: 1; position: relative;
+  display: flex; align-items: center; justify-content: center;
+  overflow: hidden;
+}
+.player-video svg {
+  width: 100%; height: 100%;
+  object-fit: cover;
+}
+.player-chrome {
+  position: absolute; top: 0; left: 0; right: 0;
+  padding: 50px 18px 18px;
+  background: linear-gradient(180deg, rgba(0,0,0,0.68) 0%, rgba(0,0,0,0) 100%);
+  display: flex; align-items: flex-start; justify-content: space-between;
+  gap: 10px;
+}
+.player-close {
+  width: 36px; height: 36px; border-radius: 50%;
+  background: rgba(0,0,0,0.5); backdrop-filter: blur(10px);
+  border: none; color: #fff; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+}
+.player-meta {
+  flex: 1;
+  color: #fff;
+}
+.player-meta .c-src {
+  color: rgba(255,255,255,0.7); font-size: 11px; font-weight: 500;
+  margin-bottom: 3px;
+}
+.player-meta .c-title {
+  font-family: 'Source Serif 4', serif;
+  font-size: 16px; color: #fff; margin-bottom: 0;
+  line-height: 1.3;
+  -webkit-line-clamp: 1;
+}
+.player-controls {
+  padding: 14px 18px 30px;
+  background: linear-gradient(0deg, rgba(0,0,0,0.78) 0%, rgba(0,0,0,0) 100%);
+  position: absolute; bottom: 0; left: 0; right: 0;
+}
+.p-scrub {
+  height: 3px; background: rgba(255,255,255,0.22);
+  border-radius: 2px; position: relative; margin-bottom: 10px;
+}
+.p-scrub-fill {
+  position: absolute; inset: 0 60% 0 0;
+  background: #fff; border-radius: 2px;
+}
+.p-scrub-knob {
+  position: absolute; left: 40%; top: 50%;
+  transform: translate(-50%, -50%);
+  width: 12px; height: 12px; border-radius: 50%;
+  background: #fff;
+}
+.p-row {
+  display: flex; align-items: center; justify-content: space-between;
+  color: rgba(255,255,255,0.85);
+}
+.p-row .times {
+  display: flex; gap: 12px; font-size: 11px; font-variant-numeric: tabular-nums;
+  font-weight: 500;
+}
+.p-row .actions {
+  display: flex; gap: 16px;
+}
+.p-btn {
+  background: transparent; border: none; color: #fff; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+}
+.p-btn.big {
+  width: 48px; height: 48px; border-radius: 50%;
+  background: rgba(255,255,255,0.16); backdrop-filter: blur(10px);
+}
+.p-hook {
+  position: absolute; bottom: 100px; left: 18px; right: 18px;
+  font-family: 'Source Serif 4', serif;
+  font-style: italic; font-size: 13px; line-height: 1.5;
+  color: rgba(255,255,255,0.82);
+}
+</style>
+</head>
+<body>
+
+<div class="page-hdr">
+  <h1>Eddy — Phase 2</h1>
+  <p class="sub">
+    Timeline. Three file states. Saved tab. Topic filter. Inline player. iPad layout. Light + dark.
+    No channels, no subscriptions, no search, no discovery, no guard — those are later phases.
+  </p>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════
+     SECTION 1 — TIMELINE (the core surface)
+     Every card ever added, reverse-chron, day-grouped.
+     All three card states visible: live, recycled, gone. Plus watched.
+     ═══════════════════════════════════════════════════════════════ -->
+<div class="section-hdr">
+  <h2>Timeline</h2>
+  <span class="note">Forever timeline, reverse-chronological by added date. Watched state is an overlay on any file state.</span>
+</div>
+
+<div class="grid">
+
+<!-- ──────────────────────────────────────────────
+     TIMELINE — LIGHT
+     ────────────────────────────────────────────── -->
+<div class="ph-wrap">
+<div class="phone light">
+<div class="screen">
+
+  <div class="status-bar">
+    <span class="s-time">9:41</span>
+    <div class="d-island"></div>
+    <div class="s-icons" style="display:flex;align-items:center;gap:5px">
+      <svg width="17" height="12" viewBox="0 0 17 12"><rect x="0" y="7" width="3" height="5" rx="1"/><rect x="4.5" y="5" width="3" height="7" rx="1"/><rect x="9" y="2.5" width="3" height="9.5" rx="1"/><rect x="13.5" y="0" width="3" height="12" rx="1"/></svg>
+      <svg width="25" height="12" viewBox="0 0 25 12" fill="none"><rect x="0.5" y="0.5" width="21" height="11" rx="3.5" stroke-opacity="0.35"/><rect x="2" y="2" width="16" height="8" rx="2"/></svg>
+    </div>
+  </div>
+
+  <div class="app-hdr">
+    <div class="hdr-row">
+      <div class="logomark">
+        <svg width="20" height="22" viewBox="4 7 40 33" fill="none" style="flex-shrink:0">
+          <path d="M 40 23 C 40 11,29 5,18 8 C 8 11,4 21,7 30 C 10 39,21 44,31 41 C 39 38,43 29,40 22 C 37 16,28 13,21 17 C 15 21,14 29,18 34 C 21 37,28 37,32 32" stroke="#3D6B6B" stroke-width="2.6" stroke-linecap="round" fill="none"/>
+        </svg>
+        <span class="wm">eddy</span>
+      </div>
+      <svg width="34" height="34" viewBox="0 0 16 16" shape-rendering="crispEdges" class="pav">
+        <rect width="16" height="16" fill="#281408"/>
+        <rect x="2" y="2" width="12" height="11" fill="#C8845A"/>
+        <rect x="2" y="2" width="12" height="2" fill="#3A2210"/><rect x="2" y="4" width="2" height="2" fill="#3A2210"/><rect x="12" y="4" width="2" height="2" fill="#3A2210"/>
+        <rect x="4" y="6" width="2" height="2" fill="#180E08"/><rect x="10" y="6" width="2" height="2" fill="#180E08"/>
+        <rect x="4" y="6" width="1" height="1" fill="#fff"/><rect x="10" y="6" width="1" height="1" fill="#fff"/>
+        <rect x="7" y="8" width="2" height="1" fill="#A06438"/>
+        <rect x="5" y="10" width="2" height="1" fill="#3A2210"/><rect x="9" y="10" width="2" height="1" fill="#3A2210"/><rect x="6" y="11" width="4" height="1" fill="#3A2210"/>
+        <rect x="1" y="6" width="1" height="3" fill="#C8845A"/><rect x="14" y="6" width="1" height="3" fill="#C8845A"/>
+        <rect x="5" y="13" width="6" height="2" fill="#C8845A"/>
+        <rect x="3" y="15" width="10" height="1" fill="#3D6B6B"/>
+      </svg>
+    </div>
+  </div>
+
+  <!-- Topic filter bar (collapsed, "All" selected) -->
+  <div class="topic-bar">
+    <button class="tp-chip active">All</button>
+    <button class="tp-chip">Minecraft</button>
+    <button class="tp-chip">Science</button>
+    <button class="tp-chip">Football</button>
+    <button class="tp-chip">Space</button>
+    <button class="tp-chip">Music</button>
+  </div>
+
+  <div class="feed">
+
+    <!-- TODAY -->
+    <div class="day-lbl">
+      <span class="day-main">Today</span>
+      <span class="day-date">Wed 16 Apr</span>
+      <span class="day-count">2 requests</span>
+    </div>
+
+    <!-- LIVE — playable right now -->
+    <div class="card">
+      <div class="thumb">
+        <svg viewBox="0 0 343 193" xmlns="http://www.w3.org/2000/svg">
+          <defs><radialGradient id="tl1" cx="50%" cy="50%" r="70%"><stop offset="0%" stop-color="#FFAA00"/><stop offset="100%" stop-color="#FF4400"/></radialGradient></defs>
+          <rect width="343" height="193" fill="url(#tl1)"/>
+          <line x1="210" y1="96" x2="343" y2="0" stroke="#FF7700" stroke-width="18" opacity="0.35"/>
+          <line x1="210" y1="96" x2="343" y2="193" stroke="#FF5500" stroke-width="20" opacity="0.3"/>
+          <rect x="0" y="140" width="343" height="53" fill="#88CCFF" opacity="0.4"/>
+          <rect x="0"  y="153" width="28" height="28" fill="#B0E8FF" opacity="0.65"/>
+          <rect x="28" y="153" width="28" height="28" fill="#C8F0FF" opacity="0.65"/>
+          <rect x="56" y="153" width="28" height="28" fill="#B0E8FF" opacity="0.65"/>
+          <rect x="84" y="153" width="28" height="28" fill="#C8F0FF" opacity="0.65"/>
+          <ellipse cx="252" cy="90" rx="76" ry="80" fill="#F4B880"/>
+          <path d="M180 55 C185 30, 210 18, 252 18 C294 18, 318 30, 325 55 L325 70 C310 50, 290 42, 252 44 C214 42, 194 50, 180 70Z" fill="#1A0C04"/>
+          <ellipse cx="178" cy="90" rx="13" ry="18" fill="#F4B880"/>
+          <ellipse cx="326" cy="90" rx="13" ry="18" fill="#F4B880"/>
+          <ellipse cx="224" cy="82" rx="24" ry="26" fill="#fff"/>
+          <ellipse cx="280" cy="82" rx="24" ry="26" fill="#fff"/>
+          <ellipse cx="226" cy="84" rx="15" ry="17" fill="#3A2010"/>
+          <ellipse cx="278" cy="84" rx="15" ry="17" fill="#3A2010"/>
+          <ellipse cx="228" cy="86" rx="10" ry="11" fill="#0a0604"/>
+          <ellipse cx="276" cy="86" rx="10" ry="11" fill="#0a0604"/>
+          <path d="M203 52 Q224 40 244 49" stroke="#1A0C04" stroke-width="5" stroke-linecap="round" fill="none"/>
+          <path d="M260 49 Q280 40 300 52" stroke="#1A0C04" stroke-width="5" stroke-linecap="round" fill="none"/>
+          <ellipse cx="252" cy="100" rx="11" ry="9" fill="#E0955A"/>
+          <ellipse cx="252" cy="130" rx="26" ry="28" fill="#1A0604"/>
+          <text x="10" y="100" font-family="Arial Black, sans-serif" font-size="86" font-weight="900" fill="none" stroke="#000" stroke-width="8">100</text>
+          <text x="10" y="100" font-family="Arial Black, sans-serif" font-size="86" font-weight="900" fill="#fff">100</text>
+          <rect x="0" y="108" width="185" height="40" fill="#CC0000"/>
+          <text x="10" y="138" font-family="Arial Black, sans-serif" font-size="30" font-weight="900" fill="#fff">DAYS</text>
+          <rect x="0" y="173" width="343" height="20" fill="rgba(0,0,0,0.65)"/>
+          <text x="8" y="186" font-family="DM Sans, sans-serif" font-size="11" font-weight="700" fill="rgba(255,255,255,0.9)">SB737</text>
+          <text x="50" y="186" font-family="DM Sans, sans-serif" font-size="10" fill="rgba(255,255,255,0.48)">4.55M subscribers</text>
+        </svg>
+        <span class="t-badge">Video</span>
+        <span class="t-dur">34:12</span>
+        <div class="t-btns">
+          <button class="t-btn" aria-label="Save">
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 2h8a1 1 0 011 1v10l-5-3-5 3V3a1 1 0 011-1z"/></svg>
+          </button>
+          <button class="t-btn" aria-label="Dismiss">
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 3l6 6M9 3l-6 6"/></svg>
+          </button>
+        </div>
+      </div>
+      <div class="c-body">
+        <div class="c-meta">
+          <span class="c-pill">Minecraft</span>
+          <span class="c-dot">·</span>
+          <span class="c-src">SB737</span>
+        </div>
+        <h2 class="c-title">I Spent 100 Days in a Diamond Only World in Hardcore Minecraft</h2>
+        <p class="c-hook">34 minutes of scarcity-survival — the day-60 collapse is where it gets genuinely tense.</p>
+        <div class="c-foot">
+          <span class="c-time">34 min · added 1h ago</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- LIVE + SAVED (bookmark filled) — shows the Save action state -->
+    <div class="card">
+      <div class="thumb">
+        <svg viewBox="0 0 343 193" xmlns="http://www.w3.org/2000/svg">
+          <defs><linearGradient id="tl2" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#FFD700"/><stop offset="100%" stop-color="#E8A000"/></linearGradient></defs>
+          <rect width="343" height="193" fill="url(#tl2)"/>
+          <circle cx="300" cy="30" r="80" fill="#FFF5D0" opacity="0.4"/>
+          <rect x="0" y="0" width="205" height="38" fill="#FFD700"/>
+          <rect x="0" y="0" width="205" height="38" fill="none" stroke="#000" stroke-width="3"/>
+          <text x="10" y="26" font-family="Arial Black, sans-serif" font-size="18" font-weight="900" fill="#000">REDSTONE MEGA-BUILD</text>
+          <rect x="0" y="38" width="205" height="32" fill="rgba(0,0,0,0.78)"/>
+          <text x="10" y="60" font-family="Arial Black, sans-serif" font-size="16" font-weight="900" fill="#FFD700">EP 7</text>
+          <ellipse cx="255" cy="108" rx="70" ry="76" fill="#E8B080"/>
+          <path d="M192 70 C196 44, 220 30, 255 30 C290 30, 314 44, 318 70 L318 84 C302 66, 280 58, 255 60 C230 58, 208 66, 192 84Z" fill="#3A2010"/>
+          <ellipse cx="232" cy="96" rx="18" ry="20" fill="#fff"/>
+          <ellipse cx="278" cy="96" rx="18" ry="20" fill="#fff"/>
+          <ellipse cx="234" cy="98" rx="10" ry="11" fill="#2A1508"/>
+          <ellipse cx="276" cy="98" rx="10" ry="11" fill="#2A1508"/>
+          <path d="M210 78 Q232 68 254 76" stroke="#3A2010" stroke-width="4" fill="none" stroke-linecap="round"/>
+          <path d="M256 76 Q278 68 300 78" stroke="#3A2010" stroke-width="4" fill="none" stroke-linecap="round"/>
+          <path d="M228 138 Q255 148 282 138" stroke="#3A2010" stroke-width="3" fill="none" stroke-linecap="round"/>
+          <rect x="0" y="173" width="343" height="20" fill="rgba(0,0,0,0.65)"/>
+          <text x="8" y="186" font-family="DM Sans, sans-serif" font-size="11" font-weight="700" fill="rgba(255,255,255,0.9)">MUMBO JUMBO</text>
+          <text x="105" y="186" font-family="DM Sans, sans-serif" font-size="10" fill="rgba(255,255,255,0.48)">9.76M subscribers</text>
+        </svg>
+        <span class="t-badge">Video</span>
+        <span class="t-dur">26:14</span>
+        <div class="t-btns">
+          <button class="t-btn saved" aria-label="Saved">
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor"><path d="M3 2h8a1 1 0 011 1v10l-5-3-5 3V3a1 1 0 011-1z"/></svg>
+          </button>
+          <button class="t-btn" aria-label="Dismiss">
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 3l6 6M9 3l-6 6"/></svg>
+          </button>
+        </div>
+      </div>
+      <div class="c-body">
+        <div class="c-meta">
+          <span class="c-pill">Minecraft</span>
+          <span class="c-dot">·</span>
+          <span class="c-src">Mumbo Jumbo</span>
+        </div>
+        <h2 class="c-title">The Only Redstone Tutorial You'll Ever Need</h2>
+        <p class="c-hook">Covers the timing gates you kept rewinding last week.</p>
+        <div class="c-foot">
+          <span class="c-time">26 min · added 3h ago</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- YESTERDAY -->
+    <hr class="div-row">
+    <div class="day-lbl">
+      <span class="day-main">Yesterday</span>
+      <span class="day-date">Tue 15 Apr</span>
+    </div>
+
+    <!-- LIVE + WATCHED — watched overlay on a live card -->
+    <div class="card">
+      <div class="thumb">
+        <svg viewBox="0 0 343 193" xmlns="http://www.w3.org/2000/svg">
+          <defs><linearGradient id="tl3" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#00AAFF"/><stop offset="60%" stop-color="#0044CC"/><stop offset="100%" stop-color="#001888"/></linearGradient></defs>
+          <rect width="343" height="193" fill="url(#tl3)"/>
+          <polygon points="50,30 62,15 74,30 62,45" fill="#88EEFF" opacity="0.6"/>
+          <polygon points="90,60 98,50 106,60 98,70" fill="#AAEEFF" opacity="0.5"/>
+          <polygon points="30,90 38,80 46,90 38,100" fill="#88EEFF" opacity="0.45"/>
+          <polygon points="130,25 140,12 150,25 140,38" fill="#CCFFFF" opacity="0.55"/>
+          <ellipse cx="258" cy="93" rx="74" ry="78" fill="#EAB070"/>
+          <path d="M188 54 C193 28, 214 14, 258 14 C302 14, 323 28, 328 54 L328 70 C312 50, 288 42, 258 44 C228 42, 204 50, 188 70Z" fill="#1A0C04"/>
+          <ellipse cx="230" cy="82" rx="23" ry="25" fill="#fff"/>
+          <ellipse cx="286" cy="82" rx="23" ry="25" fill="#fff"/>
+          <ellipse cx="232" cy="85" rx="14" ry="16" fill="#2A1808"/>
+          <ellipse cx="284" cy="85" rx="14" ry="16" fill="#2A1808"/>
+          <ellipse cx="258" cy="130" rx="22" ry="24" fill="#1A0604"/>
+          <text x="10" y="98" font-family="Arial Black, sans-serif" font-size="82" font-weight="900" fill="none" stroke="#003399" stroke-width="10">100</text>
+          <text x="10" y="98" font-family="Arial Black, sans-serif" font-size="82" font-weight="900" fill="#fff">100</text>
+          <rect x="0" y="104" width="172" height="42" fill="#003399"/>
+          <text x="8" y="136" font-family="Arial Black, sans-serif" font-size="30" font-weight="900" fill="#88EEFF">DAYS</text>
+          <rect x="0" y="173" width="343" height="20" fill="rgba(0,0,0,0.65)"/>
+          <text x="8" y="186" font-family="DM Sans, sans-serif" font-size="11" font-weight="700" fill="rgba(255,255,255,0.9)">SB737</text>
+        </svg>
+        <div class="w-overlay">
+          <div class="w-check">
+            <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><polyline points="4,9 7.5,13 14,5.5" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </div>
+        </div>
+        <div class="w-badge">Watched 18h ago</div>
+        <div class="w-bar"><div class="w-fill" style="width:100%"></div></div>
+      </div>
+      <div class="c-body">
+        <div class="c-meta">
+          <span class="c-pill">Minecraft</span>
+          <span class="c-dot">·</span>
+          <span class="c-src">SB737</span>
+        </div>
+        <h2 class="c-title dim">I Spent 100 Days in a Diamond Only World</h2>
+        <p class="c-hook dim">The diamond scarcity at day 60 is where this goes from silly to genuinely tense.</p>
+        <div class="c-foot">
+          <span class="c-time">34 min · watched Tue morning</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- TWO DAYS AGO -->
+    <hr class="div-row">
+    <div class="day-lbl">
+      <span class="day-main">Mon 14 Apr</span>
+    </div>
+
+    <!-- RECYCLED — file off disk, record remains, restore CTA -->
+    <div class="card recycled">
+      <div class="thumb">
+        <svg viewBox="0 0 343 193" xmlns="http://www.w3.org/2000/svg">
+          <defs><linearGradient id="tl4" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stop-color="#00AA44"/><stop offset="100%" stop-color="#004422"/></linearGradient></defs>
+          <rect width="343" height="193" fill="url(#tl4)"/>
+          <rect x="20" y="28" width="110" height="110" fill="#44BB44"/>
+          <rect x="38" y="52" width="28" height="28" fill="#000"/>
+          <rect x="82" y="52" width="28" height="28" fill="#000"/>
+          <rect x="48" y="92" width="12" height="28" fill="#000"/>
+          <rect x="60" y="104" width="28" height="16" fill="#000"/>
+          <rect x="88" y="92" width="12" height="28" fill="#000"/>
+          <ellipse cx="255" cy="90" rx="72" ry="76" fill="#F0C090"/>
+          <rect x="0" y="173" width="343" height="20" fill="rgba(0,0,0,0.65)"/>
+          <text x="8" y="186" font-family="DM Sans, sans-serif" font-size="11" font-weight="700" fill="rgba(255,255,255,0.9)">Dream</text>
+        </svg>
+        <span class="t-badge">Video</span>
+        <div class="rc-panel">
+          <span class="rc-label">
+            <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M2 5a3 3 0 016 0M5 8V5"/><circle cx="5" cy="8.5" r="0.7" fill="currentColor"/></svg>
+            Recycled
+          </span>
+          <button class="rc-restore">
+            <svg width="11" height="11" viewBox="0 0 11 11" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M1.5 5.5a4 4 0 118 0M9.5 3v2.5H7"/></svg>
+            Restore
+          </button>
+        </div>
+      </div>
+      <div class="c-body">
+        <div class="c-meta">
+          <span class="c-pill">Minecraft</span>
+          <span class="c-dot">·</span>
+          <span class="c-src">Dream</span>
+        </div>
+        <h2 class="c-title dim">Minecraft Manhunt Extra Scenes</h2>
+        <p class="c-hook dim">Sent by Alex · file cleaned up to save space.</p>
+        <div class="c-foot">
+          <span class="c-time">24 min · added 2 days ago</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- GONE — YouTube removed, no restore -->
+    <div class="card gone">
+      <div class="thumb">
+        <svg viewBox="0 0 343 193" xmlns="http://www.w3.org/2000/svg">
+          <defs><linearGradient id="tl5" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#AA2222"/><stop offset="100%" stop-color="#551111"/></linearGradient></defs>
+          <rect width="343" height="193" fill="url(#tl5)"/>
+          <ellipse cx="180" cy="96" rx="80" ry="60" fill="#FF4444" opacity="0.3"/>
+          <text x="30" y="120" font-family="Arial Black, sans-serif" font-size="42" font-weight="900" fill="#fff" opacity="0.7">OMG</text>
+        </svg>
+        <span class="t-badge">Video</span>
+        <div class="gn-center">
+          <svg width="22" height="22" viewBox="0 0 22 22" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="M5 5l12 12"/></svg>
+          <span class="gn-label">No longer available</span>
+        </div>
+      </div>
+      <div class="c-body">
+        <div class="c-meta">
+          <span class="c-pill">Minecraft</span>
+          <span class="c-dot">·</span>
+          <span class="c-src">Unknown channel</span>
+        </div>
+        <h2 class="c-title">OMG THIS IS INSANE (MUST WATCH)</h2>
+        <p class="c-hook">Removed from YouTube since you added it.</p>
+        <div class="c-foot">
+          <span class="c-time">added 2 days ago</span>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Bottom nav — Feed + Saved only -->
+  <div class="b-nav">
+    <div class="n-item on">
+      <div class="n-icon">
+        <svg width="22" height="22" viewBox="0 0 22 22" fill="none"><rect x="3" y="4" width="16" height="3" rx="1" fill="currentColor"/><rect x="3" y="10" width="16" height="3" rx="1" fill="currentColor"/><rect x="3" y="16" width="10" height="3" rx="1" fill="currentColor"/></svg>
+      </div>
+      <span class="n-lbl">Feed</span>
+    </div>
+    <div class="n-item">
+      <div class="n-icon">
+        <svg width="22" height="22" viewBox="0 0 22 22" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3h12a1 1 0 011 1v15l-6.5-3.5L5 19V4a1 1 0 011-1z"/></svg>
+      </div>
+      <span class="n-lbl">Saved</span>
+    </div>
+  </div>
+
+</div>
+</div>
+<p class="ph-lbl">Timeline — light<span class="desc">Live, watched, recycled, gone — every card state in one scroll</span></p>
+</div>
+
+
+<!-- ──────────────────────────────────────────────
+     TIMELINE — DARK
+     ────────────────────────────────────────────── -->
+<div class="ph-wrap">
+<div class="phone dark">
+<div class="screen">
+
+  <div class="status-bar">
+    <span class="s-time">9:41</span>
+    <div class="d-island"></div>
+    <div class="s-icons" style="display:flex;align-items:center;gap:5px">
+      <svg width="17" height="12" viewBox="0 0 17 12"><rect x="0" y="7" width="3" height="5" rx="1"/><rect x="4.5" y="5" width="3" height="7" rx="1"/><rect x="9" y="2.5" width="3" height="9.5" rx="1"/><rect x="13.5" y="0" width="3" height="12" rx="1"/></svg>
+      <svg width="25" height="12" viewBox="0 0 25 12" fill="none"><rect x="0.5" y="0.5" width="21" height="11" rx="3.5" stroke-opacity="0.35"/><rect x="2" y="2" width="16" height="8" rx="2"/></svg>
+    </div>
+  </div>
+
+  <div class="app-hdr">
+    <div class="hdr-row">
+      <div class="logomark">
+        <svg width="20" height="22" viewBox="4 7 40 33" fill="none" style="flex-shrink:0">
+          <path d="M 40 23 C 40 11,29 5,18 8 C 8 11,4 21,7 30 C 10 39,21 44,31 41 C 39 38,43 29,40 22 C 37 16,28 13,21 17 C 15 21,14 29,18 34 C 21 37,28 37,32 32" stroke="#4E8A8A" stroke-width="2.6" stroke-linecap="round" fill="none"/>
+        </svg>
+        <span class="wm">eddy</span>
+      </div>
+      <svg width="34" height="34" viewBox="0 0 16 16" shape-rendering="crispEdges" class="pav">
+        <rect width="16" height="16" fill="#180E04"/>
+        <rect x="2" y="2" width="12" height="11" fill="#C8845A"/>
+        <rect x="2" y="2" width="12" height="2" fill="#3A2210"/><rect x="2" y="4" width="2" height="2" fill="#3A2210"/><rect x="12" y="4" width="2" height="2" fill="#3A2210"/>
+        <rect x="4" y="6" width="2" height="2" fill="#180E08"/><rect x="10" y="6" width="2" height="2" fill="#180E08"/>
+        <rect x="4" y="6" width="1" height="1" fill="#fff"/><rect x="10" y="6" width="1" height="1" fill="#fff"/>
+        <rect x="7" y="8" width="2" height="1" fill="#A06438"/>
+        <rect x="5" y="10" width="2" height="1" fill="#3A2210"/><rect x="9" y="10" width="2" height="1" fill="#3A2210"/><rect x="6" y="11" width="4" height="1" fill="#3A2210"/>
+        <rect x="1" y="6" width="1" height="3" fill="#C8845A"/><rect x="14" y="6" width="1" height="3" fill="#C8845A"/>
+        <rect x="5" y="13" width="6" height="2" fill="#C8845A"/>
+        <rect x="3" y="15" width="10" height="1" fill="#4E8A8A"/>
+      </svg>
+    </div>
+  </div>
+
+  <div class="topic-bar">
+    <button class="tp-chip active">All</button>
+    <button class="tp-chip">Minecraft</button>
+    <button class="tp-chip">Science</button>
+    <button class="tp-chip">Football</button>
+    <button class="tp-chip">Space</button>
+  </div>
+
+  <div class="feed">
+
+    <div class="day-lbl">
+      <span class="day-main">Today</span>
+      <span class="day-date">Wed 16 Apr</span>
+      <span class="day-count">2 requests</span>
+    </div>
+
+    <!-- LIVE dark -->
+    <div class="card">
+      <div class="thumb">
+        <svg viewBox="0 0 343 193" xmlns="http://www.w3.org/2000/svg">
+          <defs><radialGradient id="td1" cx="50%" cy="50%" r="70%"><stop offset="0%" stop-color="#FFAA00"/><stop offset="100%" stop-color="#FF4400"/></radialGradient></defs>
+          <rect width="343" height="193" fill="url(#td1)"/>
+          <rect x="0" y="140" width="343" height="53" fill="#88CCFF" opacity="0.4"/>
+          <rect x="0"  y="153" width="28" height="28" fill="#B0E8FF" opacity="0.65"/>
+          <rect x="28" y="153" width="28" height="28" fill="#C8F0FF" opacity="0.65"/>
+          <rect x="56" y="153" width="28" height="28" fill="#B0E8FF" opacity="0.65"/>
+          <rect x="84" y="153" width="28" height="28" fill="#C8F0FF" opacity="0.65"/>
+          <ellipse cx="252" cy="90" rx="76" ry="80" fill="#F4B880"/>
+          <path d="M180 55 C185 30, 210 18, 252 18 C294 18, 318 30, 325 55 L325 70 C310 50, 290 42, 252 44 C214 42, 194 50, 180 70Z" fill="#1A0C04"/>
+          <ellipse cx="224" cy="82" rx="24" ry="26" fill="#fff"/>
+          <ellipse cx="280" cy="82" rx="24" ry="26" fill="#fff"/>
+          <ellipse cx="228" cy="86" rx="10" ry="11" fill="#0a0604"/>
+          <ellipse cx="276" cy="86" rx="10" ry="11" fill="#0a0604"/>
+          <ellipse cx="252" cy="130" rx="26" ry="28" fill="#1A0604"/>
+          <text x="10" y="100" font-family="Arial Black, sans-serif" font-size="86" font-weight="900" fill="none" stroke="#000" stroke-width="8">100</text>
+          <text x="10" y="100" font-family="Arial Black, sans-serif" font-size="86" font-weight="900" fill="#fff">100</text>
+          <rect x="0" y="108" width="185" height="40" fill="#CC0000"/>
+          <text x="10" y="138" font-family="Arial Black, sans-serif" font-size="30" font-weight="900" fill="#fff">DAYS</text>
+          <rect x="0" y="173" width="343" height="20" fill="rgba(0,0,0,0.65)"/>
+          <text x="8" y="186" font-family="DM Sans, sans-serif" font-size="11" font-weight="700" fill="rgba(255,255,255,0.9)">SB737</text>
+        </svg>
+        <span class="t-badge">Video</span>
+        <span class="t-dur">34:12</span>
+        <div class="t-btns">
+          <button class="t-btn" aria-label="Save">
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 2h8a1 1 0 011 1v10l-5-3-5 3V3a1 1 0 011-1z"/></svg>
+          </button>
+          <button class="t-btn" aria-label="Dismiss">
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 3l6 6M9 3l-6 6"/></svg>
+          </button>
+        </div>
+      </div>
+      <div class="c-body">
+        <div class="c-meta">
+          <span class="c-pill">Minecraft</span>
+          <span class="c-dot">·</span>
+          <span class="c-src">SB737</span>
+        </div>
+        <h2 class="c-title">I Spent 100 Days in a Diamond Only World in Hardcore Minecraft</h2>
+        <p class="c-hook">34 minutes of scarcity-survival — the day-60 collapse is where it gets genuinely tense.</p>
+        <div class="c-foot"><span class="c-time">34 min · added 1h ago</span></div>
+      </div>
+    </div>
+
+    <!-- WATCHED dark -->
+    <div class="card">
+      <div class="thumb">
+        <svg viewBox="0 0 343 193" xmlns="http://www.w3.org/2000/svg">
+          <defs><linearGradient id="td2" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#FFD700"/><stop offset="100%" stop-color="#E8A000"/></linearGradient></defs>
+          <rect width="343" height="193" fill="url(#td2)"/>
+          <rect x="0" y="0" width="205" height="38" fill="#FFD700"/>
+          <rect x="0" y="0" width="205" height="38" fill="none" stroke="#000" stroke-width="3"/>
+          <text x="10" y="26" font-family="Arial Black, sans-serif" font-size="18" font-weight="900" fill="#000">REDSTONE MEGA-BUILD</text>
+          <rect x="0" y="38" width="205" height="32" fill="rgba(0,0,0,0.78)"/>
+          <text x="10" y="60" font-family="Arial Black, sans-serif" font-size="16" font-weight="900" fill="#FFD700">EP 7</text>
+          <ellipse cx="255" cy="108" rx="70" ry="76" fill="#E8B080"/>
+          <path d="M192 70 C196 44, 220 30, 255 30 C290 30, 314 44, 318 70 L318 84 C302 66, 280 58, 255 60 C230 58, 208 66, 192 84Z" fill="#3A2010"/>
+          <ellipse cx="232" cy="96" rx="18" ry="20" fill="#fff"/>
+          <ellipse cx="278" cy="96" rx="18" ry="20" fill="#fff"/>
+          <ellipse cx="234" cy="98" rx="10" ry="11" fill="#2A1508"/>
+          <ellipse cx="276" cy="98" rx="10" ry="11" fill="#2A1508"/>
+          <rect x="0" y="173" width="343" height="20" fill="rgba(0,0,0,0.65)"/>
+          <text x="8" y="186" font-family="DM Sans, sans-serif" font-size="11" font-weight="700" fill="rgba(255,255,255,0.9)">MUMBO JUMBO</text>
+        </svg>
+        <div class="w-overlay">
+          <div class="w-check">
+            <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><polyline points="4,9 7.5,13 14,5.5" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </div>
+        </div>
+        <div class="w-badge">Watched 4h ago</div>
+        <div class="w-bar"><div class="w-fill" style="width:100%"></div></div>
+      </div>
+      <div class="c-body">
+        <div class="c-meta">
+          <span class="c-pill">Minecraft</span>
+          <span class="c-dot">·</span>
+          <span class="c-src">Mumbo Jumbo</span>
+        </div>
+        <h2 class="c-title dim">The Only Redstone Tutorial You'll Ever Need</h2>
+        <p class="c-hook dim">Covers the timing gates you kept rewinding last week.</p>
+        <div class="c-foot"><span class="c-time">26 min · watched this morning</span></div>
+      </div>
+    </div>
+
+    <!-- YESTERDAY -->
+    <hr class="div-row">
+    <div class="day-lbl">
+      <span class="day-main">Yesterday</span>
+      <span class="day-date">Tue 15 Apr</span>
+    </div>
+
+    <!-- RECYCLED dark -->
+    <div class="card recycled">
+      <div class="thumb">
+        <svg viewBox="0 0 343 193" xmlns="http://www.w3.org/2000/svg">
+          <defs><linearGradient id="td3" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stop-color="#00AA44"/><stop offset="100%" stop-color="#004422"/></linearGradient></defs>
+          <rect width="343" height="193" fill="url(#td3)"/>
+          <rect x="20" y="28" width="110" height="110" fill="#44BB44"/>
+          <rect x="38" y="52" width="28" height="28" fill="#000"/>
+          <rect x="82" y="52" width="28" height="28" fill="#000"/>
+          <rect x="48" y="92" width="12" height="28" fill="#000"/>
+          <rect x="60" y="104" width="28" height="16" fill="#000"/>
+          <rect x="88" y="92" width="12" height="28" fill="#000"/>
+          <ellipse cx="255" cy="90" rx="72" ry="76" fill="#F0C090"/>
+          <rect x="0" y="173" width="343" height="20" fill="rgba(0,0,0,0.65)"/>
+          <text x="8" y="186" font-family="DM Sans, sans-serif" font-size="11" font-weight="700" fill="rgba(255,255,255,0.9)">Dream</text>
+        </svg>
+        <span class="t-badge">Video</span>
+        <div class="rc-panel">
+          <span class="rc-label">
+            <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M2 5a3 3 0 016 0M5 8V5"/><circle cx="5" cy="8.5" r="0.7" fill="currentColor"/></svg>
+            Recycled
+          </span>
+          <button class="rc-restore">
+            <svg width="11" height="11" viewBox="0 0 11 11" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M1.5 5.5a4 4 0 118 0M9.5 3v2.5H7"/></svg>
+            Restore
+          </button>
+        </div>
+      </div>
+      <div class="c-body">
+        <div class="c-meta">
+          <span class="c-pill">Minecraft</span>
+          <span class="c-dot">·</span>
+          <span class="c-src">Dream</span>
+        </div>
+        <h2 class="c-title dim">Minecraft Manhunt Extra Scenes</h2>
+        <p class="c-hook dim">Sent by Alex · file cleaned up to save space.</p>
+        <div class="c-foot"><span class="c-time">24 min · added yesterday</span></div>
+      </div>
+    </div>
+
+    <!-- GONE dark -->
+    <div class="card gone">
+      <div class="thumb">
+        <svg viewBox="0 0 343 193" xmlns="http://www.w3.org/2000/svg">
+          <defs><linearGradient id="td4" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#AA2222"/><stop offset="100%" stop-color="#551111"/></linearGradient></defs>
+          <rect width="343" height="193" fill="url(#td4)"/>
+          <ellipse cx="180" cy="96" rx="80" ry="60" fill="#FF4444" opacity="0.3"/>
+          <text x="30" y="120" font-family="Arial Black, sans-serif" font-size="42" font-weight="900" fill="#fff" opacity="0.7">OMG</text>
+        </svg>
+        <span class="t-badge">Video</span>
+        <div class="gn-center">
+          <svg width="22" height="22" viewBox="0 0 22 22" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="M5 5l12 12"/></svg>
+          <span class="gn-label">No longer available</span>
+        </div>
+      </div>
+      <div class="c-body">
+        <div class="c-meta">
+          <span class="c-pill">Minecraft</span>
+          <span class="c-dot">·</span>
+          <span class="c-src">Unknown channel</span>
+        </div>
+        <h2 class="c-title">OMG THIS IS INSANE (MUST WATCH)</h2>
+        <p class="c-hook">Removed from YouTube since you added it.</p>
+        <div class="c-foot"><span class="c-time">added yesterday</span></div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="b-nav">
+    <div class="n-item on">
+      <div class="n-icon">
+        <svg width="22" height="22" viewBox="0 0 22 22" fill="none"><rect x="3" y="4" width="16" height="3" rx="1" fill="currentColor"/><rect x="3" y="10" width="16" height="3" rx="1" fill="currentColor"/><rect x="3" y="16" width="10" height="3" rx="1" fill="currentColor"/></svg>
+      </div>
+      <span class="n-lbl">Feed</span>
+    </div>
+    <div class="n-item">
+      <div class="n-icon">
+        <svg width="22" height="22" viewBox="0 0 22 22" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3h12a1 1 0 011 1v15l-6.5-3.5L5 19V4a1 1 0 011-1z"/></svg>
+      </div>
+      <span class="n-lbl">Saved</span>
+    </div>
+  </div>
+
+</div>
+</div>
+<p class="ph-lbl">Timeline — dark<span class="desc">Same surfaces, dark tokens</span></p>
+</div>
+
+</div><!-- /grid -->
+
+
+<!-- ═══════════════════════════════════════════════════════════════
+     SECTION 2 — TOPIC FILTER + SAVED + INLINE PLAYER
+     ═══════════════════════════════════════════════════════════════ -->
+<div class="section-hdr">
+  <h2>Filter · saved · player</h2>
+  <span class="note">Topic filter active on a pill, Saved tab (forever list by save date), inline HTML5 player full-screen state.</span>
+</div>
+
+<div class="grid">
+
+<!-- ──────────────────────────────────────────────
+     TOPIC FILTER — Minecraft selected, timeline narrowed
+     ────────────────────────────────────────────── -->
+<div class="ph-wrap">
+<div class="phone light">
+<div class="screen">
+
+  <div class="status-bar">
+    <span class="s-time">9:41</span>
+    <div class="d-island"></div>
+    <div class="s-icons" style="display:flex;align-items:center;gap:5px">
+      <svg width="17" height="12" viewBox="0 0 17 12"><rect x="0" y="7" width="3" height="5" rx="1"/><rect x="4.5" y="5" width="3" height="7" rx="1"/><rect x="9" y="2.5" width="3" height="9.5" rx="1"/><rect x="13.5" y="0" width="3" height="12" rx="1"/></svg>
+      <svg width="25" height="12" viewBox="0 0 25 12" fill="none"><rect x="0.5" y="0.5" width="21" height="11" rx="3.5" stroke-opacity="0.35"/><rect x="2" y="2" width="16" height="8" rx="2"/></svg>
+    </div>
+  </div>
+
+  <div class="app-hdr">
+    <div class="hdr-row">
+      <div class="logomark">
+        <svg width="20" height="22" viewBox="4 7 40 33" fill="none" style="flex-shrink:0">
+          <path d="M 40 23 C 40 11,29 5,18 8 C 8 11,4 21,7 30 C 10 39,21 44,31 41 C 39 38,43 29,40 22 C 37 16,28 13,21 17 C 15 21,14 29,18 34 C 21 37,28 37,32 32" stroke="#3D6B6B" stroke-width="2.6" stroke-linecap="round" fill="none"/>
+        </svg>
+        <span class="wm">eddy</span>
+      </div>
+      <svg width="34" height="34" viewBox="0 0 16 16" shape-rendering="crispEdges" class="pav">
+        <rect width="16" height="16" fill="#281408"/>
+        <rect x="2" y="2" width="12" height="11" fill="#C8845A"/>
+        <rect x="2" y="2" width="12" height="2" fill="#3A2210"/><rect x="2" y="4" width="2" height="2" fill="#3A2210"/><rect x="12" y="4" width="2" height="2" fill="#3A2210"/>
+        <rect x="4" y="6" width="2" height="2" fill="#180E08"/><rect x="10" y="6" width="2" height="2" fill="#180E08"/>
+        <rect x="4" y="6" width="1" height="1" fill="#fff"/><rect x="10" y="6" width="1" height="1" fill="#fff"/>
+        <rect x="7" y="8" width="2" height="1" fill="#A06438"/>
+        <rect x="5" y="10" width="2" height="1" fill="#3A2210"/><rect x="9" y="10" width="2" height="1" fill="#3A2210"/><rect x="6" y="11" width="4" height="1" fill="#3A2210"/>
+        <rect x="1" y="6" width="1" height="3" fill="#C8845A"/><rect x="14" y="6" width="1" height="3" fill="#C8845A"/>
+        <rect x="5" y="13" width="6" height="2" fill="#C8845A"/>
+        <rect x="3" y="15" width="10" height="1" fill="#3D6B6B"/>
+      </svg>
+    </div>
+  </div>
+
+  <!-- Topic filter — Minecraft active -->
+  <div class="topic-bar">
+    <button class="tp-chip">All</button>
+    <button class="tp-chip active">Minecraft</button>
+    <button class="tp-chip">Science</button>
+    <button class="tp-chip">Football</button>
+    <button class="tp-chip">Space</button>
+    <button class="tp-chip">Music</button>
+  </div>
+
+  <div class="feed">
+    <div class="day-lbl">
+      <span class="day-main">Today</span>
+      <span class="day-date">Wed 16 Apr</span>
+      <span class="day-count">2 in Minecraft</span>
+    </div>
+
+    <!-- Mumbo card live+saved -->
+    <div class="card">
+      <div class="thumb">
+        <svg viewBox="0 0 343 193" xmlns="http://www.w3.org/2000/svg">
+          <defs><linearGradient id="tf1" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#FFD700"/><stop offset="100%" stop-color="#E8A000"/></linearGradient></defs>
+          <rect width="343" height="193" fill="url(#tf1)"/>
+          <rect x="0" y="0" width="205" height="38" fill="#FFD700"/>
+          <rect x="0" y="0" width="205" height="38" fill="none" stroke="#000" stroke-width="3"/>
+          <text x="10" y="26" font-family="Arial Black, sans-serif" font-size="18" font-weight="900" fill="#000">REDSTONE MEGA-BUILD</text>
+          <rect x="0" y="38" width="205" height="32" fill="rgba(0,0,0,0.78)"/>
+          <text x="10" y="60" font-family="Arial Black, sans-serif" font-size="16" font-weight="900" fill="#FFD700">EP 7</text>
+          <ellipse cx="255" cy="108" rx="70" ry="76" fill="#E8B080"/>
+          <path d="M192 70 C196 44, 220 30, 255 30 C290 30, 314 44, 318 70 L318 84 C302 66, 280 58, 255 60 C230 58, 208 66, 192 84Z" fill="#3A2010"/>
+          <ellipse cx="232" cy="96" rx="18" ry="20" fill="#fff"/>
+          <ellipse cx="278" cy="96" rx="18" ry="20" fill="#fff"/>
+          <ellipse cx="234" cy="98" rx="10" ry="11" fill="#2A1508"/>
+          <ellipse cx="276" cy="98" rx="10" ry="11" fill="#2A1508"/>
+          <rect x="0" y="173" width="343" height="20" fill="rgba(0,0,0,0.65)"/>
+          <text x="8" y="186" font-family="DM Sans, sans-serif" font-size="11" font-weight="700" fill="rgba(255,255,255,0.9)">MUMBO JUMBO</text>
+        </svg>
+        <span class="t-badge">Video</span>
+        <span class="t-dur">26:14</span>
+        <div class="t-btns">
+          <button class="t-btn saved"><svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor"><path d="M3 2h8a1 1 0 011 1v10l-5-3-5 3V3a1 1 0 011-1z"/></svg></button>
+          <button class="t-btn"><svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 3l6 6M9 3l-6 6"/></svg></button>
+        </div>
+      </div>
+      <div class="c-body">
+        <div class="c-meta">
+          <span class="c-pill">Minecraft</span>
+          <span class="c-dot">·</span>
+          <span class="c-src">Mumbo Jumbo</span>
+        </div>
+        <h2 class="c-title">The Only Redstone Tutorial You'll Ever Need</h2>
+        <p class="c-hook">Covers the timing gates you kept rewinding last week.</p>
+        <div class="c-foot"><span class="c-time">26 min · added 3h ago</span></div>
+      </div>
+    </div>
+
+    <hr class="div-row">
+    <div class="day-lbl">
+      <span class="day-main">Mon 14 Apr</span>
+    </div>
+
+    <div class="card recycled">
+      <div class="thumb">
+        <svg viewBox="0 0 343 193" xmlns="http://www.w3.org/2000/svg">
+          <defs><linearGradient id="tf2" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stop-color="#00AA44"/><stop offset="100%" stop-color="#004422"/></linearGradient></defs>
+          <rect width="343" height="193" fill="url(#tf2)"/>
+          <rect x="20" y="28" width="110" height="110" fill="#44BB44"/>
+          <rect x="38" y="52" width="28" height="28" fill="#000"/>
+          <rect x="82" y="52" width="28" height="28" fill="#000"/>
+          <rect x="48" y="92" width="12" height="28" fill="#000"/>
+          <rect x="60" y="104" width="28" height="16" fill="#000"/>
+          <rect x="88" y="92" width="12" height="28" fill="#000"/>
+          <ellipse cx="255" cy="90" rx="72" ry="76" fill="#F0C090"/>
+        </svg>
+        <span class="t-badge">Video</span>
+        <div class="rc-panel">
+          <span class="rc-label">
+            <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M2 5a3 3 0 016 0M5 8V5"/><circle cx="5" cy="8.5" r="0.7" fill="currentColor"/></svg>
+            Recycled
+          </span>
+          <button class="rc-restore">
+            <svg width="11" height="11" viewBox="0 0 11 11" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M1.5 5.5a4 4 0 118 0M9.5 3v2.5H7"/></svg>
+            Restore
+          </button>
+        </div>
+      </div>
+      <div class="c-body">
+        <div class="c-meta">
+          <span class="c-pill">Minecraft</span>
+          <span class="c-dot">·</span>
+          <span class="c-src">Dream</span>
+        </div>
+        <h2 class="c-title dim">Minecraft Manhunt Extra Scenes</h2>
+        <p class="c-hook dim">Sent by Alex · file cleaned up to save space.</p>
+        <div class="c-foot"><span class="c-time">24 min · added 2 days ago</span></div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="b-nav">
+    <div class="n-item on">
+      <div class="n-icon"><svg width="22" height="22" viewBox="0 0 22 22" fill="none"><rect x="3" y="4" width="16" height="3" rx="1" fill="currentColor"/><rect x="3" y="10" width="16" height="3" rx="1" fill="currentColor"/><rect x="3" y="16" width="10" height="3" rx="1" fill="currentColor"/></svg></div>
+      <span class="n-lbl">Feed</span>
+    </div>
+    <div class="n-item">
+      <div class="n-icon"><svg width="22" height="22" viewBox="0 0 22 22" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3h12a1 1 0 011 1v15l-6.5-3.5L5 19V4a1 1 0 011-1z"/></svg></div>
+      <span class="n-lbl">Saved</span>
+    </div>
+  </div>
+
+</div>
+</div>
+<p class="ph-lbl">Topic filter — active<span class="desc">"Minecraft" selected, timeline narrowed. Flat list, no hierarchy.</span></p>
+</div>
+
+<!-- ──────────────────────────────────────────────
+     SAVED TAB — forever list by save date
+     ────────────────────────────────────────────── -->
+<div class="ph-wrap">
+<div class="phone light">
+<div class="screen">
+
+  <div class="status-bar">
+    <span class="s-time">9:41</span>
+    <div class="d-island"></div>
+    <div class="s-icons" style="display:flex;align-items:center;gap:5px">
+      <svg width="17" height="12" viewBox="0 0 17 12"><rect x="0" y="7" width="3" height="5" rx="1"/><rect x="4.5" y="5" width="3" height="7" rx="1"/><rect x="9" y="2.5" width="3" height="9.5" rx="1"/><rect x="13.5" y="0" width="3" height="12" rx="1"/></svg>
+      <svg width="25" height="12" viewBox="0 0 25 12" fill="none"><rect x="0.5" y="0.5" width="21" height="11" rx="3.5" stroke-opacity="0.35"/><rect x="2" y="2" width="16" height="8" rx="2"/></svg>
+    </div>
+  </div>
+
+  <div class="saved-hdr">
+    <h1 class="saved-title">Saved</h1>
+    <span class="saved-count">8 items</span>
+  </div>
+  <p class="saved-sub">Kept so they don't get recycled. Reverse-chronological by save date.</p>
+
+  <div class="feed">
+
+    <div class="saved-grp">This week</div>
+
+    <!-- Saved: Mumbo redstone -->
+    <div class="card">
+      <div class="thumb">
+        <svg viewBox="0 0 343 193" xmlns="http://www.w3.org/2000/svg">
+          <defs><linearGradient id="sv1" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#FFD700"/><stop offset="100%" stop-color="#E8A000"/></linearGradient></defs>
+          <rect width="343" height="193" fill="url(#sv1)"/>
+          <rect x="0" y="0" width="205" height="38" fill="#FFD700"/>
+          <text x="10" y="26" font-family="Arial Black, sans-serif" font-size="18" font-weight="900" fill="#000">REDSTONE MEGA-BUILD</text>
+          <rect x="0" y="38" width="205" height="32" fill="rgba(0,0,0,0.78)"/>
+          <text x="10" y="60" font-family="Arial Black, sans-serif" font-size="16" font-weight="900" fill="#FFD700">EP 7</text>
+          <ellipse cx="255" cy="108" rx="70" ry="76" fill="#E8B080"/>
+          <path d="M192 70 C196 44, 220 30, 255 30 C290 30, 314 44, 318 70 L318 84 C302 66, 280 58, 255 60 C230 58, 208 66, 192 84Z" fill="#3A2010"/>
+          <ellipse cx="232" cy="96" rx="18" ry="20" fill="#fff"/>
+          <ellipse cx="278" cy="96" rx="18" ry="20" fill="#fff"/>
+          <ellipse cx="234" cy="98" rx="10" ry="11" fill="#2A1508"/>
+          <ellipse cx="276" cy="98" rx="10" ry="11" fill="#2A1508"/>
+        </svg>
+        <span class="t-badge">Video</span>
+        <span class="t-dur">26:14</span>
+        <div class="t-btns">
+          <button class="t-btn saved"><svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor"><path d="M3 2h8a1 1 0 011 1v10l-5-3-5 3V3a1 1 0 011-1z"/></svg></button>
+        </div>
+      </div>
+      <div class="c-body">
+        <div class="c-meta">
+          <span class="c-pill">Minecraft</span>
+          <span class="c-dot">·</span>
+          <span class="c-src">Mumbo Jumbo</span>
+        </div>
+        <h2 class="c-title">The Only Redstone Tutorial You'll Ever Need</h2>
+        <p class="c-hook">Covers the timing gates you kept rewinding last week.</p>
+        <div class="c-foot"><span class="c-time">26 min · saved today</span></div>
+      </div>
+    </div>
+
+    <!-- Saved: Veritasium -->
+    <div class="card">
+      <div class="thumb">
+        <svg viewBox="0 0 343 193" xmlns="http://www.w3.org/2000/svg">
+          <defs><radialGradient id="sv2" cx="50%" cy="50%" r="70%"><stop offset="0%" stop-color="#1a3a6a"/><stop offset="100%" stop-color="#050820"/></radialGradient></defs>
+          <rect width="343" height="193" fill="url(#sv2)"/>
+          <circle cx="80" cy="80" r="1.5" fill="#fff" opacity="0.8"/>
+          <circle cx="240" cy="40" r="1" fill="#fff" opacity="0.7"/>
+          <circle cx="300" cy="120" r="2" fill="#fff" opacity="0.9"/>
+          <circle cx="60" cy="140" r="1" fill="#fff" opacity="0.6"/>
+          <circle cx="180" cy="160" r="1.5" fill="#fff" opacity="0.75"/>
+          <circle cx="250" cy="170" r="1" fill="#fff" opacity="0.6"/>
+          <circle cx="310" cy="70" r="1.5" fill="#fff" opacity="0.8"/>
+          <circle cx="170" cy="96" r="60" fill="#D4905A"/>
+          <circle cx="170" cy="96" r="60" fill="url(#sv2)" opacity="0.4"/>
+          <ellipse cx="155" cy="90" rx="20" ry="14" fill="#8a5a30" opacity="0.5"/>
+          <ellipse cx="190" cy="110" rx="15" ry="10" fill="#8a5a30" opacity="0.5"/>
+          <text x="40" y="50" font-family="Arial Black, sans-serif" font-size="28" font-weight="900" fill="#fff">Is there an</text>
+          <text x="40" y="75" font-family="Arial Black, sans-serif" font-size="28" font-weight="900" fill="#fff">EDGE to space?</text>
+          <rect x="0" y="173" width="343" height="20" fill="rgba(0,0,0,0.65)"/>
+          <text x="8" y="186" font-family="DM Sans, sans-serif" font-size="11" font-weight="700" fill="rgba(255,255,255,0.9)">Veritasium</text>
+        </svg>
+        <span class="t-badge">Video</span>
+        <span class="t-dur">18:47</span>
+        <div class="t-btns">
+          <button class="t-btn saved"><svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor"><path d="M3 2h8a1 1 0 011 1v10l-5-3-5 3V3a1 1 0 011-1z"/></svg></button>
+        </div>
+      </div>
+      <div class="c-body">
+        <div class="c-meta">
+          <span class="c-pill">Space</span>
+          <span class="c-dot">·</span>
+          <span class="c-src">Veritasium</span>
+        </div>
+        <h2 class="c-title">Is There an Edge to Space?</h2>
+        <p class="c-hook">Turns on whether the universe curves back on itself — answer depends on a single number.</p>
+        <div class="c-foot"><span class="c-time">19 min · saved Mon</span></div>
+      </div>
+    </div>
+
+    <div class="saved-grp">Earlier</div>
+
+    <!-- Saved earlier: SB737 watched -->
+    <div class="card">
+      <div class="thumb">
+        <svg viewBox="0 0 343 193" xmlns="http://www.w3.org/2000/svg">
+          <defs><linearGradient id="sv3" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#00AAFF"/><stop offset="100%" stop-color="#001888"/></linearGradient></defs>
+          <rect width="343" height="193" fill="url(#sv3)"/>
+          <ellipse cx="258" cy="93" rx="74" ry="78" fill="#EAB070"/>
+          <path d="M188 54 C193 28, 214 14, 258 14 C302 14, 323 28, 328 54 L328 70 C312 50, 288 42, 258 44 C228 42, 204 50, 188 70Z" fill="#1A0C04"/>
+          <ellipse cx="230" cy="82" rx="23" ry="25" fill="#fff"/>
+          <ellipse cx="286" cy="82" rx="23" ry="25" fill="#fff"/>
+          <ellipse cx="232" cy="85" rx="14" ry="16" fill="#2A1808"/>
+          <ellipse cx="284" cy="85" rx="14" ry="16" fill="#2A1808"/>
+          <text x="10" y="98" font-family="Arial Black, sans-serif" font-size="82" font-weight="900" fill="#fff">100</text>
+          <rect x="0" y="104" width="172" height="42" fill="#003399"/>
+          <text x="8" y="136" font-family="Arial Black, sans-serif" font-size="30" font-weight="900" fill="#88EEFF">DAYS</text>
+        </svg>
+        <div class="w-overlay">
+          <div class="w-check"><svg width="18" height="18" viewBox="0 0 18 18" fill="none"><polyline points="4,9 7.5,13 14,5.5" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+        </div>
+        <div class="w-badge">Watched</div>
+        <div class="w-bar"><div class="w-fill" style="width:100%"></div></div>
+      </div>
+      <div class="c-body">
+        <div class="c-meta">
+          <span class="c-pill">Minecraft</span>
+          <span class="c-dot">·</span>
+          <span class="c-src">SB737</span>
+        </div>
+        <h2 class="c-title dim">I Spent 100 Days in a Diamond Only World</h2>
+        <p class="c-hook dim">The diamond scarcity at day 60 is where this goes from silly to genuinely tense.</p>
+        <div class="c-foot"><span class="c-time">34 min · saved Apr 9</span></div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="b-nav">
+    <div class="n-item">
+      <div class="n-icon"><svg width="22" height="22" viewBox="0 0 22 22" fill="none"><rect x="3" y="4" width="16" height="3" rx="1" fill="currentColor"/><rect x="3" y="10" width="16" height="3" rx="1" fill="currentColor"/><rect x="3" y="16" width="10" height="3" rx="1" fill="currentColor"/></svg></div>
+      <span class="n-lbl">Feed</span>
+    </div>
+    <div class="n-item on">
+      <div class="n-icon"><svg width="22" height="22" viewBox="0 0 22 22" fill="currentColor"><path d="M5 3h12a1 1 0 011 1v15l-6.5-3.5L5 19V4a1 1 0 011-1z"/></svg></div>
+      <span class="n-lbl">Saved</span>
+    </div>
+  </div>
+
+</div>
+</div>
+<p class="ph-lbl">Saved tab<span class="desc">Forever list by save date. Saved items never recycled.</span></p>
+</div>
+
+<!-- ──────────────────────────────────────────────
+     INLINE PLAYER — full-screen HTML5 video
+     ────────────────────────────────────────────── -->
+<div class="ph-wrap">
+<div class="phone light">
+<div class="screen">
+
+  <div class="player">
+    <!-- Mock video still as "playing" -->
+    <div class="player-video">
+      <svg viewBox="0 0 343 600" preserveAspectRatio="xMidYMid slice" xmlns="http://www.w3.org/2000/svg">
+        <defs><radialGradient id="pv1" cx="50%" cy="45%" r="70%"><stop offset="0%" stop-color="#FFAA00"/><stop offset="100%" stop-color="#FF4400"/></radialGradient></defs>
+        <rect width="343" height="600" fill="url(#pv1)"/>
+        <rect x="0" y="440" width="343" height="160" fill="#88CCFF" opacity="0.35"/>
+        <rect x="0"  y="470" width="52" height="52" fill="#B0E8FF" opacity="0.6"/>
+        <rect x="52" y="470" width="52" height="52" fill="#C8F0FF" opacity="0.6"/>
+        <rect x="104" y="470" width="52" height="52" fill="#B0E8FF" opacity="0.6"/>
+        <rect x="156" y="470" width="52" height="52" fill="#C8F0FF" opacity="0.6"/>
+        <rect x="208" y="470" width="52" height="52" fill="#B0E8FF" opacity="0.6"/>
+        <rect x="260" y="470" width="52" height="52" fill="#C8F0FF" opacity="0.6"/>
+        <rect x="0" y="522" width="343" height="40" fill="#9CD8A0" opacity="0.5"/>
+        <ellipse cx="171" cy="280" rx="110" ry="120" fill="#F4B880"/>
+        <path d="M70 220 C76 160, 120 130, 171 130 C222 130, 266 160, 272 220 L272 248 C246 212, 210 200, 171 202 C132 200, 96 212, 70 248Z" fill="#1A0C04"/>
+        <ellipse cx="135" cy="262" rx="30" ry="32" fill="#fff"/>
+        <ellipse cx="207" cy="262" rx="30" ry="32" fill="#fff"/>
+        <ellipse cx="138" cy="268" rx="18" ry="20" fill="#3A2010"/>
+        <ellipse cx="204" cy="268" rx="18" ry="20" fill="#3A2010"/>
+        <ellipse cx="140" cy="272" rx="12" ry="13" fill="#0a0604"/>
+        <ellipse cx="202" cy="272" rx="12" ry="13" fill="#0a0604"/>
+        <ellipse cx="171" cy="316" rx="14" ry="12" fill="#E0955A"/>
+        <ellipse cx="171" cy="368" rx="36" ry="38" fill="#1A0604"/>
+      </svg>
+    </div>
+
+    <!-- Top chrome -->
+    <div class="player-chrome">
+      <button class="player-close">
+        <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M5 5l8 8M13 5l-8 8"/></svg>
+      </button>
+      <div class="player-meta">
+        <div class="c-src">SB737</div>
+        <h2 class="c-title">I Spent 100 Days in a Diamond Only World in Hardcore Minecraft</h2>
+      </div>
+      <div style="width:36px"></div>
+    </div>
+
+    <!-- Bottom chrome -->
+    <div class="player-controls">
+      <div class="p-scrub">
+        <div class="p-scrub-fill"></div>
+        <div class="p-scrub-knob"></div>
+      </div>
+      <div class="p-row">
+        <div class="times">
+          <span>13:42</span>
+          <span style="opacity:0.55">34:12</span>
+        </div>
+        <div class="actions">
+          <button class="p-btn">
+            <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polygon points="14,4 6,10 14,16" fill="currentColor"/></svg>
+          </button>
+          <button class="p-btn big">
+            <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor"><rect x="5" y="4" width="4" height="12" rx="1"/><rect x="11" y="4" width="4" height="12" rx="1"/></svg>
+          </button>
+          <button class="p-btn">
+            <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polygon points="6,4 14,10 6,16" fill="currentColor"/></svg>
+          </button>
+        </div>
+        <button class="p-btn">
+          <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h5M4 4v5M16 4h-5M16 4v5M4 16h5M4 16v-5M16 16h-5M16 16v-5"/></svg>
+        </button>
+      </div>
+    </div>
+  </div>
+
+</div>
+</div>
+<p class="ph-lbl">Inline player<span class="desc">HTML5 video, full-screen. Tap card → play. Close returns to timeline.</span></p>
+</div>
+
+</div><!-- /grid -->
+
+
+<!-- ═══════════════════════════════════════════════════════════════
+     SECTION 3 — iPad layout
+     ═══════════════════════════════════════════════════════════════ -->
+<div class="section-hdr">
+  <h2>iPad — two-column portrait</h2>
+  <span class="note">Same cards, denser. More of the timeline visible at once. Landscape adds a third column and sidebar (Phase 2 scope: portrait is enough for review).</span>
+</div>
+
+<div class="grid">
+
+<div class="ph-wrap">
+<div class="tablet light">
+<div class="screen">
+
+  <div class="status-bar">
+    <span class="s-time">9:41 Wed 16 Apr</span>
+    <div class="s-icons" style="display:flex;align-items:center;gap:6px">
+      <svg width="17" height="12" viewBox="0 0 17 12"><rect x="0" y="7" width="3" height="5" rx="1"/><rect x="4.5" y="5" width="3" height="7" rx="1"/><rect x="9" y="2.5" width="3" height="9.5" rx="1"/><rect x="13.5" y="0" width="3" height="12" rx="1"/></svg>
+      <svg width="25" height="12" viewBox="0 0 25 12" fill="none"><rect x="0.5" y="0.5" width="21" height="11" rx="3.5" stroke-opacity="0.35"/><rect x="2" y="2" width="16" height="8" rx="2"/></svg>
+    </div>
+  </div>
+
+  <div class="app-hdr">
+    <div class="hdr-row">
+      <div class="logomark">
+        <svg width="24" height="26" viewBox="4 7 40 33" fill="none" style="flex-shrink:0">
+          <path d="M 40 23 C 40 11,29 5,18 8 C 8 11,4 21,7 30 C 10 39,21 44,31 41 C 39 38,43 29,40 22 C 37 16,28 13,21 17 C 15 21,14 29,18 34 C 21 37,28 37,32 32" stroke="#3D6B6B" stroke-width="2.6" stroke-linecap="round" fill="none"/>
+        </svg>
+        <span class="wm">eddy</span>
+      </div>
+      <svg width="38" height="38" viewBox="0 0 16 16" shape-rendering="crispEdges" class="pav">
+        <rect width="16" height="16" fill="#281408"/>
+        <rect x="2" y="2" width="12" height="11" fill="#C8845A"/>
+        <rect x="2" y="2" width="12" height="2" fill="#3A2210"/>
+        <rect x="4" y="6" width="2" height="2" fill="#180E08"/><rect x="10" y="6" width="2" height="2" fill="#180E08"/>
+        <rect x="4" y="6" width="1" height="1" fill="#fff"/><rect x="10" y="6" width="1" height="1" fill="#fff"/>
+        <rect x="7" y="8" width="2" height="1" fill="#A06438"/>
+        <rect x="6" y="11" width="4" height="1" fill="#3A2210"/>
+        <rect x="5" y="13" width="6" height="2" fill="#C8845A"/>
+        <rect x="3" y="15" width="10" height="1" fill="#3D6B6B"/>
+      </svg>
+    </div>
+  </div>
+
+  <div class="topic-bar">
+    <button class="tp-chip active">All</button>
+    <button class="tp-chip">Minecraft</button>
+    <button class="tp-chip">Science</button>
+    <button class="tp-chip">Football</button>
+    <button class="tp-chip">Space</button>
+    <button class="tp-chip">Music</button>
+    <button class="tp-chip">Maths</button>
+    <button class="tp-chip">Art</button>
+  </div>
+
+  <div class="feed" style="padding:0 16px 40px">
+
+    <div class="day-lbl" style="padding-left:16px">
+      <span class="day-main">Today</span>
+      <span class="day-date">Wed 16 Apr</span>
+      <span class="day-count" style="margin-right:16px">4 requests</span>
+    </div>
+
+    <!-- Two-column grid within day -->
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;padding:0 0 20px">
+
+      <!-- LIVE -->
+      <div class="card" style="margin:0">
+        <div class="thumb">
+          <svg viewBox="0 0 343 193"><defs><radialGradient id="ipb1" cx="50%" cy="50%" r="70%"><stop offset="0%" stop-color="#FFAA00"/><stop offset="100%" stop-color="#FF4400"/></radialGradient></defs>
+            <rect width="343" height="193" fill="url(#ipb1)"/>
+            <rect x="0" y="140" width="343" height="53" fill="#88CCFF" opacity="0.4"/>
+            <rect x="0" y="153" width="28" height="28" fill="#B0E8FF" opacity="0.65"/>
+            <rect x="28" y="153" width="28" height="28" fill="#C8F0FF" opacity="0.65"/>
+            <ellipse cx="252" cy="90" rx="76" ry="80" fill="#F4B880"/>
+            <path d="M180 55 C185 30, 210 18, 252 18 C294 18, 318 30, 325 55 L325 70 C310 50, 290 42, 252 44 C214 42, 194 50, 180 70Z" fill="#1A0C04"/>
+            <ellipse cx="224" cy="82" rx="24" ry="26" fill="#fff"/>
+            <ellipse cx="280" cy="82" rx="24" ry="26" fill="#fff"/>
+            <ellipse cx="228" cy="86" rx="10" ry="11" fill="#0a0604"/>
+            <ellipse cx="276" cy="86" rx="10" ry="11" fill="#0a0604"/>
+            <text x="10" y="100" font-family="Arial Black, sans-serif" font-size="86" font-weight="900" fill="none" stroke="#000" stroke-width="8">100</text>
+            <text x="10" y="100" font-family="Arial Black, sans-serif" font-size="86" font-weight="900" fill="#fff">100</text>
+            <rect x="0" y="108" width="185" height="40" fill="#CC0000"/>
+            <text x="10" y="138" font-family="Arial Black, sans-serif" font-size="30" font-weight="900" fill="#fff">DAYS</text>
+          </svg>
+          <span class="t-badge">Video</span>
+          <span class="t-dur">34:12</span>
+          <div class="t-btns">
+            <button class="t-btn"><svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 2h8a1 1 0 011 1v10l-5-3-5 3V3a1 1 0 011-1z"/></svg></button>
+            <button class="t-btn"><svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 3l6 6M9 3l-6 6"/></svg></button>
+          </div>
+        </div>
+        <div class="c-body">
+          <div class="c-meta"><span class="c-pill">Minecraft</span><span class="c-dot">·</span><span class="c-src">SB737</span></div>
+          <h2 class="c-title">I Spent 100 Days in a Diamond Only World</h2>
+          <p class="c-hook">The day-60 collapse is where this gets genuinely tense.</p>
+          <div class="c-foot"><span class="c-time">34 min · added 1h ago</span></div>
+        </div>
+      </div>
+
+      <!-- LIVE + SAVED -->
+      <div class="card" style="margin:0">
+        <div class="thumb">
+          <svg viewBox="0 0 343 193"><defs><linearGradient id="ipb2" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#FFD700"/><stop offset="100%" stop-color="#E8A000"/></linearGradient></defs>
+            <rect width="343" height="193" fill="url(#ipb2)"/>
+            <rect x="0" y="0" width="205" height="38" fill="#FFD700"/>
+            <text x="10" y="26" font-family="Arial Black" font-size="18" font-weight="900" fill="#000">REDSTONE MEGA-BUILD</text>
+            <rect x="0" y="38" width="205" height="32" fill="rgba(0,0,0,0.78)"/>
+            <text x="10" y="60" font-family="Arial Black" font-size="16" font-weight="900" fill="#FFD700">EP 7</text>
+            <ellipse cx="255" cy="108" rx="70" ry="76" fill="#E8B080"/>
+            <path d="M192 70 C196 44, 220 30, 255 30 C290 30, 314 44, 318 70 L318 84 C302 66, 280 58, 255 60 C230 58, 208 66, 192 84Z" fill="#3A2010"/>
+            <ellipse cx="232" cy="96" rx="18" ry="20" fill="#fff"/>
+            <ellipse cx="278" cy="96" rx="18" ry="20" fill="#fff"/>
+            <ellipse cx="234" cy="98" rx="10" ry="11" fill="#2A1508"/>
+            <ellipse cx="276" cy="98" rx="10" ry="11" fill="#2A1508"/>
+          </svg>
+          <span class="t-badge">Video</span>
+          <span class="t-dur">26:14</span>
+          <div class="t-btns">
+            <button class="t-btn saved"><svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor"><path d="M3 2h8a1 1 0 011 1v10l-5-3-5 3V3a1 1 0 011-1z"/></svg></button>
+            <button class="t-btn"><svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 3l6 6M9 3l-6 6"/></svg></button>
+          </div>
+        </div>
+        <div class="c-body">
+          <div class="c-meta"><span class="c-pill">Minecraft</span><span class="c-dot">·</span><span class="c-src">Mumbo Jumbo</span></div>
+          <h2 class="c-title">The Only Redstone Tutorial You'll Ever Need</h2>
+          <p class="c-hook">Covers the timing gates you kept rewinding last week.</p>
+          <div class="c-foot"><span class="c-time">26 min · added 3h ago</span></div>
+        </div>
+      </div>
+
+      <!-- WATCHED -->
+      <div class="card" style="margin:0">
+        <div class="thumb">
+          <svg viewBox="0 0 343 193"><defs><radialGradient id="ipb3" cx="50%" cy="50%" r="70%"><stop offset="0%" stop-color="#1a3a6a"/><stop offset="100%" stop-color="#050820"/></radialGradient></defs>
+            <rect width="343" height="193" fill="url(#ipb3)"/>
+            <circle cx="80" cy="80" r="1.5" fill="#fff" opacity="0.8"/>
+            <circle cx="240" cy="40" r="1" fill="#fff" opacity="0.7"/>
+            <circle cx="300" cy="120" r="2" fill="#fff" opacity="0.9"/>
+            <circle cx="170" cy="96" r="60" fill="#D4905A"/>
+            <circle cx="170" cy="96" r="60" fill="url(#ipb3)" opacity="0.4"/>
+            <text x="40" y="50" font-family="Arial Black" font-size="26" font-weight="900" fill="#fff">EDGE of</text>
+            <text x="40" y="78" font-family="Arial Black" font-size="26" font-weight="900" fill="#fff">SPACE?</text>
+          </svg>
+          <div class="w-overlay">
+            <div class="w-check"><svg width="18" height="18" viewBox="0 0 18 18" fill="none"><polyline points="4,9 7.5,13 14,5.5" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+          </div>
+          <div class="w-badge">Watched 2h ago</div>
+          <div class="w-bar"><div class="w-fill" style="width:100%"></div></div>
+        </div>
+        <div class="c-body">
+          <div class="c-meta"><span class="c-pill">Space</span><span class="c-dot">·</span><span class="c-src">Veritasium</span></div>
+          <h2 class="c-title dim">Is There an Edge to Space?</h2>
+          <p class="c-hook dim">Turns on whether the universe curves back on itself.</p>
+          <div class="c-foot"><span class="c-time">19 min · watched this morning</span></div>
+        </div>
+      </div>
+
+      <!-- RECYCLED -->
+      <div class="card recycled" style="margin:0">
+        <div class="thumb">
+          <svg viewBox="0 0 343 193"><defs><linearGradient id="ipb4" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stop-color="#00AA44"/><stop offset="100%" stop-color="#004422"/></linearGradient></defs>
+            <rect width="343" height="193" fill="url(#ipb4)"/>
+            <rect x="20" y="28" width="110" height="110" fill="#44BB44"/>
+            <rect x="38" y="52" width="28" height="28" fill="#000"/>
+            <rect x="82" y="52" width="28" height="28" fill="#000"/>
+            <rect x="48" y="92" width="12" height="28" fill="#000"/>
+            <rect x="60" y="104" width="28" height="16" fill="#000"/>
+            <rect x="88" y="92" width="12" height="28" fill="#000"/>
+            <ellipse cx="255" cy="90" rx="72" ry="76" fill="#F0C090"/>
+          </svg>
+          <span class="t-badge">Video</span>
+          <div class="rc-panel">
+            <span class="rc-label">
+              <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M2 5a3 3 0 016 0M5 8V5"/><circle cx="5" cy="8.5" r="0.7" fill="currentColor"/></svg>
+              Recycled
+            </span>
+            <button class="rc-restore">
+              <svg width="11" height="11" viewBox="0 0 11 11" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M1.5 5.5a4 4 0 118 0M9.5 3v2.5H7"/></svg>
+              Restore
+            </button>
+          </div>
+        </div>
+        <div class="c-body">
+          <div class="c-meta"><span class="c-pill">Minecraft</span><span class="c-dot">·</span><span class="c-src">Dream</span></div>
+          <h2 class="c-title dim">Minecraft Manhunt Extra Scenes</h2>
+          <p class="c-hook dim">Sent by Alex · file cleaned up to save space.</p>
+          <div class="c-foot"><span class="c-time">24 min · added 2 days ago</span></div>
+        </div>
+      </div>
+
+    </div>
+
+    <hr class="div-row" style="margin:4px 16px 16px">
+    <div class="day-lbl" style="padding-left:16px">
+      <span class="day-main">Yesterday</span>
+      <span class="day-date">Tue 15 Apr</span>
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;padding:0 0 20px">
+
+      <!-- GONE -->
+      <div class="card gone" style="margin:0">
+        <div class="thumb">
+          <svg viewBox="0 0 343 193"><defs><linearGradient id="ipb5" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#AA2222"/><stop offset="100%" stop-color="#551111"/></linearGradient></defs>
+            <rect width="343" height="193" fill="url(#ipb5)"/>
+            <ellipse cx="180" cy="96" rx="80" ry="60" fill="#FF4444" opacity="0.3"/>
+            <text x="30" y="120" font-family="Arial Black" font-size="42" font-weight="900" fill="#fff" opacity="0.7">OMG</text>
+          </svg>
+          <span class="t-badge">Video</span>
+          <div class="gn-center">
+            <svg width="22" height="22" viewBox="0 0 22 22" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="M5 5l12 12"/></svg>
+            <span class="gn-label">No longer available</span>
+          </div>
+        </div>
+        <div class="c-body">
+          <div class="c-meta"><span class="c-pill">Minecraft</span><span class="c-dot">·</span><span class="c-src">Unknown channel</span></div>
+          <h2 class="c-title">OMG THIS IS INSANE (MUST WATCH)</h2>
+          <p class="c-hook">Removed from YouTube since you added it.</p>
+          <div class="c-foot"><span class="c-time">added yesterday</span></div>
+        </div>
+      </div>
+
+      <!-- Another live -->
+      <div class="card" style="margin:0">
+        <div class="thumb">
+          <svg viewBox="0 0 343 193"><defs><radialGradient id="ipb6" cx="50%" cy="50%" r="70%"><stop offset="0%" stop-color="#3A7D5A"/><stop offset="100%" stop-color="#1A3A2A"/></radialGradient></defs>
+            <rect width="343" height="193" fill="url(#ipb6)"/>
+            <circle cx="170" cy="100" r="70" fill="#B5E8C8" opacity="0.2"/>
+            <text x="30" y="60" font-family="Arial Black" font-size="26" font-weight="900" fill="#fff">WHY do PLANTS</text>
+            <text x="30" y="92" font-family="Arial Black" font-size="26" font-weight="900" fill="#fff">WASTE SUNLIGHT?</text>
+            <rect x="0" y="173" width="343" height="20" fill="rgba(0,0,0,0.65)"/>
+            <text x="8" y="186" font-family="DM Sans" font-size="11" font-weight="700" fill="rgba(255,255,255,0.9)">SciShow Kids</text>
+          </svg>
+          <span class="t-badge">Video</span>
+          <span class="t-dur">8:24</span>
+          <div class="t-btns">
+            <button class="t-btn"><svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 2h8a1 1 0 011 1v10l-5-3-5 3V3a1 1 0 011-1z"/></svg></button>
+            <button class="t-btn"><svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 3l6 6M9 3l-6 6"/></svg></button>
+          </div>
+        </div>
+        <div class="c-body">
+          <div class="c-meta"><span class="c-pill">Science</span><span class="c-dot">·</span><span class="c-src">SciShow Kids</span></div>
+          <h2 class="c-title">Why Do Plants Waste Sunlight?</h2>
+          <p class="c-hook">Short answer: they don't — but the photosynthesis efficiency limit is weirder than you'd guess.</p>
+          <div class="c-foot"><span class="c-time">8 min · added yesterday</span></div>
+        </div>
+      </div>
+
+    </div>
+
+  </div>
+
+  <div class="b-nav">
+    <div class="n-item on">
+      <div class="n-icon"><svg width="24" height="24" viewBox="0 0 22 22" fill="none"><rect x="3" y="4" width="16" height="3" rx="1" fill="currentColor"/><rect x="3" y="10" width="16" height="3" rx="1" fill="currentColor"/><rect x="3" y="16" width="10" height="3" rx="1" fill="currentColor"/></svg></div>
+      <span class="n-lbl">Feed</span>
+    </div>
+    <div class="n-item">
+      <div class="n-icon"><svg width="24" height="24" viewBox="0 0 22 22" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3h12a1 1 0 011 1v15l-6.5-3.5L5 19V4a1 1 0 011-1z"/></svg></div>
+      <span class="n-lbl">Saved</span>
+    </div>
+  </div>
+
+</div>
+</div>
+<p class="ph-lbl">iPad — two-column portrait<span class="desc">Same grid, denser. No magazine mode.</span></p>
+</div>
+
+</div><!-- /grid -->
+
+</body>
+</html>

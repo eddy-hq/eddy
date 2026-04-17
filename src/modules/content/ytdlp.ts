@@ -1,5 +1,6 @@
 import { execFile, spawn } from 'child_process';
 import { promisify } from 'util';
+import fs from 'fs';
 import path from 'path';
 import { config } from '../../config';
 import { logger } from '../../logger';
@@ -129,6 +130,19 @@ export async function downloadVideo(
 ): Promise<string> {
   const outputDir = config.VIDEO_OUTPUT_PATH;
   const outputPath = path.join(outputDir, `${youtubeId}.mp4`);
+
+  // Idempotent: if the file already exists (e.g. M4 rebooted mid-callback),
+  // skip yt-dlp and return the path so the callback can be retried cheaply.
+  try {
+    const stat = fs.statSync(outputPath);
+    if (stat.size > 0) {
+      logger.info({ youtubeId, outputPath }, 'File already exists — skipping download');
+      onProgress?.(100);
+      return Promise.resolve(outputPath);
+    }
+  } catch {
+    // file does not exist — proceed with download
+  }
 
   logger.info({ youtubeId, outputPath }, 'Starting yt-dlp download');
 
