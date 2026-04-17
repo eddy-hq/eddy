@@ -2,9 +2,11 @@ import React from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { AnimatePresence } from 'framer-motion';
-import { Card, type CardData } from '../components/Card';
+import { Card } from '../components/Card';
+import { VideoDetailSheet } from '../components/VideoDetailSheet';
 import { BottomNav } from '../components/BottomNav';
 import { AppHeader } from '../components/AppHeader';
+import { useVideoSheet } from '../hooks/useVideoSheet';
 
 interface FeedCard {
   request_id: string;
@@ -62,6 +64,7 @@ function groupByPeriod(cards: FeedCard[]): { thisWeek: FeedCard[]; earlier: Feed
 export function Saved() {
   const [params] = useSearchParams();
   const user = params.get('userId') ?? params.get('user') ?? '';
+  const { selectedCard, onSelect, onClose } = useVideoSheet();
 
   const { data, isLoading, isError } = useQuery({
     queryKey: ['feed', user],
@@ -122,7 +125,15 @@ export function Saved() {
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 14, padding: '8px 16px 0' }}>
                   <AnimatePresence mode="popLayout">
-                    {thisWeek.map(row => <Card key={row.request_id} data={toCardData(row)} />)}
+                    {thisWeek.map(row => (
+                      <Card
+                        key={row.request_id}
+                        data={toCardData(row)}
+                        userId={user}
+                        onSelect={onSelect}
+                        isSelected={selectedCard?.requestId === row.request_id}
+                      />
+                    ))}
                   </AnimatePresence>
                 </div>
               </section>
@@ -134,7 +145,15 @@ export function Saved() {
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 14, padding: '8px 16px 0' }}>
                   <AnimatePresence mode="popLayout">
-                    {earlier.map(row => <Card key={row.request_id} data={toCardData(row)} />)}
+                    {earlier.map(row => (
+                      <Card
+                        key={row.request_id}
+                        data={toCardData(row)}
+                        userId={user}
+                        onSelect={onSelect}
+                        isSelected={selectedCard?.requestId === row.request_id}
+                      />
+                    ))}
                   </AnimatePresence>
                 </div>
               </section>
@@ -144,6 +163,17 @@ export function Saved() {
       </div>
 
       <BottomNav />
+
+      <AnimatePresence>
+        {selectedCard && (
+          <VideoDetailSheet
+            key={selectedCard.requestId}
+            card={selectedCard}
+            userId={user}
+            onClose={onClose}
+          />
+        )}
+      </AnimatePresence>
     </div>
   );
 }

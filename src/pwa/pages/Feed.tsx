@@ -6,6 +6,7 @@ import { Card, type CardData } from '../components/Card';
 import { VideoDetailSheet } from '../components/VideoDetailSheet';
 import { BottomNav } from '../components/BottomNav';
 import { AppHeader } from '../components/AppHeader';
+import { useVideoSheet } from '../hooks/useVideoSheet';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -88,7 +89,7 @@ const CHIPS_H = 54; // px — padding 12 top/bottom + chip ~30
 export function Feed() {
   const [params] = useSearchParams();
   const [activeChip, setActiveChip] = useState('All');
-  const [selectedCard, setSelectedCard] = useState<CardData | null>(null);
+  const { selectedCard, onSelect, onClose } = useVideoSheet();
   const chipsVisible = useScrollDirection();
   const user = params.get('userId') ?? params.get('user') ?? '';
 
@@ -172,7 +173,8 @@ export function Feed() {
               cards={dayCards(day)}
               showDivider={i > 0}
               selectedId={selectedCard?.requestId ?? null}
-              onSelect={setSelectedCard}
+              onSelect={onSelect}
+              userId={user}
             />
           ))
         )}
@@ -185,7 +187,8 @@ export function Feed() {
           <VideoDetailSheet
             key={selectedCard.requestId}
             card={selectedCard}
-            onClose={() => setSelectedCard(null)}
+            userId={user}
+            onClose={onClose}
           />
         )}
       </AnimatePresence>
@@ -196,13 +199,14 @@ export function Feed() {
 // ── Day group ────────────────────────────────────────────────────────────────
 
 function DayGroup({
-  day, cards, showDivider, selectedId, onSelect,
+  day, cards, showDivider, selectedId, onSelect, userId,
 }: {
   day: Day;
   cards: FeedCard[];
   showDivider: boolean;
   selectedId: string | null;
   onSelect: (data: CardData) => void;
+  userId: string;
 }) {
   const lbl = day.label;
   const dateObj = new Date(day.date + 'T12:00:00');
@@ -236,6 +240,7 @@ function DayGroup({
             <Card
               key={row.request_id}
               data={toCardData(row)}
+              userId={userId}
               onSelect={onSelect}
               isSelected={selectedId === row.request_id}
             />

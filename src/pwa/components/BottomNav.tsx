@@ -31,7 +31,7 @@ export function BottomNav() {
       backdropFilter: 'blur(22px)', WebkitBackdropFilter: 'blur(22px)',
       borderTop: '1px solid var(--border-subtle)',
       display: 'flex', alignItems: 'flex-start', paddingTop: 10,
-      zIndex: 20, background: 'var(--nav-bg)',
+      zIndex: 40, background: 'var(--nav-bg)',
     }}>
       <button onClick={() => goTo('/feed')} style={tabStyle} aria-label="Feed">
         <span style={{ width: 26, height: 26, display: 'flex', alignItems: 'center', justifyContent: 'center', color: isFeed ? 'var(--accent)' : 'var(--text-tertiary)' }}>

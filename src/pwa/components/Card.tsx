@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
+import { readProgress, onProgressChange } from '../lib/videoProgress';
 
 export interface CardData {
   requestId: string;
@@ -55,10 +56,12 @@ function useDownloadProgress(requestId: string, active: boolean): PollResult {
 
 export function Card({
   data,
+  userId,
   onSelect,
   isSelected = false,
 }: {
   data: CardData;
+  userId?: string;
   onSelect?: (data: CardData) => void;
   isSelected?: boolean;
 }) {
@@ -78,6 +81,21 @@ export function Card({
   const thumbnail = data.youtubeId
     ? `https://i.ytimg.com/vi/${data.youtubeId}/hqdefault.jpg`
     : null;
+
+  const [progressFraction, setProgressFraction] = useState<number>(() => {
+    if (!userId) return 0;
+    const p = readProgress(userId, data.requestId);
+    return p && p.duration > 0 ? p.position / p.duration : 0;
+  });
+
+  useEffect(() => {
+    if (!userId) return;
+    return onProgressChange(userId, data.requestId, (p) => {
+      setProgressFraction(p && p.duration > 0 ? p.position / p.duration : 0);
+    });
+  }, [userId, data.requestId]);
+
+  const showProgressBar = isLive && !isWatched && progressFraction > 0.01 && progressFraction < 0.95;
 
   const greyRight = pct === null ? 100 : Math.max(0, 100 - pct);
 
@@ -217,6 +235,13 @@ export function Card({
                 </button>
               </div>
             </>
+          )}
+
+          {/* Partial-watch progress bar */}
+          {showProgressBar && (
+            <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, height: 3, background: 'rgba(255,255,255,0.14)', zIndex: 1 }}>
+              <div style={{ height: '100%', width: `${progressFraction * 100}%`, background: 'var(--accent)', transition: 'width 0.5s ease' }} />
+            </div>
           )}
 
           {/* Gone overlay */}
