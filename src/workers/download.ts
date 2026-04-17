@@ -36,6 +36,21 @@ interface RejectPayload {
   reason: string;
 }
 
+interface GuardScorePayload {
+  requestId: string;
+  url: string;
+  title: string;
+  channel: string;
+  description: string;
+  transcript: string | null;
+}
+
+interface GuardScoreResponse {
+  proceed: boolean;
+  verdict: string;
+  reason: string;
+}
+
 function signBody(body: string): string {
   return `sha256=${crypto
     .createHmac('sha256', config.INTERNAL_HMAC_SECRET)
@@ -66,6 +81,33 @@ async function postCallback(payload: CallbackPayload): Promise<void> {
   if (!resp.ok) {
     throw new Error(`M4 callback returned ${resp.status}`);
   }
+}
+
+async function postGuardScore(payload: GuardScorePayload): Promise<GuardScoreResponse> {
+  const baseUrl = config.M4_INTERNAL_URL;
+  if (!baseUrl) {
+    logger.debug('M4_INTERNAL_URL not set — skipping guard score');
+    return { proceed: true, verdict: 'uncertain', reason: 'Guard not configured' };
+  }
+
+  const url = `${baseUrl}/internal/guard/score`;
+  const body = JSON.stringify(payload);
+
+  const resp = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Eddy-Signature': signBody(body),
+    },
+    body,
+    signal: AbortSignal.timeout(30_000),
+  });
+
+  if (!resp.ok) {
+    throw new Error(`Guard score returned ${resp.status}`);
+  }
+
+  return (await resp.json()) as GuardScoreResponse;
 }
 
 async function postRejectCallback(payload: RejectPayload): Promise<void> {
@@ -114,6 +156,30 @@ async function processJob(job: Job<DownloadJobData>): Promise<void> {
       return;
     }
     throw err;
+  }
+
+  // Guard score — runs before download; shadow mode always proceeds
+  let guardResult: GuardScoreResponse;
+  try {
+    guardResult = await postGuardScore({
+      requestId,
+      url,
+      title: metadata.title,
+      channel: metadata.channel,
+      description: metadata.description,
+      transcript: metadata.transcript,
+    });
+    log.info({ verdict: guardResult.verdict }, 'Guard scored');
+  } catch (err) {
+    log.warn({ err }, 'Guard score failed — proceeding (shadow mode)');
+    guardResult = { proceed: true, verdict: 'uncertain', reason: 'Guard error' };
+  }
+
+  if (!guardResult.proceed) {
+    await postRejectCallback({ requestId, reason: guardResult.reason }).catch((cbErr: unknown) =>
+      log.error({ cbErr }, 'Failed to post guard rejection callback')
+    );
+    return;
   }
 
   // Download directly to output directory

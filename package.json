@@ -13,7 +13,8 @@
     "lint": "eslint src",
     "test": "vitest run --passWithNoTests",
     "health": "bash scripts/healthcheck.sh",
-    "worker": "tsx src/workers/download.ts"
+    "worker": "tsx src/workers/download.ts",
+    "label-guard": "tsx src/scripts/label-guard.ts"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.99.0",

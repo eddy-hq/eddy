@@ -6,6 +6,7 @@ import { config } from '../../config';
 import { downloadQueue } from '../../queue';
 import { sendVideoReady } from '../notifications';
 import { checkStuckDownloads } from '../watchdog';
+import { scoreForRequest } from '../guard';
 import type { DownloadJobData } from '../content';
 
 export const internalRouter = Router();
@@ -218,4 +219,56 @@ internalRouter.post('/watchdog/run', (_req: Request, res: Response) => {
     logger.error({ err }, 'Manual watchdog check failed');
   });
   res.json({ ok: true, message: 'Watchdog check triggered' });
+});
+
+interface GuardScorePayload {
+  requestId: string;
+  url: string;
+  title: string;
+  channel: string;
+  description: string;
+  transcript: string | null;
+}
+
+// POST /internal/guard/score — called by Ubuntu worker after metadata fetch, before download.
+// Shadow mode (Phase 3): always returns proceed:true. Phase 6: flip to return real verdict.
+internalRouter.post('/guard/score', async (req: Request, res: Response) => {
+  const sig = req.headers['x-eddy-signature'];
+  if (!sig || typeof sig !== 'string') {
+    return res.status(401).json({ error: 'Missing signature' });
+  }
+
+  const rawBody = (req as Request & { rawBody?: Buffer }).rawBody;
+  if (!rawBody) return res.status(400).json({ error: 'No body' });
+
+  if (!verifyHmac(rawBody, sig)) {
+    logger.warn('HMAC verification failed on guard score request');
+    return res.status(401).json({ error: 'Invalid signature' });
+  }
+
+  let payload: GuardScorePayload;
+  try {
+    payload = JSON.parse(rawBody.toString()) as GuardScorePayload;
+  } catch {
+    return res.status(400).json({ error: 'Invalid JSON' });
+  }
+
+  const row = db.prepare('SELECT user_id FROM requests WHERE request_id = ?')
+    .get(payload.requestId) as { user_id: string } | undefined;
+
+  if (!row) {
+    return res.status(404).json({ error: 'Request not found' });
+  }
+
+  let verdict;
+  try {
+    verdict = await scoreForRequest({ ...payload, userId: row.user_id });
+  } catch (err) {
+    logger.error({ err, requestId: payload.requestId }, 'Guard score endpoint error');
+    // Never block a download in shadow mode
+    return res.json({ proceed: true, verdict: 'uncertain', reason: 'Guard error' });
+  }
+
+  // Shadow mode: always proceed regardless of verdict
+  res.json({ proceed: true, verdict: verdict.verdict, reason: verdict.reason });
 });
