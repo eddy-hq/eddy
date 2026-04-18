@@ -36,8 +36,9 @@ const schema = z.object({
   // Thumbnails — generated post-download, served by nginx alongside videos
   THUMB_OUTPUT_PATH: z.string().default('/mnt/ssd/eddy/thumbs'),
   NGINX_THUMB_BASE_URL: z.string().optional(),
-  EDDY_THUMB_SOURCE_WIDTH: z.coerce.number().int().min(8).max(256).default(48),
-  EDDY_THUMB_UPSCALE: z.coerce.number().int().min(1).max(32).default(16),
+  EDDY_THUMB_BLUR_SIGMA: z.coerce.number().min(0).max(200).default(45),
+  EDDY_THUMB_SATURATION: z.coerce.number().min(0).max(3).default(0.55),
+  EDDY_THUMB_BRIGHTNESS: z.coerce.number().min(-1).max(1).default(-0.06),
   // Internal M4 ↔ Ubuntu worker callback
   INTERNAL_HMAC_SECRET: z.string().min(32, 'INTERNAL_HMAC_SECRET must be at least 32 characters'),
   M4_INTERNAL_URL: z.string().optional(), // set on Ubuntu worker; not required on M4

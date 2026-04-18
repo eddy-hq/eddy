@@ -46,9 +46,10 @@ export async function generateThumbnail(
     return null;
   }
 
-  const srcWidth = config.EDDY_THUMB_SOURCE_WIDTH;
-  const upscale = config.EDDY_THUMB_UPSCALE;
-  const vf = `scale=${srcWidth}:-1:flags=area,scale=iw*${upscale}:-1:flags=neighbor`;
+  const sigma = config.EDDY_THUMB_BLUR_SIGMA;
+  const saturation = config.EDDY_THUMB_SATURATION;
+  const brightness = config.EDDY_THUMB_BRIGHTNESS;
+  const vf = `gblur=sigma=${sigma},eq=saturation=${saturation}:brightness=${brightness}`;
 
   let lastErr: unknown;
   for (let attempt = 0; attempt < 2; attempt++) {

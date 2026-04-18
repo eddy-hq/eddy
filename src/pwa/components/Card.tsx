@@ -146,7 +146,6 @@ export function Card({
             style={{
               position: 'absolute', inset: 0,
               width: '100%', height: '100%', objectFit: 'cover',
-              imageRendering: 'pixelated',
               filter: (isRecycled || (isDownloading && !downloadDone))
                 ? 'grayscale(1) opacity(0.4)'
                 : isGone ? 'grayscale(1) opacity(0.2)'
