@@ -36,7 +36,7 @@ async function run(): Promise<void> {
     pending: Array<{ youtube_id: string; file_path: string; duration_secs: number }>;
   };
 
-  logger.info({ count: pending.length }, 'Starting thumbnail backfill');
+  logger.info({ count: pending.length, force }, 'Starting thumbnail backfill');
 
   let ok = 0;
   let failed = 0;

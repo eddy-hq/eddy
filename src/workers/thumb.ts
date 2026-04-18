@@ -26,7 +26,12 @@ export async function generateThumbnail(
   }
 
   if (!force && fs.existsSync(thumbPath)) {
+    log.debug({ youtubeId }, 'Thumbnail already exists — skipping');
     return buildThumbUrl(youtubeId);
+  }
+
+  if (force && fs.existsSync(thumbPath)) {
+    log.info({ youtubeId }, 'Force mode — regenerating existing thumbnail');
   }
 
   const seekSecs = Math.max(0, Math.floor(durationSecs * 0.25));
