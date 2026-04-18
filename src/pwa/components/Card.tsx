@@ -111,6 +111,9 @@ export function Card({
 
   const showProgressBar = isLive && !isWatched && progressFraction > 0.01 && progressFraction < 0.95;
 
+  const effectiveThumbnailUrl = data.thumbnailUrl
+    ?? (data.youtubeId ? `https://i.ytimg.com/vi/${data.youtubeId}/hqdefault.jpg` : null);
+
   function handleTap() {
     if (!effectivelyLive) return;
     if (onSelect) onSelect(data);
@@ -152,9 +155,9 @@ export function Card({
           transition={{ duration: 0.3, ease: [0.33, 1, 0.68, 1] }}
           style={{ position: 'absolute', inset: 0 }}
         >
-          {data.thumbnailUrl && (
+          {effectiveThumbnailUrl && (
             <img
-              src={data.thumbnailUrl} alt=""
+              src={effectiveThumbnailUrl} alt=""
               style={{
                 width: '100%', height: '100%', objectFit: 'cover',
                 filter: (isRecycled || (isDownloading && !downloadDone))
@@ -168,10 +171,15 @@ export function Card({
           )}
         </motion.div>
 
-        {/* Gradient — fades image into CARD_BG at the bottom */}
+        {/* Gradient — dark vignette from all sides, stronger at bottom for text */}
         <div style={{
           position: 'absolute', inset: 0, pointerEvents: 'none',
-          background: `linear-gradient(to top, ${CARD_BG} 0%, rgba(10,10,10,0.55) 38%, rgba(10,10,10,0) 68%)`,
+          background: `
+            linear-gradient(to top,    ${CARD_BG} 0%, rgba(10,10,10,0.6) 40%, rgba(10,10,10,0) 70%),
+            linear-gradient(to bottom, rgba(10,10,10,0.45) 0%, rgba(10,10,10,0) 35%),
+            linear-gradient(to right,  rgba(10,10,10,0.35) 0%, rgba(10,10,10,0) 30%),
+            linear-gradient(to left,   rgba(10,10,10,0.35) 0%, rgba(10,10,10,0) 30%)
+          `,
         }} />
 
         {/* Type badge — top right */}

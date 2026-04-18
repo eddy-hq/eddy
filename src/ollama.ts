@@ -6,6 +6,7 @@ interface OllamaGenerateRequest {
   model: string;
   prompt: string;
   stream: boolean;
+  images?: string[];
 }
 
 interface OllamaGenerateResponse {
@@ -19,14 +20,17 @@ interface OllamaTagsResponse {
 
 export async function ollamaGenerate(
   prompt: string,
-  model = config.OLLAMA_GUARD_MODEL
+  model = config.OLLAMA_GUARD_MODEL,
+  images?: string[],
 ): Promise<string> {
   let response: Response;
   try {
+    const body: OllamaGenerateRequest = { model, prompt, stream: false };
+    if (images?.length) body.images = images;
     response = await fetch(`${config.OLLAMA_URL}/api/generate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model, prompt, stream: false } satisfies OllamaGenerateRequest),
+      body: JSON.stringify(body),
     });
   } catch (err) {
     throw new GuardError(`Ollama unreachable: ${String(err)}`);

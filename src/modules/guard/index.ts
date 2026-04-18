@@ -2,6 +2,7 @@ import { v7 as uuidv7 } from 'uuid';
 import { db } from '../../db/client';
 import { logger } from '../../logger';
 import { ollamaGenerate } from '../../ollama';
+import { config } from '../../config';
 
 export const PROMPT_VERSION = 'v1';
 
@@ -149,4 +150,54 @@ export async function scoreForRequest(params: ScoreParams): Promise<GuardVerdict
   );
 
   return verdict;
+}
+
+const THUMB_CLASSIFY_PROMPT = `Look at this YouTube thumbnail image.
+
+Classify it as either "editorial" or "slop".
+
+Editorial: clean photography or illustration, minimal/no text overlay, artistic or journalistic composition — the image speaks for itself.
+Slop: exaggerated facial expressions (open mouth, wide eyes), heavy text overlays, arrows or circles highlighting things, bright clashing colours, clickbait composition.
+
+Return ONLY valid JSON with no other text:
+{
+  "style": "editorial" or "slop",
+  "confidence": 0.0 to 1.0
+}`;
+
+export type ThumbStyle = 'editorial' | 'slop';
+
+export async function classifyThumbnail(youtubeId: string): Promise<ThumbStyle> {
+  const thumbUrl = `https://i.ytimg.com/vi/${youtubeId}/hqdefault.jpg`;
+
+  let imageBase64: string;
+  try {
+    const resp = await fetch(thumbUrl, { signal: AbortSignal.timeout(10_000) });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    imageBase64 = Buffer.from(await resp.arrayBuffer()).toString('base64');
+  } catch (err) {
+    logger.warn({ err, youtubeId }, 'Failed to fetch YT thumbnail for classification');
+    return 'slop';
+  }
+
+  let raw: string;
+  try {
+    raw = await ollamaGenerate(THUMB_CLASSIFY_PROMPT, config.OLLAMA_GUARD_MODEL, [imageBase64]);
+  } catch (err) {
+    logger.warn({ err, youtubeId }, 'Ollama thumb classification failed');
+    return 'slop';
+  }
+
+  try {
+    const match = raw.match(/\{[\s\S]*\}/);
+    if (!match) throw new Error('No JSON in response');
+    const parsed = JSON.parse(match[0]) as Record<string, unknown>;
+    const style = parsed['style'];
+    if (style !== 'editorial' && style !== 'slop') throw new Error(`Unexpected style: ${String(style)}`);
+    logger.debug({ youtubeId, style, confidence: parsed['confidence'] }, 'Thumbnail classified');
+    return style;
+  } catch (err) {
+    logger.warn({ err, youtubeId, raw }, 'Failed to parse thumb classification response');
+    return 'slop';
+  }
 }

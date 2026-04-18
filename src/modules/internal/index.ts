@@ -6,7 +6,7 @@ import { config } from '../../config';
 import { downloadQueue } from '../../queue';
 import { sendVideoReady } from '../notifications';
 import { checkStuckDownloads } from '../watchdog';
-import { scoreForRequest } from '../guard';
+import { scoreForRequest, classifyThumbnail } from '../guard';
 import type { DownloadJobData } from '../content';
 
 export const internalRouter = Router();
@@ -263,6 +263,30 @@ internalRouter.post('/backfill/thumb/:youtube_id', (req: Request, res: Response)
 
   logger.info({ youtubeId: req.params['youtube_id'] }, 'Thumbnail backfilled via worker');
   res.status(204).end();
+});
+
+// POST /internal/thumb/classify — called by Ubuntu worker; fetches YT thumbnail, classifies with Gemma vision
+internalRouter.post('/thumb/classify', async (req: Request, res: Response) => {
+  const sig = req.headers['x-eddy-signature'];
+  if (!sig || typeof sig !== 'string') return res.status(401).json({ error: 'Missing signature' });
+
+  const rawBody = (req as Request & { rawBody?: Buffer }).rawBody;
+  if (!rawBody) return res.status(400).json({ error: 'No body' });
+
+  if (!verifyHmac(rawBody, sig)) {
+    logger.warn('HMAC verification failed on thumb classify request');
+    return res.status(401).json({ error: 'Invalid signature' });
+  }
+
+  let payload: { youtubeId: string };
+  try {
+    payload = JSON.parse(rawBody.toString()) as { youtubeId: string };
+  } catch {
+    return res.status(400).json({ error: 'Invalid JSON' });
+  }
+
+  const style = await classifyThumbnail(payload.youtubeId);
+  res.json({ style });
 });
 
 // POST /internal/watchdog/run — trigger an immediate watchdog check (for testing/ops)

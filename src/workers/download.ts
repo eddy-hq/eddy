@@ -8,6 +8,7 @@
  */
 import 'dotenv/config';
 import crypto from 'crypto';
+import fs from 'fs';
 import path from 'path';
 import { Worker, Job } from 'bullmq';
 import { redis, closeQueues } from '../queue';
@@ -51,6 +52,10 @@ interface GuardScoreResponse {
   proceed: boolean;
   verdict: string;
   reason: string;
+}
+
+interface ThumbClassifyResponse {
+  style: 'editorial' | 'slop';
 }
 
 function signBody(body: string): string {
@@ -112,6 +117,25 @@ async function postGuardScore(payload: GuardScorePayload): Promise<GuardScoreRes
   return (await resp.json()) as GuardScoreResponse;
 }
 
+async function postThumbClassify(youtubeId: string): Promise<ThumbClassifyResponse> {
+  const baseUrl = config.M4_INTERNAL_URL;
+  if (!baseUrl) return { style: 'slop' };
+
+  const body = JSON.stringify({ youtubeId });
+  const resp = await fetch(`${baseUrl}/internal/thumb/classify`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Eddy-Signature': signBody(body),
+    },
+    body,
+    signal: AbortSignal.timeout(60_000),
+  });
+
+  if (!resp.ok) throw new Error(`Thumb classify returned ${resp.status}`);
+  return (await resp.json()) as ThumbClassifyResponse;
+}
+
 async function postRejectCallback(payload: RejectPayload): Promise<void> {
   const baseUrl = config.M4_INTERNAL_URL;
   if (!baseUrl) {
@@ -143,6 +167,12 @@ async function processJob(job: Job<DownloadJobData>): Promise<void> {
 
   log.info('Picked up download job');
 
+  // Fire thumbnail classification immediately — youtubeId is known, runs while metadata+download proceed
+  const thumbClassifyPromise = postThumbClassify(youtubeId).catch((err) => {
+    log.warn({ err }, 'Thumb classify failed — will generate local thumbnail');
+    return { style: 'slop' as const };
+  });
+
   // Fetch metadata
   let metadata;
   try {
@@ -160,33 +190,24 @@ async function processJob(job: Job<DownloadJobData>): Promise<void> {
     throw err;
   }
 
-  // Guard score — runs before download; shadow mode always proceeds
-  let guardResult: GuardScoreResponse;
-  try {
-    guardResult = await postGuardScore({
-      requestId,
-      url,
-      title: metadata.title,
-      channel: metadata.channel,
-      description: metadata.description,
-      transcript: metadata.transcript,
-    });
-    log.info({ verdict: guardResult.verdict }, 'Guard scored');
-  } catch (err) {
-    log.warn({ err }, 'Guard score failed — proceeding (shadow mode)');
-    guardResult = { proceed: true, verdict: 'uncertain', reason: 'Guard error' };
-  }
-
-  if (!guardResult.proceed) {
-    await postRejectCallback({ requestId, reason: guardResult.reason }).catch((cbErr: unknown) =>
-      log.error({ cbErr }, 'Failed to post guard rejection callback')
-    );
-    return;
-  }
-
-  // Download directly to output directory
-  log.info('Downloading video');
+  // Start guard score and download concurrently — guard runs while video downloads
+  log.info('Starting guard score and download in parallel');
   await redis.set(PROGRESS_KEY(requestId), 0, 'EX', 3600);
+
+  const guardPromise = postGuardScore({
+    requestId,
+    url,
+    title: metadata.title,
+    channel: metadata.channel,
+    description: metadata.description,
+    transcript: metadata.transcript,
+  }).then((r) => {
+    log.info({ verdict: r.verdict }, 'Guard scored');
+    return r;
+  }).catch((err) => {
+    log.warn({ err }, 'Guard score failed — proceeding (shadow mode)');
+    return { proceed: true, verdict: 'uncertain', reason: 'Guard error' } as GuardScoreResponse;
+  });
 
   let filePath: string;
   try {
@@ -208,6 +229,23 @@ async function processJob(job: Job<DownloadJobData>): Promise<void> {
   }
 
   await redis.del(PROGRESS_KEY(requestId));
+
+  // Await guard result — usually already resolved by the time download finishes
+  const guardResult = await guardPromise;
+
+  if (!guardResult.proceed) {
+    log.warn({ verdict: guardResult.verdict, reason: guardResult.reason }, 'Guard blocked — deleting downloaded file');
+    try {
+      fs.unlinkSync(filePath);
+      log.info({ filePath }, 'Deleted blocked video file');
+    } catch (err) {
+      log.error({ err, filePath }, 'Failed to delete blocked video file');
+    }
+    await postRejectCallback({ requestId, reason: guardResult.reason }).catch((cbErr: unknown) =>
+      log.error({ cbErr }, 'Failed to post guard rejection callback')
+    );
+    return;
+  }
   log.info({ filePath }, 'Download complete');
 
   // Plex scan — localhost on Ubuntu
@@ -219,10 +257,16 @@ async function processJob(job: Job<DownloadJobData>): Promise<void> {
     ? `${nginxBase.replace(/\/$/, '')}/${path.basename(filePath)}`
     : null;
 
-  // Generate stylised thumbnail — best-effort, does not block or fail the pipeline
-  const thumbnailUrl = await generateThumbnail(youtubeId, filePath, metadata.durationSecs);
-  if (!thumbnailUrl) {
-    log.info({ youtubeId }, 'Thumbnail unavailable — continuing without it');
+  // Decide thumbnail: editorial YT CDN image or locally generated stylised frame
+  const thumbClassify = await thumbClassifyPromise;
+  let thumbnailUrl: string | null;
+
+  if (thumbClassify.style === 'editorial') {
+    thumbnailUrl = `https://i.ytimg.com/vi/${youtubeId}/maxresdefault.jpg`;
+    log.info({ youtubeId }, 'Editorial thumbnail — using YT CDN');
+  } else {
+    thumbnailUrl = await generateThumbnail(youtubeId, filePath, metadata.durationSecs);
+    if (!thumbnailUrl) log.info({ youtubeId }, 'Thumbnail unavailable — continuing without it');
   }
 
   // Callback to M4 — M4 writes SQLite and sends ntfy
