@@ -12,14 +12,19 @@ function signBody(body: string): string {
 }
 
 async function run(): Promise<void> {
+  const force = process.argv.includes('--force');
   const baseUrl = config.M4_INTERNAL_URL;
   if (!baseUrl) {
     logger.error('M4_INTERNAL_URL is not set — cannot reach the database');
     process.exit(1);
   }
 
+  const url = force
+    ? `${baseUrl}/internal/backfill/pending-thumbs?force=1`
+    : `${baseUrl}/internal/backfill/pending-thumbs`;
+
   // Fetch pending rows from M4
-  const listResp = await fetch(`${baseUrl}/internal/backfill/pending-thumbs`, {
+  const listResp = await fetch(url, {
     signal: AbortSignal.timeout(15_000),
   });
   if (!listResp.ok) {
@@ -37,7 +42,7 @@ async function run(): Promise<void> {
   let failed = 0;
 
   for (const row of pending) {
-    const thumbUrl = await generateThumbnail(row.youtube_id, row.file_path, row.duration_secs);
+    const thumbUrl = await generateThumbnail(row.youtube_id, row.file_path, row.duration_secs, { force });
 
     if (!thumbUrl) {
       failed++;

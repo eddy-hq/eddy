@@ -217,16 +217,18 @@ internalRouter.post('/requests/:id/retry', async (req: Request, res: Response) =
 });
 
 // GET /internal/backfill/pending-thumbs — list videos needing thumbnail generation (no HMAC, internal network only)
-internalRouter.get('/backfill/pending-thumbs', (_req: Request, res: Response) => {
+// ?force=1 returns all live videos regardless of whether thumbnail_url is already set
+internalRouter.get('/backfill/pending-thumbs', (req: Request, res: Response) => {
+  const force = req.query['force'] === '1';
   const rows = db.prepare(`
     SELECT youtube_id, file_path, duration_secs
     FROM requests
     WHERE file_state = 'live'
       AND status IN ('ready', 'watched')
-      AND thumbnail_url IS NULL
       AND file_path IS NOT NULL
       AND youtube_id IS NOT NULL
       AND duration_secs IS NOT NULL
+      ${force ? '' : 'AND thumbnail_url IS NULL'}
   `).all() as Array<{ youtube_id: string; file_path: string; duration_secs: number }>;
 
   res.json({ pending: rows });
@@ -256,7 +258,7 @@ internalRouter.post('/backfill/thumb/:youtube_id', (req: Request, res: Response)
 
   db.prepare(`
     UPDATE requests SET thumbnail_url = @thumbnail_url
-    WHERE youtube_id = @youtube_id AND thumbnail_url IS NULL
+    WHERE youtube_id = @youtube_id
   `).run({ thumbnail_url: payload.thumbnailUrl, youtube_id: req.params['youtube_id'] });
 
   logger.info({ youtubeId: req.params['youtube_id'] }, 'Thumbnail backfilled via worker');

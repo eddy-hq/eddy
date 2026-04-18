@@ -12,6 +12,7 @@ export async function generateThumbnail(
   youtubeId: string,
   filePath: string,
   durationSecs: number,
+  { force = false } = {},
 ): Promise<string | null> {
   const log = rootLogger.child({ youtubeId });
   const thumbDir = config.THUMB_OUTPUT_PATH;
@@ -24,7 +25,7 @@ export async function generateThumbnail(
     return null;
   }
 
-  if (fs.existsSync(thumbPath)) {
+  if (!force && fs.existsSync(thumbPath)) {
     return buildThumbUrl(youtubeId);
   }
 
