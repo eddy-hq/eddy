@@ -242,9 +242,12 @@ export function Card({
           }}>
             {data.channel && (
               <div style={{
+                display: 'inline-block', marginBottom: 4, marginLeft: -5,
                 fontSize: 12, fontWeight: 600, letterSpacing: '0.04em',
-                color: 'var(--accent)', marginBottom: 6,
-                overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis',
+                color: 'var(--accent)',
+                background: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(4px)',
+                padding: '3px 5px', borderRadius: 6,
+                maxWidth: 'calc(100% + 5px)', overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis',
               }}>
                 {data.channel}
               </div>
@@ -285,7 +288,7 @@ export function Card({
       </div>
 
       {/* ── Metadata strip + recycled controls ── */}
-      <div style={{ padding: '10px 14px 16px', position: 'relative' }}>
+      <div style={{ padding: '11px 14px 20px', position: 'relative' }}>
 
         {isRecycled ? (
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
