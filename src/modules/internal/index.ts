@@ -216,6 +216,53 @@ internalRouter.post('/requests/:id/retry', async (req: Request, res: Response) =
   res.json({ ok: true, requestId, message: 'Re-enqueued' });
 });
 
+// GET /internal/backfill/pending-thumbs — list videos needing thumbnail generation (no HMAC, internal network only)
+internalRouter.get('/backfill/pending-thumbs', (_req: Request, res: Response) => {
+  const rows = db.prepare(`
+    SELECT youtube_id, file_path, duration_secs
+    FROM requests
+    WHERE file_state = 'live'
+      AND status IN ('ready', 'watched')
+      AND thumbnail_url IS NULL
+      AND file_path IS NOT NULL
+      AND youtube_id IS NOT NULL
+      AND duration_secs IS NOT NULL
+  `).all() as Array<{ youtube_id: string; file_path: string; duration_secs: number }>;
+
+  res.json({ pending: rows });
+});
+
+// POST /internal/backfill/thumb/:youtube_id — write generated thumbnail URL back to DB
+internalRouter.post('/backfill/thumb/:youtube_id', (req: Request, res: Response) => {
+  const sig = req.headers['x-eddy-signature'];
+  if (!sig || typeof sig !== 'string') {
+    return res.status(401).json({ error: 'Missing signature' });
+  }
+
+  const rawBody = (req as Request & { rawBody?: Buffer }).rawBody;
+  if (!rawBody) return res.status(400).json({ error: 'No body' });
+
+  if (!verifyHmac(rawBody, sig)) {
+    logger.warn({ youtubeId: req.params['youtube_id'] }, 'HMAC verification failed on backfill thumb update');
+    return res.status(401).json({ error: 'Invalid signature' });
+  }
+
+  let payload: { thumbnailUrl: string };
+  try {
+    payload = JSON.parse(rawBody.toString()) as { thumbnailUrl: string };
+  } catch {
+    return res.status(400).json({ error: 'Invalid JSON' });
+  }
+
+  db.prepare(`
+    UPDATE requests SET thumbnail_url = @thumbnail_url
+    WHERE youtube_id = @youtube_id AND thumbnail_url IS NULL
+  `).run({ thumbnail_url: payload.thumbnailUrl, youtube_id: req.params['youtube_id'] });
+
+  logger.info({ youtubeId: req.params['youtube_id'] }, 'Thumbnail backfilled via worker');
+  res.status(204).end();
+});
+
 // POST /internal/watchdog/run — trigger an immediate watchdog check (for testing/ops)
 internalRouter.post('/watchdog/run', (_req: Request, res: Response) => {
   void checkStuckDownloads().catch((err: unknown) => {

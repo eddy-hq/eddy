@@ -29,6 +29,10 @@ const STATUS_LABEL: Record<string, string> = {
   rejected:      'Not available',
 };
 
+// Dark colour shared between the card background and the gradient terminus —
+// they must match exactly so the fade is seamless.
+const CARD_BG = '#0a0a0a';
+
 interface PollResult { pct: number | null; done: boolean; }
 
 function useDownloadProgress(requestId: string, active: boolean): PollResult {
@@ -50,8 +54,7 @@ function useDownloadProgress(requestId: string, active: boolean): PollResult {
         const data = await resp.json() as { status?: string; progress?: number | null };
         const done = data.status === 'ready' || data.status === 'watched';
         const raw = typeof data.progress === 'number' ? data.progress : null;
-        // yt-dlp reports 0→100 per stream (video then audio); hold the max seen value
-        // through null gaps (inter-stream pause) so the bar never goes backwards
+        // yt-dlp reports 0→100 per stream; hold max seen so bar never goes backwards
         const pct = raw !== null
           ? Math.max(raw, maxPctRef.current)
           : maxPctRef.current > 0 ? maxPctRef.current : null;
@@ -82,7 +85,7 @@ export function Card({
 }) {
   const navigate = useNavigate();
 
-  const isLive        =['ready', 'watched'].includes(data.status) && data.fileState === 'live' && !!data.nginxUrl;
+  const isLive        = ['ready', 'watched'].includes(data.status) && data.fileState === 'live' && !!data.nginxUrl;
   const isRecycled    = ['ready', 'watched'].includes(data.status) && data.fileState === 'recycled';
   const isGone        = data.fileState === 'gone';
   const isRejected    = data.status === 'rejected';
@@ -114,73 +117,76 @@ export function Card({
     else navigate(`/watch/${data.requestId}`);
   }
 
-  const cardOpacity = isGone ? 0.72 : 1;
+  const metaLine = isRejected
+    ? (data.rejectionReason ?? 'Not available')
+    : isInProgress && !effectivelyLive
+    ? (STATUS_LABEL[data.status] ?? data.status)
+    : timeAgo(data.requestedAt);
 
   return (
     <motion.article
       layout
       initial={{ opacity: 0, y: 12 }}
-      animate={{ opacity: isSelected ? 0 : cardOpacity, y: 0 }}
+      animate={{ opacity: isSelected ? 0 : (isGone ? 0.65 : 1), y: 0 }}
       exit={{ opacity: 0, y: -8, scale: 0.97 }}
       transition={{ duration: 0.3, ease: [0.33, 1, 0.68, 1] }}
       whileTap={effectivelyLive ? { scale: 0.97 } : undefined}
       onClick={handleTap}
       style={{
-        background: 'var(--bg-surface)',
+        position: 'relative',
         borderRadius: 16,
-        boxShadow: 'var(--shadow-card)',
         overflow: 'hidden',
         cursor: effectivelyLive ? 'pointer' : 'default',
+        background: CARD_BG,
+        boxShadow: 'var(--shadow-card)',
         border: '1px solid var(--border-subtle)',
       }}
     >
-      {/* ── Thumbnail ── */}
-      <motion.div
-        layoutId={`thumb-${data.requestId}`}
-        transition={{ duration: 0.3, ease: [0.33, 1, 0.68, 1] }}
-        style={{ position: 'relative', aspectRatio: '16/9', background: 'var(--bg-elevated)', display: 'block', overflow: 'hidden' }}
-      >
-        {data.thumbnailUrl ? (
-          <img
-            src={data.thumbnailUrl} alt=""
-            style={{
-              position: 'absolute', inset: 0,
-              width: '100%', height: '100%', objectFit: 'cover',
-              filter: (isRecycled || (isDownloading && !downloadDone))
-                ? 'grayscale(1) opacity(0.4)'
-                : isGone ? 'grayscale(1) opacity(0.2)'
-                : 'none',
-              transition: 'filter 0.6s ease',
-            }}
-            loading="lazy"
-          />
-        ) : (
-          <div style={{ position: 'absolute', inset: 0, background: 'var(--bg-elevated)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            {data.durationSecs != null && !isDownloading && (
-              <span style={{
-                fontSize: 11, fontWeight: 600,
-                color: 'rgba(255,255,255,0.6)',
-                background: 'rgba(0,0,0,0.28)', padding: '4px 9px', borderRadius: 5,
-              }}>
-                {formatDuration(data.durationSecs)}
-              </span>
-            )}
-          </div>
-        )}
 
-        {/* Content-type badge (top-left) */}
-        {!isDownloading && (
+      {/* ── Image section ── */}
+      <div style={{ position: 'relative', aspectRatio: '16/9' }}>
+
+        {/* Background image */}
+        <motion.div
+          layoutId={`thumb-${data.requestId}`}
+          transition={{ duration: 0.3, ease: [0.33, 1, 0.68, 1] }}
+          style={{ position: 'absolute', inset: 0 }}
+        >
+          {data.thumbnailUrl && (
+            <img
+              src={data.thumbnailUrl} alt=""
+              style={{
+                width: '100%', height: '100%', objectFit: 'cover',
+                filter: (isRecycled || (isDownloading && !downloadDone))
+                  ? 'grayscale(1) opacity(0.3)'
+                  : isGone ? 'grayscale(1) opacity(0.12)'
+                  : 'none',
+                transition: 'filter 0.6s ease',
+              }}
+              loading="lazy"
+            />
+          )}
+        </motion.div>
+
+        {/* Gradient — fades image into CARD_BG at the bottom */}
+        <div style={{
+          position: 'absolute', inset: 0, pointerEvents: 'none',
+          background: `linear-gradient(to top, ${CARD_BG} 0%, rgba(10,10,10,0.55) 38%, rgba(10,10,10,0) 68%)`,
+        }} />
+
+        {/* Type badge — top right */}
+        {!isDownloading && !isGone && (
           <span style={{
-            position: 'absolute', top: 9, left: 9,
-            fontSize: 9, fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase',
-            color: 'rgba(255,255,255,0.92)', background: 'rgba(0,0,0,0.48)',
+            position: 'absolute', top: 11, right: 11,
+            fontSize: 9, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase',
+            color: 'rgba(255,255,255,0.78)', background: 'rgba(0,0,0,0.35)',
             backdropFilter: 'blur(6px)', padding: '3px 7px', borderRadius: 5,
           }}>
             Video
           </span>
         )}
 
-        {/* Guard phase — spinner while Gemma is scoring, before download begins */}
+        {/* Guard phase spinner */}
         <AnimatePresence>
           {isDownloading && !downloadDone && pct === null && (
             <motion.div
@@ -190,140 +196,168 @@ export function Card({
               exit={{ opacity: 0 }}
               transition={{ duration: 0.4, ease: 'easeOut' }}
               style={{
-                position: 'absolute', inset: 0, zIndex: 2,
+                position: 'absolute', inset: 0, zIndex: 3,
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
-                background: 'rgba(0,0,0,0.32)',
-                backdropFilter: 'blur(3px)',
+                background: 'rgba(0,0,0,0.35)', backdropFilter: 'blur(3px)',
               }}
             >
-              <EddySpinner size={52} />
+              <EddySpinner size={48} />
             </motion.div>
           )}
         </AnimatePresence>
 
-        {/* Download progress — shown once yt-dlp reports a percentage */}
+        {/* Download progress badge */}
         {isDownloading && !downloadDone && pct !== null && (
-          <>
-            <span style={{
-              position: 'absolute', top: 9, left: 9, zIndex: 2,
-              fontSize: 9, fontWeight: 700, color: '#fff',
-              background: 'rgba(0,0,0,0.55)', padding: '3px 7px', borderRadius: 5,
-            }}>
-              {pct}%
-            </span>
-            <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, height: 3, background: 'rgba(255,255,255,0.14)' }}>
-              <div style={{ height: '100%', width: `${pct}%`, background: 'var(--accent)', transition: 'width 0.8s ease' }} />
-            </div>
-          </>
-        )}
-
-        {/* Watched overlay */}
-        {isWatched && !isDownloading && (
-          <>
-            <div style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.28)', display: 'flex', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none' }}>
-              <div style={{ width: 36, height: 36, borderRadius: '50%', background: 'rgba(61,107,107,0.82)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-                  <polyline points="4,9 7.5,13 14,5.5" stroke="#fff" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/>
-                </svg>
-              </div>
-            </div>
-            <span style={{
-              position: 'absolute', top: 8, left: 8,
-              fontSize: 10, fontWeight: 600, color: '#fff',
-              padding: '3px 8px', borderRadius: 20,
-              background: 'rgba(61,107,107,0.88)', backdropFilter: 'blur(4px)',
-            }}>
-              {watchedAgo(data.watchedAt!)}
-            </span>
-            <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, height: 3, background: 'rgba(255,255,255,0.14)' }}>
-              <div style={{ height: '100%', width: '100%', background: 'var(--accent)' }} />
-            </div>
-          </>
-        )}
-
-        {/* Recycled overlay — gradient + restore CTA */}
-        {isRecycled && (
-          <>
-            <div style={{ position: 'absolute', inset: 0, background: 'linear-gradient(180deg, rgba(0,0,0,0) 0%, rgba(0,0,0,0.18) 60%, rgba(0,0,0,0.42) 100%)', pointerEvents: 'none' }} />
-            <div style={{ position: 'absolute', inset: 'auto 0 0 0', padding: '10px 12px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, zIndex: 2 }}>
-              <span style={{ fontSize: 10, fontWeight: 600, color: 'rgba(255,255,255,0.9)', letterSpacing: '0.04em', display: 'flex', alignItems: 'center', gap: 5, background: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(6px)', padding: '4px 8px', borderRadius: 14 }}>
-                <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
-                  <path d="M2 5a3 3 0 016 0M5 8V5"/><circle cx="5" cy="8.5" r="0.7" fill="currentColor"/>
-                </svg>
-                Recycled
-              </span>
-              <button
-                onClick={(e) => { e.stopPropagation(); }}
-                style={{ fontSize: 11, fontWeight: 600, color: '#fff', background: 'var(--accent)', border: 'none', padding: '6px 12px', borderRadius: 14, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 5 }}
-              >
-                <svg width="11" height="11" viewBox="0 0 11 11" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M1.5 5.5a4 4 0 118 0M9.5 3v2.5H7"/>
-                </svg>
-                Restore
-              </button>
-            </div>
-          </>
-        )}
-
-        {/* Partial-watch progress bar */}
-        {showProgressBar && (
-          <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, height: 3, background: 'rgba(255,255,255,0.14)', zIndex: 1 }}>
-            <div style={{ height: '100%', width: `${progressFraction * 100}%`, background: 'var(--accent)', transition: 'width 0.5s ease' }} />
-          </div>
-        )}
-
-        {/* Gone overlay */}
-        {isGone && (
-          <>
-            <div style={{ position: 'absolute', inset: 0, background: 'rgba(10,10,10,0.52)', pointerEvents: 'none' }} />
-            <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8, zIndex: 2, color: 'rgba(255,255,255,0.88)' }}>
-              <svg width="22" height="22" viewBox="0 0 22 22" fill="none" stroke="rgba(255,255,255,0.75)" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                <circle cx="11" cy="11" r="8"/><path d="M5 5l12 12"/>
-              </svg>
-              <span style={{ fontSize: 10, fontWeight: 600, letterSpacing: '0.06em', textTransform: 'uppercase' }}>No longer available</span>
-            </div>
-          </>
-        )}
-      </motion.div>
-
-      {/* ── Body ── */}
-      <div style={{ padding: '13px 14px 15px' }}>
-
-        {/* Meta — channel */}
-        {data.channel && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
-            <span style={{ fontSize: 11, fontWeight: 500, color: 'var(--text-tertiary)' }}>{data.channel}</span>
-          </div>
-        )}
-
-        {/* Title */}
-        <h2 style={{
-          fontFamily: 'var(--font-serif)',
-          fontSize: 18, fontWeight: 600,
-          lineHeight: 1.3, letterSpacing: '-0.01em', marginBottom: 8,
-          color: (isWatched || isRecycled) ? 'var(--text-secondary)' : isGone ? 'var(--text-tertiary)' : 'var(--text-primary)',
-          display: '-webkit-box',
-          WebkitLineClamp: 2,
-          WebkitBoxOrient: 'vertical',
-          overflow: 'hidden',
-        }}>
-          {isGone ? 'No longer available' : data.title}
-        </h2>
-
-        {/* Footer */}
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
           <span style={{
-            fontSize: 11, fontWeight: 500,
-            color: isRejected ? 'var(--dismiss)' : 'var(--text-tertiary)',
+            position: 'absolute', top: 11, left: 11, zIndex: 3,
+            fontSize: 9, fontWeight: 700, color: '#fff',
+            background: 'rgba(0,0,0,0.55)', padding: '3px 7px', borderRadius: 5,
           }}>
-            {isInProgress && !effectivelyLive
-              ? (STATUS_LABEL[data.status] ?? data.status)
-              : isRejected
-              ? (data.rejectionReason ?? 'Not available')
-              : timeAgo(data.requestedAt)}
+            {pct}%
           </span>
-        </div>
+        )}
+
+        {/* Watched checkmark */}
+        {isWatched && !isDownloading && (
+          <div style={{
+            position: 'absolute', inset: 0, zIndex: 2, pointerEvents: 'none',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+          }}>
+            <div style={{
+              width: 34, height: 34, borderRadius: '50%',
+              background: 'rgba(61,107,107,0.75)', backdropFilter: 'blur(4px)',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+            }}>
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                <polyline points="3.5,8 6.5,11.5 12.5,4.5" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+              </svg>
+            </div>
+          </div>
+        )}
+
+        {/* Channel + title — over the gradient, bottom of image */}
+        {!isGone && (
+          <div style={{
+            position: 'absolute', bottom: 14, left: 14, right: 14, zIndex: 2,
+          }}>
+            {data.channel && (
+              <div style={{
+                fontSize: 10, fontWeight: 600, letterSpacing: '0.07em', textTransform: 'uppercase',
+                color: 'rgba(255,255,255,0.5)', marginBottom: 5,
+                overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis',
+              }}>
+                {data.channel}
+              </div>
+            )}
+            <h2 style={{
+              fontFamily: 'var(--font-serif)',
+              fontSize: 20, fontWeight: 600, lineHeight: 1.25,
+              letterSpacing: '-0.015em', margin: 0,
+              color: isRecycled ? 'rgba(255,255,255,0.5)' : '#fff',
+              display: '-webkit-box',
+              WebkitLineClamp: 2,
+              WebkitBoxOrient: 'vertical',
+              overflow: 'hidden',
+            }}>
+              {isInProgress && !effectivelyLive && !data.title
+                ? (STATUS_LABEL[data.status] ?? 'Getting it…')
+                : data.title}
+            </h2>
+          </div>
+        )}
+
+        {/* Gone overlay — image area only */}
+        {isGone && (
+          <div style={{
+            position: 'absolute', inset: 0, zIndex: 2,
+            display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8,
+            background: 'rgba(8,8,8,0.5)',
+            color: 'rgba(255,255,255,0.7)',
+          }}>
+            <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="10" cy="10" r="7.5"/><path d="M4 4l12 12"/>
+            </svg>
+            <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase' }}>
+              No longer available
+            </span>
+          </div>
+        )}
       </div>
+
+      {/* ── Metadata strip + recycled controls ── */}
+      <div style={{ padding: '8px 14px 13px', position: 'relative' }}>
+
+        {isRecycled ? (
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+            <span style={{
+              fontSize: 10, fontWeight: 600, letterSpacing: '0.04em',
+              color: 'rgba(255,255,255,0.45)',
+              display: 'flex', alignItems: 'center', gap: 4,
+            }}>
+              <svg width="9" height="9" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
+                <path d="M2 5a3 3 0 016 0M5 8V5"/><circle cx="5" cy="8.5" r="0.7" fill="currentColor"/>
+              </svg>
+              Recycled
+            </span>
+            <button
+              onClick={(e) => { e.stopPropagation(); }}
+              style={{
+                fontSize: 10, fontWeight: 600, color: '#fff', background: 'var(--accent)',
+                border: 'none', padding: '5px 11px', borderRadius: 12,
+                cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4,
+              }}
+            >
+              <svg width="10" height="10" viewBox="0 0 11 11" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M1.5 5.5a4 4 0 118 0M9.5 3v2.5H7"/>
+              </svg>
+              Restore
+            </button>
+          </div>
+        ) : (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <span style={{
+              fontSize: 11, fontWeight: 400,
+              color: isRejected ? 'rgba(255,100,100,0.7)' : 'rgba(255,255,255,0.35)',
+            }}>
+              {metaLine}
+            </span>
+            {data.durationSecs != null && !isDownloading && !isInProgress && (
+              <>
+                <span style={{ color: 'rgba(255,255,255,0.18)', fontSize: 10 }}>·</span>
+                <span style={{ fontSize: 11, fontWeight: 400, color: 'rgba(255,255,255,0.35)' }}>
+                  {formatDuration(data.durationSecs)}
+                </span>
+              </>
+            )}
+            {isWatched && data.watchedAt && (
+              <>
+                <span style={{ color: 'rgba(255,255,255,0.18)', fontSize: 10 }}>·</span>
+                <span style={{ fontSize: 11, fontWeight: 400, color: 'rgba(61,107,107,0.85)' }}>
+                  {watchedAgo(data.watchedAt)}
+                </span>
+              </>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* ── Progress bars — absolute to article, pinned to very bottom ── */}
+      {showProgressBar && (
+        <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, height: 3, zIndex: 4, background: 'rgba(255,255,255,0.08)' }}>
+          <div style={{ height: '100%', width: `${progressFraction * 100}%`, background: 'var(--accent)', transition: 'width 0.5s ease' }} />
+        </div>
+      )}
+      {isDownloading && !downloadDone && pct !== null && (
+        <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, height: 3, zIndex: 4, background: 'rgba(255,255,255,0.08)' }}>
+          <div style={{ height: '100%', width: `${pct}%`, background: 'var(--accent)', transition: 'width 0.8s ease' }} />
+        </div>
+      )}
+      {isWatched && !isDownloading && (
+        <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, height: 3, zIndex: 4, background: 'rgba(255,255,255,0.08)' }}>
+          <div style={{ height: '100%', width: '100%', background: 'var(--accent)' }} />
+        </div>
+      )}
+
     </motion.article>
   );
 }
@@ -331,20 +365,20 @@ export function Card({
 function timeAgo(iso: string): string {
   const diff = Date.now() - new Date(iso).getTime();
   const mins = Math.floor(diff / 60_000);
-  if (mins < 1) return 'added just now';
-  if (mins < 60) return `added ${mins}m ago`;
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
   const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `added ${hrs}h ago`;
+  if (hrs < 24) return `${hrs}h ago`;
   const days = Math.floor(hrs / 24);
-  return `added ${days}d ago`;
+  return `${days}d ago`;
 }
 
 function watchedAgo(iso: string): string {
   const diff = Date.now() - new Date(iso).getTime();
   const hrs = Math.floor(diff / 3_600_000);
-  if (hrs < 1) return 'Watched just now';
-  if (hrs < 24) return `Watched ${hrs}h ago`;
-  return `Watched ${Math.floor(hrs / 24)}d ago`;
+  if (hrs < 1) return 'watched just now';
+  if (hrs < 24) return `watched ${hrs}h ago`;
+  return `watched ${Math.floor(hrs / 24)}d ago`;
 }
 
 function formatDuration(secs: number): string {
