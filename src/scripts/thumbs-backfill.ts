@@ -42,7 +42,34 @@ async function run(): Promise<void> {
   let failed = 0;
 
   for (const row of pending) {
-    const thumbUrl = await generateThumbnail(row.youtube_id, row.file_path, row.duration_secs, { force });
+    // Classify YT thumbnail first — use it directly if editorial, generate local if slop
+    let thumbUrl: string | null = null;
+
+    try {
+      const classifyBody = JSON.stringify({ youtubeId: row.youtube_id });
+      const classifyResp = await fetch(`${baseUrl}/internal/thumb/classify`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Eddy-Signature': signBody(classifyBody),
+        },
+        body: classifyBody,
+        signal: AbortSignal.timeout(60_000),
+      });
+      if (classifyResp.ok) {
+        const { style } = await classifyResp.json() as { style: 'editorial' | 'slop' };
+        if (style === 'editorial') {
+          thumbUrl = `https://i.ytimg.com/vi/${row.youtube_id}/maxresdefault.jpg`;
+          logger.info({ youtubeId: row.youtube_id }, 'Editorial — using YT thumbnail');
+        }
+      }
+    } catch (err) {
+      logger.warn({ err, youtubeId: row.youtube_id }, 'Classify failed — falling back to local generation');
+    }
+
+    if (!thumbUrl) {
+      thumbUrl = await generateThumbnail(row.youtube_id, row.file_path, row.duration_secs, { force });
+    }
 
     if (!thumbUrl) {
       failed++;
