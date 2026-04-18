@@ -86,5 +86,6 @@ export async function generateThumbnail(
 function buildThumbUrl(youtubeId: string): string | null {
   const nginxBase = config.NGINX_THUMB_BASE_URL;
   if (!nginxBase) return null;
-  return `${nginxBase.replace(/\/$/, '')}/${youtubeId}.webp`;
+  const v = Math.floor(Date.now() / 1000);
+  return `${nginxBase.replace(/\/$/, '')}/${youtubeId}.webp?v=${v}`;
 }
