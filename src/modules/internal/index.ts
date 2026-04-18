@@ -31,6 +31,7 @@ interface DownloadedPayload {
   youtubeId: string;
   filePath: string;
   nginxUrl: string | null;
+  thumbnailUrl: string | null;
   title: string;
   channel: string;
   description: string;
@@ -62,7 +63,7 @@ internalRouter.post('/videos/:youtube_id/downloaded', (req: Request, res: Respon
     return res.status(400).json({ error: 'Invalid JSON' });
   }
 
-  const { requestId, filePath, nginxUrl, title, channel, description, durationSecs, transcript } = payload;
+  const { requestId, filePath, nginxUrl, thumbnailUrl, title, channel, description, durationSecs, transcript } = payload;
 
   const row = db.prepare(`
     UPDATE requests
@@ -74,6 +75,7 @@ internalRouter.post('/videos/:youtube_id/downloaded', (req: Request, res: Respon
         transcript    = @transcript,
         file_path     = @file_path,
         nginx_url     = @nginx_url,
+        thumbnail_url = @thumbnail_url,
         downloaded_at = @downloaded_at
     WHERE request_id = @request_id AND status = 'downloading'
     RETURNING user_id
@@ -85,6 +87,7 @@ internalRouter.post('/videos/:youtube_id/downloaded', (req: Request, res: Respon
     transcript,
     file_path: filePath,
     nginx_url: nginxUrl,
+    thumbnail_url: thumbnailUrl,
     downloaded_at: new Date().toISOString(),
     request_id: requestId,
   }) as { user_id: string } | undefined;

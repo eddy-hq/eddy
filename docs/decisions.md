@@ -417,3 +417,17 @@ A later-phase budget/allocation feature — at year-end, Eddy shows *"You finish
 **Why this is worth writing down:**
 
 This is exactly the kind of idea that gets scope-crept in later. "Wouldn't it be nice if Eddy could just process the payment?" Yes, it would, and also no, because that's a financial services company and Eddy is a family media system. Keeping the distinction sharp in the decisions log protects future-Eddy from the temptation.
+
+---
+
+## Why we generate our own thumbnails
+
+**What we replaced:** YouTube's creator-chosen thumbnails. These are optimised by creators for clickthrough on a recommendation engine — high-contrast colour grading, exaggerated facial expressions, bold block text, bright arrows. That is the visual grammar of exactly what Eddy is built against: engagement-first, attention-capturing, high-pressure. Showing those thumbnails in the feed is incoherent: the visual language undermines the scarcity and hook-first principles at a glance.
+
+**Why pixelation specifically:** We extract a representative frame from the video using ffmpeg's `thumbnail` filter (representative across a 300-frame window, seeking to the 25% point to avoid intros and end cards) then downscale to ~48px wide and upscale back with nearest-neighbour interpolation. This reads unambiguously as a stylistic choice, not a compression artefact. It kills the sales language — you can see colour and rough shape, not facial expressions or text. It's cheap (≈220ms per video, ~5–6 KB as WebP). And it's reversible: changing the two env vars (`EDDY_THUMB_SOURCE_WIDTH`, `EDDY_THUMB_UPSCALE`) and re-running `npm run thumbs:backfill` reskins the whole library without a schema change.
+
+**Why not go fully text-only:** Pure text cards lose a legitimate recognition cue. Kids scan their feed by visual memory — "the redstone one", "the rocket one". A pixelated frame preserves just enough shape and colour for that recognition without carrying any of the engagement-optimised signal. The recognition cue is real value; we kept it.
+
+**Why we don't fall back to the YouTube thumbnail if generation fails:** The replacement has to be consistent or the signal collapses. A feed that's mostly calm pixelated frames but occasionally shows a screaming YouTube thumbnail is worse than either choice made uniformly — the loud ones dominate attention disproportionately. Failure mode is a solid neutral tile with duration badge. That's fine; the title and hook line are the primary signal anyway.
+
+**What would prompt us to retune:** Real usage feedback after a few weeks. If kids consistently can't recognise which video is which, increase the pixel size (larger `EDDY_THUMB_SOURCE_WIDTH`). If the pixelation still reads as too photographic, decrease it. The two knobs cover the whole range without touching schema or the pipeline.

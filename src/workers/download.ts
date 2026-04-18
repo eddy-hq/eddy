@@ -15,6 +15,7 @@ import { config } from '../config';
 import { logger } from '../logger';
 import { fetchMetadata, downloadVideo } from '../modules/content/ytdlp';
 import { triggerPlexScan } from '../modules/content/plex';
+import { generateThumbnail } from './thumb';
 import type { DownloadJobData } from '../modules/content';
 
 const PROGRESS_KEY = (requestId: string) => `eddy:progress:${requestId}`;
@@ -24,6 +25,7 @@ interface CallbackPayload {
   youtubeId: string;
   filePath: string;
   nginxUrl: string | null;
+  thumbnailUrl: string | null;
   title: string;
   channel: string;
   description: string;
@@ -217,12 +219,19 @@ async function processJob(job: Job<DownloadJobData>): Promise<void> {
     ? `${nginxBase.replace(/\/$/, '')}/${path.basename(filePath)}`
     : null;
 
+  // Generate stylised thumbnail — best-effort, does not block or fail the pipeline
+  const thumbnailUrl = await generateThumbnail(youtubeId, filePath, metadata.durationSecs);
+  if (!thumbnailUrl) {
+    log.info({ youtubeId }, 'Thumbnail unavailable — continuing without it');
+  }
+
   // Callback to M4 — M4 writes SQLite and sends ntfy
   await postCallback({
     requestId,
     youtubeId,
     filePath,
     nginxUrl,
+    thumbnailUrl,
     title: metadata.title,
     channel: metadata.channel,
     description: metadata.description,

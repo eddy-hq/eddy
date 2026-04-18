@@ -19,6 +19,8 @@ interface FeedCard {
   status: string;
   file_state: string;
   nginx_url: string | null;
+  thumbnail_url: string | null;
+  duration_secs: number | null;
   rejection_reason: string | null;
   requested_at: string;
   added_at: string;
@@ -54,6 +56,8 @@ function toCardData(row: FeedCard): CardData {
     status: row.status,
     fileState: row.file_state,
     nginxUrl: row.nginx_url,
+    thumbnailUrl: row.thumbnail_url,
+    durationSecs: row.duration_secs,
     requestedAt: row.requested_at,
     rejectionReason: row.rejection_reason,
     watchedAt: row.watched_at,

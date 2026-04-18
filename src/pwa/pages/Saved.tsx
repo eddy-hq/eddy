@@ -2,7 +2,7 @@ import React from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { AnimatePresence } from 'framer-motion';
-import { Card } from '../components/Card';
+import { Card, type CardData } from '../components/Card';
 import { VideoDetailSheet } from '../components/VideoDetailSheet';
 import { BottomNav } from '../components/BottomNav';
 import { AppHeader } from '../components/AppHeader';
@@ -17,6 +17,8 @@ interface FeedCard {
   status: string;
   file_state: string;
   nginx_url: string | null;
+  thumbnail_url: string | null;
+  duration_secs: number | null;
   rejection_reason: string | null;
   requested_at: string;
   added_at: string;
@@ -43,6 +45,8 @@ function toCardData(row: FeedCard): CardData {
     status: row.status,
     fileState: row.file_state,
     nginxUrl: row.nginx_url,
+    thumbnailUrl: row.thumbnail_url,
+    durationSecs: row.duration_secs,
     requestedAt: row.requested_at,
     rejectionReason: row.rejection_reason,
     watchedAt: row.watched_at,

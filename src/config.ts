@@ -33,6 +33,11 @@ const schema = z.object({
   VIDEO_OUTPUT_PATH: z.string().default('/home/steveu/eddy/videos'),
   NGINX_VIDEO_BASE_URL: z.string().optional(),
   YTDLP_COOKIES_FILE: z.string().optional(), // path to cookies.txt; enables age-restricted downloads
+  // Thumbnails — generated post-download, served by nginx alongside videos
+  THUMB_OUTPUT_PATH: z.string().default('/mnt/ssd/eddy/thumbs'),
+  NGINX_THUMB_BASE_URL: z.string().optional(),
+  EDDY_THUMB_SOURCE_WIDTH: z.coerce.number().int().min(8).max(256).default(48),
+  EDDY_THUMB_UPSCALE: z.coerce.number().int().min(1).max(32).default(16),
   // Internal M4 ↔ Ubuntu worker callback
   INTERNAL_HMAC_SECRET: z.string().min(32, 'INTERNAL_HMAC_SECRET must be at least 32 characters'),
   M4_INTERNAL_URL: z.string().optional(), // set on Ubuntu worker; not required on M4

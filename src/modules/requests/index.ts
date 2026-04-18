@@ -169,8 +169,8 @@ requestsRouter.get('/feed', (req: Request, res: Response) => {
   const rows = db.prepare(`
     SELECT
       request_id, url, youtube_id, title, channel, status, file_state,
-      rejection_reason, nginx_url, requested_at, added_at,
-      watched_at, saved_at, source
+      rejection_reason, nginx_url, thumbnail_url, duration_secs,
+      requested_at, added_at, watched_at, saved_at, source
     FROM requests
     WHERE user_id = ?
       AND status NOT IN ('dismissed')
@@ -180,6 +180,7 @@ requestsRouter.get('/feed', (req: Request, res: Response) => {
     request_id: string; url: string; youtube_id: string | null;
     title: string | null; channel: string | null; status: string; file_state: string;
     rejection_reason: string | null; nginx_url: string | null;
+    thumbnail_url: string | null; duration_secs: number | null;
     requested_at: string; added_at: string; watched_at: string | null;
     saved_at: string | null; source: string;
   }>;
