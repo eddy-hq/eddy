@@ -242,8 +242,8 @@ export function Card({
           }}>
             {data.channel && (
               <div style={{
-                fontSize: 10, fontWeight: 600, letterSpacing: '0.07em', textTransform: 'uppercase',
-                color: 'rgba(255,255,255,0.5)', marginBottom: 5,
+                fontSize: 12, fontWeight: 600, letterSpacing: '0.04em',
+                color: 'var(--accent)', marginBottom: 6,
                 overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis',
               }}>
                 {data.channel}
@@ -285,7 +285,7 @@ export function Card({
       </div>
 
       {/* ── Metadata strip + recycled controls ── */}
-      <div style={{ padding: '8px 14px 13px', position: 'relative' }}>
+      <div style={{ padding: '10px 14px 16px', position: 'relative' }}>
 
         {isRecycled ? (
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
