@@ -260,6 +260,12 @@ internalRouter.post('/guard/score', async (req: Request, res: Response) => {
     return res.status(404).json({ error: 'Request not found' });
   }
 
+  // Write metadata now so the card shows title/channel during download
+  db.prepare(`
+    UPDATE requests SET title = @title, channel = @channel
+    WHERE request_id = @request_id AND title IS NULL
+  `).run({ title: payload.title, channel: payload.channel, request_id: payload.requestId });
+
   let verdict;
   try {
     verdict = await scoreForRequest({ ...payload, userId: row.user_id });

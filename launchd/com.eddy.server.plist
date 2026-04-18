@@ -8,7 +8,9 @@
     <key>ProgramArguments</key>
     <array>
         <string>/Users/steveu/.nvm/versions/node/v24.14.1/bin/node</string>
-        <string>dist/index.js</string>
+        <string>/Users/steveu/eddy/node_modules/.bin/tsx</string>
+        <string>watch</string>
+        <string>src/index.ts</string>
     </array>
 
     <key>WorkingDirectory</key>

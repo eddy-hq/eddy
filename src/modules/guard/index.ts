@@ -94,6 +94,19 @@ export function parseVerdict(response: string): GuardVerdict {
 }
 
 export async function scoreForRequest(params: ScoreParams): Promise<GuardVerdict> {
+  const prior = db.prepare(
+    'SELECT gemma_verdict, gemma_reason, gemma_confidence FROM guard_eval WHERE request_id = ? ORDER BY scored_at ASC LIMIT 1'
+  ).get(params.requestId) as { gemma_verdict: string; gemma_reason: string; gemma_confidence: number } | undefined;
+
+  if (prior) {
+    logger.info({ requestId: params.requestId }, 'Guard already scored for this request — skipping retry');
+    return {
+      verdict: prior.gemma_verdict as GuardVerdict['verdict'],
+      reason: prior.gemma_reason,
+      confidence: prior.gemma_confidence,
+    };
+  }
+
   const channelHistory = getChannelHistory(params.userId, params.channel);
   const prompt = buildPrompt({ ...params, channelHistory });
 

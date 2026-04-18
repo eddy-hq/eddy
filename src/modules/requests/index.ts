@@ -285,6 +285,7 @@ requestsRouter.delete('/:id', async (req: Request, res: Response) => {
     try { await redis.del(`eddy:progress:${requestId}`); } catch { /* best-effort */ }
   }
 
+  db.prepare(`DELETE FROM guard_eval WHERE request_id = ?`).run(requestId);
   db.prepare(`DELETE FROM requests WHERE request_id = ?`).run(requestId);
   logger.info({ requestId }, 'Request deleted');
   res.status(204).end();

@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { motion } from 'framer-motion';
+import { motion, AnimatePresence } from 'framer-motion';
 import { readProgress, onProgressChange } from '../lib/videoProgress';
+import { EddySpinner } from './EddySpinner';
 
 export interface CardData {
   requestId: string;
@@ -31,9 +32,14 @@ interface PollResult { pct: number | null; done: boolean; }
 function useDownloadProgress(requestId: string, active: boolean): PollResult {
   const [result, setResult] = useState<PollResult>({ pct: null, done: false });
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const maxPctRef = useRef<number>(0);
 
   useEffect(() => {
-    if (!active) { setResult({ pct: null, done: false }); return; }
+    if (!active) {
+      setResult({ pct: null, done: false });
+      maxPctRef.current = 0;
+      return;
+    }
 
     async function poll() {
       try {
@@ -41,7 +47,14 @@ function useDownloadProgress(requestId: string, active: boolean): PollResult {
         if (!resp.ok) return;
         const data = await resp.json() as { status?: string; progress?: number | null };
         const done = data.status === 'ready' || data.status === 'watched';
-        setResult({ pct: typeof data.progress === 'number' ? data.progress : null, done });
+        const raw = typeof data.progress === 'number' ? data.progress : null;
+        // yt-dlp reports 0→100 per stream (video then audio); hold the max seen value
+        // through null gaps (inter-stream pause) so the bar never goes backwards
+        const pct = raw !== null
+          ? Math.max(raw, maxPctRef.current)
+          : maxPctRef.current > 0 ? maxPctRef.current : null;
+        if (pct !== null) maxPctRef.current = pct;
+        setResult({ pct, done });
         if (done && timerRef.current) clearInterval(timerRef.current);
       } catch { /* best-effort */ }
     }
@@ -148,7 +161,8 @@ export function Card({
             loading="lazy"
           />
 
-          {/* Colour reveal during download */}
+          {/* Colour reveal during download — always mounted while downloading so
+              clip-path transition has a stable starting point (no flash on first pct tick) */}
           {isDownloading && !downloadDone && (
             <img
               src={thumbnail} alt="" aria-hidden
@@ -156,7 +170,7 @@ export function Card({
                 position: 'absolute', inset: 0,
                 width: '100%', height: '100%', objectFit: 'cover',
                 clipPath: `inset(0 ${greyRight}% 0 0)`,
-                transition: 'clip-path 0.8s ease',
+                transition: pct !== null ? 'clip-path 0.8s ease' : 'none',
               }}
             />
           )}
@@ -173,18 +187,39 @@ export function Card({
             </span>
           )}
 
-          {/* Download progress */}
-          {isDownloading && !downloadDone && (
+          {/* Guard phase — spinner while Gemma is scoring, before download begins */}
+          <AnimatePresence>
+            {isDownloading && !downloadDone && pct === null && (
+              <motion.div
+                key="guard-spinner"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0.4, ease: 'easeOut' }}
+                style={{
+                  position: 'absolute', inset: 0, zIndex: 2,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  background: 'rgba(0,0,0,0.32)',
+                  backdropFilter: 'blur(3px)',
+                }}
+              >
+                <EddySpinner size={52} />
+              </motion.div>
+            )}
+          </AnimatePresence>
+
+          {/* Download progress — shown once yt-dlp reports a percentage */}
+          {isDownloading && !downloadDone && pct !== null && (
             <>
               <span style={{
-                position: 'absolute', top: 9, left: 9,
+                position: 'absolute', top: 9, left: 9, zIndex: 2,
                 fontSize: 9, fontWeight: 700, color: '#fff',
                 background: 'rgba(0,0,0,0.55)', padding: '3px 7px', borderRadius: 5,
               }}>
-                {pct !== null ? `${pct}%` : 'Starting…'}
+                {pct}%
               </span>
               <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, height: 3, background: 'rgba(255,255,255,0.14)' }}>
-                <div style={{ height: '100%', width: `${pct ?? 0}%`, background: 'var(--accent)', transition: 'width 0.8s ease' }} />
+                <div style={{ height: '100%', width: `${pct}%`, background: 'var(--accent)', transition: 'width 0.8s ease' }} />
               </div>
             </>
           )}
