@@ -12,8 +12,9 @@ export function BottomNav() {
     ? `user=${params.get('user')}`
     : '';
 
-  const isFeed  = location.pathname === '/feed';
-  const isSaved = location.pathname === '/saved';
+  const isFeed   = location.pathname === '/feed';
+  const isSaved  = location.pathname === '/saved';
+  const isSearch = location.pathname === '/search';
 
   function goTo(path: string) {
     navigate(userParam ? `${path}?${userParam}` : path);
@@ -43,6 +44,18 @@ export function BottomNav() {
         </span>
         <span style={{ fontSize: 10, fontWeight: isFeed ? 600 : 500, color: isFeed ? 'var(--accent)' : 'var(--text-tertiary)', letterSpacing: '0.02em' }}>
           Feed
+        </span>
+      </button>
+
+      <button onClick={() => goTo('/search')} style={tabStyle} aria-label="Search">
+        <span style={{ width: 26, height: 26, display: 'flex', alignItems: 'center', justifyContent: 'center', color: isSearch ? 'var(--accent)' : 'var(--text-tertiary)' }}>
+          <svg width="22" height="22" viewBox="0 0 22 22" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="9.5" cy="9.5" r="6"/>
+            <line x1="14" y1="14" x2="19" y2="19"/>
+          </svg>
+        </span>
+        <span style={{ fontSize: 10, fontWeight: isSearch ? 600 : 500, color: isSearch ? 'var(--accent)' : 'var(--text-tertiary)', letterSpacing: '0.02em' }}>
+          Search
         </span>
       </button>
 

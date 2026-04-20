@@ -7,6 +7,7 @@ import { Feed } from './pages/Feed';
 import { Saved } from './pages/Saved';
 import { Admin } from './pages/Admin';
 import { Watch } from './pages/Watch';
+import { Search } from './pages/Search';
 import './index.css';
 
 const queryClient = new QueryClient({
@@ -31,6 +32,7 @@ createRoot(root).render(
           <Route path="/saved"     element={<Saved />} />
           <Route path="/admin"     element={<Admin />} />
           <Route path="/watch/:requestId" element={<Watch />} />
+          <Route path="/search"    element={<Search />} />
           <Route path="*" element={<Navigate to="/feed" replace />} />
         </Routes>
       </BrowserRouter>
