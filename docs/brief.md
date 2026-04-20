@@ -1,6 +1,6 @@
 # Eddy — Implementation Document
 
-**Status:** Phase 2 in progress. Phase 0-1 shipped. Videos download via Shortcut and play in the PWA.
+**Status:** Phase 4 in progress. Phases 0–3 shipped. Feed, guard shadow mode, and RSS poller running. Search and people/follow flow in progress.
 
 Reasoning and trade-offs that led to these decisions live in `docs/decisions.md`. This document is the spec.
 
@@ -1210,9 +1210,9 @@ A session is a focused working block of a few hours ending with the system runna
 
 - **Phase 0 ✅** — Foundation
 - **Phase 1 ✅** — Request flow
-- **Phase 2 🔨** — Feed (core)
-- **Phase 3** — Guard in shadow mode
-- **Phase 4** — Channels, subscriptions, search
+- **Phase 2 ✅** — Feed (core)
+- **Phase 3 ✅** — Guard in shadow mode
+- **Phase 4 🔨** — Channels, subscriptions, search
 - **Phase 5** — Discovery
 - **Phase 6** — Guard live
 - **Phase 7** — Adult sources
@@ -1231,7 +1231,7 @@ Kid shares a YouTube link via iOS share sheet → Shortcut POSTs to M4 → job e
 
 No feed yet. No guard — everything auto-approves. Signed-token pattern in place for notification actions.
 
-### Phase 2 🔨 — Feed (core)
+### Phase 2 ✅ — Feed (core)
 
 Spec in Section 8. ~3-4 sessions.
 
