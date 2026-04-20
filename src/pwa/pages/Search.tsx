@@ -2,7 +2,6 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { BottomNav } from '../components/BottomNav';
-import { AppHeader } from '../components/AppHeader';
 import { Card } from '../components/Card';
 import type { CardData } from '../components/Card';
 
@@ -34,6 +33,19 @@ interface ChannelResult {
   following: boolean;
 }
 
+interface ChannelSearchResponse {
+  channels: ChannelResult[];
+  searchError?: boolean;
+}
+
+type Tab = 'all' | 'library' | 'channels';
+
+const TABS: { id: Tab; label: string }[] = [
+  { id: 'all',      label: 'All' },
+  { id: 'library',  label: 'Library' },
+  { id: 'channels', label: 'Channels' },
+];
+
 // ── Debounce hook ─────────────────────────────────────────────────────────────
 
 function useDebounce(value: string, delay: number): string {
@@ -51,11 +63,6 @@ async function searchLibrary(q: string, userId: string): Promise<SearchResult[]>
   const resp = await fetch(`/search?q=${encodeURIComponent(q)}&userId=${encodeURIComponent(userId)}`);
   if (!resp.ok) throw new Error('Search failed');
   return ((await resp.json() as { results: SearchResult[] }).results);
-}
-
-interface ChannelSearchResponse {
-  channels: ChannelResult[];
-  searchError?: boolean;
 }
 
 async function searchChannels(q: string, userId: string): Promise<ChannelSearchResponse> {
@@ -108,11 +115,10 @@ export function Search() {
   const queryClient = useQueryClient();
 
   const [inputValue, setInputValue] = useState('');
+  const [activeTab, setActiveTab] = useState<Tab>('all');
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // Library results appear quickly — short debounce
   const libraryQuery = useDebounce(inputValue, 250);
-  // Channel search hits yt-dlp — longer debounce to avoid hammering
   const channelQuery = useDebounce(inputValue, 800);
 
   const libraryResults = useQuery({
@@ -157,120 +163,167 @@ export function Search() {
   const hasInput = inputValue.length >= 2;
   const videos = libraryResults.data ?? [];
 
-  // True while user input is ahead of the debounced query (waiting to fire)
   const libraryPending = inputValue !== libraryQuery && inputValue.length >= 2;
   const channelPending = inputValue !== channelQuery && inputValue.length >= 2;
 
+  const showLibrary = hasInput && (activeTab === 'all' || activeTab === 'library');
+  const showChannels = hasInput && (activeTab === 'all' || activeTab === 'channels');
+
   return (
     <div style={{ minHeight: '100dvh', background: 'var(--bg-primary)' }}>
-      <AppHeader />
 
-      {/* Sticky search bar */}
+      {/* ── Sticky header: search bar + filter tabs ── */}
       <div style={{
-        position: 'sticky', top: 56, zIndex: 10,
+        position: 'sticky', top: 0, zIndex: 20,
         background: 'var(--bg-primary)',
-        padding: '10px 16px 10px',
-        borderBottom: '1px solid var(--border-subtle)',
+        paddingTop: 'env(safe-area-inset-top)',
       }}>
-        <div style={{ position: 'relative' }}>
-          <span style={{
-            position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)',
-            pointerEvents: 'none', color: 'var(--text-tertiary)',
-          }}>
-            <svg width="16" height="16" viewBox="0 0 22 22" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <circle cx="9.5" cy="9.5" r="6"/>
-              <line x1="14" y1="14" x2="19" y2="19"/>
-            </svg>
-          </span>
-          <input
-            ref={inputRef}
-            value={inputValue}
-            onChange={(e) => setInputValue(e.target.value)}
-            placeholder="Search videos, channels…"
-            autoCapitalize="off"
-            autoCorrect="off"
-            autoFocus
-            style={{
-              width: '100%', padding: '10px 14px 10px 36px',
-              borderRadius: 10, border: '1px solid var(--border-subtle)',
-              background: 'var(--bg-secondary)', color: 'var(--text-primary)',
-              fontSize: 15, outline: 'none', boxSizing: 'border-box',
-              WebkitAppearance: 'none',
-            }}
-          />
+        {/* Search row */}
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 10,
+          padding: '12px 16px 8px',
+        }}>
+          <div style={{ position: 'relative', flex: 1 }}>
+            <span style={{
+              position: 'absolute', left: 11, top: '50%', transform: 'translateY(-50%)',
+              pointerEvents: 'none', color: 'var(--text-tertiary)',
+              display: 'flex', alignItems: 'center',
+            }}>
+              <svg width="15" height="15" viewBox="0 0 22 22" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="9.5" cy="9.5" r="6.5"/>
+                <line x1="14.5" y1="14.5" x2="20" y2="20"/>
+              </svg>
+            </span>
+            <input
+              ref={inputRef}
+              value={inputValue}
+              onChange={(e) => setInputValue(e.target.value)}
+              placeholder="Search videos, channels…"
+              autoCapitalize="off"
+              autoCorrect="off"
+              autoFocus
+              style={{
+                width: '100%',
+                padding: '9px 12px 9px 34px',
+                borderRadius: 12,
+                border: 'none',
+                background: 'var(--bg-elevated)',
+                color: 'var(--text-primary)',
+                fontSize: 15,
+                outline: 'none',
+                boxSizing: 'border-box',
+                WebkitAppearance: 'none',
+              }}
+            />
+          </div>
+
+          {/* Clear button — outside the pill, only when there's input */}
           {inputValue && (
             <button
-              onClick={() => setInputValue('')}
+              onClick={() => { setInputValue(''); inputRef.current?.focus(); }}
               style={{
-                position: 'absolute', right: 10, top: '50%', transform: 'translateY(-50%)',
-                background: 'none', border: 'none', padding: 4, cursor: 'pointer',
-                color: 'var(--text-tertiary)', lineHeight: 1,
+                flexShrink: 0,
+                background: 'none', border: 'none',
+                padding: '6px 2px',
+                cursor: 'pointer',
+                color: 'var(--text-tertiary)',
+                fontSize: 14, fontWeight: 500,
+                lineHeight: 1,
               }}
-              aria-label="Clear"
+              aria-label="Clear search"
             >
-              <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                <line x1="2" y1="2" x2="12" y2="12"/><line x1="12" y1="2" x2="2" y2="12"/>
-              </svg>
+              Cancel
             </button>
           )}
         </div>
+
+        {/* Filter tabs — only visible when there's input */}
+        {hasInput && (
+          <div style={{
+            display: 'flex', gap: 6,
+            padding: '0 16px 10px',
+            overflowX: 'auto',
+            scrollbarWidth: 'none',
+          }}>
+            {TABS.map((tab) => (
+              <button
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id)}
+                style={{
+                  flexShrink: 0,
+                  padding: '5px 14px',
+                  borderRadius: 20,
+                  border: 'none',
+                  cursor: 'pointer',
+                  fontSize: 13,
+                  fontWeight: activeTab === tab.id ? 600 : 500,
+                  background: activeTab === tab.id ? 'var(--accent)' : 'var(--bg-elevated)',
+                  color: activeTab === tab.id ? '#fff' : 'var(--text-secondary)',
+                  transition: 'background 0.15s, color 0.15s',
+                }}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+        )}
+
+        <div style={{ height: 1, background: 'var(--border-subtle)' }} />
       </div>
 
       <main style={{ paddingBottom: 100 }}>
-        {!userId && (
-          <Empty text="No user selected." />
-        )}
+        {!userId && <Empty text="No user selected." />}
 
-        {userId && !hasInput && (
-          <Empty text="Type to search videos and channels." />
-        )}
+        {userId && !hasInput && <Empty text="Type to search videos and channels." />}
 
         {userId && hasInput && (
           <>
-            {/* ── Library results ── */}
-            <Section
-              label="In your library"
-              count={videos.length}
-              loading={libraryPending || libraryResults.isLoading}
-              error={libraryResults.isError}
-            >
-              {videos.length > 0 ? (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 12, padding: '0 16px' }}>
-                  {videos.map((r) => (
-                    <Card key={r.request_id} data={toCardData(r)} userId={userId} />
-                  ))}
-                </div>
-              ) : libraryResults.isFetched && !libraryResults.isFetching ? (
-                <p style={{ fontSize: 13, color: 'var(--text-tertiary)', padding: '0 16px 4px' }}>
-                  No videos match "{libraryQuery}".
-                </p>
-              ) : null}
-            </Section>
+            {showLibrary && (
+              <Section
+                label="Library"
+                count={videos.length}
+                loading={libraryPending || libraryResults.isLoading}
+                error={libraryResults.isError}
+              >
+                {videos.length > 0 ? (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 12, padding: '0 16px' }}>
+                    {videos.map((r) => (
+                      <Card key={r.request_id} data={toCardData(r)} userId={userId} />
+                    ))}
+                  </div>
+                ) : libraryResults.isFetched && !libraryResults.isFetching ? (
+                  <p style={{ fontSize: 13, color: 'var(--text-tertiary)', padding: '0 16px 4px' }}>
+                    Nothing in your library matches.
+                  </p>
+                ) : null}
+              </Section>
+            )}
 
-            {/* ── Channels ── */}
-            <Section
-              label="Channels to follow"
-              count={channels.length}
-              loading={channelPending || channelResults.isLoading}
-              error={channelResults.isError || channelSearchError}
-            >
-              {channels.length > 0 ? (
-                <div style={{ padding: '0 16px' }}>
-                  {channels.map((ch) => (
-                    <ChannelRow
-                      key={ch.channelId}
-                      channel={ch}
-                      onFollow={() => followMutation.mutate(ch)}
-                      onUnfollow={() => unfollowMutation.mutate(ch.channelId)}
-                    />
-                  ))}
-                </div>
-              ) : channelResults.isFetched && !channelResults.isFetching && !channelSearchError ? (
-                <p style={{ fontSize: 13, color: 'var(--text-tertiary)', padding: '0 16px 4px' }}>
-                  No channels found.
-                </p>
-              ) : null}
-            </Section>
+            {showChannels && (
+              <Section
+                label="Channels"
+                count={channels.length}
+                loading={channelPending || channelResults.isLoading}
+                error={channelResults.isError || channelSearchError}
+              >
+                {channels.length > 0 ? (
+                  <div style={{ padding: '0 16px' }}>
+                    {channels.map((ch) => (
+                      <ChannelRow
+                        key={ch.channelId}
+                        channel={ch}
+                        onFollow={() => followMutation.mutate(ch)}
+                        onUnfollow={() => unfollowMutation.mutate(ch.channelId)}
+                      />
+                    ))}
+                  </div>
+                ) : channelResults.isFetched && !channelResults.isFetching && !channelSearchError ? (
+                  <p style={{ fontSize: 13, color: 'var(--text-tertiary)', padding: '0 16px 4px' }}>
+                    No channels found.
+                  </p>
+                ) : null}
+              </Section>
+            )}
           </>
         )}
       </main>
@@ -296,12 +349,9 @@ function Section({
   children: React.ReactNode;
 }) {
   return (
-    <div style={{ paddingTop: 20 }}>
-      <div style={{
-        display: 'flex', alignItems: 'center', gap: 8,
-        padding: '0 16px 10px',
-      }}>
-        <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+    <div style={{ paddingTop: 22 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '0 16px 10px' }}>
+        <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.07em' }}>
           {label}
         </span>
         {loading && (
@@ -310,7 +360,7 @@ function Section({
         {!loading && count > 0 && (
           <span style={{
             fontSize: 11, fontWeight: 600, color: 'var(--text-tertiary)',
-            background: 'var(--bg-secondary)', borderRadius: 8, padding: '1px 6px',
+            background: 'var(--bg-elevated)', borderRadius: 8, padding: '1px 6px',
           }}>
             {count}
           </span>
@@ -343,7 +393,7 @@ function ChannelRow({
     }}>
       <div style={{
         width: 40, height: 40, borderRadius: '50%',
-        background: 'var(--bg-secondary)',
+        background: 'var(--bg-elevated)',
         display: 'flex', alignItems: 'center', justifyContent: 'center',
         flexShrink: 0, fontSize: 16, fontWeight: 600, color: 'var(--text-secondary)',
       }}>
@@ -362,9 +412,9 @@ function ChannelRow({
       <button
         onClick={channel.following ? onUnfollow : onFollow}
         style={{
-          padding: '6px 14px', borderRadius: 8, border: 'none',
+          padding: '6px 14px', borderRadius: 20, border: 'none',
           fontSize: 13, fontWeight: 600, cursor: 'pointer', flexShrink: 0,
-          background: channel.following ? 'var(--bg-secondary)' : 'var(--accent)',
+          background: channel.following ? 'var(--bg-elevated)' : 'var(--accent)',
           color: channel.following ? 'var(--text-secondary)' : '#fff',
         }}
       >
