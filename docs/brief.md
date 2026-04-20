@@ -1,6 +1,6 @@
 # Eddy — Implementation Document
 
-**Status:** Phase 4 in progress. Phases 0–3 shipped. Feed, guard shadow mode, and RSS poller running. Search and people/follow flow in progress.
+**Status:** Phase 5 next. Phases 0–4 shipped. Feed, guard shadow mode, RSS poller, channel follow, and search all running.
 
 Reasoning and trade-offs that led to these decisions live in `docs/decisions.md`. This document is the spec.
 
@@ -1212,8 +1212,8 @@ A session is a focused working block of a few hours ending with the system runna
 - **Phase 1 ✅** — Request flow
 - **Phase 2 ✅** — Feed (core)
 - **Phase 3 ✅** — Guard in shadow mode
-- **Phase 4 🔨** — Channels, subscriptions, search
-- **Phase 5** — Discovery
+- **Phase 4 ✅** — Channels, subscriptions, search
+- **Phase 5 🔨** — Discovery
 - **Phase 6** — Guard live
 - **Phase 7** — Adult sources
 - **Phase 8** — Drift
