@@ -10,7 +10,9 @@ import type { DownloadJobData } from '../content';
 
 const execFileAsync = promisify(execFile);
 
-const YTDLP_BIN = process.env['YTDLP_BIN'] ?? 'yt-dlp';
+// YTDLP_BIN points to the Ubuntu worker path; M4 channel search needs a separate var.
+// Default to the Homebrew path which is where yt-dlp lives on the M4.
+const YTDLP_BIN_M4 = process.env['YTDLP_BIN_M4'] ?? '/opt/homebrew/bin/yt-dlp';
 const NODE_BIN = process.env['NODE_BIN'] ?? 'node';
 const RSS_POLL_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
@@ -33,7 +35,7 @@ export interface ChannelResult {
 export async function searchYoutubeChannels(query: string): Promise<ChannelResult[]> {
   // Search doesn't need the mweb/PO-token/remote-components stack — that's for video downloads.
   // Plain yt-dlp ytsearch works without auth for metadata-only queries.
-  const { stdout } = await execFileAsync(YTDLP_BIN, [
+  const { stdout } = await execFileAsync(YTDLP_BIN_M4, [
     `ytsearch10:${query}`,
     '--flat-playlist',
     '--dump-json',
@@ -266,11 +268,13 @@ peopleRouter.get('/search', ra(async (req, res) => {
   const uid = resolveUserId(userId);
 
   let channels: ChannelResult[];
+  let searchError = false;
   try {
     channels = await searchYoutubeChannels(q.trim());
   } catch (err) {
-    logger.error({ err }, 'Channel search failed');
+    logger.error({ err, ytdlpBin: YTDLP_BIN_M4 }, 'Channel search failed');
     channels = [];
+    searchError = true;
   }
 
   const followingIds = new Set(
@@ -279,7 +283,7 @@ peopleRouter.get('/search', ra(async (req, res) => {
   );
 
   const results = channels.map((c) => ({ ...c, following: followingIds.has(c.channelId) }));
-  res.json({ channels: results });
+  res.json({ channels: results, searchError });
 }));
 
 // GET /people/following?userId=

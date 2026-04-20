@@ -53,10 +53,15 @@ async function searchLibrary(q: string, userId: string): Promise<SearchResult[]>
   return ((await resp.json() as { results: SearchResult[] }).results);
 }
 
-async function searchChannels(q: string, userId: string): Promise<ChannelResult[]> {
+interface ChannelSearchResponse {
+  channels: ChannelResult[];
+  searchError?: boolean;
+}
+
+async function searchChannels(q: string, userId: string): Promise<ChannelSearchResponse> {
   const resp = await fetch(`/people/search?q=${encodeURIComponent(q)}&userId=${encodeURIComponent(userId)}`);
   if (!resp.ok) throw new Error('Channel search failed');
-  return ((await resp.json() as { channels: ChannelResult[] }).channels);
+  return resp.json() as Promise<ChannelSearchResponse>;
 }
 
 async function followChannel(userId: string, channel: ChannelResult): Promise<void> {
@@ -124,13 +129,15 @@ export function Search() {
     staleTime: 60_000,
   });
 
+  const channels = channelResults.data?.channels ?? [];
+  const channelSearchError = channelResults.data?.searchError ?? false;
+
   const followMutation = useMutation({
     mutationFn: (channel: ChannelResult) => followChannel(userId, channel),
     onSuccess: (_data, channel) => {
-      // Optimistically update cache
-      queryClient.setQueryData<ChannelResult[]>(
+      queryClient.setQueryData<ChannelSearchResponse>(
         ['search-channels', channelQuery, userId],
-        (old) => old?.map((c) => c.channelId === channel.channelId ? { ...c, following: true } : c)
+        (old) => old ? { ...old, channels: old.channels.map((c) => c.channelId === channel.channelId ? { ...c, following: true } : c) } : old
       );
       void queryClient.invalidateQueries({ queryKey: ['people-following', userId] });
     },
@@ -139,9 +146,9 @@ export function Search() {
   const unfollowMutation = useMutation({
     mutationFn: (channelId: string) => unfollowChannel(userId, channelId),
     onSuccess: (_data, channelId) => {
-      queryClient.setQueryData<ChannelResult[]>(
+      queryClient.setQueryData<ChannelSearchResponse>(
         ['search-channels', channelQuery, userId],
-        (old) => old?.map((c) => c.channelId === channelId ? { ...c, following: false } : c)
+        (old) => old ? { ...old, channels: old.channels.map((c) => c.channelId === channelId ? { ...c, following: false } : c) } : old
       );
       void queryClient.invalidateQueries({ queryKey: ['people-following', userId] });
     },
@@ -149,7 +156,6 @@ export function Search() {
 
   const hasInput = inputValue.length >= 2;
   const videos = libraryResults.data ?? [];
-  const channels = channelResults.data ?? [];
 
   // True while user input is ahead of the debounced query (waiting to fire)
   const libraryPending = inputValue !== libraryQuery && inputValue.length >= 2;
@@ -246,7 +252,7 @@ export function Search() {
               label="Channels to follow"
               count={channels.length}
               loading={channelPending || channelResults.isLoading}
-              error={channelResults.isError}
+              error={channelResults.isError || channelSearchError}
             >
               {channels.length > 0 ? (
                 <div style={{ padding: '0 16px' }}>
@@ -259,7 +265,7 @@ export function Search() {
                     />
                   ))}
                 </div>
-              ) : channelResults.isFetched && !channelResults.isFetching ? (
+              ) : channelResults.isFetched && !channelResults.isFetching && !channelSearchError ? (
                 <p style={{ fontSize: 13, color: 'var(--text-tertiary)', padding: '0 16px 4px' }}>
                   No channels found.
                 </p>
