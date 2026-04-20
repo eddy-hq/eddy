@@ -146,6 +146,15 @@ async function pollChannel(output: OutputRow): Promise<void> {
 
   if (followers.length === 0) return;
 
+  // On first poll for a channel (no seen_videos yet), queue only the latest
+  // video as confirmation that follow worked. Mark the rest seen without downloading.
+  const hasAnySeenVideos = !!db.prepare(
+    'SELECT 1 FROM seen_videos WHERE channel_id = ? LIMIT 1'
+  ).get(output.channel_id);
+  const isFirstPoll = !hasAnySeenVideos;
+
+  let firstUnseen = true;
+
   for (const video of videos) {
     const alreadySeen = db.prepare(
       'SELECT 1 FROM seen_videos WHERE channel_id = ? AND video_id = ?'
@@ -156,6 +165,10 @@ async function pollChannel(output: OutputRow): Promise<void> {
     db.prepare(
       'INSERT OR IGNORE INTO seen_videos (channel_id, video_id, seen_at) VALUES (?, ?, ?)'
     ).run(output.channel_id, video.videoId, new Date().toISOString());
+
+    // On first poll: skip downloading all but the single most recent video
+    if (isFirstPoll && !firstUnseen) continue;
+    firstUnseen = false;
 
     const url = `https://www.youtube.com/watch?v=${video.videoId}`;
 
