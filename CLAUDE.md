@@ -2,6 +2,8 @@
 
 Self-hosted family media system. Full spec: **`docs/brief.md`** — read it.
 
+**Operations** (service map, watchdog, deploy script, manual restart commands): **`docs/ops.md`** — read before touching infrastructure or asking how to restart things.
+
 ## Workflow
 
 - Confirm current phase with Steve before coding. Phases are sequential (Section 17 of brief).
