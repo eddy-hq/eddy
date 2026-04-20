@@ -314,17 +314,19 @@ peopleRouter.post('/follow', (req: Request, res: Response) => {
   if (!channelName?.trim()) throw new ValidationError('channelName required');
   const uid = resolveUserId(userId);
 
-  // Find or create person by channel_id
+  // Find or create person + output by channel_id
   const existingOutput = db.prepare(
-    'SELECT person_id FROM person_outputs WHERE output_type = ? AND external_id = ?'
-  ).get('youtube', channelId) as { person_id: string } | undefined;
+    'SELECT person_id, output_id FROM person_outputs WHERE output_type = ? AND external_id = ?'
+  ).get('youtube', channelId) as { person_id: string; output_id: string } | undefined;
 
   let personId: string;
+  let outputId: string;
   if (existingOutput) {
     personId = existingOutput.person_id;
+    outputId = existingOutput.output_id;
   } else {
     personId = uuidv7();
-    const outputId = uuidv7();
+    outputId = uuidv7();
     const feedUrl = `https://www.youtube.com/feeds/videos.xml?channel_id=${channelId}`;
     const now = new Date().toISOString();
 
@@ -350,6 +352,10 @@ peopleRouter.post('/follow', (req: Request, res: Response) => {
       VALUES (?, ?, 1.0, ?, 'manual')
     `).run(uid, personId, new Date().toISOString());
   }
+
+  // Fire-and-forget: poll the channel immediately so videos appear without waiting for the poller
+  void pollChannel({ output_id: outputId, channel_id: channelId, person_id: personId, channel_name: channelName.trim() })
+    .catch((err: unknown) => logger.error({ err, channelId }, 'Immediate post-follow poll failed'));
 
   logger.info({ userId: uid, personId, channelId }, 'User followed channel');
   res.json({ personId, channelId, following: true });
