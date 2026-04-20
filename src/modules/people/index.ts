@@ -7,6 +7,7 @@ import { logger } from '../../logger';
 import { ValidationError, NotFoundError } from '../../errors';
 import { downloadQueue } from '../../queue';
 import type { DownloadJobData } from '../content';
+import { inferChannelTopics } from '../discovery';
 
 const execFileAsync = promisify(execFile);
 
@@ -369,6 +370,10 @@ peopleRouter.post('/follow', (req: Request, res: Response) => {
   // Fire-and-forget: poll the channel immediately so videos appear without waiting for the poller
   void pollChannel({ output_id: outputId, channel_id: channelId, person_id: personId, channel_name: channelName.trim() })
     .catch((err: unknown) => logger.error({ err, channelId }, 'Immediate post-follow poll failed'));
+
+  // Fire-and-forget: infer topic links for this channel
+  void inferChannelTopics(channelId, channelName.trim())
+    .catch((err: unknown) => logger.error({ err, channelId }, 'Channel topic inference failed'));
 
   logger.info({ userId: uid, personId, channelId }, 'User followed channel');
   res.json({ personId, channelId, following: true });
