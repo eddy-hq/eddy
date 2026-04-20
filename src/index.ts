@@ -6,6 +6,7 @@ import { seedUsers } from './db/seed';
 import { app } from './server';
 import { closeQueues } from './queue';
 import { startWatchdog, stopWatchdog } from './modules/watchdog';
+import { startRssPoller, stopRssPoller } from './modules/people/index';
 
 async function start(): Promise<void> {
   logger.info({ env: config.NODE_ENV }, 'Starting Eddy');
@@ -15,6 +16,7 @@ async function start(): Promise<void> {
   logger.info('Database ready');
 
   startWatchdog();
+  startRssPoller();
 
   const server = app.listen(config.PORT, () => {
     logger.info(
@@ -26,6 +28,7 @@ async function start(): Promise<void> {
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'Shutting down');
     stopWatchdog();
+    stopRssPoller();
     server.close(() => logger.info('HTTP server closed'));
     await closeQueues();
     logger.info('Shutdown complete');

@@ -209,7 +209,7 @@ requestsRouter.get('/feed', (req: Request, res: Response) => {
       ...base,
       sections: [
         { id: 'requests', label: 'My requests', cards: cards.filter((c) => c.source === 'share_sheet') },
-        { id: 'channels', label: 'From your channels', cards: cards.filter((c) => c.source === 'channel') },
+        { id: 'channels', label: 'From people you follow', cards: cards.filter((c) => c.source === 'channel_subscription') },
         { id: 'recommended', label: 'Picked for you', cards: cards.filter((c) => c.source === 'recommended') },
       ],
     };

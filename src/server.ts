@@ -7,6 +7,8 @@ import { db } from './db/client';
 import { EddyError, NotFoundError } from './errors';
 import { requestsRouter } from './modules/requests/index';
 import { internalRouter } from './modules/internal/index';
+import { peopleRouter } from './modules/people/index';
+import { searchRouter } from './modules/search/index';
 
 export const app = express();
 
@@ -23,6 +25,8 @@ app.use(
 
 app.use('/requests', requestsRouter);
 app.use('/internal', internalRouter);
+app.use('/people', peopleRouter);
+app.use('/search', searchRouter);
 
 app.get('/health', async (_req: Request, res: Response) => {
   // DB — synchronous probe; throws if SQLite is broken

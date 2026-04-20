@@ -17,6 +17,10 @@ export default defineConfig({
     port: 5173,
     proxy: {
       '/requests': 'http://localhost:3737',
+      '/search':   'http://localhost:3737',
+      '/people':   'http://localhost:3737',
+      '/internal': 'http://localhost:3737',
+      '/health':   'http://localhost:3737',
     },
   },
 });
