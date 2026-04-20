@@ -174,6 +174,7 @@ requestsRouter.get('/feed', (req: Request, res: Response) => {
     FROM requests
     WHERE user_id = ?
       AND status NOT IN ('dismissed')
+      AND NOT (source = 'channel_subscription' AND status IN ('pending', 'downloading'))
     ORDER BY added_at DESC
     LIMIT 200
   `).all(found.user_id) as Array<{
