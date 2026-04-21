@@ -73,6 +73,8 @@ if [[ "$DO_UBUNTU" == true ]]; then
 
   ssh $SSH_OPTS "${SSH_USER}@${SSH_HOST}" "
     set -euo pipefail
+    export NVM_DIR=\"\$HOME/.nvm\"
+    [ -s \"\$NVM_DIR/nvm.sh\" ] && . \"\$NVM_DIR/nvm.sh\"
     cd ~/eddy
     git pull --ff-only origin
     npm ci --omit=dev
