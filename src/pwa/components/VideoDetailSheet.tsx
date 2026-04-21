@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { motion, useDragControls, AnimatePresence } from 'framer-motion';
-import { useQueryClient } from '@tanstack/react-query';
-import { X, Bookmark, BookmarkCheck } from 'lucide-react';
+import { useQueryClient, useMutation } from '@tanstack/react-query';
+import { X, Bookmark, BookmarkCheck, Trash2 } from 'lucide-react';
 import { readProgress, writeProgress, clearProgress } from '../lib/videoProgress';
 import type { CardData } from './Card';
 
@@ -27,6 +27,18 @@ export function VideoDetailSheet({ card, userId, onClose }: Props) {
 
   const [isSaved, setIsSaved] = useState(!!card.savedAt);
   const [saving, setSaving] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+
+  const deleteMutation = useMutation({
+    mutationFn: async () => {
+      const res = await fetch(`/requests/${card.requestId}/delete`, { method: 'POST' });
+      if (!res.ok) throw new Error('Delete failed');
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['feed', userId] });
+      onClose();
+    },
+  });
 
   async function toggleSave() {
     if (saving) return;
@@ -267,8 +279,48 @@ export function VideoDetailSheet({ card, userId, onClose }: Props) {
             </div>
           )}
 
-          <div style={{ display: 'flex', gap: 10 }}>
+          <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
             <SaveButton isSaved={isSaved} saving={saving} onToggle={() => void toggleSave()} />
+            {confirmDelete ? (
+              <>
+                <span style={{ fontSize: 13, color: 'var(--text-secondary)', marginLeft: 4 }}>Delete?</span>
+                <button
+                  onClick={() => deleteMutation.mutate()}
+                  disabled={deleteMutation.isPending}
+                  style={{
+                    fontSize: 13, fontWeight: 600,
+                    color: 'var(--destructive, #e53e3e)',
+                    minHeight: 44, padding: '0 8px',
+                  }}
+                >
+                  {deleteMutation.isPending ? 'Deleting…' : 'Yes, delete'}
+                </button>
+                <button
+                  onClick={() => setConfirmDelete(false)}
+                  style={{ fontSize: 13, color: 'var(--text-secondary)', minHeight: 44, padding: '0 8px' }}
+                >
+                  Cancel
+                </button>
+              </>
+            ) : (
+              <button
+                onClick={() => setConfirmDelete(true)}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 8,
+                  padding: '11px 16px', borderRadius: 12,
+                  background: 'var(--bg-surface)',
+                  color: 'var(--text-secondary)',
+                  border: '1.5px solid var(--border-subtle)',
+                  fontSize: 14, fontWeight: 600, cursor: 'pointer',
+                  fontFamily: 'inherit',
+                  WebkitTapHighlightColor: 'transparent',
+                  outline: 'none',
+                }}
+              >
+                <Trash2 size={16} strokeWidth={2.2} />
+                Delete
+              </button>
+            )}
           </div>
         </div>
       </motion.div>
