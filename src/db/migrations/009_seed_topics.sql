@@ -21,44 +21,44 @@ INSERT OR IGNORE INTO topics (id, label, emoji, category, age_gate, source, sear
 ('cycling',       'Cycling',     '🚴',  'Sport', 0, 'seed', '["cycling tips beginners","road cycling training","bike maintenance guide","cycling for fitness"]'),
 ('tennis',        'Tennis',      '🎾',  'Sport', 0, 'seed', '["tennis tips beginners","tennis technique tutorial","how to improve tennis","tennis serve how to"]'),
 ('swimming',      'Swimming',    '🏊',  'Sport', 0, 'seed', '["swimming technique tutorial","how to swim faster","swimming tips beginners","freestyle swimming stroke"]'),
-('formula1',      'Formula 1',   '🏎️', 'Sport', 0, 'seed', '["formula 1 explained","f1 race highlights","how f1 cars work","formula 1 guide beginners"]'),
+('formula1',      'F1',          '🏎️', 'Sport', 0, 'seed', '["formula 1 explained","f1 race highlights","how f1 cars work","formula 1 guide beginners"]'),
 ('skateboarding', 'Skateboarding','🛹', 'Sport', 0, 'seed', '["skateboarding tricks beginners","how to skateboard","skateboard ollie tutorial","skating tips"]');
 
 -- ── Science ───────────────────────────────────────────────────────────────────
 INSERT OR IGNORE INTO topics (id, label, emoji, category, age_gate, source, search_terms) VALUES
-('space',         'Space & Astronomy', '🚀', 'Science', 0, 'seed', '["space documentary","astronomy for beginners","how the universe works","NASA explained"]'),
+('space',         'Astronomy',          '🚀', 'Science', 0, 'seed', '["space documentary","astronomy for beginners","how the universe works","NASA explained"]'),
 ('biology',       'Biology',           '🧬', 'Science', 0, 'seed', '["biology explained simply","how the human body works","evolution explained","biology facts interesting"]'),
 ('physics',       'Physics',           '⚛️', 'Science', 0, 'seed', '["physics explained simply","how things work physics","physics experiments at home","physics for beginners"]'),
 ('chemistry',     'Chemistry',         '🧪', 'Science', 0, 'seed', '["chemistry experiments","how chemistry works","chemistry for beginners","interesting chemistry reactions"]'),
-('nature',        'Nature & Wildlife', '🌿', 'Science', 0, 'seed', '["wildlife documentary","nature explained","animal behaviour","nature facts amazing"]'),
+('nature',        'Nature',            '🌿', 'Science', 0, 'seed', '["wildlife documentary","nature explained","animal behaviour","nature facts amazing"]'),
 ('maths',         'Mathematics',       '🔢', 'Science', 0, 'seed', '["math explained visually","interesting mathematics","math tips tricks","math problem solving"]'),
 ('environment',   'Environment',       '🌍', 'Science', 0, 'seed', '["climate change explained","environmental science","sustainability explained","how ecosystems work"]');
 
 -- ── Technology ────────────────────────────────────────────────────────────────
 INSERT OR IGNORE INTO topics (id, label, emoji, category, age_gate, source, search_terms) VALUES
 ('programming',   'Programming',   '💻', 'Technology', 0, 'seed', '["learn to code beginners","programming tutorial","coding projects beginners","how programming works"]'),
-('ai_ml',         'AI & Machine Learning', '🤖', 'Technology', 0, 'seed', '["artificial intelligence explained","machine learning beginner","how AI works","AI technology explained"]'),
+('ai_ml',         'AI',                    '🤖', 'Technology', 0, 'seed', '["artificial intelligence explained","machine learning beginner","how AI works","AI technology explained"]'),
 ('electronics',   'Electronics',   '🔧', 'Technology', 0, 'seed', '["electronics projects beginners","how to build circuits","Arduino tutorial","electronics for beginners"]'),
 ('robotics',      'Robotics',      '🦾', 'Technology', 0, 'seed', '["robotics for beginners","how robots work","robot building tutorial","robotics project"]'),
-('web_dev',       'Web Development','🌐', 'Technology', 0, 'seed', '["web development tutorial","how websites work","HTML CSS tutorial","web design beginners"]'),
-('linux',         'Linux & Open Source','🐧','Technology', 0, 'seed', '["linux tutorial beginners","how to use linux","linux tips tricks","open source tools"]'),
+('web_dev',       'Web',            '🌐', 'Technology', 0, 'seed', '["web development tutorial","how websites work","HTML CSS tutorial","web design beginners"]'),
+('linux',         'Linux',              '🐧','Technology', 0, 'seed', '["linux tutorial beginners","how to use linux","linux tips tricks","open source tools"]'),
 ('cybersecurity', 'Cybersecurity', '🔐', 'Technology', 0, 'seed', '["cybersecurity explained","how hacking works explained","online safety tips","cybersecurity for beginners"]');
 
 -- ── Arts & Creativity ─────────────────────────────────────────────────────────
 INSERT OR IGNORE INTO topics (id, label, emoji, category, age_gate, source, search_terms) VALUES
 ('drawing',           'Drawing',            '✏️', 'Arts', 0, 'seed', '["drawing tutorial beginners","how to draw","art tips for beginners","sketching techniques"]'),
-('music_production',  'Music Production',   '🎛️', 'Arts', 0, 'seed', '["music production tutorial beginners","how to make beats","beat making guide","music production tips"]'),
+('music_production',  'Production',          '🎛️', 'Arts', 0, 'seed', '["music production tutorial beginners","how to make beats","beat making guide","music production tips"]'),
 ('photography',       'Photography',        '📷', 'Arts', 0, 'seed', '["photography tips beginners","how to take better photos","camera settings explained","photography techniques"]'),
 ('animation',         'Animation',          '🎬', 'Arts', 0, 'seed', '["animation tutorial beginners","how to animate","2D animation basics","stop motion animation"]'),
-('crafts',            'Crafts & Making',    '✂️', 'Arts', 0, 'seed', '["DIY crafts tutorial","craft ideas","how to make crafts","paper crafts easy"]'),
-('creative_writing',  'Creative Writing',   '📝', 'Arts', 0, 'seed', '["creative writing tips","how to write stories","storytelling techniques","writing for beginners"]'),
+('crafts',            'Crafts',              '✂️', 'Arts', 0, 'seed', '["DIY crafts tutorial","craft ideas","how to make crafts","paper crafts easy"]'),
+('creative_writing',  'Writing',             '📝', 'Arts', 0, 'seed', '["creative writing tips","how to write stories","storytelling techniques","writing for beginners"]'),
 ('design',            'Design',             '🎨', 'Arts', 0, 'seed', '["graphic design tutorial","design principles explained","UI design basics","colour theory design"]');
 
 -- ── Music ─────────────────────────────────────────────────────────────────────
 INSERT OR IGNORE INTO topics (id, label, emoji, category, age_gate, source, search_terms) VALUES
 ('guitar',        'Guitar',         '🎸', 'Music', 0, 'seed', '["guitar lessons beginners","how to play guitar","guitar chords tutorial","acoustic guitar tips"]'),
 ('piano',         'Piano',          '🎹', 'Music', 0, 'seed', '["piano lessons beginners","how to play piano","piano tutorial","keyboard piano tips"]'),
-('music_theory',  'Music Theory',   '🎼', 'Music', 0, 'seed', '["music theory explained","how music works","music theory for beginners","understanding rhythm harmony"]');
+('music_theory',  'Theory',         '🎼', 'Music', 0, 'seed', '["music theory explained","how music works","music theory for beginners","understanding rhythm harmony"]');
 
 -- ── Food ─────────────────────────────────────────────────────────────────────
 INSERT OR IGNORE INTO topics (id, label, emoji, category, age_gate, source, search_terms) VALUES
@@ -68,8 +68,8 @@ INSERT OR IGNORE INTO topics (id, label, emoji, category, age_gate, source, sear
 -- ── Fitness ───────────────────────────────────────────────────────────────────
 INSERT OR IGNORE INTO topics (id, label, emoji, category, age_gate, source, search_terms) VALUES
 ('yoga',         'Yoga',          '🧘', 'Fitness', 0, 'seed', '["yoga for beginners","yoga tutorial routine","yoga benefits explained","morning yoga practice"]'),
-('gym',          'Gym & Fitness', '💪', 'Fitness', 0, 'seed', '["gym workout beginners","how to start gym","weight training basics","home workout routine"]'),
-('martial_arts', 'Martial Arts',  '🥋', 'Fitness', 0, 'seed', '["martial arts basics","karate tutorial beginners","judo technique introduction","martial arts for beginners"]');
+('gym',          'Fitness',       '💪', 'Fitness', 0, 'seed', '["gym workout beginners","how to start gym","weight training basics","home workout routine"]'),
+('martial_arts', 'Martial',       '🥋', 'Fitness', 0, 'seed', '["martial arts basics","karate tutorial beginners","judo technique introduction","martial arts for beginners"]');
 
 -- ── Outdoors ─────────────────────────────────────────────────────────────────
 INSERT OR IGNORE INTO topics (id, label, emoji, category, age_gate, source, search_terms) VALUES
@@ -86,8 +86,8 @@ INSERT OR IGNORE INTO topics (id, label, emoji, category, age_gate, source, sear
 
 -- ── Film & Media ──────────────────────────────────────────────────────────────
 INSERT OR IGNORE INTO topics (id, label, emoji, category, age_gate, source, search_terms) VALUES
-('film',    'Film & Cinema',  '🎥', 'Film', 0, 'seed', '["film analysis video essay","how movies are made","filmmaking tutorial","movie history explained"]'),
-('books',   'Books & Reading','📚', 'Film', 0, 'seed', '["book recommendations","best books to read","book review analysis","reading guide"]');
+('film',    'Film',           '🎥', 'Film', 0, 'seed', '["film analysis video essay","how movies are made","filmmaking tutorial","movie history explained"]'),
+('books',   'Books',          '📚', 'Film', 0, 'seed', '["book recommendations","best books to read","book review analysis","reading guide"]');
 
 -- ── Travel ────────────────────────────────────────────────────────────────────
 INSERT OR IGNORE INTO topics (id, label, emoji, category, age_gate, source, search_terms) VALUES
@@ -95,8 +95,8 @@ INSERT OR IGNORE INTO topics (id, label, emoji, category, age_gate, source, sear
 
 -- ── Health ────────────────────────────────────────────────────────────────────
 INSERT OR IGNORE INTO topics (id, label, emoji, category, age_gate, source, search_terms) VALUES
-('health',         'Health & Wellness', '❤️', 'Health', 0, 'seed', '["health and wellness tips","how to stay healthy","healthy habits explained","wellness routine"]'),
-('mental_health',  'Mental Health',     '🧠', 'Health', 0, 'seed', '["mental health explained","managing anxiety tips","mental wellbeing how to","psychology for beginners"]'),
+('health',         'Wellness',           '❤️', 'Health', 0, 'seed', '["health and wellness tips","how to stay healthy","healthy habits explained","wellness routine"]'),
+('mental_health',  'Wellbeing',          '🧠', 'Health', 0, 'seed', '["mental health explained","managing anxiety tips","mental wellbeing how to","psychology for beginners"]'),
 ('nutrition',      'Nutrition',         '🥗', 'Health', 0, 'seed', '["nutrition basics explained","healthy eating guide","how to eat well","nutrition tips beginners"]');
 
 -- ── Vehicles ─────────────────────────────────────────────────────────────────
@@ -106,11 +106,11 @@ INSERT OR IGNORE INTO topics (id, label, emoji, category, age_gate, source, sear
 
 -- ── Age-gated (adults only) ───────────────────────────────────────────────────
 INSERT OR IGNORE INTO topics (id, label, emoji, category, age_gate, source, search_terms) VALUES
-('politics',       'Politics & Current Affairs', '🏛️', 'Society', 1, 'seed', '["political science explained","how government works","political history","democracy explained"]'),
+('politics',       'Politics',                   '🏛️', 'Society', 1, 'seed', '["political science explained","how government works","political history","democracy explained"]'),
 ('economics',      'Economics',                  '📈', 'Society', 1, 'seed', '["economics explained","how economy works","microeconomics basics","economic history"]'),
 ('business',       'Business',                   '💼', 'Society', 1, 'seed', '["business ideas explained","entrepreneurship tips","startup story","business strategy explained"]'),
 ('investing',      'Investing',                  '💹', 'Society', 1, 'seed', '["investing for beginners","how stock market works","personal finance tips","investment strategy"]'),
-('news_analysis',  'News & Analysis',            '📰', 'Society', 1, 'seed', '["news analysis explained","current events context","world news background","journalism explained"]'),
-('combat_sports',  'Combat Sports',              '🥊', 'Sport',   1, 'seed', '["boxing technique tutorial","MMA explained","UFC fighter story","combat sports training"]'),
-('cocktails',      'Cocktails & Drinks',         '🍹', 'Food',    1, 'seed', '["cocktail recipes how to","mixology tutorial","how to make cocktails","bartending basics"]'),
+('news_analysis',  'News',                       '📰', 'Society', 1, 'seed', '["news analysis explained","current events context","world news background","journalism explained"]'),
+('combat_sports',  'Combat',                     '🥊', 'Sport',   1, 'seed', '["boxing technique tutorial","MMA explained","UFC fighter story","combat sports training"]'),
+('cocktails',      'Cocktails',                  '🍹', 'Food',    1, 'seed', '["cocktail recipes how to","mixology tutorial","how to make cocktails","bartending basics"]'),
 ('woodworking',    'Woodworking',                '🪵', 'Making',  0, 'seed', '["woodworking for beginners","woodworking projects easy","carpentry basics","woodworking tips tools"]');

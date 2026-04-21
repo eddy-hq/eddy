@@ -35,7 +35,17 @@ export const guardQueue = new Queue('guard', {
   },
 });
 
+// Discovery engine queue (Phase 5) — repeatable daily job, processed on M4
+export const discoveryQueue = new Queue('discovery', {
+  connection: redis,
+  defaultJobOptions: {
+    attempts: 1,
+    removeOnComplete: { count: 10 },
+    removeOnFail: { count: 20 },
+  },
+});
+
 export async function closeQueues(): Promise<void> {
-  await Promise.all([downloadQueue.close(), guardQueue.close()]);
+  await Promise.all([downloadQueue.close(), guardQueue.close(), discoveryQueue.close()]);
   await redis.quit();
 }

@@ -16,6 +16,7 @@
     "deploy:full": "bash scripts/deploy.sh --full",
     "health": "bash scripts/healthcheck.sh",
     "worker": "tsx src/workers/download.ts",
+    "discovery:run": "tsx src/scripts/run-discovery.ts",
     "label-guard": "tsx src/scripts/label-guard.ts",
     "thumbs:backfill": "tsx src/scripts/thumbs-backfill.ts",
     "thumbs:quality": "tsx src/scripts/thumb-quality-test.ts"

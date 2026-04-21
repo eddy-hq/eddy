@@ -8,6 +8,18 @@ import { BottomNav } from '../components/BottomNav';
 import { AppHeader } from '../components/AppHeader';
 import { useVideoSheet } from '../hooks/useVideoSheet';
 
+// ── Topics API ───────────────────────────────────────────────────────────────
+
+interface UserTopic { id: string; label: string; emoji: string | null; }
+interface TopicsResponse { categories: { name: string; topics: UserTopic[] }[]; }
+
+async function fetchUserTopics(userId: string): Promise<UserTopic[]> {
+  const res = await fetch(`/topics?userId=${encodeURIComponent(userId)}`);
+  if (!res.ok) return [];
+  const data = await res.json() as TopicsResponse;
+  return data.categories.flatMap((c) => c.topics).filter((t) => (t as UserTopic & { selected: boolean }).selected);
+}
+
 // ── Types ────────────────────────────────────────────────────────────────────
 
 interface FeedCard {
@@ -104,6 +116,13 @@ export function Feed() {
     refetchInterval: 10_000,
   });
 
+  const { data: userTopics = [] } = useQuery({
+    queryKey: ['topics', user],
+    queryFn: () => fetchUserTopics(user),
+    enabled: !!user,
+    staleTime: 60_000,
+  });
+
   if (!user) return <Empty text="No user selected." />;
   if (isLoading) return <Empty text="Loading…" />;
   if (isError) return <Empty text="Could not load." />;
@@ -139,22 +158,22 @@ export function Feed() {
             display: 'flex', gap: 7, alignItems: 'center',
             WebkitOverflowScrolling: 'touch',
           }}>
-            {['All', 'Minecraft', 'Science', 'Football', 'Space', 'Music'].map((chip) => (
+            {[{ id: 'All', label: 'All', emoji: null }, ...userTopics].map((chip) => (
               <button
-                key={chip}
-                onClick={() => setActiveChip(chip)}
+                key={chip.id}
+                onClick={() => setActiveChip(chip.id)}
                 style={{
                   flexShrink: 0,
-                  fontSize: 12, fontWeight: activeChip === chip ? 600 : 500,
+                  fontSize: 12, fontWeight: activeChip === chip.id ? 600 : 500,
                   letterSpacing: '0.01em',
                   padding: '7px 13px', borderRadius: 20,
-                  background: activeChip === chip ? 'var(--accent)' : 'transparent',
-                  color: activeChip === chip ? '#fff' : 'var(--text-secondary)',
-                  border: `1px solid ${activeChip === chip ? 'var(--accent)' : 'var(--border-subtle)'}`,
+                  background: activeChip === chip.id ? 'var(--accent)' : 'transparent',
+                  color: activeChip === chip.id ? '#fff' : 'var(--text-secondary)',
+                  border: `1px solid ${activeChip === chip.id ? 'var(--accent)' : 'var(--border-subtle)'}`,
                   cursor: 'pointer', whiteSpace: 'nowrap',
                 }}
               >
-                {chip}
+                {chip.label}
               </button>
             ))}
           </div>
@@ -164,10 +183,26 @@ export function Feed() {
       {/* Feed content */}
       <main style={{ paddingBottom: 100 }}>
         {!hasContent ? (
-          <div style={{ paddingTop: 64, textAlign: 'center' }}>
-            <p style={{ color: 'var(--text-secondary)', fontSize: 'var(--text-base)' }}>
+          <div style={{ paddingTop: 64, textAlign: 'center', padding: '64px 32px 0' }}>
+            <p style={{ color: 'var(--text-secondary)', fontSize: 'var(--text-base)', margin: '0 0 16px' }}>
               Nothing here yet. Share a YouTube link to get started.
             </p>
+            <a
+              href={`/interests?userId=${encodeURIComponent(user)}&returnTo=${encodeURIComponent(`/feed?userId=${user}`)}`}
+              style={{
+                display: 'inline-block',
+                padding: '9px 20px',
+                borderRadius: 20,
+                border: '1.5px solid var(--border-subtle)',
+                color: 'var(--text-secondary)',
+                fontSize: 13,
+                fontFamily: 'var(--font-sans)',
+                fontWeight: 500,
+                textDecoration: 'none',
+              }}
+            >
+              Set up your interests →
+            </a>
           </div>
         ) : (
           days.map((day, i) => (
