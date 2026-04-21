@@ -81,7 +81,7 @@ if [[ "$DO_UBUNTU" == true ]]; then
 
   if [[ "$DEPS_CHANGED" == true ]]; then
     info "Dependencies changed — will run npm ci"
-    NPM_STEP="npm ci --omit=dev &&"
+    NPM_STEP="npm ci &&"
   else
     NPM_STEP=""
     info "Dependencies unchanged — skipping npm ci"
