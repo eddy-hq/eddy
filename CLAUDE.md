@@ -55,6 +55,10 @@ No Python in Eddy — yt-dlp is a binary shell-out.
 - Auto-apply Drift suggestions or any profile change.
 - Put kid PII or consumption details in anything that could leave the local network.
 
+## Deploying / restarting
+
+Always use `npm run deploy` — never raw `launchctl` or `systemctl`. Migrations run on server startup; applying a new migration requires `npm run deploy --server` (or `--full`) to restart the M4 server.
+
 ## Verify before declaring done
 
 ```

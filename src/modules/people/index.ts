@@ -14,16 +14,7 @@ const execFileAsync = promisify(execFile);
 // YTDLP_BIN points to the Ubuntu worker path; M4 channel search needs a separate var.
 // Default to the Homebrew path which is where yt-dlp lives on the M4.
 const YTDLP_BIN_M4 = process.env['YTDLP_BIN_M4'] ?? '/opt/homebrew/bin/yt-dlp';
-const NODE_BIN = process.env['NODE_BIN'] ?? 'node';
 const RSS_POLL_INTERVAL_MS = 6 * 60 * 60 * 1000;
-
-function baseArgs(): string[] {
-  return [
-    '--js-runtimes', `node:${NODE_BIN}`,
-    '--remote-components', 'ejs:github',
-    '--extractor-args', 'youtube:player_client=mweb',
-  ];
-}
 
 // ── Channel search ────────────────────────────────────────────────────────────
 
@@ -187,7 +178,7 @@ async function pollChannel(output: OutputRow): Promise<void> {
           (request_id, user_id, source, url, youtube_id, title, channel, status, requested_at, added_at, file_state)
         VALUES
           (@requestId, @userId, 'channel_subscription', @url, @youtubeId, @title, @channel,
-           'pending', @now, @now, 'live')
+           'downloading', @now, @now, 'live')
       `).run({
         requestId,
         userId: follower.user_id,

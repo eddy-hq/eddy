@@ -21,7 +21,8 @@ export default defineConfig({
       '/people':   'http://localhost:3737',
       '/internal': 'http://localhost:3737',
       '/health':   'http://localhost:3737',
-      '/topics':   'http://localhost:3737',
+      '/topics':     'http://localhost:3737',
+      '/discovery':  'http://localhost:3737',
     },
   },
 });

@@ -80,10 +80,12 @@ async function run(): Promise<void> {
   }>;
 
   if (rows.length === 0) {
+    // eslint-disable-next-line no-console
     console.log('No videos found.');
     return;
   }
 
+  // eslint-disable-next-line no-console
   console.log(`\n${BOLD}Classifying ${rows.length} thumbnails using ${config.OLLAMA_GUARD_MODEL}…${RESET}\n`);
 
   let editorial = 0;
@@ -101,6 +103,7 @@ async function run(): Promise<void> {
       const raw = await ollamaGenerate(PROMPT, config.OLLAMA_GUARD_MODEL, [b64]);
       result = parseResult(raw);
     } catch (err) {
+      // eslint-disable-next-line no-console
       console.log(`  ${DIM}  error  ${truncate(channel, 24)} ${truncate(title, 52)} ${String(err)}${RESET}`);
       failed++;
       continue;
@@ -108,6 +111,7 @@ async function run(): Promise<void> {
 
     const colour = result.style === 'editorial' ? GREEN : RED;
     const conf   = `${Math.round(result.confidence * 100)}%`;
+    // eslint-disable-next-line no-console
     console.log(
       `  ${colour}${result.style === 'editorial' ? 'editorial' : '     slop'}${RESET}` +
       `  ${DIM}${truncate(channel, 24)}${RESET}` +
@@ -118,6 +122,7 @@ async function run(): Promise<void> {
     if (result.style === 'editorial') editorial++; else slop++;
   }
 
+  // eslint-disable-next-line no-console
   console.log(
     `\n${BOLD}Summary:${RESET} ${GREEN}${editorial} editorial${RESET}` +
     `, ${RED}${slop} slop${RESET}` +
@@ -127,6 +132,7 @@ async function run(): Promise<void> {
 }
 
 run().catch((err: unknown) => {
+  // eslint-disable-next-line no-console
   console.error('Script failed:', err);
   process.exit(1);
 });

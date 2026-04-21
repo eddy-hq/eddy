@@ -27,7 +27,7 @@ const users = (targetArg
 
 if (users.length === 0) {
   // eslint-disable-next-line no-console
-  console.error('No users found', targetUserId ? `for userId ${targetUserId}` : '');
+  console.error('No users found', targetArg ? `for userId ${targetArg}` : '');
   process.exit(1);
 }
 
