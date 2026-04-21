@@ -28,6 +28,7 @@ export function VideoDetailSheet({ card, userId, onClose }: Props) {
   const [isSaved, setIsSaved] = useState(!!card.savedAt);
   const [saving, setSaving] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleteError, setDeleteError] = useState(false);
 
   const deleteMutation = useMutation({
     mutationFn: async () => {
@@ -37,6 +38,9 @@ export function VideoDetailSheet({ card, userId, onClose }: Props) {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['feed', userId] });
       onClose();
+    },
+    onError: () => {
+      setDeleteError(true);
     },
   });
 
@@ -283,9 +287,11 @@ export function VideoDetailSheet({ card, userId, onClose }: Props) {
             <SaveButton isSaved={isSaved} saving={saving} onToggle={() => void toggleSave()} />
             {confirmDelete ? (
               <>
-                <span style={{ fontSize: 13, color: 'var(--text-secondary)', marginLeft: 4 }}>Delete?</span>
+                <span style={{ fontSize: 13, color: deleteError ? 'var(--destructive, #e53e3e)' : 'var(--text-secondary)', marginLeft: 4 }}>
+                  {deleteError ? 'Failed — try again' : 'Delete?'}
+                </span>
                 <button
-                  onClick={() => deleteMutation.mutate()}
+                  onClick={() => { setDeleteError(false); deleteMutation.mutate(); }}
                   disabled={deleteMutation.isPending}
                   style={{
                     fontSize: 13, fontWeight: 600,
@@ -296,7 +302,7 @@ export function VideoDetailSheet({ card, userId, onClose }: Props) {
                   {deleteMutation.isPending ? 'Deleting…' : 'Yes, delete'}
                 </button>
                 <button
-                  onClick={() => setConfirmDelete(false)}
+                  onClick={() => { setConfirmDelete(false); setDeleteError(false); }}
                   style={{ fontSize: 13, color: 'var(--text-secondary)', minHeight: 44, padding: '0 8px' }}
                 >
                   Cancel
