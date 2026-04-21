@@ -68,24 +68,8 @@ if [[ "$DO_UBUNTU" == true ]]; then
     info "Ubuntu at ${UBUNTU_SHA:0:7} → deploying ${LOCAL_SHA:0:7}"
   fi
 
-  # Determine if package-lock changed between Ubuntu's HEAD and ours
-  DEPS_CHANGED=false
-  if [[ "$UBUNTU_SHA" != "unknown" && "$UBUNTU_SHA" != "$LOCAL_SHA" ]]; then
-    CHANGED=$(git -C "$SCRIPT_DIR/.." diff --name-only "$UBUNTU_SHA" "$LOCAL_SHA" 2>/dev/null || echo "")
-    if echo "$CHANGED" | grep -qE "^package(-lock)?\.json$"; then
-      DEPS_CHANGED=true
-    fi
-  else
-    DEPS_CHANGED=true  # unknown baseline — run npm ci to be safe
-  fi
-
-  if [[ "$DEPS_CHANGED" == true ]]; then
-    info "Dependencies changed — will run npm ci"
-    NPM_STEP="npm ci &&"
-  else
-    NPM_STEP=""
-    info "Dependencies unchanged — skipping npm ci"
-  fi
+  NPM_STEP="npm ci &&"
+  info "Will run npm ci"
 
   ssh $SSH_OPTS "${SSH_USER}@${SSH_HOST}" "
     set -euo pipefail
