@@ -6,9 +6,10 @@ import { v7 as uuidv7 } from 'uuid';
 import { db } from '../../db/client';
 import { logger } from '../../logger';
 import { ollamaGenerate } from '../../ollama';
-import { redis, discoveryQueue } from '../../queue';
+import { redis, discoveryQueue, downloadQueue } from '../../queue';
 import { ValidationError, NotFoundError } from '../../errors';
 import { buildPrompt, parseVerdict, PROMPT_VERSION } from '../guard/index';
+import type { DownloadJobData } from '../content';
 
 const execFileAsync = promisify(execFile);
 const YTDLP_BIN_M4 = process.env['YTDLP_BIN_M4'] ?? '/opt/homebrew/bin/yt-dlp';
@@ -282,12 +283,6 @@ interface ScoringItem {
   channel: string;
   durationSecs: number | null;
   publishedAt: string | null;
-}
-
-function formatDuration(secs: number | null): string {
-  if (secs === null) return 'unknown length';
-  const m = Math.floor(secs / 60);
-  return m < 1 ? `${secs}s` : `${m} min`;
 }
 
 function formatAge(isoDate: string | null): string {
@@ -735,4 +730,166 @@ topicsRouter.post('/user-add', (req: Request, res: Response) => {
   })();
 
   res.json({ topicId, label: trimmed, isNew: true });
+});
+
+// ── Discovery HTTP router ─────────────────────────────────────────────────────
+
+export const discoveryRouter = Router();
+
+interface SurfacedCandidateRow {
+  candidate_id: string;
+  url: string;
+  external_id: string | null;
+  title: string | null;
+  thumbnail_url: string | null;
+  published_at: string | null;
+  gemma_score: number | null;
+  why_text: string | null;
+  topic_id: string | null;
+  source_type: string;
+}
+
+// GET /discovery/feed?userId=
+discoveryRouter.get('/feed', (req: Request, res: Response) => {
+  const user = resolveUser(req.query['userId']);
+  const today = new Date().toISOString().slice(0, 10);
+
+  const candidates = db.prepare(`
+    SELECT candidate_id, url, external_id, title, thumbnail_url, published_at,
+           gemma_score, why_text, topic_id, source_type
+    FROM candidate_pool
+    WHERE user_id = ? AND surfaced_date = ? AND status = 'surfaced'
+    ORDER BY gemma_score DESC
+  `).all(user.user_id, today) as SurfacedCandidateRow[];
+
+  const topicCount = (db.prepare(
+    'SELECT COUNT(*) AS n FROM user_topics WHERE user_id = ?'
+  ).get(user.user_id) as { n: number }).n;
+
+  const coldStart = topicCount === 0 || candidates.length === 0;
+
+  // Balance prompt: dominant topic >70% of today's feed AND no prompt shown in past 10 days
+  let balancePrompt: {
+    promptId: string;
+    topicId: string;
+    topicLabel: string;
+    concentration: number;
+  } | null = null;
+
+  if (candidates.length >= 3) {
+    const topicCounts = new Map<string, number>();
+    for (const c of candidates) {
+      if (c.topic_id) topicCounts.set(c.topic_id, (topicCounts.get(c.topic_id) ?? 0) + 1);
+    }
+    const [topTopicId, topCount] = [...topicCounts.entries()].sort((a, b) => b[1] - a[1])[0] ?? [];
+
+    if (topTopicId && topCount / candidates.length > 0.7) {
+      const concentration = topCount / candidates.length;
+      const recentPrompt = db.prepare(`
+        SELECT 1 FROM balance_prompts
+        WHERE user_id = ? AND topic_id = ? AND shown_at > datetime('now', '-10 days')
+        LIMIT 1
+      `).get(user.user_id, topTopicId);
+
+      if (!recentPrompt) {
+        const topicRow = db.prepare('SELECT label FROM topics WHERE id = ?')
+          .get(topTopicId) as { label: string } | undefined;
+        const promptId = uuidv7();
+        const now = new Date().toISOString();
+        db.prepare(`
+          INSERT INTO balance_prompts (prompt_id, user_id, topic_id, topic_label, concentration, shown_at)
+          VALUES (?, ?, ?, ?, ?, ?)
+        `).run(promptId, user.user_id, topTopicId, topicRow?.label ?? topTopicId, concentration, now);
+        balancePrompt = { promptId, topicId: topTopicId, topicLabel: topicRow?.label ?? topTopicId, concentration };
+      }
+    }
+  }
+
+  res.json({
+    candidates: candidates.map((c) => ({
+      candidateId: c.candidate_id,
+      url: c.url,
+      externalId: c.external_id,
+      title: c.title,
+      thumbnailUrl: c.thumbnail_url,
+      publishedAt: c.published_at,
+      score: c.gemma_score,
+      why: c.why_text,
+      topicId: c.topic_id,
+      sourceType: c.source_type,
+    })),
+    coldStart,
+    balancePrompt,
+  });
+});
+
+// ── Deletion signal ───────────────────────────────────────────────────────────
+
+// Called when a user deletes a downloaded video. Nudges the originating topic
+// weight down slightly so future discovery de-prioritises similar content.
+export function recordDeletionSignal(userId: string, youtubeId: string): void {
+  const candidate = db.prepare(
+    'SELECT topic_id FROM candidate_pool WHERE user_id = ? AND external_id = ? LIMIT 1'
+  ).get(userId, youtubeId) as { topic_id: string | null } | undefined;
+
+  if (!candidate?.topic_id) return;
+
+  db.prepare(`
+    UPDATE user_topics SET weight = MAX(0.1, weight - 0.2)
+    WHERE user_id = ? AND topic_id = ?
+  `).run(userId, candidate.topic_id);
+
+  logger.info({ topicId: candidate.topic_id }, 'Discovery: deletion signal recorded');
+}
+
+// POST /discovery/dismiss — body: { userId, candidateId }
+discoveryRouter.post('/dismiss', (req: Request, res: Response) => {
+  const { userId, candidateId } = req.body as { userId?: string; candidateId?: string };
+  const user = resolveUser(userId);
+  if (!candidateId?.trim()) throw new ValidationError('candidateId required');
+
+  const candidate = db.prepare(
+    'SELECT candidate_id FROM candidate_pool WHERE candidate_id = ? AND user_id = ?'
+  ).get(candidateId, user.user_id) as { candidate_id: string } | undefined;
+  if (!candidate) throw new NotFoundError(`candidate ${candidateId}`);
+
+  db.prepare(`UPDATE candidate_pool SET status = 'dismissed' WHERE candidate_id = ?`).run(candidateId);
+
+  res.json({ candidateId, status: 'dismissed' });
+});
+
+// POST /discovery/request — body: { userId, candidateId }
+discoveryRouter.post('/request', async (req: Request, res: Response) => {
+  const { userId, candidateId } = req.body as { userId?: string; candidateId?: string };
+  const user = resolveUser(userId);
+  if (!candidateId?.trim()) throw new ValidationError('candidateId required');
+
+  const candidate = db.prepare(
+    'SELECT candidate_id, url, external_id, title FROM candidate_pool WHERE candidate_id = ? AND user_id = ?'
+  ).get(candidateId, user.user_id) as {
+    candidate_id: string;
+    url: string;
+    external_id: string | null;
+    title: string | null;
+  } | undefined;
+  if (!candidate) throw new NotFoundError(`candidate ${candidateId}`);
+
+  const requestId = uuidv7();
+  const now = new Date().toISOString();
+
+  db.prepare(`
+    INSERT INTO requests
+      (request_id, user_id, source, url, youtube_id, title, status, decided_by, decided_at, requested_at)
+    VALUES
+      (?, ?, 'recommended', ?, ?, ?, 'downloading', 'auto', ?, ?)
+  `).run(requestId, user.user_id, candidate.url, candidate.external_id, candidate.title, now, now);
+
+  const jobData: DownloadJobData = { requestId, youtubeId: candidate.external_id ?? '', url: candidate.url };
+  await downloadQueue.add('download', jobData, { jobId: requestId });
+
+  db.prepare(`UPDATE candidate_pool SET status = 'requested' WHERE candidate_id = ?`).run(candidateId);
+
+  logger.info({ requestId, candidateId, userId: user.user_id }, 'Discovery: candidate requested');
+
+  res.status(202).json({ requestId, candidateId, status: 'downloading' });
 });

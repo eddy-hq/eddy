@@ -1,7 +1,7 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
-import { ArrowLeft } from 'lucide-react';
+import { useQuery, useMutation } from '@tanstack/react-query';
+import { ArrowLeft, Trash2 } from 'lucide-react';
 import { VideoPlayer } from '../components/VideoPlayer';
 
 interface RequestData {
@@ -19,9 +19,20 @@ async function fetchRequest(id: string): Promise<RequestData> {
   return res.json() as Promise<RequestData>;
 }
 
+async function deleteRequest(id: string): Promise<void> {
+  const res = await fetch(`/requests/${id}/delete`, { method: 'POST' });
+  if (!res.ok) throw new Error('Delete failed');
+}
+
 export function Watch() {
   const { requestId } = useParams<{ requestId: string }>();
   const navigate = useNavigate();
+  const [confirmDelete, setConfirmDelete] = useState(false);
+
+  const deleteMutation = useMutation({
+    mutationFn: () => deleteRequest(requestId!),
+    onSuccess: () => navigate(-1),
+  });
 
   const { data, isLoading, isError } = useQuery({
     queryKey: ['request', requestId],
@@ -41,6 +52,14 @@ export function Watch() {
     return (
       <Screen>
         <Message text={data.rejectionReason ?? "Eddy can't get this one."} />
+      </Screen>
+    );
+  }
+
+  if (data.status === 'deleted') {
+    return (
+      <Screen>
+        <Message text="This video has been deleted." />
       </Screen>
     );
   }
@@ -97,6 +116,55 @@ export function Watch() {
             {data.title}
           </h1>
         )}
+
+        <div style={{ marginTop: 'var(--space-5)', borderTop: '1px solid var(--border-subtle)', paddingTop: 'var(--space-4)' }}>
+          {confirmDelete ? (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)' }}>
+              <span style={{ fontSize: 'var(--text-sm)', color: 'var(--text-secondary)' }}>
+                Delete this video?
+              </span>
+              <button
+                onClick={() => deleteMutation.mutate()}
+                disabled={deleteMutation.isPending}
+                style={{
+                  fontSize: 'var(--text-sm)',
+                  color: 'var(--destructive, #e53e3e)',
+                  fontWeight: 600,
+                  minHeight: 44,
+                  padding: '0 var(--space-2)',
+                }}
+              >
+                {deleteMutation.isPending ? 'Deleting…' : 'Delete'}
+              </button>
+              <button
+                onClick={() => setConfirmDelete(false)}
+                style={{
+                  fontSize: 'var(--text-sm)',
+                  color: 'var(--text-secondary)',
+                  minHeight: 44,
+                  padding: '0 var(--space-2)',
+                }}
+              >
+                Cancel
+              </button>
+            </div>
+          ) : (
+            <button
+              onClick={() => setConfirmDelete(true)}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 'var(--space-2)',
+                color: 'var(--text-tertiary, var(--text-secondary))',
+                fontSize: 'var(--text-sm)',
+                minHeight: 44,
+              }}
+            >
+              <Trash2 size={16} />
+              Delete
+            </button>
+          )}
+        </div>
 
       </div>
     </div>

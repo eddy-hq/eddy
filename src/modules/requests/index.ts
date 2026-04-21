@@ -1,3 +1,4 @@
+import fs from 'fs';
 import { Router, Request, Response } from 'express';
 import { v7 as uuidv7 } from 'uuid';
 import { db } from '../../db/client';
@@ -7,6 +8,7 @@ import { config } from '../../config';
 import { downloadQueue, redis } from '../../queue';
 import type { DownloadJobData } from '../content';
 import { sendVideoReady } from '../notifications';
+import { recordDeletionSignal } from '../discovery';
 
 export const requestsRouter = Router();
 
@@ -173,7 +175,7 @@ requestsRouter.get('/feed', (req: Request, res: Response) => {
       requested_at, added_at, watched_at, saved_at, source
     FROM requests
     WHERE user_id = ?
-      AND status NOT IN ('dismissed')
+      AND status NOT IN ('dismissed', 'deleted')
       AND NOT (source = 'channel_subscription' AND status IN ('pending', 'downloading'))
     ORDER BY added_at DESC
     LIMIT 200
@@ -344,6 +346,51 @@ requestsRouter.delete('/:id/save', (req: Request, res: Response) => {
   db.prepare(
     `UPDATE requests SET saved_at = NULL WHERE request_id = ?`
   ).run(req.params['id']);
+  res.status(204).end();
+});
+
+// POST /requests/:id/delete — soft-delete: marks record deleted, removes video file
+requestsRouter.post('/:id/delete', async (req: Request, res: Response) => {
+  const requestId = req.params['id'];
+
+  const row = db.prepare(
+    `SELECT status, file_path, youtube_id, user_id FROM requests WHERE request_id = ?`
+  ).get(requestId) as {
+    status: string;
+    file_path: string | null;
+    youtube_id: string | null;
+    user_id: string;
+  } | undefined;
+
+  if (!row) throw new NotFoundError('request');
+
+  if (!['ready', 'watched'].includes(row.status)) {
+    return res.status(409).json({ error: 'INVALID_STATE', message: `Cannot delete a request in status '${row.status}'` });
+  }
+
+  const now = new Date().toISOString();
+  db.prepare(`
+    UPDATE requests SET status = 'deleted', file_state = 'gone', deleted_at = ?
+    WHERE request_id = ?
+  `).run(now, requestId);
+
+  if (row.file_path) {
+    try {
+      await fs.promises.unlink(row.file_path);
+      const base = row.file_path.replace(/\.[^.]+$/, '');
+      for (const ext of ['.en.vtt', '.en.srt', '.vtt', '.srt']) {
+        await fs.promises.unlink(base + ext).catch(() => { /* sidecar may not exist */ });
+      }
+      logger.info({ requestId }, 'Video file deleted');
+    } catch (err) {
+      logger.warn({ err, requestId }, 'Could not delete video file — record still marked deleted');
+    }
+  }
+
+  if (row.youtube_id) {
+    recordDeletionSignal(row.user_id, row.youtube_id);
+  }
+
   res.status(204).end();
 });
 
