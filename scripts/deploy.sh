@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 # Deploy Eddy: push to GitHub, update Ubuntu worker, optionally restart M4 server.
 #
+# Ubuntu only runs the BullMQ worker — no build step needed there.
+# The M4 server restart builds (tsc + vite) locally before relaunching.
+#
 # Usage:
-#   deploy.sh              — push + deploy Ubuntu worker (auto-skips npm ci if deps unchanged)
-#   deploy.sh --server     — also restart the M4 Express server
-#   deploy.sh --server-only — restart M4 server without touching Ubuntu
+#   deploy.sh              — push + deploy Ubuntu worker
+#   deploy.sh --server     — also build + restart the M4 Express server
+#   deploy.sh --server-only — build + restart M4 server without touching Ubuntu
 #   deploy.sh --full       — push + Ubuntu deploy + M4 server restart
 set -euo pipefail
 
@@ -68,16 +71,11 @@ if [[ "$DO_UBUNTU" == true ]]; then
     info "Ubuntu at ${UBUNTU_SHA:0:7} → deploying ${LOCAL_SHA:0:7}"
   fi
 
-  NPM_STEP="npm ci &&"
-  info "Will run npm ci"
-
   ssh $SSH_OPTS "${SSH_USER}@${SSH_HOST}" "
     set -euo pipefail
-    export NVM_DIR=\"\$HOME/.nvm\"
-    [ -s \"\$NVM_DIR/nvm.sh\" ] && . \"\$NVM_DIR/nvm.sh\"
     cd ~/eddy
     git pull --ff-only origin
-    ${NPM_STEP} npm run build
+    npm ci --omit=dev
     systemctl --user restart eddy-worker
     sleep 2
     systemctl --user is-active eddy-worker
@@ -89,6 +87,9 @@ fi
 if [[ "$DO_SERVER" == true ]]; then
   STEP_NUM=$([[ "$DO_UBUNTU" == true ]] && echo "3/3" || echo "1/1")
   step "${STEP_NUM}  M4 server restart"
+  info "Building…"
+  npm --prefix "$SCRIPT_DIR/.." run build
+  ok "Build complete"
   launchctl kickstart -k "gui/$(id -u)/com.eddy.server"
   sleep 3
   PORT="${PORT:-3737}"
