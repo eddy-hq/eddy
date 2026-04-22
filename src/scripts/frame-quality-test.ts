@@ -20,7 +20,7 @@ const RED    = '\x1b[31m';
 // Avoids intros / end cards that cluster near 0% and 100%.
 const SEEK_FRACTIONS = [0.24, 0.36, 0.48, 0.60, 0.72];
 
-const PROMPT = `Score this video frame 0-10 as a family-video thumbnail.
+const SCORE_PROMPT = `Score this video frame 0-10 as a family-video thumbnail.
 
 Judge by overall composition and visual impact. Penalise text/graphics only by how much of the frame they occupy — a small corner logo barely matters; a full-screen title card is disqualifying.
 
@@ -30,11 +30,34 @@ Judge by overall composition and visual impact. Penalise text/graphics only by h
 
 Return ONLY JSON: {"score": 0-10, "reason": "one short sentence, note if graphics are dominant or peripheral"}`;
 
+const CLASSIFY_PROMPT = `Look at this YouTube thumbnail image.
+
+Classify it as either "editorial" or "slop".
+
+Editorial: clean photography or illustration, minimal/no text overlay, artistic or journalistic composition, the image speaks for itself.
+Slop: exaggerated facial expressions (open mouth, wide eyes), heavy text overlays, arrows or circles highlighting things, bright clashing colours, clickbait composition.
+
+Return ONLY JSON: {"style": "editorial" or "slop", "reason": "one short sentence"}`;
+
+// Score at which we short-circuit local frame scoring — anything >= this is "good enough".
+const GOOD_ENOUGH_SCORE = 8;
+
+// YouTube auto-generated frame thumbnails — three algorithmic picks from across the video.
+// Worth checking before doing local extraction since they're free / already on CDN.
+const YT_AUTO_FRAMES = ['maxresdefault', '1', '2', '3'] as const;
+
 interface FrameScore {
   seekSecs: number;
   score: number;
   reason: string;
   fileName: string | null; // relative to the video's output subdir
+}
+
+interface YtThumbResult {
+  label: string;
+  url: string;
+  style: 'editorial' | 'slop' | 'error';
+  reason: string;
 }
 
 interface VideoRow {
@@ -45,6 +68,7 @@ interface VideoRow {
 
 interface VideoResult {
   row: VideoRow;
+  ytThumbs: YtThumbResult[];
   scores: FrameScore[];
   elapsedSecs: number;
 }
@@ -61,19 +85,22 @@ async function extractFrame(filePath: string, seekSecs: number, outPath: string)
   ]);
 }
 
-function parseScore(raw: string): { score: number; reason: string } {
+function extractJson(raw: string): Record<string, unknown> {
   const match = raw.match(/\{[\s\S]*\}/);
   if (!match) {
     const preview = raw.trim().slice(0, 200).replace(/\s+/g, ' ');
     throw new Error(`No JSON in response — got: "${preview}"`);
   }
-  let parsed: Record<string, unknown>;
   try {
-    parsed = JSON.parse(match[0]) as Record<string, unknown>;
+    return JSON.parse(match[0]) as Record<string, unknown>;
   } catch {
     const preview = match[0].slice(0, 200).replace(/\s+/g, ' ');
     throw new Error(`Malformed JSON — got: "${preview}"`);
   }
+}
+
+function parseScore(raw: string): { score: number; reason: string } {
+  const parsed = extractJson(raw);
   const score = parsed['score'];
   if (typeof score !== 'number' || score < 0 || score > 10) {
     throw new Error(`Invalid score: ${String(score)}`);
@@ -82,6 +109,51 @@ function parseScore(raw: string): { score: number; reason: string } {
     score,
     reason: typeof parsed['reason'] === 'string' ? parsed['reason'] : '',
   };
+}
+
+function parseClassify(raw: string): { style: 'editorial' | 'slop'; reason: string } {
+  const parsed = extractJson(raw);
+  const style = parsed['style'];
+  if (style !== 'editorial' && style !== 'slop') {
+    throw new Error(`Unexpected style: ${String(style)}`);
+  }
+  return {
+    style,
+    reason: typeof parsed['reason'] === 'string' ? parsed['reason'] : '',
+  };
+}
+
+async function fetchYtThumbAsBase64(youtubeId: string, label: string): Promise<string | null> {
+  const url = `https://i.ytimg.com/vi/${youtubeId}/${label}.jpg`;
+  try {
+    const resp = await fetch(url, { signal: AbortSignal.timeout(10_000) });
+    if (!resp.ok) return null;
+    const buf = await resp.arrayBuffer();
+    if (buf.byteLength < 1024) return null; // YT returns a tiny placeholder for missing variants
+    return Buffer.from(buf).toString('base64');
+  } catch {
+    return null;
+  }
+}
+
+async function classifyYtThumbs(youtubeId: string, baseUrl: string): Promise<YtThumbResult[]> {
+  const results: YtThumbResult[] = [];
+  for (const label of YT_AUTO_FRAMES) {
+    const url = `https://i.ytimg.com/vi/${youtubeId}/${label}.jpg`;
+    const b64 = await fetchYtThumbAsBase64(youtubeId, label);
+    if (!b64) {
+      results.push({ label, url, style: 'error', reason: 'thumbnail not available' });
+      continue;
+    }
+    try {
+      const raw = await callScoreFrame(baseUrl, b64, CLASSIFY_PROMPT);
+      const parsed = parseClassify(raw);
+      results.push({ label, url, style: parsed.style, reason: parsed.reason });
+    } catch (err) {
+      results.push({ label, url, style: 'error', reason: String(err).slice(0, 200) });
+    }
+  }
+  return results;
 }
 
 function colourForScore(score: number): string {
@@ -108,8 +180,8 @@ function signBody(body: string): string {
     .digest('hex')}`;
 }
 
-async function scoreFrameViaM4(baseUrl: string, b64Image: string): Promise<string> {
-  const body = JSON.stringify({ image: b64Image, prompt: PROMPT });
+async function callScoreFrame(baseUrl: string, b64Image: string, prompt: string): Promise<string> {
+  const body = JSON.stringify({ image: b64Image, prompt });
   const resp = await fetch(`${baseUrl}/internal/thumb/score-frame`, {
     method: 'POST',
     headers: {
@@ -168,7 +240,7 @@ async function scoreVideo(row: VideoRow, videoOutDir: string | null, baseUrl: st
       await extractFrame(row.file_path, seekSecs, framePath);
       const buf = fs.readFileSync(framePath);
       const b64 = buf.toString('base64');
-      const raw = await scoreFrameViaM4(baseUrl, b64);
+      const raw = await callScoreFrame(baseUrl, b64, SCORE_PROMPT);
       const parsed = parseScore(raw);
       results.push({
         seekSecs,
@@ -176,6 +248,7 @@ async function scoreVideo(row: VideoRow, videoOutDir: string | null, baseUrl: st
         reason: parsed.reason,
         fileName: videoOutDir ? fileName : null,
       });
+      if (parsed.score >= GOOD_ENOUGH_SCORE) break; // short-circuit — no need to keep scoring
     } catch (err) {
       results.push({ seekSecs, score: -1, reason: `ERROR: ${String(err).slice(0, 300)}`, fileName: null });
     } finally {
@@ -207,12 +280,25 @@ function buildHtmlIndex(results: VideoResult[], runStamp: string): string {
     const valid = r.scores.filter((s) => s.score >= 0);
     const best = valid.length > 0 ? valid.reduce((a, b) => (a.score >= b.score ? a : b)) : null;
 
+    const ytThumbs = r.ytThumbs.map((t) => {
+      const colour = t.style === 'editorial' ? '#2a7' : t.style === 'slop' ? '#c33' : '#888';
+      return `
+        <figure class="frame yt${t.style === 'editorial' ? ' yt-editorial' : ''}">
+          <img src="${escapeHtml(t.url)}" loading="lazy" onerror="this.style.display='none'">
+          <figcaption>
+            <span class="time">yt:${escapeHtml(t.label)}</span>
+            <span class="score" style="color:${colour}">${t.style}</span>
+            <div class="reason">${escapeHtml(t.reason)}</div>
+          </figcaption>
+        </figure>`;
+    }).join('\n');
+
     const frames = r.scores.map((s) => {
       const isWinner = best && s === best;
       const colour = htmlScoreColour(s.score);
       const scoreStr = s.score < 0 ? 'ERR' : String(s.score);
       const imgTag = s.fileName
-        ? `<img src="${escapeHtml(s.fileName)}" loading="lazy">`
+        ? `<img src="${escapeHtml(r.row.youtube_id)}/${escapeHtml(s.fileName)}" loading="lazy">`
         : `<div class="no-frame">frame not saved</div>`;
       return `
         <figure class="frame${isWinner ? ' winner' : ''}">
@@ -226,10 +312,18 @@ function buildHtmlIndex(results: VideoResult[], runStamp: string): string {
         </figure>`;
     }).join('\n');
 
+    const anyEditorial = r.ytThumbs.some((t) => t.style === 'editorial');
+    const saved = anyEditorial
+      ? `<span class="saved">YT auto-frame would have sufficed — local scoring could have been skipped</span>`
+      : '';
+
     return `
       <section>
-        <h2><code>${escapeHtml(r.row.youtube_id)}</code> <span class="meta">${fmtTime(r.row.duration_secs)} · ${r.elapsedSecs.toFixed(1)}s scored</span></h2>
-        <div class="file-path">${escapeHtml(r.row.file_path)}</div>
+        <h2><code>${escapeHtml(r.row.youtube_id)}</code> <span class="meta">${fmtTime(r.row.duration_secs)} · ${r.elapsedSecs.toFixed(1)}s scored${r.scores.length < SEEK_FRACTIONS.length ? ` · short-circuited after ${r.scores.length}/${SEEK_FRACTIONS.length}` : ''}</span></h2>
+        <div class="file-path">${escapeHtml(r.row.file_path)} ${saved}</div>
+        <h3>YouTube thumbnails</h3>
+        <div class="grid">${ytThumbs}</div>
+        <h3>Local frames</h3>
         <div class="grid">${frames}</div>
       </section>`;
   }).join('\n');
@@ -243,11 +337,14 @@ function buildHtmlIndex(results: VideoResult[], runStamp: string): string {
   body { font: 14px/1.4 system-ui, sans-serif; background: #111; color: #ddd; margin: 0; padding: 24px; }
   h1 { font-size: 18px; margin: 0 0 4px; }
   h2 { font-size: 15px; margin: 24px 0 4px; }
+  h3 { font-size: 12px; margin: 16px 0 6px; color: #888; text-transform: uppercase; letter-spacing: 0.5px; }
   h2 .meta { color: #888; font-weight: normal; font-size: 13px; margin-left: 8px; }
   .file-path { color: #666; font-size: 12px; margin-bottom: 12px; word-break: break-all; }
+  .saved { color: #2a7; margin-left: 8px; font-weight: bold; }
   .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
   .frame { margin: 0; background: #1a1a1a; border-radius: 4px; overflow: hidden; border: 2px solid transparent; }
   .frame.winner { border-color: #2a7; box-shadow: 0 0 0 2px rgba(42,119,0,0.3); }
+  .frame.yt-editorial { border-color: #2a7; }
   .frame img { width: 100%; display: block; }
   .frame .no-frame { padding: 40px; text-align: center; color: #555; background: #222; }
   figcaption { padding: 8px 10px; }
@@ -307,9 +404,28 @@ async function run(): Promise<void> {
 
     const videoOutDir = runDir ? path.join(runDir, row.youtube_id) : null;
     const t0 = Date.now();
+
+    // Step 1: classify the YouTube thumbnails (maxres + 3 auto-generated frames)
+    const ytThumbs = await classifyYtThumbs(row.youtube_id, baseUrl);
+    for (const t of ytThumbs) {
+      const styleColour = t.style === 'editorial' ? GREEN : t.style === 'slop' ? RED : DIM;
+      // eslint-disable-next-line no-console
+      console.log(
+        `  ${DIM}yt:${t.label.padStart(14)}${RESET}  ` +
+        `${styleColour}${t.style.padEnd(9)}${RESET}  ` +
+        `${truncate(t.reason, 70)}`,
+      );
+    }
+    const anyEditorial = ytThumbs.some((t) => t.style === 'editorial');
+    if (anyEditorial) {
+      // eslint-disable-next-line no-console
+      console.log(`  ${GREEN}→ A YT thumbnail classified editorial — local scoring could be skipped in production${RESET}`);
+    }
+
+    // Step 2: score local frames (short-circuits when a frame scores >= GOOD_ENOUGH_SCORE)
     const scores = await scoreVideo(row, videoOutDir, baseUrl);
     const elapsedSecs = (Date.now() - t0) / 1000;
-    results.push({ row, scores, elapsedSecs });
+    results.push({ row, ytThumbs, scores, elapsedSecs });
 
     const valid = scores.filter((s) => s.score >= 0);
     const best = valid.length > 0
@@ -327,6 +443,10 @@ async function run(): Promise<void> {
         `${colour}${scoreStr}${RESET}  ` +
         `${reason}${marker}`,
       );
+    }
+    if (scores.length < SEEK_FRACTIONS.length) {
+      // eslint-disable-next-line no-console
+      console.log(`  ${DIM}(short-circuited after ${scores.length}/${SEEK_FRACTIONS.length} — first frame ≥ ${GOOD_ENOUGH_SCORE})${RESET}`);
     }
     // eslint-disable-next-line no-console
     console.log(`  ${DIM}${elapsedSecs.toFixed(1)}s${RESET}\n`);
