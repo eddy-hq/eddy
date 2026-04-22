@@ -9,7 +9,6 @@
     <array>
         <string>/Users/steveu/.nvm/versions/node/v24.14.1/bin/node</string>
         <string>/Users/steveu/eddy/node_modules/.bin/tsx</string>
-        <string>watch</string>
         <string>src/index.ts</string>
     </array>
 
@@ -21,6 +20,9 @@
 
     <key>KeepAlive</key>
     <true/>
+
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
 
     <key>StandardOutPath</key>
     <string>/Users/steveu/eddy/logs/server.stdout.log</string>

@@ -27,6 +27,7 @@
     "bullmq": "^5.12.0",
     "dotenv": "^17.4.2",
     "express": "^4.19.2",
+    "express-async-errors": "^3.1.1",
     "framer-motion": "^12.38.0",
     "ioredis": "^5.3.2",
     "lucide-react": "^1.8.0",

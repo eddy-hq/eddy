@@ -42,6 +42,16 @@ async function start(): Promise<void> {
   process.on('SIGINT', () => void shutdown('SIGINT'));
 }
 
+process.on('unhandledRejection', (err: unknown) => {
+  logger.error({ err }, 'Unhandled promise rejection — exiting for supervisor restart');
+  process.exit(1);
+});
+
+process.on('uncaughtException', (err: unknown) => {
+  logger.error({ err }, 'Uncaught exception — exiting for supervisor restart');
+  process.exit(1);
+});
+
 start().catch((err: unknown) => {
   logger.error({ err }, 'Fatal startup error');
   process.exit(1);

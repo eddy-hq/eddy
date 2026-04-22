@@ -1,4 +1,5 @@
 import path from 'path';
+import 'express-async-errors';
 import express, { NextFunction, Request, Response } from 'express';
 import { logger } from './logger';
 import { ollamaHealthCheck } from './ollama';

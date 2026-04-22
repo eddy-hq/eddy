@@ -75,6 +75,23 @@ capture_diag() {
   /bin/ls -t "$DIAG_DIR"/*.log 2>/dev/null | tail -n +21 | xargs rm -f 2>/dev/null || true
 }
 
+# ── M4 Express server ────────────────────────────────────────────────────────
+# Local check, independent of Tailscale/SSH. launchd's KeepAlive is the primary
+# recovery mechanism; this is defence-in-depth and the notification path.
+PORT="${PORT:-3737}"
+if ! curl -sf --max-time 5 "http://localhost:${PORT}/health" > /dev/null 2>&1; then
+  log "WARN" "M4 Express /health not responding, kickstarting com.eddy.server"
+  launchctl kickstart -k "gui/$(id -u)/com.eddy.server" 2>/dev/null || true
+  sleep 8
+  if curl -sf --max-time 5 "http://localhost:${PORT}/health" > /dev/null 2>&1; then
+    log "INFO" "M4 Express server recovered"
+    notify "Eddy watchdog" "Express server was down — kickstarted and healthy"
+  else
+    log "ERROR" "M4 Express server still not responding after kickstart"
+    notify "Eddy watchdog — action needed" "Express server down, kickstart did not recover it"
+  fi
+fi
+
 # ── Tailscale ────────────────────────────────────────────────────────────────
 STATE=$(ts_state)
 

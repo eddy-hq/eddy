@@ -24,17 +24,19 @@ Runs every 60 seconds via launchd (`launchd/com.eddy.watchdog.plist`). Self-heal
 
 **What it checks and fixes:**
 
-1. **Tailscale** — if state is not `Running`, runs `tailscale up`. If state is `NeedsLogin`, notifies and aborts (can't auto-fix).
-2. **SSH to Ubuntu** — if unreachable despite Tailscale being up, notifies. All remote checks are skipped.
-3. **eddy-worker** — checks `systemctl --user is-active eddy-worker`. If not active, restarts it and rechecks.
+1. **M4 Express server** — curls `http://localhost:3737/health`. If unreachable, runs `launchctl kickstart -k gui/$(id -u)/com.eddy.server` and rechecks. launchd's `KeepAlive` is the primary recovery path; the watchdog is defence-in-depth and the notification path.
+2. **Tailscale** — if state is not `Running`, runs `tailscale up`. If state is `NeedsLogin`, notifies and aborts (can't auto-fix).
+3. **SSH to Ubuntu** — if unreachable despite Tailscale being up, notifies. All remote checks are skipped.
+4. **eddy-worker** — checks `systemctl --user is-active eddy-worker`. If not active, restarts it and rechecks.
 
 Sends an ntfy notification to Steve's topic on any corrective action or unrecoverable failure.
 
 **Log:** `logs/watchdog.log`
 
 **Not in this script:**
-- **Express server** — launchd's `KeepAlive: true` on `com.eddy.server` handles it natively.
 - **Redis** — launchd's `KeepAlive: true` on `homebrew.mxcl.redis` handles it natively.
+
+**Why launchd alone isn't enough for the Express server:** the plist runs `tsx src/index.ts` (no `watch` — see `launchd/com.eddy.server.plist`). `KeepAlive` restarts on process exit, which is fine for crashes. But if tsx ever hangs instead of exiting, launchd won't notice — the watchdog's `/health` probe catches that.
 
 ### Loading / reloading the watchdog
 
