@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
-# Self-healing watchdog. Run by launchd every 60s.
-# Checks: Tailscale → SSH → eddy-worker.
+# Self-healing watchdog. Long-running daemon launched by launchd
+# (KeepAlive=true). Runs checks every INTERVAL seconds in an internal
+# loop — launchd's StartInterval was coalesced unreliably on macOS.
+# Checks: M4 Express /health → Tailscale → SSH → eddy-worker.
 # Notifies via ntfy on any corrective action or unrecoverable failure.
 set -uo pipefail
+
+INTERVAL="${WATCHDOG_INTERVAL:-60}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE="${SCRIPT_DIR}/../.env"
@@ -75,73 +79,89 @@ capture_diag() {
   /bin/ls -t "$DIAG_DIR"/*.log 2>/dev/null | tail -n +21 | xargs rm -f 2>/dev/null || true
 }
 
-# ── M4 Express server ────────────────────────────────────────────────────────
-# Local check, independent of Tailscale/SSH. launchd's KeepAlive is the primary
-# recovery mechanism; this is defence-in-depth and the notification path.
-PORT="${PORT:-3737}"
-if ! curl -sf --max-time 5 "http://localhost:${PORT}/health" > /dev/null 2>&1; then
-  log "WARN" "M4 Express /health not responding, kickstarting com.eddy.server"
-  launchctl kickstart -k "gui/$(id -u)/com.eddy.server" 2>/dev/null || true
-  sleep 8
-  if curl -sf --max-time 5 "http://localhost:${PORT}/health" > /dev/null 2>&1; then
-    log "INFO" "M4 Express server recovered"
-    notify "Eddy watchdog" "Express server was down — kickstarted and healthy"
-  else
-    log "ERROR" "M4 Express server still not responding after kickstart"
-    notify "Eddy watchdog — action needed" "Express server down, kickstart did not recover it"
+# Run all checks once. Uses a subshell so any `exit` inside a stage only
+# aborts this iteration — the outer daemon loop keeps running.
+run_checks() (
+  # ── M4 Express server ──────────────────────────────────────────────────────
+  # Local check, independent of Tailscale/SSH. launchd's KeepAlive is the
+  # primary recovery mechanism; this is defence-in-depth and the notification
+  # path.
+  PORT="${PORT:-3737}"
+  if ! curl -sf --max-time 5 "http://localhost:${PORT}/health" > /dev/null 2>&1; then
+    log "WARN" "M4 Express /health not responding, kickstarting com.eddy.server"
+    launchctl kickstart -k "gui/$(id -u)/com.eddy.server" 2>/dev/null || true
+    sleep 8
+    if curl -sf --max-time 5 "http://localhost:${PORT}/health" > /dev/null 2>&1; then
+      log "INFO" "M4 Express server recovered"
+      notify "Eddy watchdog" "Express server was down — kickstarted and healthy"
+    else
+      log "ERROR" "M4 Express server still not responding after kickstart"
+      notify "Eddy watchdog — action needed" "Express server down, kickstart did not recover it"
+    fi
   fi
-fi
 
-# ── Tailscale ────────────────────────────────────────────────────────────────
-STATE=$(ts_state)
-
-if [[ "$STATE" == "NeedsLogin" ]]; then
-  log "ERROR" "Tailscale needs login — cannot auto-recover"
-  notify "Eddy watchdog — action needed" "Tailscale needs login. Run: tailscale login"
-  exit 1
-fi
-
-if [[ "$STATE" != "Running" ]]; then
-  log "WARN" "Tailscale state=${STATE}, attempting tailscale up"
-  capture_diag "ts-${STATE}"
-  "$TAILSCALE" up 2>/dev/null || true
-  sleep 6
+  # ── Tailscale ──────────────────────────────────────────────────────────────
   STATE=$(ts_state)
-  if [[ "$STATE" == "Running" ]]; then
-    log "INFO" "Tailscale recovered"
-    notify "Eddy watchdog" "Tailscale reconnected automatically"
-  else
-    log "ERROR" "Tailscale still not running (state=${STATE})"
-    notify "Eddy watchdog — action needed" "Tailscale is ${STATE} and could not auto-recover"
+
+  if [[ "$STATE" == "NeedsLogin" ]]; then
+    log "ERROR" "Tailscale needs login — cannot auto-recover"
+    notify "Eddy watchdog — action needed" "Tailscale needs login. Run: tailscale login"
     exit 1
   fi
-fi
 
-# ── SSH connectivity ─────────────────────────────────────────────────────────
-if ! ssh $SSH_OPTS "${SSH_USER}@${SSH_HOST}" "exit 0" 2>/dev/null; then
-  log "ERROR" "SSH to Ubuntu failed despite Tailscale being up"
-  notify "Eddy watchdog — action needed" "Tailscale is up but SSH to Ubuntu failed — server may be down"
-  exit 1
-fi
+  if [[ "$STATE" != "Running" ]]; then
+    log "WARN" "Tailscale state=${STATE}, attempting tailscale up"
+    capture_diag "ts-${STATE}"
+    "$TAILSCALE" up 2>/dev/null || true
+    sleep 6
+    STATE=$(ts_state)
+    if [[ "$STATE" == "Running" ]]; then
+      log "INFO" "Tailscale recovered"
+      notify "Eddy watchdog" "Tailscale reconnected automatically"
+    else
+      log "ERROR" "Tailscale still not running (state=${STATE})"
+      notify "Eddy watchdog — action needed" "Tailscale is ${STATE} and could not auto-recover"
+      exit 1
+    fi
+  fi
 
-# ── Eddy worker ──────────────────────────────────────────────────────────────
-WORKER_STATE=$(ssh $SSH_OPTS "${SSH_USER}@${SSH_HOST}" \
-  "systemctl --user is-active eddy-worker 2>/dev/null" 2>/dev/null || echo "unknown")
+  # ── SSH connectivity ───────────────────────────────────────────────────────
+  if ! ssh $SSH_OPTS "${SSH_USER}@${SSH_HOST}" "exit 0" 2>/dev/null; then
+    log "ERROR" "SSH to Ubuntu failed despite Tailscale being up"
+    notify "Eddy watchdog — action needed" "Tailscale is up but SSH to Ubuntu failed — server may be down"
+    exit 1
+  fi
 
-if [[ "$WORKER_STATE" != "active" ]]; then
-  log "WARN" "eddy-worker state=${WORKER_STATE}, restarting"
-  ssh $SSH_OPTS "${SSH_USER}@${SSH_HOST}" \
-    "systemctl --user restart eddy-worker" 2>/dev/null || true
-  sleep 5
+  # ── Eddy worker ────────────────────────────────────────────────────────────
   WORKER_STATE=$(ssh $SSH_OPTS "${SSH_USER}@${SSH_HOST}" \
     "systemctl --user is-active eddy-worker 2>/dev/null" 2>/dev/null || echo "unknown")
-  if [[ "$WORKER_STATE" == "active" ]]; then
-    log "INFO" "eddy-worker recovered"
-    notify "Eddy watchdog" "Download worker was down — restarted and active"
-  else
-    log "ERROR" "eddy-worker still not active (state=${WORKER_STATE})"
-    notify "Eddy watchdog — action needed" "Download worker restart failed (state: ${WORKER_STATE})"
-  fi
-fi
 
-log "INFO" "watchdog run complete"
+  if [[ "$WORKER_STATE" != "active" ]]; then
+    log "WARN" "eddy-worker state=${WORKER_STATE}, restarting"
+    ssh $SSH_OPTS "${SSH_USER}@${SSH_HOST}" \
+      "systemctl --user restart eddy-worker" 2>/dev/null || true
+    sleep 5
+    WORKER_STATE=$(ssh $SSH_OPTS "${SSH_USER}@${SSH_HOST}" \
+      "systemctl --user is-active eddy-worker 2>/dev/null" 2>/dev/null || echo "unknown")
+    if [[ "$WORKER_STATE" == "active" ]]; then
+      log "INFO" "eddy-worker recovered"
+      notify "Eddy watchdog" "Download worker was down — restarted and active"
+    else
+      log "ERROR" "eddy-worker still not active (state=${WORKER_STATE})"
+      notify "Eddy watchdog — action needed" "Download worker restart failed (state: ${WORKER_STATE})"
+    fi
+  fi
+)
+
+# Exit cleanly on SIGTERM/SIGINT so launchd sees a normal stop.
+trap 'log "INFO" "watchdog exiting on signal"; exit 0' TERM INT
+
+log "INFO" "watchdog daemon starting (interval=${INTERVAL}s)"
+while true; do
+  run_checks || true
+  log "DEBUG" "tick"
+  # Background sleep + wait so signals interrupt the sleep immediately
+  # instead of waiting up to INTERVAL seconds.
+  sleep "$INTERVAL" &
+  wait $!
+done

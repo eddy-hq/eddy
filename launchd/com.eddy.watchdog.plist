@@ -11,16 +11,18 @@
         <string>/Users/steveu/eddy/scripts/watchdog.sh</string>
     </array>
 
-    <key>StartInterval</key>
-    <integer>60</integer>
-
+    <!-- Watchdog is a long-running daemon: it loops internally and sleeps
+         between checks. launchd's StartInterval was coalesced unreliably
+         on macOS (skipped minutes of fires), so we do our own scheduling
+         and rely on KeepAlive for crash recovery only. -->
     <key>RunAtLoad</key>
     <true/>
 
-    <!-- Force strict timer firing. Default Mach timers get coalesced
-         by macOS power management and routinely skip minutes of fires. -->
-    <key>LegacyTimers</key>
+    <key>KeepAlive</key>
     <true/>
+
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
 
     <key>StandardOutPath</key>
     <string>/Users/steveu/eddy/logs/watchdog.log</string>
