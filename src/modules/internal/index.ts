@@ -222,7 +222,7 @@ internalRouter.post('/requests/:id/retry', async (req: Request, res: Response) =
 internalRouter.get('/backfill/pending-thumbs', (req: Request, res: Response) => {
   const force = req.query['force'] === '1';
   const rows = db.prepare(`
-    SELECT youtube_id, file_path, duration_secs
+    SELECT youtube_id, file_path, duration_secs, added_at
     FROM requests
     WHERE file_state = 'live'
       AND status IN ('ready', 'watched')
@@ -230,7 +230,8 @@ internalRouter.get('/backfill/pending-thumbs', (req: Request, res: Response) => 
       AND youtube_id IS NOT NULL
       AND duration_secs IS NOT NULL
       ${force ? '' : 'AND thumbnail_url IS NULL'}
-  `).all() as Array<{ youtube_id: string; file_path: string; duration_secs: number }>;
+    ORDER BY added_at DESC
+  `).all() as Array<{ youtube_id: string; file_path: string; duration_secs: number; added_at: string }>;
 
   res.json({ pending: rows });
 });
