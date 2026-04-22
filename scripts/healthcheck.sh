@@ -68,6 +68,13 @@ else
   check "Eddy server (port ${PORT})" "skip" "not running (start with: npm run dev)"
 fi
 
+# Redis — local, managed by Homebrew launchd
+if redis-cli -u "${REDIS_URL:-redis://localhost:6379}" ping 2>/dev/null | grep -q PONG; then
+  check "Redis" "ok"
+else
+  check "Redis" "fail" "run: brew services start redis"
+fi
+
 # ── Ubuntu services ──────────────────────────────────────────────────────────
 printf "\n${BOLD}Ubuntu — Media server${RESET}\n"
 
@@ -87,13 +94,6 @@ else
 fi
 
 if [[ "$SSH_OK" == true ]]; then
-  # Redis — ping via docker exec (avoids needing redis-cli or nc on the host)
-  if ssh $SSH_OPTS "${SSH_USER}@${SSH_HOST}" "docker exec eddy-redis redis-cli ping 2>/dev/null | grep -q PONG" 2>/dev/null; then
-    check "Redis" "ok"
-  else
-    check "Redis" "fail" "run: docker start eddy-redis (on Ubuntu)"
-  fi
-
   # yt-dlp — non-interactive SSH won't load .profile, so check common paths
   YTDLP_VER=$(ssh $SSH_OPTS "${SSH_USER}@${SSH_HOST}" \
     "for p in /usr/local/bin/yt-dlp \$HOME/.local/bin/yt-dlp; do [ -x \"\$p\" ] && \$p --version 2>/dev/null && break; done" \
@@ -132,9 +132,9 @@ if [[ "$SSH_OK" == true ]]; then
     check "nginx" "fail" "run: deploy/setup-ubuntu.sh"
   fi
 
-  # Eddy worker systemd service
+  # Eddy worker systemd service (user-level)
   WORKER_STATE=$(ssh $SSH_OPTS "${SSH_USER}@${SSH_HOST}" \
-    "systemctl is-active eddy-worker 2>/dev/null" 2>/dev/null || echo "unknown")
+    "systemctl --user is-active eddy-worker 2>/dev/null" 2>/dev/null || echo "unknown")
   if [[ "${WORKER_STATE}" == "active" ]]; then
     check "Eddy worker (systemd)" "ok"
   else
@@ -150,7 +150,6 @@ if [[ "$SSH_OK" == true ]]; then
     check "Plex API" "fail" "check PLEX_URL / PLEX_TOKEN in .env"
   fi
 else
-  check "Redis" "skip" "SSH unavailable"
   check "yt-dlp" "skip" "SSH unavailable"
   check "Video path" "skip" "SSH unavailable"
   check "ntfy" "skip" "SSH unavailable"

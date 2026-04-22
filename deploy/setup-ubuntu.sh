@@ -22,7 +22,8 @@ sudo mkdir -p "${VIDEO_PATH}"
 sudo chown -R "${USER}:${USER}" "/mnt/ssd/eddy"
 check "Video path ready: ${VIDEO_PATH}"
 
-# ── 2. Docker services (Redis + ntfy) ────────────────────────────────────────
+# ── 2. Docker services (ntfy) ────────────────────────────────────────────────
+# Redis lives on M4 (Homebrew). Ubuntu only runs ntfy in Docker.
 info "Docker services"
 
 if ! command -v docker &>/dev/null; then
@@ -34,15 +35,13 @@ fi
 mkdir -p "${DEPLOY_DIR}/ntfy"
 cp -n "${DEPLOY_DIR}/ntfy/server.yml" "${DEPLOY_DIR}/ntfy/server.yml" 2>/dev/null || true
 
-# Stop and remove any containers started outside of compose so compose can own them
-for container in eddy-redis eddy-ntfy; do
-  if docker ps -a --format '{{.Names}}' | grep -q "^${container}$"; then
-    docker rm -f "${container}" > /dev/null
-  fi
-done
+# Stop and remove any container started outside of compose so compose can own it
+if docker ps -a --format '{{.Names}}' | grep -q "^eddy-ntfy$"; then
+  docker rm -f eddy-ntfy > /dev/null
+fi
 
 docker compose -f "${DEPLOY_DIR}/docker-compose.ubuntu.yml" up -d
-check "Redis + ntfy containers running"
+check "ntfy container running"
 
 # ── 3. ntfy users and topics ─────────────────────────────────────────────────
 info "ntfy users"
@@ -165,8 +164,7 @@ check "yt-dlp found at ${YTDLP_PATH}"
 sudo tee /etc/systemd/system/eddy-worker.service > /dev/null <<EOF
 [Unit]
 Description=Eddy download worker
-After=network.target docker.service
-Wants=docker.service
+After=network.target
 StartLimitIntervalSec=0
 
 [Service]
@@ -175,8 +173,7 @@ User=${USER}
 WorkingDirectory=${REPO_DIR}
 Environment=PATH=${NODE_BIN_DIR}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 Environment=YTDLP_BIN=${YTDLP_PATH}
-ExecStartPre=/bin/bash -c 'until docker exec eddy-redis redis-cli ping 2>/dev/null | grep -q PONG; do sleep 2; done'
-ExecStart=${TSX_PATH} ${REPO_DIR}/src/workers/download.ts
+ExecStart=${NODE_BIN_DIR}/node ${REPO_DIR}/dist/workers/download.js
 Restart=on-failure
 RestartSec=10
 StandardOutput=journal

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Self-healing watchdog. Run by launchd every 60s.
-# Checks: Tailscale → SSH → Redis → eddy-worker.
+# Checks: Tailscale → SSH → eddy-worker.
 # Notifies via ntfy on any corrective action or unrecoverable failure.
 set -uo pipefail
 
@@ -73,22 +73,6 @@ if ! ssh $SSH_OPTS "${SSH_USER}@${SSH_HOST}" "exit 0" 2>/dev/null; then
   log "ERROR" "SSH to Ubuntu failed despite Tailscale being up"
   notify "Eddy watchdog — action needed" "Tailscale is up but SSH to Ubuntu failed — server may be down"
   exit 1
-fi
-
-# ── Redis ────────────────────────────────────────────────────────────────────
-if ! ssh $SSH_OPTS "${SSH_USER}@${SSH_HOST}" \
-    "docker exec eddy-redis redis-cli ping 2>/dev/null | grep -q PONG" 2>/dev/null; then
-  log "WARN" "Redis not responding, attempting restart"
-  ssh $SSH_OPTS "${SSH_USER}@${SSH_HOST}" "docker start eddy-redis" 2>/dev/null || true
-  sleep 5
-  if ssh $SSH_OPTS "${SSH_USER}@${SSH_HOST}" \
-      "docker exec eddy-redis redis-cli ping 2>/dev/null | grep -q PONG" 2>/dev/null; then
-    log "INFO" "Redis recovered"
-    notify "Eddy watchdog" "Redis was down — restarted and healthy"
-  else
-    log "ERROR" "Redis still not responding after restart"
-    notify "Eddy watchdog — action needed" "Redis restart failed — manual intervention needed"
-  fi
 fi
 
 # ── Eddy worker ──────────────────────────────────────────────────────────────

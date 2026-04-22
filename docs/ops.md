@@ -1,6 +1,6 @@
 # Eddy — Operations
 
-Two machines: **M4 Mac Mini** (Tailscale: `mini-steve`) runs the Express server and Ollama. **Ubuntu media server** (Tailscale: `mediaserver`) runs the download worker, Redis, ntfy, nginx, and Plex.
+Two machines: **M4 Mac Mini** (Tailscale: `mini-steve`) runs the Express server, Ollama, and Redis. **Ubuntu media server** (Tailscale: `mediaserver`) runs the download worker, ntfy, nginx, and Plex.
 
 ---
 
@@ -10,8 +10,8 @@ Two machines: **M4 Mac Mini** (Tailscale: `mini-steve`) runs the Express server 
 |---|---|---|
 | Express server (`src/index.ts`) | M4 | launchd `com.eddy.server` |
 | Vite dev server | M4 | manual (`npm run dev:pwa`) |
+| Redis | M4 | Homebrew (`brew services`, launchd `homebrew.mxcl.redis`) |
 | Download worker (`dist/workers/download.js`) | Ubuntu | systemd `eddy-worker` |
-| Redis | Ubuntu | Docker (`eddy-redis` container) |
 | ntfy | Ubuntu | Docker (`eddy-ntfy` container) |
 | nginx | Ubuntu | system service |
 | Plex | Ubuntu | system service |
@@ -26,14 +26,15 @@ Runs every 60 seconds via launchd (`launchd/com.eddy.watchdog.plist`). Self-heal
 
 1. **Tailscale** — if state is not `Running`, runs `tailscale up`. If state is `NeedsLogin`, notifies and aborts (can't auto-fix).
 2. **SSH to Ubuntu** — if unreachable despite Tailscale being up, notifies. All remote checks are skipped.
-3. **Redis** — pings via `docker exec eddy-redis redis-cli ping`. If no PONG, runs `docker start eddy-redis` and rechecks.
-4. **eddy-worker** — checks `systemctl --user is-active eddy-worker`. If not active, restarts it and rechecks.
+3. **eddy-worker** — checks `systemctl --user is-active eddy-worker`. If not active, restarts it and rechecks.
 
 Sends an ntfy notification to Steve's topic on any corrective action or unrecoverable failure.
 
 **Log:** `logs/watchdog.log`
 
-**The Express server is not in this script** — launchd's `KeepAlive: true` on `com.eddy.server` handles that natively.
+**Not in this script:**
+- **Express server** — launchd's `KeepAlive: true` on `com.eddy.server` handles it natively.
+- **Redis** — launchd's `KeepAlive: true` on `homebrew.mxcl.redis` handles it natively.
 
 ### Loading / reloading the watchdog
 
@@ -82,11 +83,11 @@ The M4 Express server uses `tsx watch` and hot-reloads most source changes autom
 # M4 — Express server
 launchctl kickstart -k gui/$(id -u)/com.eddy.server
 
-# Ubuntu — worker
-ssh -i ~/.ssh/id_ed25519_eddy steveu@100.95.170.27 "systemctl --user restart eddy-worker"
+# M4 — Redis
+brew services restart redis
 
-# Ubuntu — Redis
-ssh -i ~/.ssh/id_ed25519_eddy steveu@100.95.170.27 "docker start eddy-redis"
+# Ubuntu — worker
+ssh -i ~/.ssh/id_ed25519_eddy steveu@mediaserver "systemctl --user restart eddy-worker"
 ```
 
 ### Checking service state
