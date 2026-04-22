@@ -1,11 +1,11 @@
 import 'dotenv/config';
 import { promisify } from 'util';
 import { execFile } from 'child_process';
+import crypto from 'crypto';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
 import { config } from '../config';
-import { ollamaGenerate } from '../ollama';
 
 const execFileAsync = promisify(execFile);
 
@@ -93,6 +93,29 @@ function truncate(s: string, n: number): string {
   return s.length <= n ? s : s.slice(0, n - 1) + '…';
 }
 
+function signBody(body: string): string {
+  return `sha256=${crypto
+    .createHmac('sha256', config.INTERNAL_HMAC_SECRET)
+    .update(body)
+    .digest('hex')}`;
+}
+
+async function scoreFrameViaM4(baseUrl: string, b64Image: string): Promise<string> {
+  const body = JSON.stringify({ image: b64Image, prompt: PROMPT });
+  const resp = await fetch(`${baseUrl}/internal/thumb/score-frame`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Eddy-Signature': signBody(body),
+    },
+    body,
+    signal: AbortSignal.timeout(60_000),
+  });
+  if (!resp.ok) throw new Error(`score-frame HTTP ${resp.status}: ${await resp.text()}`);
+  const { raw } = await resp.json() as { raw: string };
+  return raw;
+}
+
 async function fetchVideos(ids: string[], recentCount: number): Promise<VideoRow[]> {
   const baseUrl = config.M4_INTERNAL_URL;
   if (!baseUrl) throw new Error('M4_INTERNAL_URL not set — run this on the Ubuntu worker');
@@ -120,7 +143,7 @@ async function fetchVideos(ids: string[], recentCount: number): Promise<VideoRow
   return found;
 }
 
-async function scoreVideo(row: VideoRow, videoOutDir: string | null): Promise<FrameScore[]> {
+async function scoreVideo(row: VideoRow, videoOutDir: string | null, baseUrl: string): Promise<FrameScore[]> {
   const tmpBase = videoOutDir ?? os.tmpdir();
   if (videoOutDir) fs.mkdirSync(videoOutDir, { recursive: true });
 
@@ -137,7 +160,7 @@ async function scoreVideo(row: VideoRow, videoOutDir: string | null): Promise<Fr
       await extractFrame(row.file_path, seekSecs, framePath);
       const buf = fs.readFileSync(framePath);
       const b64 = buf.toString('base64');
-      const raw = await ollamaGenerate(PROMPT, config.OLLAMA_GUARD_MODEL, [b64]);
+      const raw = await scoreFrameViaM4(baseUrl, b64);
       const parsed = parseScore(raw);
       results.push({
         seekSecs,
@@ -229,7 +252,7 @@ function buildHtmlIndex(results: VideoResult[], runStamp: string): string {
 </head>
 <body>
   <h1>Eddy frame quality — ${escapeHtml(runStamp)}</h1>
-  <div style="color:#888;font-size:12px;">${results.length} video(s) · ${SEEK_FRACTIONS.length} frames each · ${escapeHtml(config.OLLAMA_GUARD_MODEL)}</div>
+  <div style="color:#888;font-size:12px;">${results.length} video(s) · ${SEEK_FRACTIONS.length} frames each</div>
   ${sections}
 </body>
 </html>
@@ -249,6 +272,9 @@ async function run(): Promise<void> {
     : null;
   if (runDir) fs.mkdirSync(runDir, { recursive: true });
 
+  const baseUrl = config.M4_INTERNAL_URL;
+  if (!baseUrl) throw new Error('M4_INTERNAL_URL not set — run this on the Ubuntu worker');
+
   const videos = await fetchVideos(ids, recentCount);
 
   if (videos.length === 0) {
@@ -259,7 +285,7 @@ async function run(): Promise<void> {
 
   // eslint-disable-next-line no-console
   console.log(
-    `\n${BOLD}Scoring ${videos.length} video(s) × ${SEEK_FRACTIONS.length} frames using ${config.OLLAMA_GUARD_MODEL}${RESET}` +
+    `\n${BOLD}Scoring ${videos.length} video(s) × ${SEEK_FRACTIONS.length} frames via M4 ${baseUrl}${RESET}` +
     (runDir ? `  ${DIM}(saving to ${runDir})${RESET}` : '') +
     '\n',
   );
@@ -273,7 +299,7 @@ async function run(): Promise<void> {
 
     const videoOutDir = runDir ? path.join(runDir, row.youtube_id) : null;
     const t0 = Date.now();
-    const scores = await scoreVideo(row, videoOutDir);
+    const scores = await scoreVideo(row, videoOutDir, baseUrl);
     const elapsedSecs = (Date.now() - t0) / 1000;
     results.push({ row, scores, elapsedSecs });
 

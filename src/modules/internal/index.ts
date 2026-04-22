@@ -7,6 +7,7 @@ import { downloadQueue } from '../../queue';
 import { sendVideoReady } from '../notifications';
 import { checkStuckDownloads } from '../watchdog';
 import { scoreForRequest, classifyThumbnail } from '../guard';
+import { ollamaGenerate } from '../../ollama';
 import type { DownloadJobData } from '../content';
 
 export const internalRouter = Router();
@@ -287,6 +288,39 @@ internalRouter.post('/thumb/classify', async (req: Request, res: Response) => {
 
   const style = await classifyThumbnail(payload.youtubeId);
   res.json({ style });
+});
+
+// POST /internal/thumb/score-frame — proxy for Ubuntu worker to score a local frame against Gemma.
+// Ollama binds to localhost on M4, so the worker can't hit it directly; this relays.
+internalRouter.post('/thumb/score-frame', async (req: Request, res: Response) => {
+  const sig = req.headers['x-eddy-signature'];
+  if (!sig || typeof sig !== 'string') return res.status(401).json({ error: 'Missing signature' });
+
+  const rawBody = (req as Request & { rawBody?: Buffer }).rawBody;
+  if (!rawBody) return res.status(400).json({ error: 'No body' });
+
+  if (!verifyHmac(rawBody, sig)) {
+    logger.warn('HMAC verification failed on thumb score-frame request');
+    return res.status(401).json({ error: 'Invalid signature' });
+  }
+
+  let payload: { image: string; prompt: string };
+  try {
+    payload = JSON.parse(rawBody.toString()) as { image: string; prompt: string };
+  } catch {
+    return res.status(400).json({ error: 'Invalid JSON' });
+  }
+  if (typeof payload.image !== 'string' || typeof payload.prompt !== 'string') {
+    return res.status(400).json({ error: 'image and prompt required' });
+  }
+
+  try {
+    const raw = await ollamaGenerate(payload.prompt, undefined, [payload.image]);
+    res.json({ raw });
+  } catch (err) {
+    logger.warn({ err }, 'score-frame Ollama call failed');
+    res.status(502).json({ error: String(err) });
+  }
 });
 
 // POST /internal/watchdog/run — trigger an immediate watchdog check (for testing/ops)
