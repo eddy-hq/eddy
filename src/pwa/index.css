@@ -1,5 +1,7 @@
 /* ── Design tokens ───────────────────────────────────────────────────────── */
 :root {
+  color-scheme: light;
+
   /* Type scale */
   --text-xs:   11px;
   --text-sm:   13px;
@@ -56,23 +58,6 @@
   /* Fonts */
   --font-serif: 'Source Serif 4', Georgia, serif;
   --font-sans:  'DM Sans', system-ui, sans-serif;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg-primary:   #1A1916;
-    --bg-surface:   #242422;
-    --bg-elevated:  #2A2A28;
-    --text-primary:   #F0EFE9;
-    --text-secondary: #9A9890;
-    --text-tertiary:  #5C5A56;
-    --accent:         #4E8A8A;
-    --accent-subtle:  rgba(78, 138, 138, 0.13);
-    --save:    #5A9D7A;
-    --dismiss: #D4706C;
-    --border-subtle: rgba(240, 239, 233, 0.07);
-    --nav-bg: rgba(26, 25, 22, 0.92);
-  }
 }
 
 @media (prefers-reduced-motion: reduce) {

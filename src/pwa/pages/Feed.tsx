@@ -4,6 +4,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { AnimatePresence, motion } from 'framer-motion';
 import { X } from 'lucide-react';
 import { Card, type CardData } from '../components/Card';
+import { CompactCard, type SourceKind } from '../components/CompactCard';
 import { VideoDetailSheet } from '../components/VideoDetailSheet';
 import { BottomNav } from '../components/BottomNav';
 import { AppHeader } from '../components/AppHeader';
@@ -90,11 +91,13 @@ interface FeedCard {
   source: string;
 }
 
+interface DaySection { id: string; label: string; cards: FeedCard[]; }
+
 interface Day {
   date: string;
   label: string;
   cards: FeedCard[];
-  sections?: { id: string; label: string; cards: FeedCard[] }[];
+  sections?: DaySection[];
 }
 
 interface FeedResponse { days: Day[]; }
@@ -124,6 +127,13 @@ function toCardData(row: FeedCard): CardData {
     watchedAt: row.watched_at,
     savedAt: row.saved_at,
   };
+}
+
+function sourceKind(src: string): SourceKind | null {
+  if (src === 'share_sheet') return 'req';
+  if (src === 'channel_subscription') return 'follow';
+  if (src === 'recommended') return 'pick';
+  return null;
 }
 
 // ── Scroll-direction hook ────────────────────────────────────────────────────
@@ -202,19 +212,18 @@ export function Feed() {
   if (isLoading) return <Empty text="Loading…" />;
   if (isError) return <Empty text="Could not load." />;
 
-  // Only days that have visible request cards
-  const days = (data?.days ?? []).filter((d) => d.cards.length > 0 || d.sections?.some(s => s.cards.length));
-
-  function dayCards(day: Day): FeedCard[] {
-    if (day.sections?.length) return day.sections.flatMap(s => s.cards);
-    return day.cards;
-  }
+  const allDays = data?.days ?? [];
+  const todayDay = allDays.find((d) => d.label === 'Today') ?? null;
+  const pastDays = allDays.filter((d) => d !== todayDay && (d.cards.length > 0 || d.sections?.some((s) => s.cards.length)));
 
   const visibleCandidates = (discoveryData?.candidates ?? []).filter(
     (c) => !dismissedIds.has(c.candidateId) && !addedIds.has(c.candidateId)
   );
   const showDiscovery = !!discoveryData;
-  const showEmpty = !showDiscovery && days.length === 0;
+
+  const hasAnyTodayContent =
+    !!todayDay && ((todayDay.sections?.some((s) => s.cards.length) ?? false) || todayDay.cards.length > 0);
+  const showEmpty = !showDiscovery && !hasAnyTodayContent && pastDays.length === 0;
 
   return (
     <div style={{ minHeight: '100dvh', background: 'var(--bg-primary)' }}>
@@ -287,22 +296,21 @@ export function Feed() {
           </div>
         ) : (
           <>
-            {showDiscovery && (
-              <TodaySection
-                candidates={visibleCandidates}
-                coldStart={discoveryData.coldStart}
-                hasDividerBelow={days.length > 0}
-                onDismiss={handleDismiss}
-                onAdd={handleAdd}
-              />
-            )}
-            {days.map((day, i) => (
-              <DayGroup
+            <TodayBlock
+              todayDay={todayDay}
+              candidates={visibleCandidates}
+              coldStart={discoveryData?.coldStart ?? false}
+              showDiscovery={showDiscovery}
+              selectedId={selectedCard?.requestId ?? null}
+              onSelect={onSelect}
+              onDismiss={handleDismiss}
+              onAdd={handleAdd}
+              userId={user}
+            />
+            {pastDays.map((day) => (
+              <PastDayBlock
                 key={day.date}
                 day={day}
-                cards={dayCards(day)}
-                showDivider={showDiscovery || i > 0}
-                selectedId={selectedCard?.requestId ?? null}
                 onSelect={onSelect}
                 userId={user}
               />
@@ -327,12 +335,311 @@ export function Feed() {
   );
 }
 
-// ── Discovery card ───────────────────────────────────────────────────────────
+// ── Today block — Tier 1 ─────────────────────────────────────────────────────
 
-function DiscoveryCard({
-  candidate,
-  onDismiss,
-  onAdd,
+function TodayBlock({
+  todayDay, candidates, coldStart, showDiscovery,
+  selectedId, onSelect, onDismiss, onAdd, userId,
+}: {
+  todayDay: Day | null;
+  candidates: DiscoveryCandidate[];
+  coldStart: boolean;
+  showDiscovery: boolean;
+  selectedId: string | null;
+  onSelect: (data: CardData) => void;
+  onDismiss: (id: string) => void;
+  onAdd: (id: string) => void;
+  userId: string;
+}) {
+  const today = new Date();
+  const formattedDate = today.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
+
+  // Sections from server come as requests/channels/recommended. Falls back to flat cards.
+  const sections = todayDay?.sections ?? [];
+  const reqSection = sections.find((s) => s.id === 'requests');
+  const followSection = sections.find((s) => s.id === 'channels');
+  const pickSection = sections.find((s) => s.id === 'recommended');
+
+  const requestsCards = reqSection?.cards ?? [];
+  const followCards = followSection?.cards ?? [];
+  const pickedCards = pickSection?.cards ?? [];
+
+  const totalCount = requestsCards.length + followCards.length + pickedCards.length + candidates.length;
+
+  // If today has no cards at all and discovery is cold, show nothing (caller handles empty state).
+  if (totalCount === 0 && !showDiscovery) return null;
+
+  // Heavy-follow days swap compact; otherwise hero.
+  const followAsCompact = followCards.length > 6;
+
+  const firstVoice = candidates[0]?.why ?? (pickedCards.length > 0 ? 'A few more you might like.' : null);
+
+  return (
+    <section>
+      <DayLabelToday date={formattedDate} count={totalCount || null} />
+
+      {requestsCards.length > 0 && (
+        <>
+          <SectionHeader label="You asked" count={requestsCards.length} />
+          <CardList>
+            <AnimatePresence mode="popLayout">
+              {requestsCards.map((row) => (
+                <Card
+                  key={row.request_id}
+                  data={toCardData(row)}
+                  userId={userId}
+                  onSelect={onSelect}
+                  isSelected={selectedId === row.request_id}
+                  sourceKind="req"
+                />
+              ))}
+            </AnimatePresence>
+          </CardList>
+        </>
+      )}
+
+      {followCards.length > 0 && (
+        <>
+          <SectionHeader label="From people you follow" count={followCards.length} />
+          {followAsCompact ? (
+            <CompactList>
+              <AnimatePresence mode="popLayout">
+                {followCards.map((row) => (
+                  <CompactCard
+                    key={row.request_id}
+                    data={toCardData(row)}
+                    userId={userId}
+                    sourceKind="follow"
+                    onSelect={onSelect}
+                  />
+                ))}
+              </AnimatePresence>
+            </CompactList>
+          ) : (
+            <CardList>
+              <AnimatePresence mode="popLayout">
+                {followCards.map((row) => (
+                  <Card
+                    key={row.request_id}
+                    data={toCardData(row)}
+                    userId={userId}
+                    onSelect={onSelect}
+                    isSelected={selectedId === row.request_id}
+                    sourceKind="follow"
+                  />
+                ))}
+              </AnimatePresence>
+            </CardList>
+          )}
+        </>
+      )}
+
+      {(pickedCards.length > 0 || candidates.length > 0) && (
+        <>
+          {firstVoice && <VoiceLine text={firstVoice} />}
+          <CardList>
+            {pickedCards.map((row) => (
+              <Card
+                key={row.request_id}
+                data={toCardData(row)}
+                userId={userId}
+                onSelect={onSelect}
+                isSelected={selectedId === row.request_id}
+                sourceKind="pick"
+              />
+            ))}
+            <AnimatePresence mode="popLayout">
+              {candidates.map((c, i) => (
+                <React.Fragment key={c.candidateId}>
+                  {i > 0 && c.why && <VoiceLine text={c.why} />}
+                  <HeroDiscoveryCard candidate={c} onDismiss={onDismiss} onAdd={onAdd} />
+                </React.Fragment>
+              ))}
+            </AnimatePresence>
+          </CardList>
+        </>
+      )}
+
+      {coldStart && pickedCards.length === 0 && candidates.length === 0 && (
+        <div style={{ padding: '0 16px 18px' }}>
+          <p style={{
+            margin: 0, padding: '12px 14px', borderRadius: 10,
+            background: 'var(--bg-surface)', border: '1px solid var(--border-subtle)',
+            fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.5,
+          }}>
+            Eddy is still figuring out what you like — check back soon.
+          </p>
+        </div>
+      )}
+
+      <EndToday />
+    </section>
+  );
+}
+
+// ── Past-day block — Tier 2 (recent past, compact cards) ─────────────────────
+
+function PastDayBlock({
+  day, onSelect, userId,
+}: {
+  day: Day;
+  onSelect: (data: CardData) => void;
+  userId: string;
+}) {
+  const lbl = day.label;
+  const isYesterday = lbl.toLowerCase() === 'yesterday';
+  const dateObj = new Date(day.date + 'T12:00:00');
+  const weekday = dateObj.toLocaleDateString('en-GB', { weekday: 'long' });
+  const dayMonth = dateObj.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+
+  const cards = day.sections?.length ? day.sections.flatMap((s) => s.cards) : day.cards;
+  if (cards.length === 0) return null;
+
+  return (
+    <section>
+      <DayLabelPast
+        main={isYesterday ? 'Yesterday' : weekday}
+        ago={isYesterday ? 'yesterday' : dayMonth}
+        count={cards.length}
+      />
+      <CompactList>
+        <AnimatePresence mode="popLayout">
+          {cards.map((row) => (
+            <CompactCard
+              key={row.request_id}
+              data={toCardData(row)}
+              userId={userId}
+              sourceKind={sourceKind(row.source)}
+              onSelect={onSelect}
+            />
+          ))}
+        </AnimatePresence>
+      </CompactList>
+    </section>
+  );
+}
+
+// ── Timeline building blocks ─────────────────────────────────────────────────
+
+function DayLabelToday({ date, count }: { date: string; count: number | null }) {
+  return (
+    <div style={{ padding: '20px 22px 16px', display: 'flex', alignItems: 'baseline', gap: 10 }}>
+      <span style={{
+        fontSize: 11, fontWeight: 700, letterSpacing: '0.14em', textTransform: 'uppercase',
+        color: 'var(--text-primary)',
+      }}>
+        Today
+      </span>
+      <span style={{ fontSize: 11, fontWeight: 500, letterSpacing: '0.02em', color: 'var(--text-tertiary)' }}>
+        {date}
+      </span>
+      {count != null && count > 0 && (
+        <span style={{
+          marginLeft: 'auto', fontFamily: 'var(--font-serif)', fontStyle: 'italic',
+          fontSize: 12, color: 'var(--text-secondary)',
+        }}>
+          {count} {count === 1 ? 'item' : 'items'}
+        </span>
+      )}
+    </div>
+  );
+}
+
+function DayLabelPast({ main, ago, count }: { main: string; ago: string; count: number }) {
+  return (
+    <div style={{ padding: '28px 22px 14px', display: 'flex', alignItems: 'baseline', gap: 10 }}>
+      <span style={{
+        fontFamily: 'var(--font-serif)', fontWeight: 500,
+        fontSize: 14, color: 'var(--text-primary)', letterSpacing: '-0.005em',
+      }}>
+        {main}
+      </span>
+      <span style={{
+        fontFamily: 'var(--font-serif)', fontStyle: 'italic',
+        fontSize: 11, color: 'var(--text-tertiary)',
+      }}>
+        · {ago} · {count} {count === 1 ? 'item' : 'items'}
+      </span>
+    </div>
+  );
+}
+
+function SectionHeader({ label, count }: { label: string; count: number }) {
+  return (
+    <div style={{ padding: '18px 22px 10px', display: 'flex', alignItems: 'baseline', gap: 10 }}>
+      <span style={{
+        fontFamily: 'var(--font-serif)', fontWeight: 500,
+        fontSize: 15, color: 'var(--text-primary)', letterSpacing: '-0.003em',
+      }}>
+        {label}
+      </span>
+      <span style={{
+        fontFamily: 'var(--font-serif)', fontStyle: 'italic',
+        fontSize: 12, color: 'var(--text-secondary)',
+      }}>
+        {count}
+      </span>
+      <span style={{ flex: 1, height: 1, background: 'var(--border-subtle)', marginLeft: 8 }} />
+    </div>
+  );
+}
+
+function VoiceLine({ text }: { text: string }) {
+  return (
+    <p style={{
+      margin: '18px 16px 10px',
+      padding: '4px 0 6px',
+      fontFamily: 'var(--font-serif)',
+      fontStyle: 'italic',
+      fontWeight: 400,
+      fontSize: 15,
+      lineHeight: 1.5,
+      letterSpacing: '-0.002em',
+      color: 'var(--text-primary)',
+    }}>
+      {text}
+    </p>
+  );
+}
+
+function EndToday() {
+  return (
+    <div style={{
+      margin: '24px 22px 8px',
+      padding: '16px 0 14px',
+      textAlign: 'center',
+      fontFamily: 'var(--font-serif)',
+      fontStyle: 'italic',
+      fontSize: 13,
+      color: 'var(--text-tertiary)',
+      borderBottom: '1px dashed var(--border-subtle)',
+      letterSpacing: '0.005em',
+    }}>
+      That's Today.
+    </div>
+  );
+}
+
+function CardList({ children }: { children: React.ReactNode }) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12, padding: '0 16px' }}>
+      {children}
+    </div>
+  );
+}
+
+function CompactList({ children }: { children: React.ReactNode }) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 10, padding: '0 16px' }}>
+      {children}
+    </div>
+  );
+}
+
+// ── Hero discovery card (tap-to-add, with dismiss) ───────────────────────────
+
+function HeroDiscoveryCard({
+  candidate, onDismiss, onAdd,
 }: {
   candidate: DiscoveryCandidate;
   onDismiss: (id: string) => void;
@@ -341,205 +648,112 @@ function DiscoveryCard({
   const [adding, setAdding] = useState(false);
 
   async function handleAdd() {
+    if (adding) return;
     setAdding(true);
     await onAdd(candidate.candidateId);
   }
 
   return (
-    <motion.div
+    <motion.article
       layout
       initial={{ opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, scale: 0.96 }}
-      transition={{ duration: 0.18 }}
+      transition={{ duration: 0.22 }}
+      onClick={handleAdd}
       style={{
-        borderRadius: 12,
-        overflow: 'hidden',
-        background: 'var(--bg-secondary)',
-        border: '1px solid var(--border-subtle)',
         position: 'relative',
+        aspectRatio: '16/9',
+        borderRadius: 16,
+        overflow: 'hidden',
+        background: '#2A2826',
+        boxShadow: 'var(--shadow-card)',
+        border: '1px solid var(--border-subtle)',
+        cursor: adding ? 'default' : 'pointer',
       }}
     >
+      {candidate.thumbnailUrl && (
+        <img
+          src={candidate.thumbnailUrl}
+          alt=""
+          loading="lazy"
+          style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }}
+        />
+      )}
+
+      {/* Scrim — darker at bottom so the title stays readable */}
+      <div style={{
+        position: 'absolute', inset: 0, pointerEvents: 'none',
+        background: 'linear-gradient(180deg, rgba(0,0,0,0) 25%, rgba(0,0,0,0.25) 50%, rgba(0,0,0,0.65) 72%, rgba(0,0,0,0.88) 88%, rgba(0,0,0,0.95) 100%)',
+      }} />
+
+      {/* Dismiss */}
       <button
         aria-label="Dismiss"
-        onClick={() => onDismiss(candidate.candidateId)}
+        onClick={(e) => { e.stopPropagation(); onDismiss(candidate.candidateId); }}
         style={{
-          position: 'absolute', top: 8, right: 8, zIndex: 2,
-          width: 26, height: 26, borderRadius: '50%',
-          background: 'rgba(0,0,0,0.45)', border: 'none',
+          position: 'absolute', top: 10, right: 10, zIndex: 3,
+          width: 28, height: 28, borderRadius: '50%',
+          background: 'rgba(0,0,0,0.55)', border: 'none',
           display: 'flex', alignItems: 'center', justifyContent: 'center',
           cursor: 'pointer', color: '#fff',
+          backdropFilter: 'blur(4px)',
         }}
       >
-        <X size={13} strokeWidth={2.5} />
+        <X size={14} strokeWidth={2.5} />
       </button>
 
-      <button
-        onClick={handleAdd}
-        disabled={adding}
-        style={{
-          display: 'flex', width: '100%', textAlign: 'left',
-          background: 'transparent', border: 'none', cursor: adding ? 'default' : 'pointer',
-          padding: 0,
-        }}
-      >
-        {candidate.thumbnailUrl && (
-          <img
-            src={candidate.thumbnailUrl}
-            alt=""
-            style={{
-              width: 112, height: 72, objectFit: 'cover', flexShrink: 0,
-              background: 'var(--bg-tertiary)',
-            }}
-          />
-        )}
-        <div style={{ padding: '10px 36px 10px 12px', flex: 1, minWidth: 0 }}>
-          <p style={{
-            margin: '0 0 4px',
-            fontSize: 13, fontWeight: 600, lineHeight: 1.3,
-            color: 'var(--text-primary)',
-            display: '-webkit-box', WebkitLineClamp: 2,
-            WebkitBoxOrient: 'vertical', overflow: 'hidden',
+      {/* Title + meta */}
+      <div style={{ position: 'absolute', bottom: 14, left: 14, right: 14, zIndex: 2 }}>
+        <h3 style={{
+          fontFamily: 'var(--font-serif)',
+          fontSize: 19, fontWeight: 500, lineHeight: 1.22,
+          letterSpacing: '-0.008em', margin: '0 0 8px',
+          color: '#F6F3ED',
+          textShadow: '0 1px 2px rgba(0,0,0,0.4)',
+          display: '-webkit-box',
+          WebkitLineClamp: 2,
+          WebkitBoxOrient: 'vertical',
+          overflow: 'hidden',
+        }}>
+          {candidate.title ?? candidate.url}
+        </h3>
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 8,
+          fontSize: 11, fontWeight: 500, color: 'rgba(244,241,234,0.78)',
+          letterSpacing: '0.005em',
+        }}>
+          <span style={{
+            display: 'inline-flex', alignItems: 'center', gap: 6,
+            padding: '3px 9px',
+            background: 'rgba(244,241,234,0.16)',
+            borderRadius: 100,
+            backdropFilter: 'blur(8px) saturate(120%)',
+            WebkitBackdropFilter: 'blur(8px) saturate(120%)',
+            fontSize: 10, fontWeight: 600, letterSpacing: '0.03em',
+            color: 'rgba(244,241,234,0.95)',
           }}>
-            {candidate.title ?? candidate.url}
-          </p>
-          {candidate.why && (
-            <p style={{
-              margin: 0, fontSize: 11, lineHeight: 1.35,
-              color: 'var(--text-secondary)',
-              display: '-webkit-box', WebkitLineClamp: 2,
-              WebkitBoxOrient: 'vertical', overflow: 'hidden',
-            }}>
-              {candidate.why}
-            </p>
-          )}
+            <span style={{ width: 5, height: 5, borderRadius: '50%', background: '#5A9D7A' }} />
+            Picked
+          </span>
+          <span style={{ color: 'rgba(244,241,234,0.4)' }}>·</span>
+          <span>Tap to add</span>
         </div>
-      </button>
+      </div>
 
       {adding && (
         <div style={{
-          position: 'absolute', inset: 0, borderRadius: 12,
-          background: 'rgba(0,0,0,0.35)',
+          position: 'absolute', inset: 0, zIndex: 4,
+          background: 'rgba(0,0,0,0.45)',
           display: 'flex', alignItems: 'center', justifyContent: 'center',
+          backdropFilter: 'blur(2px)',
         }}>
-          <span style={{ fontSize: 12, fontWeight: 600, color: '#fff' }}>Adding…</span>
-        </div>
-      )}
-    </motion.div>
-  );
-}
-
-// ── Today section (discovery header + cards) ─────────────────────────────────
-
-function TodaySection({
-  candidates, coldStart, hasDividerBelow, onDismiss, onAdd,
-}: {
-  candidates: DiscoveryCandidate[];
-  coldStart: boolean;
-  hasDividerBelow: boolean;
-  onDismiss: (id: string) => void;
-  onAdd: (id: string) => void;
-}) {
-  const today = new Date();
-  const formattedDate = today.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
-
-  return (
-    <section>
-      <div style={{ padding: '22px 20px 10px', display: 'flex', alignItems: 'baseline', gap: 10 }}>
-        <span style={{ fontSize: 11, fontWeight: 600, letterSpacing: '0.09em', textTransform: 'uppercase', color: 'var(--text-primary)' }}>
-          Today
-        </span>
-        <span style={{ fontSize: 11, fontWeight: 500, letterSpacing: '0.02em', color: 'var(--text-tertiary)' }}>
-          {formattedDate}
-        </span>
-      </div>
-      <div style={{ padding: '0 20px 10px' }}>
-        <span style={{ fontSize: 11, fontWeight: 600, letterSpacing: '0.07em', textTransform: 'uppercase', color: 'var(--accent)' }}>
-          Picked for you
-        </span>
-      </div>
-      {coldStart ? (
-        <div style={{ padding: '0 16px 18px' }}>
-          <p style={{
-            margin: 0, padding: '12px 14px', borderRadius: 10,
-            background: 'var(--bg-secondary)', border: '1px solid var(--border-subtle)',
-            fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.5,
-          }}>
-            Eddy is still figuring out what you like — check back soon.
-          </p>
-        </div>
-      ) : candidates.length === 0 ? (
-        <div style={{ padding: '0 16px 18px' }}>
-          <p style={{
-            margin: 0, padding: '12px 14px', borderRadius: 10,
-            background: 'var(--bg-secondary)', border: '1px solid var(--border-subtle)',
-            fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.5, textAlign: 'center',
-          }}>
-            That's it for today — more tomorrow
-          </p>
-        </div>
-      ) : (
-        <div style={{ padding: '0 16px 18px', display: 'flex', flexDirection: 'column', gap: 10 }}>
-          <AnimatePresence mode="popLayout">
-            {candidates.map((c) => (
-              <DiscoveryCard key={c.candidateId} candidate={c} onDismiss={onDismiss} onAdd={onAdd} />
-            ))}
-          </AnimatePresence>
-        </div>
-      )}
-      {hasDividerBelow && (
-        <div style={{ margin: '4px 20px 16px', height: 1, background: 'var(--border-subtle)' }} />
-      )}
-    </section>
-  );
-}
-
-// ── Day group ────────────────────────────────────────────────────────────────
-
-function DayGroup({
-  day, cards, showDivider, selectedId, onSelect, userId,
-}: {
-  day: Day;
-  cards: FeedCard[];
-  showDivider: boolean;
-  selectedId: string | null;
-  onSelect: (data: CardData) => void;
-  userId: string;
-}) {
-  const lbl = day.label;
-  const dateObj = new Date(day.date + 'T12:00:00');
-  const isYesterday = lbl.toLowerCase() === 'yesterday';
-  const formattedDate = dateObj.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
-
-  return (
-    <section>
-      {showDivider && (
-        <div style={{ margin: '4px 20px 16px', height: 1, background: 'var(--border-subtle)' }} />
-      )}
-      <div style={{ padding: '22px 20px 14px', display: 'flex', alignItems: 'baseline', gap: 10 }}>
-        <span style={{ fontSize: 11, fontWeight: 600, letterSpacing: '0.09em', textTransform: 'uppercase', color: 'var(--text-primary)' }}>
-          {lbl}
-        </span>
-        {isYesterday && (
-          <span style={{ fontSize: 11, fontWeight: 500, letterSpacing: '0.02em', color: 'var(--text-tertiary)' }}>
-            {formattedDate}
+          <span style={{ fontSize: 12, fontWeight: 600, color: '#fff', letterSpacing: '0.04em' }}>
+            Adding…
           </span>
-        )}
-      </div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 14, padding: '0 16px' }}>
-        <AnimatePresence mode="popLayout">
-          {cards.map((row) => (
-            <Card
-              key={row.request_id}
-              data={toCardData(row)}
-              userId={userId}
-              onSelect={onSelect}
-              isSelected={selectedId === row.request_id}
-            />
-          ))}
-        </AnimatePresence>
-      </div>
-    </section>
+        </div>
+      )}
+    </motion.article>
   );
 }
 

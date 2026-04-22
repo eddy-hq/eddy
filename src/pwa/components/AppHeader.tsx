@@ -31,11 +31,11 @@ export function AppHeader({ borderBottom = true }: { borderBottom?: boolean }) {
       borderBottom: borderBottom ? '1px solid var(--border-subtle)' : 'none',
     }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingBottom: 13 }}>
-        <div style={{ display: 'flex', alignItems: 'flex-end', gap: 6, lineHeight: 1 }}>
-          <svg width="20" height="22" viewBox="4 7 40 33" fill="none" style={{ flexShrink: 0 }}>
-            <path d="M 40 23 C 40 11,29 5,18 8 C 8 11,4 21,7 30 C 10 39,21 44,31 41 C 39 38,43 29,40 22 C 37 16,28 13,21 17 C 15 21,14 29,18 34 C 21 37,28 37,32 32" stroke="var(--accent)" strokeWidth="2.6" strokeLinecap="round" fill="none"/>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 7, lineHeight: 1 }}>
+          <svg width="22" height="24" viewBox="4 7 40 33" fill="none" style={{ flexShrink: 0, display: 'block' }}>
+            <path d="M 40 23 C 40 11,29 5,18 8 C 8 11,4 21,7 30 C 10 39,21 44,31 41 C 39 38,43 29,40 22 C 37 16,28 13,21 17 C 15 21,14 29,18 34 C 21 37,28 37,32 32" stroke="var(--accent)" strokeWidth="3.2" strokeLinecap="round" fill="none"/>
           </svg>
-          <span style={{ fontFamily: 'var(--font-serif)', fontSize: 26, fontWeight: 400, letterSpacing: '-0.01em', lineHeight: 1, color: 'var(--text-primary)' }}>
+          <span style={{ fontFamily: 'var(--font-serif)', fontSize: 22, fontWeight: 400, letterSpacing: '-0.015em', color: 'var(--text-primary)' }}>
             eddy
           </span>
         </div>
