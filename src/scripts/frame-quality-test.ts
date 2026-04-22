@@ -16,22 +16,19 @@ const GREEN  = '\x1b[32m';
 const YELLOW = '\x1b[33m';
 const RED    = '\x1b[31m';
 
-// Sample 8 positions evenly across the middle 60% of the video.
+// Sample 5 positions evenly across the middle 60% of the video.
 // Avoids intros / end cards that cluster near 0% and 100%.
-const SEEK_FRACTIONS = [0.20, 0.28, 0.36, 0.44, 0.52, 0.60, 0.68, 0.76];
+const SEEK_FRACTIONS = [0.24, 0.36, 0.48, 0.60, 0.72];
 
-const PROMPT = `Score this video frame from 0 to 10 on how well it would work as a thumbnail for a family video library.
+const PROMPT = `Score this video frame 0-10 as a family-video thumbnail.
 
-Judge the frame by its overall visual impact and composition — not by whether any text or graphics are present.
+Judge by overall composition and visual impact. Penalise text/graphics only by how much of the frame they occupy — a small corner logo barely matters; a full-screen title card is disqualifying.
 
-High score (8-10): clear subject, strong composition, natural lighting, the imagery communicates what the moment is about. Small lower-thirds, channel logos, or minor captions are fine at this tier if they do not dominate the frame.
-Medium score (4-7): reasonable frame with minor issues — slightly off-centre subject, mild motion, graphics covering a small portion of the image, legible but unremarkable.
-Low score (0-3): text or graphics dominate the frame (title card, end card, large "SUBSCRIBE" overlay), heavy motion blur, transition frame, washed out, near-black, near-white, or no clear subject.
+8-10: clear subject, strong composition, minor/no graphic intrusion.
+4-7: decent but unremarkable, or graphics on a small portion of the frame.
+0-3: dominated by text/graphics, transition, motion blur, washed out, near-black/white, no clear subject.
 
-Weight penalties by how much of the frame the text or graphic actually occupies. A small caption or a channel bug in one corner should barely move the score. A full-screen title card is disqualifying.
-
-Return ONLY valid JSON with no other text:
-{"score": 0-10, "reason": "one short sentence noting whether any graphics are dominant or peripheral"}`;
+Return ONLY JSON: {"score": 0-10, "reason": "one short sentence, note if graphics are dominant or peripheral"}`;
 
 interface FrameScore {
   seekSecs: number;
@@ -56,7 +53,7 @@ async function extractFrame(filePath: string, seekSecs: number, outPath: string)
   await execFileAsync('ffmpeg', [
     '-y', '-ss', String(seekSecs),
     '-i', filePath,
-    '-vf', 'thumbnail=300,scale=640:-2',
+    '-vf', 'scale=384:-2',
     '-frames:v', '1',
     '-f', 'image2',
     '-q:v', '3',
