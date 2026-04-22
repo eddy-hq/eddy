@@ -317,9 +317,12 @@ internalRouter.post('/thumb/score-frame', async (req: Request, res: Response) =>
 
   try {
     const raw = await ollamaGenerate(payload.prompt, undefined, [payload.image], {
-      temperature: 0,
+      temperature: 0.1,
       num_predict: 256,
     });
+    if (!raw.trim()) {
+      logger.warn({ imageBytes: payload.image.length }, 'score-frame Ollama returned empty response');
+    }
     res.json({ raw });
   } catch (err) {
     logger.warn({ err }, 'score-frame Ollama call failed');
