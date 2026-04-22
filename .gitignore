@@ -5,5 +5,7 @@ dist/
 *.db-shm
 *.db-wal
 .env
+.env.*
+!.env.example
 dump.rdb
 logs/
