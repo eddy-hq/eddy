@@ -1,6 +1,6 @@
 # Eddy — Implementation Document
 
-**Status:** Phase 5 next. Phases 0–4 shipped. Feed, guard shadow mode, RSS poller, channel follow, and search all running.
+**Status:** Phase 5 in progress. Phases 0–4 shipped (feed, guard shadow mode, RSS poller, channel follow, search). Discovery engine, topic picker, balance prompts, channel→topic inference all live; recommendation extraction and affinity enrichment still to come.
 
 Reasoning and trade-offs that led to these decisions live in `docs/decisions.md`. This document is the spec.
 
@@ -70,7 +70,7 @@ Partner's profile and the Pi-hole blocker both wait for her explicit buy-in.
 
 **Storage on Ubuntu:**
 - HDD — existing Plex library, untouched
-- SSD — `/mnt/ssd/eddy/videos/`. Eddy owns. yt-dlp writes, Eddy recycles, Plex and nginx read.
+- SSD — `$VIDEO_OUTPUT_PATH` for video files, `$THUMB_OUTPUT_PATH` for stylised thumbnails (see `.env.example`). Eddy owns. yt-dlp writes, Eddy recycles, Plex and nginx read.
 
 **Network:** BT Home Hub 2. Tailscale across both machines and all family devices. HH2 cannot push DNS to DHCP clients — Pi-hole will only reach Tailscale-joined devices. Fine, stated explicitly.
 
@@ -196,7 +196,7 @@ Guard triage:
         ↓
 Parent approve/deny via ntfy notification (if escalated)
         ↓
-Download → /mnt/ssd/eddy/videos/{youtube_id}.mp4, H.264
+Download → $VIDEO_OUTPUT_PATH/{youtube_id}.mp4, H.264
         ↓
 Plex scan trigger → video on TV within ~30s
         ↓
@@ -229,13 +229,17 @@ yt-dlp \
   --concurrent-fragments 4 \
   --write-auto-sub --sub-lang en \
   --no-part \
-  -o /mnt/ssd/eddy/videos/{id}.mp4 \
+  -o $VIDEO_OUTPUT_PATH/{id}.mp4 \
   {url}
 ```
 
 Flag notes: `mweb` client is the path the plugin supports. Sleep intervals keep us polite and avoid rate-limiting. H.264 + AAC forced — ffmpeg stream-copies only, no re-encode (verify with `--verbose` that both streams show `(copy)`). Concurrent fragments give 2-3× throughput. `--no-part` skips a rename step on local disk.
 
 Metadata and auto-subs stored in SQLite for guard + hook generation.
+
+### Stylised thumbnails
+
+Raw YouTube thumbnails don't fit Eddy's editorial feel — high-contrast, saturated, engineered to pull clicks. After each successful download, the Ubuntu worker generates a dimmed, desaturated `.webp` to `$THUMB_OUTPUT_PATH/{youtube_id}.webp` (sharp pipeline: blur + saturation drop + brightness reduction). The PWA shows these; nginx serves them. Tunable via `EDDY_THUMB_BLUR_SIGMA`, `EDDY_THUMB_SATURATION`, `EDDY_THUMB_BRIGHTNESS`. Stylising at download time avoids runtime processing, and thumbnails persist across file recycling so "recycled" cards stay recognisable.
 
 ### No Google credentials in the kids' path
 
@@ -249,7 +253,7 @@ Kids download anonymously. No cookies, no account. Age-restricted and members-on
 
 ### Plex integration
 
-- Library type "Other Videos" (no agent matching) pointing at `/mnt/ssd/eddy/videos/`
+- Library type "Other Videos" (no agent matching) pointing at `$VIDEO_OUTPUT_PATH`
 - On download completion, Ubuntu worker triggers partial Plex scan via API
 - Plex is pure reader. All file operations are Eddy's.
 
@@ -498,7 +502,7 @@ No swipe-as-primary. Dismissal is a quiet opt-out.
 
 ### Search
 
-Full-text across the whole timeline via SQLite FTS5. Matches title, personal hook, person/channel, topic. Flat results list ordered by relevance, card's original date shown beneath. Also powers "find similar" for gone cards.
+Full-text across the whole timeline via SQLite FTS5. Matches title, channel, description, and transcript. Flat results list ordered by relevance, card's original date shown beneath. Also powers "find similar" for gone cards.
 
 Text-only in v1. Filters (saved, person, date range, topic) come in a later polish pass.
 
@@ -864,255 +868,16 @@ No automated external calls in v1. Claude API usage (Phase 11, optional) require
 
 ## 15. Data model
 
-SQLite, single file on M4, nightly backup to Ubuntu. All tables have `user_id` where relevant.
+SQLite, single file on M4, nightly backup to Ubuntu. **The migrations in `src/db/migrations/*.sql` are the source of truth** — reading them top to bottom gives the exact current shape. Inspect live schema with `sqlite3 eddy.db '.schema'`.
 
-```sql
-CREATE TABLE users (
-  user_id       TEXT PRIMARY KEY,
-  display_name  TEXT,
-  age_gate      BOOLEAN DEFAULT 0,
-  profile       TEXT,                -- JSON
-  created_at    TIMESTAMP
-);
+Design rules the schema should obey:
 
-CREATE TABLE devices (
-  device_id     TEXT PRIMARY KEY,
-  display_name  TEXT,
-  owner_user_id TEXT,
-  tailscale_ip  TEXT,
-  local_ip      TEXT,
-  device_type   TEXT                 -- phone|tablet|tv|desktop
-);
+- All user-scoped tables carry `user_id`.
+- Timestamps are ISO 8601 strings.
+- Primary keys are UUID v7, except YouTube IDs as PKs on video-specific tables.
+- New tables land as a new numbered migration; never edit a shipped migration.
 
--- People as the subscription unit (Section 4a)
-
-CREATE TABLE people (
-  person_id     TEXT PRIMARY KEY,
-  display_name  TEXT,
-  person_type   TEXT,                -- individual|duo|group|studio
-  photo_url     TEXT,
-  bio           TEXT,
-  support_urls  TEXT,                -- JSON: {substack, patreon, bookshop, etc.}
-  created_at    TIMESTAMP
-);
-
-CREATE TABLE person_outputs (
-  output_id     TEXT PRIMARY KEY,
-  person_id     TEXT,
-  output_type   TEXT,                -- youtube|podcast|substack|blog|arxiv|author
-  fetcher_type  TEXT,                -- which fetcher adapter handles this
-  feed_url      TEXT,                -- RSS URL, channel ID, etc.
-  external_id   TEXT,                -- e.g. YouTube channel ID
-  active        BOOLEAN DEFAULT 1,
-  last_polled   TIMESTAMP
-);
-
-CREATE TABLE followed_people (
-  user_id       TEXT,
-  person_id     TEXT,
-  trust_weight  REAL DEFAULT 1.0,    -- Layer 3 of profile
-  followed_at   TIMESTAMP,
-  followed_via  TEXT,                -- manual|suggestion|guest_crossover
-  PRIMARY KEY (user_id, person_id)
-);
-
-CREATE TABLE person_recommendations (
-  rec_id        TEXT PRIMARY KEY,
-  person_id     TEXT,                -- who made the recommendation
-  content_type  TEXT,                -- book|article|podcast|video|paper
-  target_url    TEXT,
-  target_title  TEXT,
-  target_author TEXT,                -- for books etc.
-  source_output_id TEXT,             -- which output carried the recommendation
-  framing       TEXT,                -- the recommender's own words, where extractable
-  detected_at   TIMESTAMP
-);
-
--- Requests (kid-initiated, share-sheet flow)
-
-CREATE TABLE requests (
-  request_id       TEXT PRIMARY KEY,
-  user_id          TEXT,
-  source           TEXT,              -- share_sheet|search|output_drop|dns_landing
-  url              TEXT,
-  youtube_id       TEXT,
-  title            TEXT,
-  channel          TEXT,
-  status           TEXT,              -- pending|guard_review|parent_review|approved|rejected|downloading|ready|watched|dismissed
-  guard_verdict    TEXT,              -- clear_yes|clear_no|uncertain
-  guard_reason     TEXT,
-  decided_by       TEXT,              -- 'gemma'|user_id
-  rejection_reason TEXT,
-  file_path        TEXT,
-  nginx_url        TEXT,
-  duration_secs    INTEGER,
-  requested_at     TIMESTAMP,
-  decided_at       TIMESTAMP,
-  downloaded_at    TIMESTAMP,
-  watched_at       TIMESTAMP
-);
-
-CREATE TABLE content_items (
-  item_id          TEXT PRIMARY KEY,
-  user_id          TEXT,
-  content_type     TEXT,              -- video|article|podcast|paper|book|recipe
-  title            TEXT,
-  person_id        TEXT,              -- attributed to a person where known
-  source_output_id TEXT,              -- which output produced this
-  recommender_id   TEXT,              -- person_id who recommended, if applicable
-  author           TEXT,              -- for books, papers
-  url              TEXT,
-  topic            TEXT,
-  score            REAL,
-  personal_hook    TEXT,              -- Gemma-generated, <=15 words
-  why_this         TEXT,              -- Gemma reasoning for discovery picks
-  thumbnail_url    TEXT,
-  duration_secs    INTEGER,           -- video, podcast
-  page_count       INTEGER,           -- books
-  file_path        TEXT,              -- null when recycled or non-video
-  nginx_url        TEXT,              -- null when recycled or non-video
-  file_state       TEXT DEFAULT 'na', -- live|recycled|gone|na (non-video)
-  added_section    TEXT,              -- my_request|from_people|recommendation
-  discovery_source TEXT,              -- null|person_output|person_recommendation|topic_search|related_person
-  structured_data  TEXT,              -- JSON for schema.org-extracted types (recipes)
-  tapped           BOOLEAN DEFAULT 0,
-  saved            BOOLEAN DEFAULT 0,
-  dismissed        BOOLEAN DEFAULT 0,
-  completed        BOOLEAN DEFAULT 0,
-  reading_status   TEXT,              -- books only: want|reading|finished
-  landed           TEXT,              -- books only: yes|no|null after finish
-  dwell_secs       INTEGER DEFAULT 0,
-  re_watch_count   INTEGER DEFAULT 0,
-  added_at         TIMESTAMP,         -- anchor for timeline position; immutable
-  tapped_at        TIMESTAMP,
-  watched_at       TIMESTAMP,
-  saved_at         TIMESTAMP,
-  dismissed_at     TIMESTAMP,
-  recycled_at      TIMESTAMP
-);
-
-CREATE VIRTUAL TABLE content_items_fts USING fts5(
-  title, personal_hook, author, topic,
-  content='content_items', content_rowid='rowid'
-);
-
-CREATE TABLE candidate_pool (
-  candidate_id     TEXT PRIMARY KEY,
-  user_id          TEXT,
-  content_type     TEXT,
-  url              TEXT,
-  external_id      TEXT,              -- youtube_id, episode guid, etc.
-  title            TEXT,
-  person_id        TEXT,
-  recommender_id   TEXT,
-  discovery_source TEXT,              -- person_output|person_recommendation|topic_search|related_person|podcast_scan
-  discovered_at    TIMESTAMP,
-  scored_at        TIMESTAMP,
-  score            REAL,
-  surfaced         BOOLEAN DEFAULT 0,
-  surfaced_at      TIMESTAMP,
-  rejected         BOOLEAN DEFAULT 0,
-  rejection_reason TEXT
-);
-
-CREATE TABLE podcast_scoring_log (
-  log_id        TEXT PRIMARY KEY,
-  user_id       TEXT,
-  episode_url   TEXT,
-  show_name     TEXT,
-  episode_title TEXT,
-  verdict       TEXT,                 -- match|reject|uncertain
-  reason        TEXT,
-  scored_at     TIMESTAMP
-);
-
-CREATE TABLE inferred_affinities (
-  affinity_id    TEXT PRIMARY KEY,
-  user_id        TEXT,
-  statement      TEXT,                -- sentence form
-  confidence     REAL,
-  evidence_items TEXT,                -- JSON array of item_ids
-  user_confirmed TEXT,                -- null|yes|no|sort_of (later phases)
-  created_at     TIMESTAMP,
-  updated_at     TIMESTAMP
-);
-
-CREATE TABLE balance_prompts (
-  prompt_id     TEXT PRIMARY KEY,
-  user_id       TEXT,
-  topic         TEXT,
-  concentration REAL,                 -- % of recent consumption
-  shown_at      TIMESTAMP,
-  chosen        TEXT,                 -- null|stretch|stay
-  chosen_at     TIMESTAMP
-);
-
-CREATE TABLE topics (
-  id           TEXT PRIMARY KEY,
-  label        TEXT,
-  emoji        TEXT,
-  search_terms TEXT,                  -- JSON array
-  category     TEXT,
-  age_gate     BOOLEAN DEFAULT 0,
-  source       TEXT                   -- seed|user_added
-);
-
-CREATE TABLE user_topics (
-  user_id    TEXT,
-  topic_id   TEXT,
-  weight     REAL DEFAULT 1.0,
-  liked      BOOLEAN DEFAULT 1,
-  added_at   TIMESTAMP,
-  PRIMARY KEY (user_id, topic_id)
-);
-
-CREATE TABLE overrides (
-  override_id   TEXT PRIMARY KEY,
-  user_id       TEXT,
-  device_id     TEXT,
-  granted_by    TEXT,
-  duration_mins INTEGER,
-  expires_at    TIMESTAMP,
-  status        TEXT,                 -- active|expired|revoked
-  created_at    TIMESTAMP
-);
-
-CREATE TABLE drift (
-  user_id       TEXT,
-  week          TEXT,                 -- ISO: "2026-W15"
-  summary       TEXT,                 -- JSON
-  calculated_at TIMESTAMP,
-  PRIMARY KEY (user_id, week)
-);
-
-CREATE TABLE guard_eval (
-  eval_id            TEXT PRIMARY KEY,
-  request_id         TEXT,
-  url                TEXT,
-  gemma_verdict      TEXT,                -- clear_yes|clear_no|uncertain
-  gemma_reason       TEXT,
-  gemma_confidence   REAL,                -- 0.0–1.0
-  prompt_version     TEXT,                -- tag, so verdicts are attributable to a prompt
-  scored_at          TIMESTAMP,
-  human_verdict      TEXT,                -- labelled by Steve; null until reviewed
-  human_notes        TEXT,
-  human_labelled_at  TIMESTAMP            -- null until reviewed
-);
-
-CREATE TABLE used_tokens (
-  token_hash TEXT PRIMARY KEY,
-  handler    TEXT,
-  user_id    TEXT,
-  used_at    TIMESTAMP
-);
-
-CREATE TABLE seen_items (
-  output_id   TEXT,
-  external_id TEXT,                   -- video ID, episode guid, post slug, etc.
-  seen_at     TIMESTAMP,
-  PRIMARY KEY (output_id, external_id)
-);
-```
+Per-phase additions are described in the relevant section of this document (e.g. guard tables in §9, discovery tables in §9a, balance prompts in §9a). Cross-reference to a specific table should point at its migration, not at a duplicated DDL block here.
 
 ---
 
@@ -1196,7 +961,7 @@ Person cards are simple; the value is routing, not content.
 
 ### Frontend stack
 
-React 18 + Vite · Framer Motion · Zustand · TanStack Query · Lucide · Radix primitives.
+React 19 + Vite · Framer Motion · Zustand · TanStack Query · Lucide.
 
 A single `/design-reference` route in the PWA shows every component in every state. Serves as the design doc.
 
@@ -1284,22 +1049,27 @@ Specs in Sections 4a and 8. ~3 sessions.
 
 Specs in Sections 4a and 9a. ~2-3 sessions.
 
-- `person_recommendations`, `candidate_pool`, `inferred_affinities` tables
-- Four-layer profile (behavioural signal capture, per-person trust weights, inferred affinities)
-- Discovery sources: new outputs from people followed, recommendations extracted from their text outputs, topic search (gap-filler), related-people expansion (for follow suggestions, not direct surfacing)
-- Gemma scoring with person-trust-weight as primary input, batched
-- Shadow guard continues to run on discovered items the same way it runs on requested items
-- Daily cap enforcement with surplus carry-forward
+**Shipped:**
+
+- `candidate_pool`, `person_recommendations`, `inferred_affinities`, `channel_topic_links`, `balance_prompts` tables
+- Discovery engine as a BullMQ repeatable job on M4 — topic search via `ytsearch`, daily cap with surplus carry-forward
+- Gemma scoring in batches, `why_text` stored per candidate
+- Shadow guard runs on discovered items the same way it runs on requested items
 - "Picked for you" section in Today, with "That's it for today — more tomorrow"
-- "Why this?" affordance on every discovery card, naming a specific person where possible
 - Balance prompt (>70% concentration, max once per 1-2 weeks)
-- Cold start handling
-- BullMQ repeatable job, early morning on M4
-- Cleanup job: prune unsurfaced candidates >30 days old
-- Seed topics JSON → DB migration (~60–80 topics, categorised, age-gated where needed)
-- Onboarding topic picker (categorised pill grid, ≥1 topic + ≥1 person required to proceed)
+- Seed topics DB migration (~65 topics, categorised, age-gated where needed)
+- Onboarding topic picker at `/interests` (categorised pill grid, ≥1 topic + ≥1 person required to proceed)
 - User-added topic flow (Gemma generates `search_terms` from free-text input)
-- Channel → topic inference on subscribe
+- Channel → topic inference at subscribe time
+
+**Remaining:**
+
+- Recommendation extraction — Gemma reading followed people's text outputs to populate `person_recommendations`
+- Four-layer profile enrichment — behavioural signals, per-person trust weights, richer `inferred_affinities` (statements + evidence)
+- Related-people expansion (for follow suggestions, not direct surfacing)
+- "Why this?" UI affordance on discovery cards, routing through a specific person where possible
+- Cold start handling copy
+- Cleanup job: prune unsurfaced candidates >30 days old
 
 **Ends with:** Today has a populated "Picked for you" with visible reasoning, mostly naming a specific person. Adults can follow across media types; kids follow people via YouTube channels (v1). Scarcity principle honoured. Guard still shadow-mode.
 
