@@ -318,7 +318,7 @@ internalRouter.post('/thumb/score-frame', async (req: Request, res: Response) =>
   try {
     const raw = await ollamaGenerate(payload.prompt, undefined, [payload.image], {
       temperature: 0,
-      num_predict: 100,
+      num_predict: 256,
     });
     res.json({ raw });
   } catch (err) {

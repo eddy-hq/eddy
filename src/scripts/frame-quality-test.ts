@@ -66,8 +66,17 @@ async function extractFrame(filePath: string, seekSecs: number, outPath: string)
 
 function parseScore(raw: string): { score: number; reason: string } {
   const match = raw.match(/\{[\s\S]*\}/);
-  if (!match) throw new Error('No JSON in response');
-  const parsed = JSON.parse(match[0]) as Record<string, unknown>;
+  if (!match) {
+    const preview = raw.trim().slice(0, 200).replace(/\s+/g, ' ');
+    throw new Error(`No JSON in response — got: "${preview}"`);
+  }
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(match[0]) as Record<string, unknown>;
+  } catch {
+    const preview = match[0].slice(0, 200).replace(/\s+/g, ' ');
+    throw new Error(`Malformed JSON — got: "${preview}"`);
+  }
   const score = parsed['score'];
   if (typeof score !== 'number' || score < 0 || score > 10) {
     throw new Error(`Invalid score: ${String(score)}`);
@@ -171,7 +180,7 @@ async function scoreVideo(row: VideoRow, videoOutDir: string | null, baseUrl: st
         fileName: videoOutDir ? fileName : null,
       });
     } catch (err) {
-      results.push({ seekSecs, score: -1, reason: `ERROR: ${String(err).slice(0, 100)}`, fileName: null });
+      results.push({ seekSecs, score: -1, reason: `ERROR: ${String(err).slice(0, 300)}`, fileName: null });
     } finally {
       if (!videoOutDir) {
         try { fs.unlinkSync(framePath); } catch { /* best-effort */ }
@@ -314,11 +323,12 @@ async function run(): Promise<void> {
       const colour = colourForScore(s.score);
       const marker = best && s === best ? `  ${GREEN}← winner${RESET}` : '';
       const scoreStr = s.score < 0 ? 'ERR' : String(s.score).padStart(2);
+      const reason = s.score < 0 ? s.reason : truncate(s.reason, 80);
       // eslint-disable-next-line no-console
       console.log(
         `  ${DIM}[${fmtTime(s.seekSecs).padStart(5)}]${RESET}  ` +
         `${colour}${scoreStr}${RESET}  ` +
-        `${truncate(s.reason, 80)}${marker}`,
+        `${reason}${marker}`,
       );
     }
     // eslint-disable-next-line no-console
