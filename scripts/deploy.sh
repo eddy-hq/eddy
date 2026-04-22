@@ -77,7 +77,8 @@ if [[ "$DO_UBUNTU" == true ]]; then
     [ -s \"\$NVM_DIR/nvm.sh\" ] && . \"\$NVM_DIR/nvm.sh\"
     cd ~/eddy
     git pull --ff-only origin
-    npm ci --omit=dev
+    npm ci
+    npm run build
     systemctl --user restart eddy-worker
     sleep 2
     systemctl --user is-active eddy-worker

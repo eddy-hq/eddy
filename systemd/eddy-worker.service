@@ -1,16 +1,14 @@
 [Unit]
 Description=Eddy download worker
-After=network.target docker.service
-Wants=docker.service
+After=network.target
 StartLimitIntervalSec=0
 
 [Service]
 Type=simple
-User=steveu
 WorkingDirectory=/home/steveu/eddy
-Environment=PATH=/home/steveu/.nvm/versions/node/v24.14.1/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=PATH=/home/steveu/.local/bin:/home/steveu/.nvm/versions/node/v24.14.1/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ExecStartPre=/bin/bash -c 'until docker exec eddy-redis redis-cli ping 2>/dev/null | grep -q PONG; do sleep 2; done'
-ExecStart=/home/steveu/eddy/node_modules/.bin/tsx /home/steveu/eddy/src/workers/download.ts
+ExecStart=/home/steveu/.nvm/versions/node/v24.14.1/bin/node /home/steveu/eddy/dist/workers/download.js
 Restart=on-failure
 RestartSec=10
 StandardOutput=journal
@@ -19,4 +17,4 @@ SyslogIdentifier=eddy-worker
 EnvironmentFile=/home/steveu/eddy/.env
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=default.target
