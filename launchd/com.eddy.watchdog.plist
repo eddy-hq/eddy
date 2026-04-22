@@ -17,6 +17,11 @@
     <key>RunAtLoad</key>
     <true/>
 
+    <!-- Force strict timer firing. Default Mach timers get coalesced
+         by macOS power management and routinely skip minutes of fires. -->
+    <key>LegacyTimers</key>
+    <true/>
+
     <key>StandardOutPath</key>
     <string>/Users/steveu/eddy/logs/watchdog.log</string>
 
