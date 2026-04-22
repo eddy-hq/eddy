@@ -2,11 +2,17 @@ import { config } from './config';
 import { logger } from './logger';
 import { GuardError } from './errors';
 
+interface OllamaOptions {
+  temperature?: number;
+  num_predict?: number;
+}
+
 interface OllamaGenerateRequest {
   model: string;
   prompt: string;
   stream: boolean;
   images?: string[];
+  options?: OllamaOptions;
 }
 
 interface OllamaGenerateResponse {
@@ -22,11 +28,13 @@ export async function ollamaGenerate(
   prompt: string,
   model = config.OLLAMA_GUARD_MODEL,
   images?: string[],
+  options?: OllamaOptions,
 ): Promise<string> {
   let response: Response;
   try {
     const body: OllamaGenerateRequest = { model, prompt, stream: false };
     if (images?.length) body.images = images;
+    if (options) body.options = options;
     response = await fetch(`${config.OLLAMA_URL}/api/generate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
