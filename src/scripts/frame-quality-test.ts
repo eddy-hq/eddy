@@ -56,7 +56,7 @@ async function extractFrame(filePath: string, seekSecs: number, outPath: string)
   await execFileAsync('ffmpeg', [
     '-y', '-ss', String(seekSecs),
     '-i', filePath,
-    '-vf', 'thumbnail=300,scale=384:-2',
+    '-vf', 'thumbnail=300,scale=640:-2',
     '-frames:v', '1',
     '-f', 'image2',
     '-q:v', '3',
