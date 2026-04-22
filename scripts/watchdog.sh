@@ -7,6 +7,7 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE="${SCRIPT_DIR}/../.env"
 LOG_FILE="${SCRIPT_DIR}/../logs/watchdog.log"
+DIAG_DIR="${SCRIPT_DIR}/../logs/watchdog-diag"
 
 if [[ -f "$ENV_FILE" ]]; then
   set -a; source "$ENV_FILE"; set +a
@@ -21,7 +22,7 @@ SSH_OPTS="-i ${SSH_KEY} -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new 
 NTFY_URL="${NTFY_BASE_URL:-}"
 NTFY_TOPIC="${NTFY_TOPIC_STEVE:-}"
 NTFY_CREDS="${NTFY_CREDS_STEVE:-}"
-TAILSCALE="/opt/homebrew/bin/tailscale"
+TAILSCALE="/usr/local/bin/tailscale"
 
 log() {
   echo "$(date -u +"%Y-%m-%dT%H:%M:%SZ") [$1] ${*:2}" >> "$LOG_FILE"
@@ -44,6 +45,36 @@ ts_state() {
     || echo "unknown"
 }
 
+capture_diag() {
+  local reason="$1"
+  mkdir -p "$DIAG_DIR" 2>/dev/null || return 0
+  local ts; ts="$(date -u +"%Y%m%dT%H%M%SZ")"
+  local file="${DIAG_DIR}/${ts}-${reason}.log"
+  {
+    echo "=== watchdog diag: ${reason} @ ${ts} ==="
+    echo
+    echo "--- tailscale status --json ---"
+    "$TAILSCALE" status --json 2>&1 || true
+    echo
+    echo "--- tailscale netcheck ---"
+    "$TAILSCALE" netcheck 2>&1 || true
+    echo
+    echo "--- pmset -g assertions ---"
+    pmset -g assertions 2>&1 | head -80 || true
+    echo
+    echo "--- pmset -g ---"
+    pmset -g 2>&1 || true
+    echo
+    echo "--- sleep/wake events (last 60, filtered) ---"
+    pmset -g log 2>/dev/null \
+      | grep -Ei 'sleep|wake|darkwake|assertion|display' \
+      | tail -60 || true
+  } > "$file" 2>&1
+  log "INFO" "diag captured → $(basename "$file")"
+  # Keep only the most recent 20 diag files.
+  /bin/ls -t "$DIAG_DIR"/*.log 2>/dev/null | tail -n +21 | xargs rm -f 2>/dev/null || true
+}
+
 # ── Tailscale ────────────────────────────────────────────────────────────────
 STATE=$(ts_state)
 
@@ -55,6 +86,7 @@ fi
 
 if [[ "$STATE" != "Running" ]]; then
   log "WARN" "Tailscale state=${STATE}, attempting tailscale up"
+  capture_diag "ts-${STATE}"
   "$TAILSCALE" up 2>/dev/null || true
   sleep 6
   STATE=$(ts_state)
