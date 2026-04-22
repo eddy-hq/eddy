@@ -7,7 +7,6 @@ StartLimitIntervalSec=0
 Type=simple
 WorkingDirectory=/home/steveu/eddy
 Environment=PATH=/home/steveu/.local/bin:/home/steveu/.nvm/versions/node/v24.14.1/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-ExecStartPre=/bin/bash -c 'until docker exec eddy-redis redis-cli ping 2>/dev/null | grep -q PONG; do sleep 2; done'
 ExecStart=/home/steveu/.nvm/versions/node/v24.14.1/bin/node /home/steveu/eddy/dist/workers/download.js
 Restart=on-failure
 RestartSec=10
