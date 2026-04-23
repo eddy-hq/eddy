@@ -11,13 +11,20 @@ import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { Worker, Job } from 'bullmq';
-import { redis, closeQueues } from '../queue';
+import { redis, closeQueues, thumbsQueue } from '../queue';
 import { config } from '../config';
 import { logger } from '../logger';
 import { fetchMetadata, downloadVideo } from '../modules/content/ytdlp';
 import { triggerPlexScan } from '../modules/content/plex';
 import { generateThumbnail } from './thumb';
 import type { DownloadJobData } from '../modules/content';
+
+interface ThumbJobData {
+  requestId: string;
+  youtubeId: string;
+  filePath: string;
+  durationSecs: number;
+}
 
 const PROGRESS_KEY = (requestId: string) => `eddy:progress:${requestId}`;
 
@@ -52,10 +59,6 @@ interface GuardScoreResponse {
   proceed: boolean;
   verdict: string;
   reason: string;
-}
-
-interface ThumbClassifyResponse {
-  style: 'editorial' | 'slop';
 }
 
 function signBody(body: string): string {
@@ -117,25 +120,6 @@ async function postGuardScore(payload: GuardScorePayload): Promise<GuardScoreRes
   return (await resp.json()) as GuardScoreResponse;
 }
 
-async function postThumbClassify(youtubeId: string): Promise<ThumbClassifyResponse> {
-  const baseUrl = config.M4_INTERNAL_URL;
-  if (!baseUrl) return { style: 'slop' };
-
-  const body = JSON.stringify({ youtubeId });
-  const resp = await fetch(`${baseUrl}/internal/thumb/classify`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Eddy-Signature': signBody(body),
-    },
-    body,
-    signal: AbortSignal.timeout(60_000),
-  });
-
-  if (!resp.ok) throw new Error(`Thumb classify returned ${resp.status}`);
-  return (await resp.json()) as ThumbClassifyResponse;
-}
-
 async function postRejectCallback(payload: RejectPayload): Promise<void> {
   const baseUrl = config.M4_INTERNAL_URL;
   if (!baseUrl) {
@@ -166,12 +150,6 @@ async function processJob(job: Job<DownloadJobData>): Promise<void> {
   const log = logger.child({ requestId, youtubeId });
 
   log.info('Picked up download job');
-
-  // Fire thumbnail classification immediately — youtubeId is known, runs while metadata+download proceed
-  const thumbClassifyPromise = postThumbClassify(youtubeId).catch((err) => {
-    log.warn({ err }, 'Thumb classify failed — will generate local thumbnail');
-    return { style: 'slop' as const };
-  });
 
   // Fetch metadata
   let metadata;
@@ -257,17 +235,9 @@ async function processJob(job: Job<DownloadJobData>): Promise<void> {
     ? `${nginxBase.replace(/\/$/, '')}/${path.basename(filePath)}`
     : null;
 
-  // Decide thumbnail: editorial YT CDN image or locally generated stylised frame
-  const thumbClassify = await thumbClassifyPromise;
-  let thumbnailUrl: string | null;
-
-  if (thumbClassify.style === 'editorial') {
-    thumbnailUrl = `https://i.ytimg.com/vi/${youtubeId}/maxresdefault.jpg`;
-    log.info({ youtubeId }, 'Editorial thumbnail — using YT CDN');
-  } else {
-    thumbnailUrl = await generateThumbnail(youtubeId, filePath, metadata.durationSecs);
-    if (!thumbnailUrl) log.info({ youtubeId }, 'Thumbnail unavailable — continuing without it');
-  }
+  // Immediate fallback thumbnail — the editorial-first upgrade runs in a separate
+  // queue so the video is available without waiting on Gemma.
+  const thumbnailUrl = `https://i.ytimg.com/vi/${youtubeId}/maxresdefault.jpg`;
 
   // Callback to M4 — M4 writes SQLite and sends ntfy
   await postCallback({
@@ -283,7 +253,50 @@ async function processJob(job: Job<DownloadJobData>): Promise<void> {
     transcript: metadata.transcript,
   });
 
+  // Enqueue the thumbnail-upgrade job — non-blocking, processed serially.
+  await thumbsQueue.add('upgrade', {
+    requestId,
+    youtubeId,
+    filePath,
+    durationSecs: metadata.durationSecs,
+  } satisfies ThumbJobData, { jobId: `thumb:${requestId}` });
+
   log.info({ nginxUrl }, 'Job complete');
+}
+
+async function processThumbJob(job: Job<ThumbJobData>): Promise<void> {
+  const { requestId, youtubeId, filePath, durationSecs } = job.data;
+  const log = logger.child({ requestId, youtubeId });
+
+  if (!fs.existsSync(filePath)) {
+    log.warn({ filePath }, 'Video file gone before thumbnail upgrade — skipping');
+    return;
+  }
+
+  const thumbnailUrl = await generateThumbnail(youtubeId, filePath, durationSecs);
+  if (!thumbnailUrl) {
+    log.info('Thumbnail upgrade returned no URL — leaving fallback in place');
+    return;
+  }
+
+  // Push the upgraded URL back to M4. Reuses the backfill endpoint.
+  const baseUrl = config.M4_INTERNAL_URL;
+  if (!baseUrl) {
+    log.warn('M4_INTERNAL_URL not set — cannot persist upgraded thumbnail');
+    return;
+  }
+
+  const body = JSON.stringify({ thumbnailUrl });
+  const resp = await fetch(`${baseUrl}/internal/backfill/thumb/${youtubeId}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Eddy-Signature': signBody(body) },
+    body,
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (!resp.ok) {
+    throw new Error(`Failed to persist upgraded thumbnail: HTTP ${resp.status}`);
+  }
+  log.info({ thumbnailUrl }, 'Thumbnail upgraded');
 }
 
 async function start(): Promise<void> {
@@ -302,11 +315,26 @@ async function start(): Promise<void> {
     logger.error({ jobId: job?.id, requestId: job?.data.requestId, err }, 'Job failed');
   });
 
+  // Thumbnail-upgrade worker: concurrency 1 keeps Gemma pressure low and predictable.
+  const thumbsWorker = new Worker<ThumbJobData>('thumbs', processThumbJob, {
+    connection: redis,
+    concurrency: 1,
+  });
+
+  thumbsWorker.on('completed', (job) => {
+    logger.info({ jobId: job.id, requestId: job.data.requestId }, 'Thumb upgrade completed');
+  });
+
+  thumbsWorker.on('failed', (job, err) => {
+    logger.warn({ jobId: job?.id, requestId: job?.data.requestId, err }, 'Thumb upgrade failed');
+  });
+
   logger.info('Download worker running');
 
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'Shutting down worker');
     await worker.close();
+    await thumbsWorker.close();
     await closeQueues();
     process.exit(0);
   };

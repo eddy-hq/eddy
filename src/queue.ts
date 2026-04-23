@@ -45,7 +45,26 @@ export const discoveryQueue = new Queue('discovery', {
   },
 });
 
+// Thumbnail upgrade queue — runs after a download completes so the video is usable
+// with a fallback (maxresdefault) thumbnail immediately, while the editorial-first
+// selection happens in the background without holding up availability or blocking
+// Gemma on the guard path.
+export const thumbsQueue = new Queue('thumbs', {
+  connection: redis,
+  defaultJobOptions: {
+    attempts: 2,
+    backoff: { type: 'exponential', delay: 30_000 },
+    removeOnComplete: { count: 100 },
+    removeOnFail: { count: 200 },
+  },
+});
+
 export async function closeQueues(): Promise<void> {
-  await Promise.all([downloadQueue.close(), guardQueue.close(), discoveryQueue.close()]);
+  await Promise.all([
+    downloadQueue.close(),
+    guardQueue.close(),
+    discoveryQueue.close(),
+    thumbsQueue.close(),
+  ]);
   await redis.quit();
 }
