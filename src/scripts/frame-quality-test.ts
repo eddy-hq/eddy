@@ -16,9 +16,10 @@ const GREEN  = '\x1b[32m';
 const YELLOW = '\x1b[33m';
 const RED    = '\x1b[31m';
 
-// Sample 5 positions evenly across the middle 60% of the video.
-// Avoids intros / end cards that cluster near 0% and 100%.
-const SEEK_FRACTIONS = [0.24, 0.36, 0.48, 0.60, 0.72];
+// Sample positions across the middle of the video. Avoids intros / end cards that
+// cluster near 0% and 100%. Matches production (`workers/thumb.ts`) when --pick is set.
+const SEEK_FRACTIONS_FULL = [0.24, 0.36, 0.48, 0.60, 0.72];
+const SEEK_FRACTIONS_PICK = [0.30, 0.50, 0.70];
 
 const SCORE_PROMPT = `Score this video frame 0-10 as a family-video thumbnail.
 
@@ -76,10 +77,18 @@ interface VideoRow {
   duration_secs: number;
 }
 
+interface Winner {
+  source: 'yt' | 'local' | 'fallback';
+  imageUrl: string;
+  label: string;
+  reason: string;
+}
+
 interface VideoResult {
   row: VideoRow;
   ytThumbs: YtThumbResult[];
   scores: FrameScore[];
+  winner: Winner | null;
   elapsedSecs: number;
 }
 
@@ -161,7 +170,11 @@ async function pickDisplayUrl(youtubeId: string, preferredVariant: string, fallb
   return ytUrl(youtubeId, fallbackVariant);
 }
 
-async function classifyYtThumbs(youtubeId: string, baseUrl: string): Promise<YtThumbResult[]> {
+async function classifyYtThumbs(
+  youtubeId: string,
+  baseUrl: string,
+  { stopOnEditorial = false } = {},
+): Promise<YtThumbResult[]> {
   const results: YtThumbResult[] = [];
   for (const frame of YT_FRAMES) {
     const classifyImgUrl = ytUrl(youtubeId, frame.classifyVariant);
@@ -176,6 +189,7 @@ async function classifyYtThumbs(youtubeId: string, baseUrl: string): Promise<YtT
       const raw = await callScoreFrame(baseUrl, b64, CLASSIFY_PROMPT);
       const parsed = parseClassify(raw);
       results.push({ label: frame.label, displayUrl, style: parsed.style, reason: parsed.reason });
+      if (stopOnEditorial && parsed.style === 'editorial') break;
     } catch (err) {
       results.push({ label: frame.label, displayUrl, style: 'error', reason: String(err).slice(0, 200) });
     }
@@ -250,14 +264,19 @@ async function fetchVideos(ids: string[], recentCount: number): Promise<VideoRow
   return found;
 }
 
-async function scoreVideo(row: VideoRow, videoOutDir: string | null, baseUrl: string): Promise<FrameScore[]> {
+async function scoreVideo(
+  row: VideoRow,
+  videoOutDir: string | null,
+  baseUrl: string,
+  seekFractions: number[],
+): Promise<FrameScore[]> {
   const tmpBase = videoOutDir ?? os.tmpdir();
   if (videoOutDir) fs.mkdirSync(videoOutDir, { recursive: true });
 
   const results: FrameScore[] = [];
 
-  for (let i = 0; i < SEEK_FRACTIONS.length; i++) {
-    const seekSecs = Math.max(0, Math.floor(row.duration_secs * SEEK_FRACTIONS[i]!));
+  for (let i = 0; i < seekFractions.length; i++) {
+    const seekSecs = Math.max(0, Math.floor(row.duration_secs * seekFractions[i]!));
     const fileName = `${String(i).padStart(2, '0')}-${fmtTime(seekSecs).replace(':', 'm')}s.jpg`;
     const framePath = videoOutDir
       ? path.join(tmpBase, fileName)
@@ -300,6 +319,74 @@ function htmlScoreColour(score: number): string {
   if (score >= 7) return '#2a7';
   if (score >= 4) return '#c90';
   return '#c33';
+}
+
+function buildPickHtmlIndex(results: VideoResult[], runStamp: string): string {
+  const badgeColour = (source: Winner['source']): string =>
+    source === 'yt' ? '#2a7' : source === 'local' ? '#37c' : '#c33';
+
+  const tiles = results.map((r) => {
+    if (!r.winner) return '';
+    const bc = badgeColour(r.winner.source);
+    const sourceLabel = r.winner.source === 'yt' ? 'YT EDITORIAL'
+      : r.winner.source === 'local' ? 'LOCAL FRAME'
+      : 'FALLBACK';
+    return `
+      <figure class="tile source-${r.winner.source}">
+        <img src="${escapeHtml(r.winner.imageUrl)}" loading="lazy" onerror="this.style.display='none'">
+        <figcaption>
+          <div class="top">
+            <code>${escapeHtml(r.row.youtube_id)}</code>
+            <span class="badge" style="background:${bc}">${sourceLabel}</span>
+          </div>
+          <div class="label">${escapeHtml(r.winner.label)} · ${fmtTime(r.row.duration_secs)} · ${r.elapsedSecs.toFixed(1)}s</div>
+          <div class="reason">${escapeHtml(r.winner.reason)}</div>
+        </figcaption>
+      </figure>`;
+  }).join('\n');
+
+  const counts = {
+    yt: results.filter((r) => r.winner?.source === 'yt').length,
+    local: results.filter((r) => r.winner?.source === 'local').length,
+    fallback: results.filter((r) => r.winner?.source === 'fallback').length,
+  };
+
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Eddy thumbnail picks — ${escapeHtml(runStamp)}</title>
+<style>
+  body { font: 14px/1.4 system-ui, sans-serif; background: #111; color: #ddd; margin: 0; padding: 24px; }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  .summary { color: #888; font-size: 12px; margin-bottom: 24px; }
+  .summary .yt { color: #2a7; }
+  .summary .local { color: #37c; }
+  .summary .fallback { color: #c33; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 16px; }
+  .tile { margin: 0; background: #1a1a1a; border-radius: 6px; overflow: hidden; border: 2px solid transparent; }
+  .tile.source-fallback { border-color: #c33; }
+  .tile img { width: 100%; display: block; aspect-ratio: 16/9; object-fit: cover; background: #000; }
+  figcaption { padding: 10px 12px; }
+  .top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
+  .badge { color: #000; font-size: 10px; padding: 2px 6px; border-radius: 3px; font-weight: bold; letter-spacing: 0.5px; }
+  .label { color: #888; font-size: 12px; font-family: monospace; margin-bottom: 4px; }
+  .reason { color: #aaa; font-size: 12px; }
+  code { background: #222; padding: 2px 6px; border-radius: 3px; font-size: 12px; }
+</style>
+</head>
+<body>
+  <h1>Eddy thumbnail picks — ${escapeHtml(runStamp)}</h1>
+  <div class="summary">
+    ${results.length} video(s) ·
+    <span class="yt">${counts.yt} YT editorial</span> ·
+    <span class="local">${counts.local} local frame</span> ·
+    <span class="fallback">${counts.fallback} fallback (no good option)</span>
+  </div>
+  <div class="grid">${tiles}</div>
+</body>
+</html>
+`;
 }
 
 function buildHtmlIndex(results: VideoResult[], runStamp: string): string {
@@ -346,7 +433,7 @@ function buildHtmlIndex(results: VideoResult[], runStamp: string): string {
 
     return `
       <section>
-        <h2><code>${escapeHtml(r.row.youtube_id)}</code> <span class="meta">${fmtTime(r.row.duration_secs)} · ${r.elapsedSecs.toFixed(1)}s scored${r.scores.length < SEEK_FRACTIONS.length ? ` · short-circuited after ${r.scores.length}/${SEEK_FRACTIONS.length}` : ''}</span></h2>
+        <h2><code>${escapeHtml(r.row.youtube_id)}</code> <span class="meta">${fmtTime(r.row.duration_secs)} · ${r.elapsedSecs.toFixed(1)}s scored</span></h2>
         <div class="file-path">${escapeHtml(r.row.file_path)} ${saved}</div>
         <h3>YouTube thumbnails</h3>
         <div class="grid">${ytThumbs}</div>
@@ -384,7 +471,7 @@ function buildHtmlIndex(results: VideoResult[], runStamp: string): string {
 </head>
 <body>
   <h1>Eddy frame quality — ${escapeHtml(runStamp)}</h1>
-  <div style="color:#888;font-size:12px;">${results.length} video(s) · ${SEEK_FRACTIONS.length} frames each</div>
+  <div style="color:#888;font-size:12px;">${results.length} video(s)</div>
   ${sections}
 </body>
 </html>
@@ -396,7 +483,10 @@ async function run(): Promise<void> {
   const flags = new Set(rawArgs.filter((a) => a.startsWith('--')));
   const ids = rawArgs.filter((a) => !a.startsWith('--'));
   const keepFrames = flags.has('--keep');
-  const recentCount = 5;
+  const pickMode = flags.has('--pick');
+  const allVideos = flags.has('--all');
+  const recentCount = allVideos ? 10_000 : 5;
+  const seekFractions = pickMode ? SEEK_FRACTIONS_PICK : SEEK_FRACTIONS_FULL;
 
   const runStamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
   const runDir = keepFrames
@@ -417,7 +507,7 @@ async function run(): Promise<void> {
 
   // eslint-disable-next-line no-console
   console.log(
-    `\n${BOLD}Scoring ${videos.length} video(s) × ${SEEK_FRACTIONS.length} frames via M4 ${baseUrl}${RESET}` +
+    `\n${BOLD}${pickMode ? 'Picker' : 'Scoring'} ${videos.length} video(s) via M4 ${baseUrl}${RESET}` +
     (runDir ? `  ${DIM}(saving to ${runDir})${RESET}` : '') +
     '\n',
   );
@@ -432,8 +522,8 @@ async function run(): Promise<void> {
     const videoOutDir = runDir ? path.join(runDir, row.youtube_id) : null;
     const t0 = Date.now();
 
-    // Step 1: classify the YouTube thumbnails (maxres + 3 auto-generated frames)
-    const ytThumbs = await classifyYtThumbs(row.youtube_id, baseUrl);
+    // Step 1: classify YouTube thumbnails. In --pick mode we stop on the first editorial.
+    const ytThumbs = await classifyYtThumbs(row.youtube_id, baseUrl, { stopOnEditorial: pickMode });
     for (const t of ytThumbs) {
       const styleColour = t.style === 'editorial' ? GREEN : t.style === 'slop' ? RED : DIM;
       // eslint-disable-next-line no-console
@@ -443,46 +533,73 @@ async function run(): Promise<void> {
         `${truncate(t.reason, 70)}`,
       );
     }
-    const anyEditorial = ytThumbs.some((t) => t.style === 'editorial');
-    if (anyEditorial) {
-      // eslint-disable-next-line no-console
-      console.log(`  ${GREEN}→ A YT thumbnail classified editorial — local scoring could be skipped in production${RESET}`);
-    }
 
-    // Step 2: score local frames (short-circuits when a frame scores >= GOOD_ENOUGH_SCORE)
-    const scores = await scoreVideo(row, videoOutDir, baseUrl);
-    const elapsedSecs = (Date.now() - t0) / 1000;
-    results.push({ row, ytThumbs, scores, elapsedSecs });
-
-    const valid = scores.filter((s) => s.score >= 0);
-    const best = valid.length > 0
-      ? valid.reduce((a, b) => (a.score >= b.score ? a : b))
+    const ytWinner = ytThumbs.find((t) => t.style === 'editorial') ?? null;
+    let winner: Winner | null = ytWinner
+      ? { source: 'yt', imageUrl: ytWinner.displayUrl, label: `yt:${ytWinner.label}`, reason: ytWinner.reason }
       : null;
 
-    for (const s of scores) {
-      const colour = colourForScore(s.score);
-      const marker = best && s === best ? `  ${GREEN}← winner${RESET}` : '';
-      const scoreStr = s.score < 0 ? 'ERR' : String(s.score).padStart(2);
-      const reason = s.score < 0 ? s.reason : truncate(s.reason, 80);
-      // eslint-disable-next-line no-console
-      console.log(
-        `  ${DIM}[${fmtTime(s.seekSecs).padStart(5)}]${RESET}  ` +
-        `${colour}${scoreStr}${RESET}  ` +
-        `${reason}${marker}`,
-      );
+    // Step 2: local frame scoring. Skipped in --pick mode when a YT winner is already found.
+    let scores: FrameScore[] = [];
+    if (!pickMode || !ytWinner) {
+      scores = await scoreVideo(row, videoOutDir, baseUrl, seekFractions);
+
+      const valid = scores.filter((s) => s.score >= 0);
+      const best = valid.length > 0
+        ? valid.reduce((a, b) => (a.score >= b.score ? a : b))
+        : null;
+
+      for (const s of scores) {
+        const colour = colourForScore(s.score);
+        const marker = best && s === best ? `  ${GREEN}← local best${RESET}` : '';
+        const scoreStr = s.score < 0 ? 'ERR' : String(s.score).padStart(2);
+        const reason = s.score < 0 ? s.reason : truncate(s.reason, 80);
+        // eslint-disable-next-line no-console
+        console.log(
+          `  ${DIM}[${fmtTime(s.seekSecs).padStart(5)}]${RESET}  ` +
+          `${colour}${scoreStr}${RESET}  ` +
+          `${reason}${marker}`,
+        );
+      }
+      if (scores.length < seekFractions.length) {
+        // eslint-disable-next-line no-console
+        console.log(`  ${DIM}(short-circuited after ${scores.length}/${seekFractions.length} — first frame ≥ ${GOOD_ENOUGH_SCORE})${RESET}`);
+      }
+
+      // If no YT winner, pick the best local frame ≥ GOOD_ENOUGH_SCORE as the pick winner.
+      if (!winner && best && best.score >= GOOD_ENOUGH_SCORE && best.fileName) {
+        winner = {
+          source: 'local',
+          imageUrl: `${row.youtube_id}/${best.fileName}`,
+          label: `local:${fmtTime(best.seekSecs)}`,
+          reason: best.reason,
+        };
+      }
     }
-    if (scores.length < SEEK_FRACTIONS.length) {
-      // eslint-disable-next-line no-console
-      console.log(`  ${DIM}(short-circuited after ${scores.length}/${SEEK_FRACTIONS.length} — first frame ≥ ${GOOD_ENOUGH_SCORE})${RESET}`);
+
+    // Fallback: no YT editorial, no local ≥ 8 — fall back to maxresdefault (raw).
+    if (!winner) {
+      winner = {
+        source: 'fallback',
+        imageUrl: `https://i.ytimg.com/vi/${row.youtube_id}/maxresdefault.jpg`,
+        label: 'fallback:maxresdefault',
+        reason: 'No editorial YT thumb and no local frame ≥ 8',
+      };
     }
+
+    const elapsedSecs = (Date.now() - t0) / 1000;
+    results.push({ row, ytThumbs, scores, winner, elapsedSecs });
+
     // eslint-disable-next-line no-console
-    console.log(`  ${DIM}${elapsedSecs.toFixed(1)}s${RESET}\n`);
+    console.log(`  ${BOLD}winner:${RESET} ${winner.source}  ${winner.label}  ${DIM}(${elapsedSecs.toFixed(1)}s)${RESET}\n`);
   }
 
   const totalElapsed = ((Date.now() - startAll) / 1000).toFixed(1);
 
   if (runDir) {
-    const html = buildHtmlIndex(results, runStamp);
+    const html = pickMode
+      ? buildPickHtmlIndex(results, runStamp)
+      : buildHtmlIndex(results, runStamp);
     const indexPath = path.join(runDir, 'index.html');
     fs.writeFileSync(indexPath, html, 'utf8');
 
