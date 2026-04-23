@@ -168,15 +168,33 @@ Return ONLY valid JSON with no other text:
 export type ThumbStyle = 'editorial' | 'slop';
 
 export async function classifyThumbnail(youtubeId: string): Promise<ThumbStyle> {
-  const thumbUrl = `https://i.ytimg.com/vi/${youtubeId}/hqdefault.jpg`;
+  const cached = db.prepare(`SELECT thumbnail_maxres_verdict FROM requests WHERE youtube_id = ?`)
+    .get(youtubeId) as { thumbnail_maxres_verdict: string | null } | undefined;
+  if (cached?.thumbnail_maxres_verdict === 'editorial' || cached?.thumbnail_maxres_verdict === 'slop') {
+    logger.debug({ youtubeId, style: cached.thumbnail_maxres_verdict }, 'Thumbnail verdict from cache');
+    return cached.thumbnail_maxres_verdict;
+  }
+
+  const style = await classifyYtImage(youtubeId, 'hqdefault');
+  db.prepare(`UPDATE requests SET thumbnail_maxres_verdict = ? WHERE youtube_id = ?`)
+    .run(style, youtubeId);
+  return style;
+}
+
+// Classify an arbitrary YT thumbnail variant (e.g. hq1, hq2, hq3). Not cached —
+// auto-frames are only classified once per pipeline run.
+export async function classifyYtImage(youtubeId: string, variant: string): Promise<ThumbStyle> {
+  const thumbUrl = `https://i.ytimg.com/vi/${youtubeId}/${variant}.jpg`;
 
   let imageBase64: string;
   try {
     const resp = await fetch(thumbUrl, { signal: AbortSignal.timeout(10_000) });
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-    imageBase64 = Buffer.from(await resp.arrayBuffer()).toString('base64');
+    const buf = await resp.arrayBuffer();
+    if (buf.byteLength < 2000) throw new Error('placeholder-sized response');
+    imageBase64 = Buffer.from(buf).toString('base64');
   } catch (err) {
-    logger.warn({ err, youtubeId }, 'Failed to fetch YT thumbnail for classification');
+    logger.warn({ err, youtubeId, variant }, 'Failed to fetch YT thumbnail variant');
     return 'slop';
   }
 
@@ -184,7 +202,7 @@ export async function classifyThumbnail(youtubeId: string): Promise<ThumbStyle> 
   try {
     raw = await ollamaGenerate(THUMB_CLASSIFY_PROMPT, config.OLLAMA_GUARD_MODEL, [imageBase64]);
   } catch (err) {
-    logger.warn({ err, youtubeId }, 'Ollama thumb classification failed');
+    logger.warn({ err, youtubeId, variant }, 'Ollama thumb classification failed');
     return 'slop';
   }
 
@@ -194,10 +212,10 @@ export async function classifyThumbnail(youtubeId: string): Promise<ThumbStyle> 
     const parsed = JSON.parse(match[0]) as Record<string, unknown>;
     const style = parsed['style'];
     if (style !== 'editorial' && style !== 'slop') throw new Error(`Unexpected style: ${String(style)}`);
-    logger.debug({ youtubeId, style, confidence: parsed['confidence'] }, 'Thumbnail classified');
+    logger.debug({ youtubeId, variant, style }, 'Thumbnail classified');
     return style;
   } catch (err) {
-    logger.warn({ err, youtubeId, raw }, 'Failed to parse thumb classification response');
+    logger.warn({ err, youtubeId, variant, raw }, 'Failed to parse thumb classification response');
     return 'slop';
   }
 }

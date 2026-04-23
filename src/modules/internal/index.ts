@@ -6,7 +6,7 @@ import { config } from '../../config';
 import { downloadQueue } from '../../queue';
 import { sendVideoReady } from '../notifications';
 import { checkStuckDownloads } from '../watchdog';
-import { scoreForRequest, classifyThumbnail } from '../guard';
+import { scoreForRequest, classifyThumbnail, classifyYtImage } from '../guard';
 import { ollamaGenerate } from '../../ollama';
 import type { DownloadJobData } from '../content';
 
@@ -288,6 +288,37 @@ internalRouter.post('/thumb/classify', async (req: Request, res: Response) => {
   }
 
   const style = await classifyThumbnail(payload.youtubeId);
+  res.json({ style });
+});
+
+// POST /internal/thumb/classify-variant — classify an arbitrary YT thumbnail variant (e.g. hq1, hq2, hq3).
+// Used by the worker during the editorial-selection chain for auto-generated frame thumbnails.
+internalRouter.post('/thumb/classify-variant', async (req: Request, res: Response) => {
+  const sig = req.headers['x-eddy-signature'];
+  if (!sig || typeof sig !== 'string') return res.status(401).json({ error: 'Missing signature' });
+
+  const rawBody = (req as Request & { rawBody?: Buffer }).rawBody;
+  if (!rawBody) return res.status(400).json({ error: 'No body' });
+
+  if (!verifyHmac(rawBody, sig)) {
+    logger.warn('HMAC verification failed on thumb classify-variant request');
+    return res.status(401).json({ error: 'Invalid signature' });
+  }
+
+  let payload: { youtubeId: string; variant: string };
+  try {
+    payload = JSON.parse(rawBody.toString()) as { youtubeId: string; variant: string };
+  } catch {
+    return res.status(400).json({ error: 'Invalid JSON' });
+  }
+  if (typeof payload.youtubeId !== 'string' || typeof payload.variant !== 'string') {
+    return res.status(400).json({ error: 'youtubeId and variant required' });
+  }
+  if (!/^(hq|mq|maxres|sd)?(default|[1-3])$/.test(payload.variant)) {
+    return res.status(400).json({ error: 'unsupported variant' });
+  }
+
+  const style = await classifyYtImage(payload.youtubeId, payload.variant);
   res.json({ style });
 });
 

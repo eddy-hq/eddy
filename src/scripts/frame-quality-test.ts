@@ -42,9 +42,19 @@ Return ONLY JSON: {"style": "editorial" or "slop", "reason": "one short sentence
 // Score at which we short-circuit local frame scoring — anything >= this is "good enough".
 const GOOD_ENOUGH_SCORE = 8;
 
-// YouTube auto-generated frame thumbnails — three algorithmic picks from across the video.
-// Worth checking before doing local extraction since they're free / already on CDN.
-const YT_AUTO_FRAMES = ['maxresdefault', '1', '2', '3'] as const;
+// YouTube auto-generated frame thumbnails — one channel-set thumb + three algorithmic picks.
+// `classifyVariant` is a smaller resolution sent to Gemma (faster tokenisation, same verdict).
+// `displayVariant` is the highest resolution we'd actually serve; probed at runtime with fallback.
+// Every variant below is a valid path under https://i.ytimg.com/vi/<id>/<variant>.jpg
+const YT_FRAMES: Array<{ label: string; classifyVariant: string; displayVariant: string }> = [
+  { label: 'maxresdefault', classifyVariant: 'hqdefault', displayVariant: 'maxresdefault' },
+  { label: '1',             classifyVariant: 'hq1',       displayVariant: 'maxres1' },
+  { label: '2',             classifyVariant: 'hq2',       displayVariant: 'maxres2' },
+  { label: '3',             classifyVariant: 'hq3',       displayVariant: 'maxres3' },
+];
+
+// Minimum content-length for a real YT thumbnail (anything smaller is the placeholder gif).
+const YT_PLACEHOLDER_THRESHOLD = 2000;
 
 interface FrameScore {
   seekSecs: number;
@@ -55,7 +65,7 @@ interface FrameScore {
 
 interface YtThumbResult {
   label: string;
-  url: string;
+  displayUrl: string;
   style: 'editorial' | 'slop' | 'error';
   reason: string;
 }
@@ -123,34 +133,51 @@ function parseClassify(raw: string): { style: 'editorial' | 'slop'; reason: stri
   };
 }
 
-async function fetchYtThumbAsBase64(youtubeId: string, label: string): Promise<string | null> {
-  const url = `https://i.ytimg.com/vi/${youtubeId}/${label}.jpg`;
+function ytUrl(youtubeId: string, variant: string): string {
+  return `https://i.ytimg.com/vi/${youtubeId}/${variant}.jpg`;
+}
+
+async function fetchYtThumbAsBase64(url: string): Promise<string | null> {
   try {
     const resp = await fetch(url, { signal: AbortSignal.timeout(10_000) });
     if (!resp.ok) return null;
     const buf = await resp.arrayBuffer();
-    if (buf.byteLength < 1024) return null; // YT returns a tiny placeholder for missing variants
+    if (buf.byteLength < YT_PLACEHOLDER_THRESHOLD) return null; // placeholder gif
     return Buffer.from(buf).toString('base64');
   } catch {
     return null;
   }
 }
 
+async function pickDisplayUrl(youtubeId: string, preferredVariant: string, fallbackVariant: string): Promise<string> {
+  const preferred = ytUrl(youtubeId, preferredVariant);
+  try {
+    const head = await fetch(preferred, { method: 'HEAD', signal: AbortSignal.timeout(5_000) });
+    if (head.ok) {
+      const len = parseInt(head.headers.get('content-length') ?? '0', 10);
+      if (len >= YT_PLACEHOLDER_THRESHOLD) return preferred;
+    }
+  } catch { /* fall through to fallback */ }
+  return ytUrl(youtubeId, fallbackVariant);
+}
+
 async function classifyYtThumbs(youtubeId: string, baseUrl: string): Promise<YtThumbResult[]> {
   const results: YtThumbResult[] = [];
-  for (const label of YT_AUTO_FRAMES) {
-    const url = `https://i.ytimg.com/vi/${youtubeId}/${label}.jpg`;
-    const b64 = await fetchYtThumbAsBase64(youtubeId, label);
+  for (const frame of YT_FRAMES) {
+    const classifyImgUrl = ytUrl(youtubeId, frame.classifyVariant);
+    const b64 = await fetchYtThumbAsBase64(classifyImgUrl);
+    const displayUrl = await pickDisplayUrl(youtubeId, frame.displayVariant, frame.classifyVariant);
+
     if (!b64) {
-      results.push({ label, url, style: 'error', reason: 'thumbnail not available' });
+      results.push({ label: frame.label, displayUrl, style: 'error', reason: 'thumbnail not available' });
       continue;
     }
     try {
       const raw = await callScoreFrame(baseUrl, b64, CLASSIFY_PROMPT);
       const parsed = parseClassify(raw);
-      results.push({ label, url, style: parsed.style, reason: parsed.reason });
+      results.push({ label: frame.label, displayUrl, style: parsed.style, reason: parsed.reason });
     } catch (err) {
-      results.push({ label, url, style: 'error', reason: String(err).slice(0, 200) });
+      results.push({ label: frame.label, displayUrl, style: 'error', reason: String(err).slice(0, 200) });
     }
   }
   return results;
@@ -284,7 +311,7 @@ function buildHtmlIndex(results: VideoResult[], runStamp: string): string {
       const colour = t.style === 'editorial' ? '#2a7' : t.style === 'slop' ? '#c33' : '#888';
       return `
         <figure class="frame yt${t.style === 'editorial' ? ' yt-editorial' : ''}">
-          <img src="${escapeHtml(t.url)}" loading="lazy" onerror="this.style.display='none'">
+          <img src="${escapeHtml(t.displayUrl)}" loading="lazy" onerror="this.style.display='none'">
           <figcaption>
             <span class="time">yt:${escapeHtml(t.label)}</span>
             <span class="score" style="color:${colour}">${t.style}</span>
