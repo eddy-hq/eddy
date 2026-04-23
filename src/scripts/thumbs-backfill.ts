@@ -3,6 +3,7 @@ import crypto from 'crypto';
 import { config } from '../config';
 import { logger } from '../logger';
 import { generateThumbnail } from '../workers/thumb';
+import { thumbsQueue, redis } from '../queue';
 
 function signBody(body: string): string {
   return `sha256=${crypto
@@ -13,6 +14,7 @@ function signBody(body: string): string {
 
 async function run(): Promise<void> {
   const force = process.argv.includes('--force');
+  const enqueue = process.argv.includes('--enqueue');
   const baseUrl = config.M4_INTERNAL_URL;
   if (!baseUrl) {
     logger.error('M4_INTERNAL_URL is not set — cannot reach the database');
@@ -23,7 +25,6 @@ async function run(): Promise<void> {
     ? `${baseUrl}/internal/backfill/pending-thumbs?force=1`
     : `${baseUrl}/internal/backfill/pending-thumbs`;
 
-  // Fetch pending rows from M4
   const listResp = await fetch(url, {
     signal: AbortSignal.timeout(15_000),
   });
@@ -36,7 +37,12 @@ async function run(): Promise<void> {
     pending: Array<{ youtube_id: string; file_path: string; duration_secs: number }>;
   };
 
-  logger.info({ count: pending.length, force }, 'Starting thumbnail backfill');
+  logger.info({ count: pending.length, force, enqueue }, 'Starting thumbnail backfill');
+
+  if (enqueue) {
+    await enqueueAll(pending);
+    return;
+  }
 
   let ok = 0;
   let failed = 0;
@@ -72,6 +78,24 @@ async function run(): Promise<void> {
   }
 
   logger.info({ ok, failed, total: pending.length }, 'Backfill complete');
+}
+
+async function enqueueAll(
+  pending: Array<{ youtube_id: string; file_path: string; duration_secs: number }>,
+): Promise<void> {
+  let queued = 0;
+  for (const row of pending) {
+    await thumbsQueue.add('upgrade', {
+      requestId: `backfill:${row.youtube_id}`,
+      youtubeId: row.youtube_id,
+      filePath: row.file_path,
+      durationSecs: row.duration_secs,
+    }, { jobId: `thumb:backfill:${row.youtube_id}` });
+    queued++;
+  }
+  logger.info({ queued }, 'Enqueued thumbnail jobs — thumbs worker will process them at concurrency 1');
+  await thumbsQueue.close();
+  await redis.quit();
 }
 
 run().catch((err: unknown) => {
