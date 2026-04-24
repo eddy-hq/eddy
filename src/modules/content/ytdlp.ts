@@ -54,6 +54,9 @@ export function mapYtdlpError(stderr: string): string | null {
   if (/members.?only|join this channel/i.test(stderr)) {
     return "This video is for channel members only.";
   }
+  if (/premieres? in|premieres? on|this live event will begin|scheduled (start )?time/i.test(stderr)) {
+    return "This one hasn't aired yet. Try again once it's live.";
+  }
   // Bot detection is transient — return null so BullMQ retries with backoff
   if (/sign in to confirm|bot detection|please sign in/i.test(stderr)) {
     return null;
