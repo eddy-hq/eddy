@@ -1,8 +1,9 @@
 import React from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 
 function PixelAvatar() {
   return (
-    <svg width="34" height="34" viewBox="0 0 16 16" shapeRendering="crispEdges" style={{ borderRadius: 7, flexShrink: 0 }}>
+    <svg width="34" height="34" viewBox="0 0 16 16" shapeRendering="crispEdges" style={{ borderRadius: 7, flexShrink: 0, display: 'block' }}>
       <rect width="16" height="16" fill="#281408"/>
       <rect x="2" y="2" width="12" height="11" fill="#C8845A"/>
       <rect x="2" y="2" width="12" height="2"  fill="#3A2210"/>
@@ -25,6 +26,18 @@ function PixelAvatar() {
 }
 
 export function AppHeader({ borderBottom = true }: { borderBottom?: boolean }) {
+  const navigate = useNavigate();
+  const [params] = useSearchParams();
+  const userParam = params.get('userId')
+    ? `userId=${params.get('userId')}`
+    : params.get('user')
+    ? `user=${params.get('user')}`
+    : '';
+
+  function goProfile() {
+    navigate(userParam ? `/profile?${userParam}` : '/profile');
+  }
+
   return (
     <div style={{
       padding: '6px 22px 0',
@@ -39,7 +52,16 @@ export function AppHeader({ borderBottom = true }: { borderBottom?: boolean }) {
             eddy
           </span>
         </div>
-        <PixelAvatar />
+        <button
+          onClick={goProfile}
+          aria-label="Profile"
+          style={{
+            padding: 0, background: 'none', border: 'none', cursor: 'pointer',
+            WebkitTapHighlightColor: 'transparent',
+          }}
+        >
+          <PixelAvatar />
+        </button>
       </div>
     </div>
   );
