@@ -36,7 +36,12 @@ Sends an ntfy notification to Steve's topic on any corrective action or unrecove
 **Not in this script:**
 - **Redis** — launchd's `KeepAlive: true` on `homebrew.mxcl.redis` handles it natively.
 
-**Why launchd alone isn't enough for the Express server:** the plist runs `tsx src/index.ts` (no `watch` — see `launchd/com.eddy.server.plist`). `KeepAlive` restarts on process exit, which is fine for crashes. But if tsx ever hangs instead of exiting, launchd won't notice — the watchdog's `/health` probe catches that.
+**Why launchd alone isn't enough for the Express server:** the plist runs `tsx watch --include 'src/**/*.ts' src/index.ts` (see `launchd/com.eddy.server.plist`) — watch mode reloads on source changes, and `KeepAlive` restarts on process exit if tsx itself dies. But if tsx ever hangs instead of exiting, launchd won't notice — the watchdog's `/health` probe catches that.
+
+Two quirks worth knowing about the launchd setup:
+
+- **`--include 'src/**/*.ts'`** is required. Without it, tsx's default import-graph watcher only fires on edits to the entry file (`src/index.ts`) when running under launchd — edits to imported modules are missed.
+- **`CHOKIDAR_USEPOLLING=1`** is set in the plist's `EnvironmentVariables`. FSEvents is unreliable for daemonised processes on macOS; polling adds tiny CPU overhead but makes reloads deterministic.
 
 ### Loading / reloading the watchdog
 
@@ -77,7 +82,7 @@ npm run deploy -- --server-only   # restart M4 server only
 
 **`--server` / `--full`** additionally runs `launchctl kickstart -k gui/$(id -u)/com.eddy.server` and waits for `/health` to respond.
 
-The M4 Express server uses `tsx watch` and hot-reloads most source changes automatically — a server restart is only needed when picking up new env vars or after a crash.
+The M4 Express server uses `tsx watch` and hot-reloads on changes to any file under `src/` — a server restart is only needed when picking up new env vars, after a crash, or after editing the plist itself (see "Reloading the server plist" below).
 
 ### Manually restarting services
 
@@ -91,6 +96,17 @@ brew services restart redis
 # Ubuntu — worker
 ssh -i ~/.ssh/id_ed25519_eddy steveu@mediaserver "systemctl --user restart eddy-worker"
 ```
+
+### Reloading the server plist
+
+The installed plist at `~/Library/LaunchAgents/com.eddy.server.plist` is a symlink to the repo copy, so edits to `launchd/com.eddy.server.plist` are live on disk. But launchd itself caches the loaded definition — a `kickstart` restarts the process with the old args. To pick up plist changes:
+
+```bash
+launchctl bootout   gui/$(id -u) ~/Library/LaunchAgents/com.eddy.server.plist
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.eddy.server.plist
+```
+
+`ThrottleInterval` is 10s — if `bootstrap` silently fails to start the process, wait past that and it comes up, or run `launchctl kickstart gui/$(id -u)/com.eddy.server` to force it.
 
 ### Checking service state
 

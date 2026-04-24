@@ -9,11 +9,23 @@
     <array>
         <string>/Users/steveu/.nvm/versions/node/v24.14.1/bin/node</string>
         <string>/Users/steveu/eddy/node_modules/.bin/tsx</string>
+        <string>watch</string>
+        <string>--include</string>
+        <string>src/**/*.ts</string>
         <string>src/index.ts</string>
     </array>
 
     <key>WorkingDirectory</key>
     <string>/Users/steveu/eddy</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <!-- Force chokidar polling so tsx watch detects edits to imported
+             files under launchd (FSEvents is unreliable for daemonised
+             processes on macOS). -->
+        <key>CHOKIDAR_USEPOLLING</key>
+        <string>1</string>
+    </dict>
 
     <key>RunAtLoad</key>
     <true/>
