@@ -130,3 +130,14 @@ systemctl --user restart eddy-worker
 ```
 
 **Reboot failure mode:** if the M4 reboots mid-download, yt-dlp finishes but the HMAC callback fails. BullMQ retries the whole job. `downloadVideo()` is idempotent — if the file already exists it skips yt-dlp and goes straight to the callback. If jobs are stuck in `downloading` status after a reboot: check worker state, check if file is on disk, check BullMQ failed set.
+
+---
+
+## API route prefixes
+
+`src/api-prefixes.ts` is the single source of truth for top-level HTTP prefixes. Two consumers read it:
+
+- **`src/server.ts`** — the SPA-fallback regex. Anything matching a prefix falls through to the router chain and reaches the JSON 404 handler on a miss; anything else returns `index.html` for client-side routing.
+- **`vite.config.ts`** — the dev-server proxy map, so `npm run dev:pwa` on `:5173` forwards API calls to the Express server on `:3737`.
+
+To add a new top-level route: add the prefix to the array, mount the router in `src/server.ts`. No changes needed in the Vite config or the fallback regex — both pick it up automatically.

@@ -1,6 +1,9 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
+import { API_PREFIXES } from './src/api-prefixes';
+
+const API_PROXY = 'http://localhost:3737';
 
 export default defineConfig({
   plugins: [react()],
@@ -15,14 +18,6 @@ export default defineConfig({
   server: {
     host: true,
     port: 5173,
-    proxy: {
-      '/requests': 'http://localhost:3737',
-      '/search':   'http://localhost:3737',
-      '/people':   'http://localhost:3737',
-      '/internal': 'http://localhost:3737',
-      '/health':   'http://localhost:3737',
-      '/topics':     'http://localhost:3737',
-      '/discovery':  'http://localhost:3737',
-    },
+    proxy: Object.fromEntries(API_PREFIXES.map((p) => [p, API_PROXY])),
   },
 });

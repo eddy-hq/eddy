@@ -11,6 +11,7 @@ import { internalRouter } from './modules/internal/index';
 import { peopleRouter } from './modules/people/index';
 import { searchRouter } from './modules/search/index';
 import { interestsRouter, discoveryRouter } from './modules/discovery/index';
+import { API_PREFIXES } from './api-prefixes';
 
 export const app = express();
 
@@ -65,10 +66,14 @@ app.get('/health', async (_req: Request, res: Response) => {
   });
 });
 
-// PWA — serve built assets; fall back to index.html for client-side routing
+// PWA — serve built assets; fall back to index.html for client-side routing.
+// API prefixes are excluded so unknown API paths reach the 404 handler below
+// instead of silently returning index.html.
 const pwaDir = path.join(__dirname, '../dist/pwa');
 app.use(express.static(pwaDir));
-app.get(/^\/(?!api|requests|internal|action|health).*/, (_req: Request, res: Response) => {
+const apiPrefixAlternation = API_PREFIXES.map((p) => p.slice(1)).join('|');
+const spaFallback = new RegExp(`^/(?!(?:${apiPrefixAlternation})(?:/|$)).*`);
+app.get(spaFallback, (_req: Request, res: Response) => {
   res.sendFile(path.join(pwaDir, 'index.html'));
 });
 
