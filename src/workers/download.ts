@@ -259,7 +259,7 @@ async function processJob(job: Job<DownloadJobData>): Promise<void> {
     youtubeId,
     filePath,
     durationSecs: metadata.durationSecs,
-  } satisfies ThumbJobData, { jobId: `thumb:${requestId}` });
+  } satisfies ThumbJobData, { jobId: `thumb:upgrade:${requestId}` });
 
   log.info({ nginxUrl }, 'Job complete');
 }

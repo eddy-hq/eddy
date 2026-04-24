@@ -15,6 +15,8 @@ function signBody(body: string): string {
 async function run(): Promise<void> {
   const force = process.argv.includes('--force');
   const enqueue = process.argv.includes('--enqueue');
+  const limitArg = process.argv.find((a) => a.startsWith('--limit='));
+  const limit = limitArg ? parseInt(limitArg.slice('--limit='.length), 10) : undefined;
   const baseUrl = config.M4_INTERNAL_URL;
   if (!baseUrl) {
     logger.error('M4_INTERNAL_URL is not set — cannot reach the database');
@@ -33,11 +35,12 @@ async function run(): Promise<void> {
     process.exit(1);
   }
 
-  const { pending } = await listResp.json() as {
+  const { pending: all } = await listResp.json() as {
     pending: Array<{ youtube_id: string; file_path: string; duration_secs: number }>;
   };
+  const pending = typeof limit === 'number' && limit > 0 ? all.slice(0, limit) : all;
 
-  logger.info({ count: pending.length, force, enqueue }, 'Starting thumbnail backfill');
+  logger.info({ count: pending.length, total: all.length, force, enqueue, limit }, 'Starting thumbnail backfill');
 
   if (enqueue) {
     await enqueueAll(pending);
