@@ -44,7 +44,7 @@ async function main() {
     }
 
     // eslint-disable-next-line no-console
-    console.log(`  Topics checked : ${result.topicsChecked}`);
+    console.log(`  Interests checked: ${result.interestsChecked}`);
     // eslint-disable-next-line no-console
     console.log(`  Candidates added: ${result.candidatesAdded}`);
     // eslint-disable-next-line no-console

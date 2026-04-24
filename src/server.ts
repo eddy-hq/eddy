@@ -10,7 +10,7 @@ import { requestsRouter } from './modules/requests/index';
 import { internalRouter } from './modules/internal/index';
 import { peopleRouter } from './modules/people/index';
 import { searchRouter } from './modules/search/index';
-import { topicsRouter, discoveryRouter } from './modules/discovery/index';
+import { interestsRouter, discoveryRouter } from './modules/discovery/index';
 
 export const app = express();
 
@@ -29,7 +29,7 @@ app.use('/requests', requestsRouter);
 app.use('/internal', internalRouter);
 app.use('/people', peopleRouter);
 app.use('/search', searchRouter);
-app.use('/topics', topicsRouter);
+app.use('/interests', interestsRouter);
 app.use('/discovery', discoveryRouter);
 
 app.get('/health', async (_req: Request, res: Response) => {

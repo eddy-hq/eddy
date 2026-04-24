@@ -16,15 +16,14 @@ const YTDLP_BIN_M4 = process.env['YTDLP_BIN_M4'] ?? '/opt/homebrew/bin/yt-dlp';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-interface TopicRow {
+interface InterestRow {
   id: string;
   label: string;
   category: string | null;
 }
 
-interface TopicFullRow extends TopicRow {
+interface InterestFullRow extends InterestRow {
   emoji: string | null;
-  age_gate: number;
 }
 
 interface UserRow {
@@ -33,10 +32,11 @@ interface UserRow {
   age_gate: number;
 }
 
-interface UserTopicRow {
-  topic_id: string;
+interface UserInterestRow {
+  interest_id: string;
   label: string;
-  weight: number;
+  rank: number;
+  expertise: 'beginner' | 'comfortable' | 'deep';
   search_terms: string;
 }
 
@@ -48,7 +48,7 @@ interface CandidateRow {
   thumbnail_url: string | null;
   published_at: string | null;
   source_type: string;
-  topic_id: string | null;
+  interest_id: string | null;
   person_id: string | null;
 }
 
@@ -63,7 +63,7 @@ interface SearchResult {
   url: string;
 }
 
-// ── Channel topic inference ───────────────────────────────────────────────────
+// ── Channel interest inference ────────────────────────────────────────────────
 
 async function fetchRecentTitles(channelId: string, limit = 5): Promise<string[]> {
   const rssUrl = `https://www.youtube.com/feeds/videos.xml?channel_id=${channelId}`;
@@ -89,23 +89,23 @@ async function fetchRecentTitles(channelId: string, limit = 5): Promise<string[]
   return titles;
 }
 
-export async function inferChannelTopics(channelId: string, channelName: string): Promise<void> {
+export async function inferChannelInterests(channelId: string, channelName: string): Promise<void> {
   const existing = db.prepare(
-    'SELECT 1 FROM channel_topic_links WHERE channel_id = ? LIMIT 1'
+    'SELECT 1 FROM channel_interest_links WHERE channel_id = ? LIMIT 1'
   ).get(channelId);
   if (existing) return;
 
-  const topics = db.prepare(
-    'SELECT id, label, category FROM topics ORDER BY category, label'
-  ).all() as TopicRow[];
-  if (topics.length === 0) return;
+  const interests = db.prepare(
+    'SELECT id, label, category FROM interests ORDER BY category, label'
+  ).all() as InterestRow[];
+  if (interests.length === 0) return;
 
   const recentTitles = await fetchRecentTitles(channelId);
   const titlesText = recentTitles.length > 0
     ? `\nRecent video titles: ${recentTitles.join('; ')}`
     : '';
 
-  const topicList = topics
+  const interestList = interests
     .map((t) => `${t.id}: ${t.label}${t.category ? ` (${t.category})` : ''}`)
     .join('\n');
 
@@ -113,54 +113,54 @@ export async function inferChannelTopics(channelId: string, channelName: string)
 
 Channel name: "${channelName}"${titlesText}
 
-Available topics:
-${topicList}
+Available interests:
+${interestList}
 
-Select 1 or 2 topic IDs from the list above that best describe the content of this channel. Return a JSON array of IDs only, for example ["minecraft"] or ["programming","electronics"]. If no topic fits well, return []. No explanation.`;
+Select 1 or 2 interest IDs from the list above that best describe the content of this channel. Return a JSON array of IDs only, for example ["minecraft"] or ["programming","electronics"]. If no interest fits well, return []. No explanation.`;
 
   let raw: string;
   try {
     raw = await ollamaGenerate(prompt);
   } catch (err) {
-    logger.warn({ err, channelId }, 'Channel topic inference: Gemma call failed');
+    logger.warn({ err, channelId }, 'Channel interest inference: Gemma call failed');
     return;
   }
 
-  let topicIds: string[];
+  let interestIds: string[];
   try {
     const match = /\[.*?]/.exec(raw.trim());
     if (!match) return;
     const parsed: unknown = JSON.parse(match[0]);
     if (!Array.isArray(parsed)) return;
-    topicIds = (parsed as unknown[])
+    interestIds = (parsed as unknown[])
       .filter((v): v is string => typeof v === 'string')
       .slice(0, 2);
   } catch {
-    logger.warn({ channelId, raw }, 'Channel topic inference: could not parse response');
+    logger.warn({ channelId, raw }, 'Channel interest inference: could not parse response');
     return;
   }
 
-  const validIds = new Set(topics.map((t) => t.id));
+  const validIds = new Set(interests.map((t) => t.id));
   const now = new Date().toISOString();
   const inserted: string[] = [];
 
-  for (const topicId of topicIds) {
-    if (!validIds.has(topicId)) continue;
+  for (const interestId of interestIds) {
+    if (!validIds.has(interestId)) continue;
     db.prepare(`
-      INSERT OR IGNORE INTO channel_topic_links (channel_id, topic_id, confidence, inferred_at)
+      INSERT OR IGNORE INTO channel_interest_links (channel_id, interest_id, confidence, inferred_at)
       VALUES (?, ?, 1.0, ?)
-    `).run(channelId, topicId, now);
-    inserted.push(topicId);
+    `).run(channelId, interestId, now);
+    inserted.push(interestId);
   }
 
   if (inserted.length > 0) {
-    logger.info({ channelId, topicIds: inserted }, 'Channel topic inference stored');
+    logger.info({ channelId, interestIds: inserted }, 'Channel interest inference stored');
   }
 }
 
 // ── Discovery engine ──────────────────────────────────────────────────────────
 
-async function searchTopicVideos(searchTerm: string): Promise<SearchResult[]> {
+async function searchInterestVideos(searchTerm: string): Promise<SearchResult[]> {
   let stdout: string;
   try {
     const result = await execFileAsync(YTDLP_BIN_M4, [
@@ -230,24 +230,24 @@ function daysSince(isoDate: string | null): number | null {
   return Math.floor(ms / (1000 * 60 * 60 * 24));
 }
 
-async function refreshCandidatePool(userId: string, userTopics: UserTopicRow[]): Promise<number> {
+async function refreshCandidatePool(userId: string, userInterests: UserInterestRow[]): Promise<number> {
   const now = new Date().toISOString();
   let added = 0;
 
-  // Top 5 topics by weight, up to 2 search terms each
-  const topTopics = userTopics.slice(0, 5);
+  // Top 5 interests by rank, up to 2 search terms each
+  const topInterests = userInterests.slice(0, 5);
 
-  for (const topic of topTopics) {
+  for (const interest of topInterests) {
     let terms: string[];
     try {
-      terms = JSON.parse(topic.search_terms) as string[];
+      terms = JSON.parse(interest.search_terms) as string[];
       if (!Array.isArray(terms)) terms = [];
     } catch {
       terms = [];
     }
 
     for (const term of terms.slice(0, 2)) {
-      const results = await searchTopicVideos(term);
+      const results = await searchInterestVideos(term);
 
       for (const result of results) {
         if (isDuplicateCandidate(userId, result.videoId)) continue;
@@ -259,12 +259,12 @@ async function refreshCandidatePool(userId: string, userTopics: UserTopicRow[]):
 
         db.prepare(`
           INSERT OR IGNORE INTO candidate_pool
-            (candidate_id, user_id, content_type, source_type, topic_id,
+            (candidate_id, user_id, content_type, source_type, interest_id,
              url, external_id, title, thumbnail_url, published_at, status, created_at)
           VALUES
-            (?, ?, 'video', 'topic_search', ?, ?, ?, ?, ?, ?, 'pending', ?)
+            (?, ?, 'video', 'interest_search', ?, ?, ?, ?, ?, ?, 'pending', ?)
         `).run(
-          uuidv7(), userId, topic.topic_id,
+          uuidv7(), userId, interest.interest_id,
           result.url, result.videoId, result.title,
           result.thumbnailUrl, publishedAt, now
         );
@@ -293,9 +293,9 @@ function formatAge(isoDate: string | null): string {
   return `${Math.floor(days / 30)}mo ago`;
 }
 
-async function scoreCandidates(userId: string, userTopics: UserTopicRow[]): Promise<void> {
+async function scoreCandidates(userId: string, userInterests: UserInterestRow[]): Promise<void> {
   const pending = db.prepare(`
-    SELECT candidate_id, external_id, title, url, thumbnail_url, published_at, source_type, topic_id, person_id
+    SELECT candidate_id, external_id, title, url, thumbnail_url, published_at, source_type, interest_id, person_id
     FROM candidate_pool
     WHERE user_id = ? AND status = 'pending'
     ORDER BY created_at DESC
@@ -304,8 +304,8 @@ async function scoreCandidates(userId: string, userTopics: UserTopicRow[]): Prom
 
   if (pending.length === 0) return;
 
-  const topicSummary = userTopics
-    .map((t) => `${t.label} (weight: ${t.weight.toFixed(1)})`)
+  const interestSummary = userInterests
+    .map((t) => `${t.label} (${t.expertise})`)
     .join(', ');
 
   const BATCH = 10;
@@ -332,7 +332,7 @@ async function scoreCandidates(userId: string, userTopics: UserTopicRow[]): Prom
 
     const prompt = `You are scoring YouTube videos for a personal discovery feed.
 
-User interests: ${topicSummary}
+User interests (in priority order, with expertise level): ${interestSummary}
 
 Videos to score:
 ${videoList}
@@ -341,12 +341,12 @@ Return ONLY a compact JSON array — no whitespace, no other text:
 [{"index":1,"score":7.5,"why":"One sentence, max 15 words."},...]
 
 Scoring (0–10):
-- 8–10: Directly relevant to stated interests and appears quality/substantive
+- 8–10: Directly relevant to stated interests, level-appropriate, and quality/substantive
 - 5–7: Reasonably relevant or interesting
 - 2–4: Weakly relevant
 - 0–2: Off-topic, generic, or clickbait
-- Penalise: very old content, very short videos on complex topics, generic titles
-- Reward: specificity, depth, niche topics matching interests`;
+- Penalise: mismatched depth (beginner videos for 'deep' interests, or vice versa), very old content, generic titles
+- Reward: specificity, depth matching stated expertise, niche subjects matching interests`;
 
     let raw: string;
     try {
@@ -497,7 +497,7 @@ export interface DiscoveryRunResult {
   userId: string;
   skipped: boolean;
   skipReason?: string;
-  topicsChecked: number;
+  interestsChecked: number;
   candidatesAdded: number;
   surfaced: number;
   items: Array<{ title: string | null; score: number | null; why: string | null; guardVerdict: string | null }>;
@@ -514,27 +514,27 @@ export async function runDiscoveryForUser(user: UserRow): Promise<DiscoveryRunRe
 
   if (existing.n >= cap) {
     logger.info({ userId: user.user_id }, 'Discovery: already at cap for today, skipping');
-    return { userId: user.user_id, skipped: true, skipReason: 'Already at daily cap', topicsChecked: 0, candidatesAdded: 0, surfaced: 0, items: [] };
+    return { userId: user.user_id, skipped: true, skipReason: 'Already at daily cap', interestsChecked: 0, candidatesAdded: 0, surfaced: 0, items: [] };
   }
 
-  const userTopics = db.prepare(`
-    SELECT ut.topic_id, t.label, ut.weight, t.search_terms
-    FROM user_topics ut
-    INNER JOIN topics t ON t.id = ut.topic_id
-    WHERE ut.user_id = ? ${isKid ? 'AND t.age_gate = 0' : ''}
-    ORDER BY ut.weight DESC
-  `).all(user.user_id) as UserTopicRow[];
+  const userInterests = db.prepare(`
+    SELECT ut.interest_id, t.label, ut.rank, ut.expertise, t.search_terms
+    FROM user_interests ut
+    INNER JOIN interests t ON t.id = ut.interest_id
+    WHERE ut.user_id = ?
+    ORDER BY ut.rank ASC
+  `).all(user.user_id) as UserInterestRow[];
 
-  if (userTopics.length === 0) {
-    logger.info({ userId: user.user_id }, 'Discovery: user has no topics, skipping');
-    return { userId: user.user_id, skipped: true, skipReason: 'No topics set', topicsChecked: 0, candidatesAdded: 0, surfaced: 0, items: [] };
+  if (userInterests.length === 0) {
+    logger.info({ userId: user.user_id }, 'Discovery: user has no interests, skipping');
+    return { userId: user.user_id, skipped: true, skipReason: 'No interests set', interestsChecked: 0, candidatesAdded: 0, surfaced: 0, items: [] };
   }
 
-  logger.info({ userId: user.user_id, topics: userTopics.length }, 'Discovery: refreshing candidate pool');
-  const added = await refreshCandidatePool(user.user_id, userTopics);
+  logger.info({ userId: user.user_id, interests: userInterests.length }, 'Discovery: refreshing candidate pool');
+  const added = await refreshCandidatePool(user.user_id, userInterests);
   logger.info({ userId: user.user_id, added }, 'Discovery: candidates added to pool');
 
-  await scoreCandidates(user.user_id, userTopics);
+  await scoreCandidates(user.user_id, userInterests);
 
   if (isKid) {
     await guardCandidates(user.user_id);
@@ -553,7 +553,7 @@ export async function runDiscoveryForUser(user: UserRow): Promise<DiscoveryRunRe
   return {
     userId: user.user_id,
     skipped: false,
-    topicsChecked: userTopics.length,
+    interestsChecked: userInterests.length,
     candidatesAdded: added,
     surfaced,
     items: items.map((r) => ({ title: r.title, score: r.gemma_score, why: r.why_text, guardVerdict: r.guard_verdict })),
@@ -608,9 +608,9 @@ export async function stopDiscoveryScheduler(): Promise<void> {
   }
 }
 
-// ── Topics HTTP router ────────────────────────────────────────────────────────
+// ── Interests HTTP router ─────────────────────────────────────────────────────
 
-export const topicsRouter = Router();
+export const interestsRouter = Router();
 
 function resolveUser(userId: unknown): UserRow {
   if (typeof userId !== 'string' || !userId.trim()) throw new ValidationError('userId required');
@@ -623,93 +623,98 @@ function resolveUser(userId: unknown): UserRow {
 
 interface CategoryGroup {
   name: string;
-  topics: Array<{ id: string; label: string; emoji: string | null; selected: boolean }>;
+  interests: Array<{ id: string; label: string; emoji: string | null; selected: boolean }>;
 }
 
-topicsRouter.get('/', (req: Request, res: Response) => {
+interestsRouter.get('/', (req: Request, res: Response) => {
   const user = resolveUser(req.query['userId']);
-  const isKid = user.role === 'kid' || user.age_gate === 0;
 
-  const allTopics = db.prepare(
-    `SELECT id, label, emoji, category, age_gate FROM topics
-     ${isKid ? 'WHERE age_gate = 0' : ''}
-     ORDER BY category, label`
-  ).all() as TopicFullRow[];
+  const allInterests = db.prepare(
+    `SELECT id, label, emoji, category FROM interests ORDER BY category, label`
+  ).all() as InterestFullRow[];
 
   const selectedIds = new Set(
-    (db.prepare('SELECT topic_id FROM user_topics WHERE user_id = ?').all(user.user_id) as Array<{ topic_id: string }>)
-      .map((r) => r.topic_id)
+    (db.prepare('SELECT interest_id FROM user_interests WHERE user_id = ?').all(user.user_id) as Array<{ interest_id: string }>)
+      .map((r) => r.interest_id)
   );
 
   const categoryMap = new Map<string, CategoryGroup>();
-  for (const t of allTopics) {
+  for (const t of allInterests) {
     const cat = t.category ?? 'Other';
-    if (!categoryMap.has(cat)) categoryMap.set(cat, { name: cat, topics: [] });
-    categoryMap.get(cat)!.topics.push({ id: t.id, label: t.label, emoji: t.emoji, selected: selectedIds.has(t.id) });
+    if (!categoryMap.has(cat)) categoryMap.set(cat, { name: cat, interests: [] });
+    categoryMap.get(cat)!.interests.push({ id: t.id, label: t.label, emoji: t.emoji, selected: selectedIds.has(t.id) });
   }
 
   res.json({ categories: Array.from(categoryMap.values()), selected_count: selectedIds.size });
 });
 
-topicsRouter.post('/select', (req: Request, res: Response) => {
-  const { userId, topicId } = req.body as { userId?: string; topicId?: string };
+interestsRouter.post('/select', (req: Request, res: Response) => {
+  const { userId, interestId } = req.body as { userId?: string; interestId?: string };
   const user = resolveUser(userId);
-  if (!topicId?.trim()) throw new ValidationError('topicId required');
+  if (!interestId?.trim()) throw new ValidationError('interestId required');
 
-  const topic = db.prepare('SELECT id FROM topics WHERE id = ?').get(topicId) as { id: string } | undefined;
-  if (!topic) throw new NotFoundError(`topic ${topicId}`);
+  const interest = db.prepare('SELECT id FROM interests WHERE id = ?').get(interestId) as { id: string } | undefined;
+  if (!interest) throw new NotFoundError(`interest ${interestId}`);
+
+  const nextRank = (db.prepare(
+    'SELECT COALESCE(MAX(rank), 0) + 1 AS r FROM user_interests WHERE user_id = ?'
+  ).get(user.user_id) as { r: number }).r;
 
   db.prepare(`
-    INSERT INTO user_topics (user_id, topic_id, weight, liked, added_at)
-    VALUES (?, ?, 1.0, 1, ?)
-    ON CONFLICT(user_id, topic_id) DO NOTHING
-  `).run(user.user_id, topicId, new Date().toISOString());
+    INSERT INTO user_interests (user_id, interest_id, rank, expertise, liked, added_at)
+    VALUES (?, ?, ?, 'comfortable', 1, ?)
+    ON CONFLICT(user_id, interest_id) DO NOTHING
+  `).run(user.user_id, interestId, nextRank, new Date().toISOString());
 
-  res.json({ topicId, selected: true });
+  res.json({ interestId, selected: true });
 });
 
-topicsRouter.delete('/select', (req: Request, res: Response) => {
-  const { userId, topicId } = req.body as { userId?: string; topicId?: string };
+interestsRouter.delete('/select', (req: Request, res: Response) => {
+  const { userId, interestId } = req.body as { userId?: string; interestId?: string };
   const user = resolveUser(userId);
-  if (!topicId?.trim()) throw new ValidationError('topicId required');
+  if (!interestId?.trim()) throw new ValidationError('interestId required');
 
-  db.prepare('DELETE FROM user_topics WHERE user_id = ? AND topic_id = ?')
-    .run(user.user_id, topicId);
+  db.prepare('DELETE FROM user_interests WHERE user_id = ? AND interest_id = ?')
+    .run(user.user_id, interestId);
 
-  res.json({ topicId, selected: false });
+  res.json({ interestId, selected: false });
 });
 
-topicsRouter.post('/user-add', (req: Request, res: Response) => {
+interestsRouter.post('/user-add', (req: Request, res: Response) => {
   const { userId, label } = req.body as { userId?: string; label?: string };
   const user = resolveUser(userId);
   if (!label?.trim()) throw new ValidationError('label required');
 
   const trimmed = label.trim();
   const slug = trimmed.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/, '');
-  const topicId = slug || uuidv7();
+  const interestId = slug || uuidv7();
 
-  const existing = db.prepare('SELECT id FROM topics WHERE id = ? OR label = ?').get(topicId, trimmed) as { id: string } | undefined;
+  const nextRank = (db.prepare(
+    'SELECT COALESCE(MAX(rank), 0) + 1 AS r FROM user_interests WHERE user_id = ?'
+  ).get(user.user_id) as { r: number }).r;
+
+  const existing = db.prepare('SELECT id FROM interests WHERE id = ? OR label = ?').get(interestId, trimmed) as { id: string } | undefined;
   if (existing) {
     db.prepare(`
-      INSERT INTO user_topics (user_id, topic_id, weight, liked, added_at)
-      VALUES (?, ?, 1.0, 1, ?)
-      ON CONFLICT(user_id, topic_id) DO NOTHING
-    `).run(user.user_id, existing.id, new Date().toISOString());
-    res.json({ topicId: existing.id, label: trimmed, isNew: false });
+      INSERT INTO user_interests (user_id, interest_id, rank, expertise, liked, added_at)
+      VALUES (?, ?, ?, 'comfortable', 1, ?)
+      ON CONFLICT(user_id, interest_id) DO NOTHING
+    `).run(user.user_id, existing.id, nextRank, new Date().toISOString());
+    res.json({ interestId: existing.id, label: trimmed, isNew: false });
     return;
   }
 
   const now = new Date().toISOString();
   db.prepare(`
-    INSERT OR IGNORE INTO topics (id, label, emoji, category, age_gate, source, search_terms)
-    VALUES (?, ?, '🔍', NULL, 0, 'user_added', '[]')
-  `).run(topicId, trimmed);
+    INSERT OR IGNORE INTO interests (id, label, emoji, category, source, search_terms)
+    VALUES (?, ?, '🔍', NULL, 'user_added', '[]')
+  `).run(interestId, trimmed);
 
   db.prepare(`
-    INSERT INTO user_topics (user_id, topic_id, weight, liked, added_at)
-    VALUES (?, ?, 1.0, 1, ?)
-    ON CONFLICT(user_id, topic_id) DO NOTHING
-  `).run(user.user_id, topicId, now);
+    INSERT INTO user_interests (user_id, interest_id, rank, expertise, liked, added_at)
+    VALUES (?, ?, ?, 'comfortable', 1, ?)
+    ON CONFLICT(user_id, interest_id) DO NOTHING
+  `).run(user.user_id, interestId, nextRank, now);
 
   void (async () => {
     const prompt = `Generate 4 YouTube search queries that would find good videos about "${trimmed}". Return a JSON array of strings only, for example ["query one","query two","query three","query four"]. No explanation.`;
@@ -720,16 +725,16 @@ topicsRouter.post('/user-add', (req: Request, res: Response) => {
         const parsed: unknown = JSON.parse(match[0]);
         if (Array.isArray(parsed)) {
           const terms = (parsed as unknown[]).filter((v): v is string => typeof v === 'string').slice(0, 4);
-          db.prepare('UPDATE topics SET search_terms = ? WHERE id = ?').run(JSON.stringify(terms), topicId);
-          logger.info({ topicId, terms }, 'User-added topic search terms generated');
+          db.prepare('UPDATE interests SET search_terms = ? WHERE id = ?').run(JSON.stringify(terms), interestId);
+          logger.info({ interestId, terms }, 'User-added interest search terms generated');
         }
       }
     } catch (err) {
-      logger.warn({ err, topicId }, 'User-added topic: search term generation failed');
+      logger.warn({ err, interestId }, 'User-added interest: search term generation failed');
     }
   })();
 
-  res.json({ topicId, label: trimmed, isNew: true });
+  res.json({ interestId, label: trimmed, isNew: true });
 });
 
 // ── Discovery HTTP router ─────────────────────────────────────────────────────
@@ -745,7 +750,7 @@ interface SurfacedCandidateRow {
   published_at: string | null;
   gemma_score: number | null;
   why_text: string | null;
-  topic_id: string | null;
+  interest_id: string | null;
   source_type: string;
 }
 
@@ -756,51 +761,51 @@ discoveryRouter.get('/feed', (req: Request, res: Response) => {
 
   const candidates = db.prepare(`
     SELECT candidate_id, url, external_id, title, thumbnail_url, published_at,
-           gemma_score, why_text, topic_id, source_type
+           gemma_score, why_text, interest_id, source_type
     FROM candidate_pool
     WHERE user_id = ? AND surfaced_date = ? AND status = 'surfaced'
     ORDER BY gemma_score DESC
   `).all(user.user_id, today) as SurfacedCandidateRow[];
 
-  const topicCount = (db.prepare(
-    'SELECT COUNT(*) AS n FROM user_topics WHERE user_id = ?'
+  const interestCount = (db.prepare(
+    'SELECT COUNT(*) AS n FROM user_interests WHERE user_id = ?'
   ).get(user.user_id) as { n: number }).n;
 
-  const coldStart = topicCount === 0 || candidates.length === 0;
+  const coldStart = interestCount === 0 || candidates.length === 0;
 
-  // Balance prompt: dominant topic >70% of today's feed AND no prompt shown in past 10 days
+  // Balance prompt: dominant interest >70% of today's feed AND no prompt shown in past 10 days
   let balancePrompt: {
     promptId: string;
-    topicId: string;
-    topicLabel: string;
+    interestId: string;
+    interestLabel: string;
     concentration: number;
   } | null = null;
 
   if (candidates.length >= 3) {
-    const topicCounts = new Map<string, number>();
+    const interestCounts = new Map<string, number>();
     for (const c of candidates) {
-      if (c.topic_id) topicCounts.set(c.topic_id, (topicCounts.get(c.topic_id) ?? 0) + 1);
+      if (c.interest_id) interestCounts.set(c.interest_id, (interestCounts.get(c.interest_id) ?? 0) + 1);
     }
-    const [topTopicId, topCount] = [...topicCounts.entries()].sort((a, b) => b[1] - a[1])[0] ?? [];
+    const [topInterestId, topCount] = [...interestCounts.entries()].sort((a, b) => b[1] - a[1])[0] ?? [];
 
-    if (topTopicId && topCount / candidates.length > 0.7) {
+    if (topInterestId && topCount / candidates.length > 0.7) {
       const concentration = topCount / candidates.length;
       const recentPrompt = db.prepare(`
         SELECT 1 FROM balance_prompts
-        WHERE user_id = ? AND topic_id = ? AND shown_at > datetime('now', '-10 days')
+        WHERE user_id = ? AND interest_id = ? AND shown_at > datetime('now', '-10 days')
         LIMIT 1
-      `).get(user.user_id, topTopicId);
+      `).get(user.user_id, topInterestId);
 
       if (!recentPrompt) {
-        const topicRow = db.prepare('SELECT label FROM topics WHERE id = ?')
-          .get(topTopicId) as { label: string } | undefined;
+        const interestRow = db.prepare('SELECT label FROM interests WHERE id = ?')
+          .get(topInterestId) as { label: string } | undefined;
         const promptId = uuidv7();
         const now = new Date().toISOString();
         db.prepare(`
-          INSERT INTO balance_prompts (prompt_id, user_id, topic_id, topic_label, concentration, shown_at)
+          INSERT INTO balance_prompts (prompt_id, user_id, interest_id, interest_label, concentration, shown_at)
           VALUES (?, ?, ?, ?, ?, ?)
-        `).run(promptId, user.user_id, topTopicId, topicRow?.label ?? topTopicId, concentration, now);
-        balancePrompt = { promptId, topicId: topTopicId, topicLabel: topicRow?.label ?? topTopicId, concentration };
+        `).run(promptId, user.user_id, topInterestId, interestRow?.label ?? topInterestId, concentration, now);
+        balancePrompt = { promptId, interestId: topInterestId, interestLabel: interestRow?.label ?? topInterestId, concentration };
       }
     }
   }
@@ -815,32 +820,13 @@ discoveryRouter.get('/feed', (req: Request, res: Response) => {
       publishedAt: c.published_at,
       score: c.gemma_score,
       why: c.why_text,
-      topicId: c.topic_id,
+      interestId: c.interest_id,
       sourceType: c.source_type,
     })),
     coldStart,
     balancePrompt,
   });
 });
-
-// ── Deletion signal ───────────────────────────────────────────────────────────
-
-// Called when a user deletes a downloaded video. Nudges the originating topic
-// weight down slightly so future discovery de-prioritises similar content.
-export function recordDeletionSignal(userId: string, youtubeId: string): void {
-  const candidate = db.prepare(
-    'SELECT topic_id FROM candidate_pool WHERE user_id = ? AND external_id = ? LIMIT 1'
-  ).get(userId, youtubeId) as { topic_id: string | null } | undefined;
-
-  if (!candidate?.topic_id) return;
-
-  db.prepare(`
-    UPDATE user_topics SET weight = MAX(0.1, weight - 0.2)
-    WHERE user_id = ? AND topic_id = ?
-  `).run(userId, candidate.topic_id);
-
-  logger.info({ topicId: candidate.topic_id }, 'Discovery: deletion signal recorded');
-}
 
 // POST /discovery/dismiss — body: { userId, candidateId }
 discoveryRouter.post('/dismiss', (req: Request, res: Response) => {

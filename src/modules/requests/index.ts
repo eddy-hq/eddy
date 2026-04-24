@@ -8,7 +8,6 @@ import { config } from '../../config';
 import { downloadQueue, redis } from '../../queue';
 import type { DownloadJobData } from '../content';
 import { sendVideoReady } from '../notifications';
-import { recordDeletionSignal } from '../discovery';
 
 export const requestsRouter = Router();
 
@@ -385,10 +384,6 @@ requestsRouter.post('/:id/delete', async (req: Request, res: Response) => {
     } catch (err) {
       logger.warn({ err, requestId }, 'Could not delete video file — record still marked deleted');
     }
-  }
-
-  if (row.youtube_id) {
-    recordDeletionSignal(row.user_id, row.youtube_id);
   }
 
   res.status(204).end();

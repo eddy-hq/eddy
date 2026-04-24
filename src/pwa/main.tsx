@@ -8,7 +8,6 @@ import { Saved } from './pages/Saved';
 import { Admin } from './pages/Admin';
 import { Watch } from './pages/Watch';
 import { Search } from './pages/Search';
-import { TopicPicker } from './pages/TopicPicker';
 import './index.css';
 
 const queryClient = new QueryClient({
@@ -34,7 +33,6 @@ createRoot(root).render(
           <Route path="/admin"     element={<Admin />} />
           <Route path="/watch/:requestId" element={<Watch />} />
           <Route path="/search"    element={<Search />} />
-          <Route path="/interests" element={<TopicPicker />} />
           <Route path="*" element={<Navigate to="/feed" replace />} />
         </Routes>
       </BrowserRouter>

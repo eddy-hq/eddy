@@ -21,7 +21,7 @@ interface DiscoveryCandidate {
   publishedAt: string | null;
   score: number | null;
   why: string | null;
-  topicId: string | null;
+  interestId: string | null;
   sourceType: string;
 }
 
@@ -30,8 +30,8 @@ interface DiscoveryFeedResponse {
   coldStart: boolean;
   balancePrompt: {
     promptId: string;
-    topicId: string;
-    topicLabel: string;
+    interestId: string;
+    interestLabel: string;
     concentration: number;
   } | null;
 }
@@ -193,25 +193,9 @@ export function Feed() {
       <main style={{ paddingBottom: 100 }}>
         {showEmpty ? (
           <div style={{ paddingTop: 64, textAlign: 'center', padding: '64px 32px 0' }}>
-            <p style={{ color: 'var(--text-secondary)', fontSize: 'var(--text-base)', margin: '0 0 16px' }}>
+            <p style={{ color: 'var(--text-secondary)', fontSize: 'var(--text-base)', margin: 0 }}>
               Nothing here yet. Share a YouTube link to get started.
             </p>
-            <a
-              href={`/interests?userId=${encodeURIComponent(user)}&returnTo=${encodeURIComponent(`/feed?userId=${user}`)}`}
-              style={{
-                display: 'inline-block',
-                padding: '9px 20px',
-                borderRadius: 20,
-                border: '1.5px solid var(--border-subtle)',
-                color: 'var(--text-secondary)',
-                fontSize: 13,
-                fontFamily: 'var(--font-sans)',
-                fontWeight: 500,
-                textDecoration: 'none',
-              }}
-            >
-              Set up your interests →
-            </a>
           </div>
         ) : (
           <>
