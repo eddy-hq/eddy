@@ -29,9 +29,8 @@ const STATUS_LABEL: Record<string, string> = {
   rejected:      'Not available',
 };
 
-// Dark colour shared between the card background and the gradient terminus —
-// they must match exactly so the fade is seamless.
-const CARD_BG = '#0a0a0a';
+// Fallback colour shown behind the thumbnail before the image loads.
+const THUMB_BG = '#0a0a0a';
 
 interface PollResult { pct: number | null; done: boolean; }
 
@@ -139,205 +138,199 @@ export function Card({
       whileTap={effectivelyLive ? { scale: 0.97 } : undefined}
       onClick={handleTap}
       style={{
-        position: 'relative',
-        aspectRatio: '16/10',
+        display: 'flex',
+        flexDirection: 'column',
         borderRadius: 16,
         overflow: 'hidden',
         cursor: effectivelyLive ? 'pointer' : 'default',
-        background: CARD_BG,
+        background: 'var(--bg-surface)',
         boxShadow: 'var(--shadow-card)',
         border: '1px solid var(--border-subtle)',
       }}
     >
-      {/* Background image — anchored to the top so the bottom of the frame falls under the scrim */}
-      <motion.div
-        layoutId={`thumb-${data.requestId}`}
-        transition={{ duration: 0.3, ease: [0.33, 1, 0.68, 1] }}
-        style={{ position: 'absolute', inset: 0 }}
-      >
-        {effectiveThumbnailUrl && (
-          <img
-            src={effectiveThumbnailUrl} alt=""
-            style={{
-              width: '100%', height: '100%', objectFit: 'cover', objectPosition: 'center top',
-              filter: (isRecycled || (isDownloading && !downloadDone))
-                ? 'grayscale(1) opacity(0.3)'
-                : isGone ? 'grayscale(1) opacity(0.12)'
-                : 'none',
-              transition: 'filter 0.6s ease',
-            }}
-            loading="lazy"
-          />
-        )}
-      </motion.div>
-
-      {/* Scrim — fades into a solid black well at the bottom for text contrast */}
+      {/* Thumbnail */}
       <div style={{
-        position: 'absolute', inset: 0, pointerEvents: 'none',
-        background: 'linear-gradient(180deg, rgba(0,0,0,0) 0%, rgba(0,0,0,0) 28%, rgba(0,0,0,0.45) 52%, rgba(0,0,0,0.88) 66%, #000 78%, #000 100%)',
-      }} />
+        position: 'relative',
+        aspectRatio: '16/9',
+        overflow: 'hidden',
+        background: THUMB_BG,
+      }}>
+        <motion.div
+          layoutId={`thumb-${data.requestId}`}
+          transition={{ duration: 0.3, ease: [0.33, 1, 0.68, 1] }}
+          style={{ position: 'absolute', inset: 0 }}
+        >
+          {effectiveThumbnailUrl && (
+            <img
+              src={effectiveThumbnailUrl} alt=""
+              style={{
+                width: '100%', height: '100%', objectFit: 'cover',
+                filter: (isRecycled || (isDownloading && !downloadDone))
+                  ? 'grayscale(1) opacity(0.3)'
+                  : isGone ? 'grayscale(1) opacity(0.12)'
+                  : 'none',
+                transition: 'filter 0.6s ease',
+              }}
+              loading="lazy"
+            />
+          )}
+        </motion.div>
 
-      {/* Duration badge — top right */}
-      {!isDownloading && !isGone && data.durationSecs != null && (
-        <span style={{
-          position: 'absolute', top: 12, right: 12, zIndex: 2,
-          fontSize: 10, fontWeight: 600, letterSpacing: '0.02em',
-          color: '#F4F1EA', background: 'rgba(0,0,0,0.55)',
-          backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)',
-          padding: '4px 8px', borderRadius: 5,
-        }}>
-          {formatDuration(data.durationSecs)}
-        </span>
-      )}
-
-      {/* Guard phase spinner */}
-      <AnimatePresence>
-        {isDownloading && !downloadDone && pct === null && (
-          <motion.div
-            key="guard-spinner"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            transition={{ duration: 0.4, ease: 'easeOut' }}
-            style={{
-              position: 'absolute', inset: 0, zIndex: 3,
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              background: 'rgba(0,0,0,0.35)', backdropFilter: 'blur(3px)',
-            }}
-          >
-            <EddySpinner size={48} />
-          </motion.div>
+        {/* Duration badge — top right */}
+        {!isDownloading && !isGone && data.durationSecs != null && (
+          <span style={{
+            position: 'absolute', top: 10, right: 10, zIndex: 2,
+            fontSize: 10, fontWeight: 600, letterSpacing: '0.02em',
+            color: '#F4F1EA', background: 'rgba(0,0,0,0.55)',
+            backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)',
+            padding: '4px 8px', borderRadius: 5,
+          }}>
+            {formatDuration(data.durationSecs)}
+          </span>
         )}
-      </AnimatePresence>
 
-      {/* Download progress badge */}
-      {isDownloading && !downloadDone && pct !== null && (
-        <span style={{
-          position: 'absolute', top: 11, left: 11, zIndex: 3,
-          fontSize: 9, fontWeight: 700, color: '#fff',
-          background: 'rgba(0,0,0,0.55)', padding: '3px 7px', borderRadius: 5,
-        }}>
-          {pct}%
-        </span>
-      )}
+        {/* Guard phase spinner */}
+        <AnimatePresence>
+          {isDownloading && !downloadDone && pct === null && (
+            <motion.div
+              key="guard-spinner"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.4, ease: 'easeOut' }}
+              style={{
+                position: 'absolute', inset: 0, zIndex: 3,
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                background: 'rgba(0,0,0,0.35)', backdropFilter: 'blur(3px)',
+              }}
+            >
+              <EddySpinner size={48} />
+            </motion.div>
+          )}
+        </AnimatePresence>
 
-      {/* Watched checkmark — centred over image */}
-      {isWatched && !isDownloading && (
-        <div style={{
-          position: 'absolute', inset: 0, zIndex: 2, pointerEvents: 'none',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-        }}>
+        {/* Download progress badge */}
+        {isDownloading && !downloadDone && pct !== null && (
+          <span style={{
+            position: 'absolute', top: 10, left: 10, zIndex: 3,
+            fontSize: 9, fontWeight: 700, color: '#fff',
+            background: 'rgba(0,0,0,0.55)', padding: '3px 7px', borderRadius: 5,
+          }}>
+            {pct}%
+          </span>
+        )}
+
+        {/* Watched checkmark — centred over image */}
+        {isWatched && !isDownloading && (
           <div style={{
-            width: 34, height: 34, borderRadius: '50%',
-            background: 'rgba(61,107,107,0.75)', backdropFilter: 'blur(4px)',
+            position: 'absolute', inset: 0, zIndex: 2, pointerEvents: 'none',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
           }}>
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-              <polyline points="3.5,8 6.5,11.5 12.5,4.5" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-            </svg>
+            <div style={{
+              width: 34, height: 34, borderRadius: '50%',
+              background: 'rgba(61,107,107,0.75)', backdropFilter: 'blur(4px)',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+            }}>
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                <polyline points="3.5,8 6.5,11.5 12.5,4.5" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+              </svg>
+            </div>
           </div>
-        </div>
-      )}
+        )}
 
-      {/* Title + meta — flush bottom, Timeline content padding */}
-      {!isGone && (
-        <div style={{ position: 'absolute', left: 0, right: 0, bottom: 0, padding: '14px 16px 16px', zIndex: 2 }}>
-          <h2 style={{
-            fontFamily: 'var(--font-serif)',
-            fontSize: 19, fontWeight: 500, lineHeight: 1.22,
-            letterSpacing: '-0.008em', margin: '0 0 8px',
-            color: isRecycled ? 'rgba(246,243,237,0.55)' : '#F6F3ED',
-            textShadow: '0 1px 2px rgba(0,0,0,0.4)',
-            display: '-webkit-box',
-            WebkitLineClamp: 2,
-            WebkitBoxOrient: 'vertical',
-            overflow: 'hidden',
-          }}>
-            {isInProgress && !effectivelyLive && !data.title
-              ? (STATUS_LABEL[data.status] ?? 'Getting it…')
-              : data.title}
-          </h2>
+        {/* Gone overlay */}
+        {isGone && (
           <div style={{
-            display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
-            fontSize: 11, fontWeight: 500,
-            color: isRejected ? 'rgba(255,140,135,0.9)' : 'rgba(244,241,234,0.78)',
-            letterSpacing: '0.005em',
+            position: 'absolute', inset: 0, zIndex: 2,
+            display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8,
+            background: 'rgba(8,8,8,0.5)',
+            color: 'rgba(255,255,255,0.7)',
           }}>
-            {sourceKind && (
-              <span style={{
-                display: 'inline-flex', alignItems: 'center', gap: 6,
-                padding: '3px 9px',
-                background: 'rgba(244,241,234,0.16)',
-                borderRadius: 100,
-                backdropFilter: 'blur(8px) saturate(120%)',
-                WebkitBackdropFilter: 'blur(8px) saturate(120%)',
-                fontSize: 10, fontWeight: 600, letterSpacing: '0.03em',
-                color: 'rgba(244,241,234,0.95)',
-              }}>
-                <span style={{
-                  width: 5, height: 5, borderRadius: '50%',
-                  background: sourceKind === 'req' ? '#E4B35C'
-                    : sourceKind === 'pick' ? '#5A9D7A'
-                    : '#7DB8B8',
-                }} />
-                {sourceKind === 'follow' ? (data.channel ?? 'Follow')
-                  : sourceKind === 'req' ? 'You asked'
-                  : 'Picked'}
-              </span>
-            )}
-            {sourceKind && sourceKind !== 'follow' && data.channel && (
-              <>
-                <span style={{ color: 'rgba(244,241,234,0.4)' }}>·</span>
-                <span>{data.channel}</span>
-              </>
-            )}
-            {!sourceKind && data.channel && (
-              <span style={{ fontWeight: 600, color: 'rgba(244,241,234,0.95)' }}>
-                {data.channel}
-              </span>
-            )}
-            {((sourceKind || data.channel)) && (
-              <span style={{ color: 'rgba(244,241,234,0.4)' }}>·</span>
-            )}
-            <span>{trailingMeta}</span>
+            <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="10" cy="10" r="7.5"/><path d="M4 4l12 12"/>
+            </svg>
+            <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase' }}>
+              No longer available
+            </span>
           </div>
-        </div>
-      )}
+        )}
 
-      {/* Gone overlay */}
-      {isGone && (
-        <div style={{
-          position: 'absolute', inset: 0, zIndex: 2,
-          display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8,
-          background: 'rgba(8,8,8,0.5)',
-          color: 'rgba(255,255,255,0.7)',
+        {/* Progress bars — pinned to bottom of thumbnail */}
+        {showProgressBar && (
+          <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, height: 3, zIndex: 4, background: 'rgba(255,255,255,0.08)' }}>
+            <div style={{ height: '100%', width: `${progressFraction * 100}%`, background: 'var(--accent)', transition: 'width 0.5s ease' }} />
+          </div>
+        )}
+        {isDownloading && !downloadDone && pct !== null && (
+          <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, height: 3, zIndex: 4, background: 'rgba(255,255,255,0.08)' }}>
+            <div style={{ height: '100%', width: `${pct}%`, background: 'var(--accent)', transition: 'width 0.8s ease' }} />
+          </div>
+        )}
+        {isWatched && !isDownloading && (
+          <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, height: 3, zIndex: 4, background: 'rgba(255,255,255,0.08)' }}>
+            <div style={{ height: '100%', width: '100%', background: 'var(--accent)' }} />
+          </div>
+        )}
+      </div>
+
+      {/* Title + meta — below thumbnail */}
+      <div style={{ padding: '12px 14px 14px' }}>
+        <h2 style={{
+          fontFamily: 'var(--font-serif)',
+          fontSize: 19, fontWeight: 500, lineHeight: 1.22,
+          letterSpacing: '-0.008em', margin: '0 0 6px',
+          color: (isGone || isRecycled) ? 'var(--text-secondary)' : 'var(--text-primary)',
+          display: '-webkit-box',
+          WebkitLineClamp: 2,
+          WebkitBoxOrient: 'vertical',
+          overflow: 'hidden',
         }}>
-          <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-            <circle cx="10" cy="10" r="7.5"/><path d="M4 4l12 12"/>
-          </svg>
-          <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase' }}>
-            No longer available
-          </span>
+          {isInProgress && !effectivelyLive && !data.title
+            ? (STATUS_LABEL[data.status] ?? 'Getting it…')
+            : data.title}
+        </h2>
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap',
+          fontSize: 11, fontWeight: 500,
+          color: isRejected ? 'var(--dismiss)' : 'var(--text-secondary)',
+          letterSpacing: '0.005em',
+        }}>
+          {sourceKind && (
+            <span style={{
+              display: 'inline-flex', alignItems: 'center', gap: 5,
+              fontSize: 11, fontWeight: 600, letterSpacing: '0.02em',
+              color: sourceKind === 'req' ? '#B8863C'
+                : sourceKind === 'pick' ? 'var(--save)'
+                : 'var(--accent)',
+            }}>
+              <span style={{
+                width: 5, height: 5, borderRadius: '50%',
+                background: sourceKind === 'req' ? '#B8863C'
+                  : sourceKind === 'pick' ? 'var(--save)'
+                  : 'var(--accent)',
+              }} />
+              {sourceKind === 'follow' ? (data.channel ?? 'Follow')
+                : sourceKind === 'req' ? 'You asked'
+                : 'Picked'}
+            </span>
+          )}
+          {sourceKind && sourceKind !== 'follow' && data.channel && (
+            <>
+              <span style={{ color: 'var(--text-tertiary)' }}>·</span>
+              <span>{data.channel}</span>
+            </>
+          )}
+          {!sourceKind && data.channel && (
+            <span style={{ fontWeight: 600, color: 'var(--text-primary)' }}>
+              {data.channel}
+            </span>
+          )}
+          {((sourceKind || data.channel)) && (
+            <span style={{ color: 'var(--text-tertiary)' }}>·</span>
+          )}
+          <span>{trailingMeta}</span>
         </div>
-      )}
-
-      {/* ── Progress bars — absolute to article, pinned to very bottom ── */}
-      {showProgressBar && (
-        <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, height: 3, zIndex: 4, background: 'rgba(255,255,255,0.08)' }}>
-          <div style={{ height: '100%', width: `${progressFraction * 100}%`, background: 'var(--accent)', transition: 'width 0.5s ease' }} />
-        </div>
-      )}
-      {isDownloading && !downloadDone && pct !== null && (
-        <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, height: 3, zIndex: 4, background: 'rgba(255,255,255,0.08)' }}>
-          <div style={{ height: '100%', width: `${pct}%`, background: 'var(--accent)', transition: 'width 0.8s ease' }} />
-        </div>
-      )}
-      {isWatched && !isDownloading && (
-        <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, height: 3, zIndex: 4, background: 'rgba(255,255,255,0.08)' }}>
-          <div style={{ height: '100%', width: '100%', background: 'var(--accent)' }} />
-        </div>
-      )}
-
+      </div>
     </motion.article>
   );
 }

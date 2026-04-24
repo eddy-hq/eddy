@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { AnimatePresence, motion } from 'framer-motion';
@@ -56,18 +56,6 @@ async function requestCandidate(userId: string, candidateId: string): Promise<vo
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ userId, candidateId }),
   });
-}
-
-// ── Topics API ───────────────────────────────────────────────────────────────
-
-interface UserTopic { id: string; label: string; emoji: string | null; }
-interface TopicsResponse { categories: { name: string; topics: UserTopic[] }[]; }
-
-async function fetchUserTopics(userId: string): Promise<UserTopic[]> {
-  const res = await fetch(`/topics?userId=${encodeURIComponent(userId)}`);
-  if (!res.ok) return [];
-  const data = await res.json() as TopicsResponse;
-  return data.categories.flatMap((c) => c.topics).filter((t) => (t as UserTopic & { selected: boolean }).selected);
 }
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -136,36 +124,11 @@ function sourceKind(src: string): SourceKind | null {
   return null;
 }
 
-// ── Scroll-direction hook ────────────────────────────────────────────────────
-
-function useScrollDirection(threshold = 6) {
-  const [chipsVisible, setChipsVisible] = useState(true);
-  const lastY = useRef(0);
-
-  useEffect(() => {
-    function onScroll() {
-      const y = window.scrollY;
-      const delta = y - lastY.current;
-      lastY.current = y;
-      if (delta > threshold && y > 80) setChipsVisible(false);
-      if (delta < -threshold) setChipsVisible(true);
-    }
-    window.addEventListener('scroll', onScroll, { passive: true });
-    return () => window.removeEventListener('scroll', onScroll);
-  }, [threshold]);
-
-  return chipsVisible;
-}
-
 // ── Component ────────────────────────────────────────────────────────────────
-
-const CHIPS_H = 54; // px — padding 12 top/bottom + chip ~30
 
 export function Feed() {
   const [params] = useSearchParams();
-  const [activeChip, setActiveChip] = useState('All');
   const { selectedCard, onSelect, onClose } = useVideoSheet();
-  const chipsVisible = useScrollDirection();
   const user = params.get('userId') ?? params.get('user') ?? '';
   const queryClient = useQueryClient();
 
@@ -177,13 +140,6 @@ export function Feed() {
     queryFn: () => fetchFeed(user),
     enabled: !!user,
     refetchInterval: 10_000,
-  });
-
-  const { data: userTopics = [] } = useQuery({
-    queryKey: ['topics', user],
-    queryFn: () => fetchUserTopics(user),
-    enabled: !!user,
-    staleTime: 60_000,
   });
 
   const { data: discoveryData } = useQuery({
@@ -230,44 +186,7 @@ export function Feed() {
 
       {/* Sticky chrome */}
       <div style={{ position: 'sticky', top: 0, zIndex: 10, background: 'var(--bg-primary)' }}>
-
-        {/* App header — always visible */}
-        <AppHeader borderBottom={!chipsVisible} />
-
-        {/* Topic chips — collapses on scroll-down */}
-        <div style={{
-          maxHeight: chipsVisible ? CHIPS_H : 0,
-          opacity: chipsVisible ? 1 : 0,
-          overflow: 'hidden',
-          transition: 'max-height 240ms ease, opacity 180ms ease',
-          borderBottom: '1px solid var(--border-subtle)',
-        }}>
-          <div style={{
-            padding: '12px 18px',
-            overflowX: 'auto', scrollbarWidth: 'none',
-            display: 'flex', gap: 7, alignItems: 'center',
-            WebkitOverflowScrolling: 'touch',
-          }}>
-            {[{ id: 'All', label: 'All', emoji: null }, ...userTopics].map((chip) => (
-              <button
-                key={chip.id}
-                onClick={() => setActiveChip(chip.id)}
-                style={{
-                  flexShrink: 0,
-                  fontSize: 12, fontWeight: activeChip === chip.id ? 600 : 500,
-                  letterSpacing: '0.01em',
-                  padding: '7px 13px', borderRadius: 20,
-                  background: activeChip === chip.id ? 'var(--accent)' : 'transparent',
-                  color: activeChip === chip.id ? '#fff' : 'var(--text-secondary)',
-                  border: `1px solid ${activeChip === chip.id ? 'var(--accent)' : 'var(--border-subtle)'}`,
-                  cursor: 'pointer', whiteSpace: 'nowrap',
-                }}
-              >
-                {chip.label}
-              </button>
-            ))}
-          </div>
-        </div>
+        <AppHeader />
       </div>
 
       {/* Feed content */}
@@ -663,54 +582,56 @@ function HeroDiscoveryCard({
       onClick={handleAdd}
       style={{
         position: 'relative',
-        aspectRatio: '16/9',
+        display: 'flex',
+        flexDirection: 'column',
         borderRadius: 16,
         overflow: 'hidden',
-        background: '#2A2826',
+        background: 'var(--bg-surface)',
         boxShadow: 'var(--shadow-card)',
         border: '1px solid var(--border-subtle)',
         cursor: adding ? 'default' : 'pointer',
       }}
     >
-      {candidate.thumbnailUrl && (
-        <img
-          src={candidate.thumbnailUrl}
-          alt=""
-          loading="lazy"
-          style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }}
-        />
-      )}
-
-      {/* Scrim — darker at bottom so the title stays readable */}
+      {/* Thumbnail */}
       <div style={{
-        position: 'absolute', inset: 0, pointerEvents: 'none',
-        background: 'linear-gradient(180deg, rgba(0,0,0,0) 25%, rgba(0,0,0,0.25) 50%, rgba(0,0,0,0.65) 72%, rgba(0,0,0,0.88) 88%, rgba(0,0,0,0.95) 100%)',
-      }} />
+        position: 'relative',
+        aspectRatio: '16/9',
+        overflow: 'hidden',
+        background: '#2A2826',
+      }}>
+        {candidate.thumbnailUrl && (
+          <img
+            src={candidate.thumbnailUrl}
+            alt=""
+            loading="lazy"
+            style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }}
+          />
+        )}
 
-      {/* Dismiss */}
-      <button
-        aria-label="Dismiss"
-        onClick={(e) => { e.stopPropagation(); onDismiss(candidate.candidateId); }}
-        style={{
-          position: 'absolute', top: 10, right: 10, zIndex: 3,
-          width: 28, height: 28, borderRadius: '50%',
-          background: 'rgba(0,0,0,0.55)', border: 'none',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          cursor: 'pointer', color: '#fff',
-          backdropFilter: 'blur(4px)',
-        }}
-      >
-        <X size={14} strokeWidth={2.5} />
-      </button>
+        {/* Dismiss */}
+        <button
+          aria-label="Dismiss"
+          onClick={(e) => { e.stopPropagation(); onDismiss(candidate.candidateId); }}
+          style={{
+            position: 'absolute', top: 10, right: 10, zIndex: 3,
+            width: 28, height: 28, borderRadius: '50%',
+            background: 'rgba(0,0,0,0.55)', border: 'none',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            cursor: 'pointer', color: '#fff',
+            backdropFilter: 'blur(4px)',
+          }}
+        >
+          <X size={14} strokeWidth={2.5} />
+        </button>
+      </div>
 
       {/* Title + meta */}
-      <div style={{ position: 'absolute', bottom: 14, left: 14, right: 14, zIndex: 2 }}>
+      <div style={{ padding: '12px 14px 14px' }}>
         <h3 style={{
           fontFamily: 'var(--font-serif)',
           fontSize: 19, fontWeight: 500, lineHeight: 1.22,
-          letterSpacing: '-0.008em', margin: '0 0 8px',
-          color: '#F6F3ED',
-          textShadow: '0 1px 2px rgba(0,0,0,0.4)',
+          letterSpacing: '-0.008em', margin: '0 0 6px',
+          color: 'var(--text-primary)',
           display: '-webkit-box',
           WebkitLineClamp: 2,
           WebkitBoxOrient: 'vertical',
@@ -719,24 +640,19 @@ function HeroDiscoveryCard({
           {candidate.title ?? candidate.url}
         </h3>
         <div style={{
-          display: 'flex', alignItems: 'center', gap: 8,
-          fontSize: 11, fontWeight: 500, color: 'rgba(244,241,234,0.78)',
+          display: 'flex', alignItems: 'center', gap: 6,
+          fontSize: 11, fontWeight: 500, color: 'var(--text-secondary)',
           letterSpacing: '0.005em',
         }}>
           <span style={{
-            display: 'inline-flex', alignItems: 'center', gap: 6,
-            padding: '3px 9px',
-            background: 'rgba(244,241,234,0.16)',
-            borderRadius: 100,
-            backdropFilter: 'blur(8px) saturate(120%)',
-            WebkitBackdropFilter: 'blur(8px) saturate(120%)',
-            fontSize: 10, fontWeight: 600, letterSpacing: '0.03em',
-            color: 'rgba(244,241,234,0.95)',
+            display: 'inline-flex', alignItems: 'center', gap: 5,
+            fontSize: 11, fontWeight: 600, letterSpacing: '0.02em',
+            color: 'var(--save)',
           }}>
-            <span style={{ width: 5, height: 5, borderRadius: '50%', background: '#5A9D7A' }} />
+            <span style={{ width: 5, height: 5, borderRadius: '50%', background: 'var(--save)' }} />
             Picked
           </span>
-          <span style={{ color: 'rgba(244,241,234,0.4)' }}>·</span>
+          <span style={{ color: 'var(--text-tertiary)' }}>·</span>
           <span>Tap to add</span>
         </div>
       </div>

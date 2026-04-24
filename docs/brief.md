@@ -1,6 +1,6 @@
 # Eddy — Implementation Document
 
-**Status:** Phase 5 in progress. Phases 0–4 shipped (feed, guard shadow mode, RSS poller, channel follow, search). Discovery engine, topic picker, balance prompts, channel→topic inference all live; recommendation extraction and affinity enrichment still to come.
+**Status:** Phase 5 in progress. Phases 0–4 shipped (feed, guard shadow mode, RSS poller, channel follow, search). Discovery engine, interest picker, balance prompts, channel→interest inference all live; recommendation extraction, profile-editing surface, and freeform-interest rework still to come.
 
 Reasoning and trade-offs that led to these decisions live in `docs/decisions.md`. This document is the spec.
 
@@ -364,7 +364,7 @@ Eddy's podcast value is finding single episodes worth your time from shows you *
 
 Mechanics:
 
-- Per-user curated list of ~50 high-quality podcasts across their topics (seed + expand over time)
+- Per-user curated list of ~50 high-quality podcasts across their interests (seed + expand over time)
 - Every 6 hours, Eddy polls each show's RSS for new episodes
 - Gemma classifies each new episode against the user's profile using title, category, and show notes (three-bucket classification: clear-match / clear-reject / uncertain)
 - Uncertain drops silently. A good episode Eddy missed is invisible; a bad episode surfaced erodes trust in "why this?"
@@ -463,7 +463,7 @@ Watched state is an additional overlay — tick + "Watched Xh ago" replacing dur
 More of the timeline visible at once is the goal.
 
 - **Portrait (≥768px)** — two-column grid within each day
-- **Landscape (≥1024px)** — three-column grid, left sidebar with topic filter and search
+- **Landscape (≥1024px)** — three-column grid, left sidebar with interest filter and search
 
 iPhone uses the same grid, denser. No magazine mode.
 
@@ -481,7 +481,7 @@ Tap destinations:
 - Paper → Safari
 - Book → user-configured destination (Amazon/Bookshop/library/Libby/Kindle)
 
-Card shows: thumbnail, topic pill, source (person name where known), headline, one-sentence personal hook, duration/read time/page count. Past-day cards also show "Watched Xh later" if applicable.
+Card shows: thumbnail, interest pill, source (person name where known), headline, one-sentence personal hook, duration/read time/page count. Past-day cards also show "Watched Xh later" if applicable.
 
 ### Personal hook
 
@@ -504,7 +504,7 @@ No swipe-as-primary. Dismissal is a quiet opt-out.
 
 Full-text across the whole timeline via SQLite FTS5. Matches title, channel, description, and transcript. Flat results list ordered by relevance, card's original date shown beneath. Also powers "find similar" for gone cards.
 
-Text-only in v1. Filters (saved, person, date range, topic) come in a later polish pass.
+Text-only in v1. Filters (saved, person, date range, interest) come in a later polish pass.
 
 ### Saved and Reading list
 
@@ -569,9 +569,9 @@ Eddy proactively finds content worth surfacing. Small number of genuinely good p
 
 ### Profile: four layers
 
-**Layer 1 — Explicit.** Topics with weights, followed people (Section 4a), hard exclusions (kids' invisible to them), duration preferences.
+**Layer 1 — Explicit.** Interests in user-defined rank order with per-interest expertise level, followed people (Section 4a), hard exclusions (kids' invisible to them), duration preferences.
 
-**Layer 2 — Behavioural.** Completion rate per topic/person/duration-band, save rate, dwell-before-dismiss, re-watch count, requested-and-finished rate.
+**Layer 2 — Behavioural.** Completion rate per interest/person/duration-band, save rate, dwell-before-dismiss, re-watch count, requested-and-finished rate.
 
 **Layer 3 — Person-level trust.** Per-person trust weights inferred from engagement. Completing most of a person's outputs across media → high trust. Dismissing consistently → low trust. Drives heavy scoring input.
 
@@ -583,7 +583,7 @@ Every item surfaced by discovery (not requests, not direct outputs from people y
 
 Where a followed person is involved, the reasoning routes through them wherever possible:
 
-Adult: *"Tyler recommended this book twice in the last six months, and it's on a topic you've been reading about."*
+Adult: *"Tyler recommended this book twice in the last six months, and it's on something you've been reading about."*
 
 Kid: *"DanTDM doesn't usually make redstone videos, but this one's exactly the kind of thing you finished last week."*
 
@@ -595,7 +595,7 @@ v1 (Phase 5):
 
 - **New outputs from people you follow** — their YouTube uploads, Substack posts, podcast appearances, book releases. Strongest signal.
 - **Recommendations from people you follow** — Gemma detects pointers in their text output (book mentions, linked essays), surfaces as candidates with recommender attribution.
-- **Topic search** — daily `ytsearch20:'topic keywords'` for top-weighted topics. Used when person-sourced candidates are thin.
+- **Interest search** — daily `ytsearch20:'interest keywords'` for top-ranked interests. Used when person-sourced candidates are thin.
 - **Related-people expansion** — from engaged items, identify adjacent people (guests, collaborators, frequently-mentioned). Candidates for suggesting new follows, not for direct surfacing without confirmation.
 - **Podcast discovery** — episode-level scoring across a curated per-user podcast list (Section 7).
 
@@ -614,7 +614,7 @@ For each active user:
   1. Refresh candidate pool
        - Pull new outputs from followed people
        - Scan followed people's text outputs for recommendations
-       - Run topic searches for top-N topics (fill gaps)
+       - Run interest searches for top-N interests (fill gaps)
        - Poll curated podcast list
        - Dedupe against seen_items and content_items
   2. Score candidates with Gemma
@@ -633,18 +633,18 @@ Cap is firm. Surplus carries forward but never inflates a single day. Finishing 
 
 ### Balance: a choice, not imposed
 
-When imbalance is pronounced (>70% one topic across multiple days, triggering at most once per 1-2 weeks), Eddy surfaces a single in-feed prompt — not a notification, not a nag:
+When imbalance is pronounced (>70% one interest across multiple days, triggering at most once per 1-2 weeks), Eddy surfaces a single in-feed prompt — not a notification, not a nag:
 
 > *"You've watched a lot of Minecraft recently. Want today's picks to stretch you a bit, or stay in the groove?"*
 > [Stretch me] [Stay in the groove]
 
-Both options lead to good picks. Stretch biases toward adjacent topics the user has shown mild interest in. Stay honours the current pattern. Not a punishment.
+Both options lead to good picks. Stretch biases toward adjacent interests the user has shown some engagement with. Stay honours the current pattern. Not a punishment.
 
 Kids see this too. Noticing your own patterns in real time is part of the literacy principle.
 
 ### Kid transparency
 
-Kids see: their own topics/people followed/durations, watch history via timeline, "why this?" on every surfaced item, balance prompts.
+Kids see: their own interests/people followed/durations, watch history via timeline, "why this?" on every surfaced item, balance prompts.
 
 Person-level observation for kids is qualitative: *"You've been really into this creator lately."* Never quantitative or ranked.
 
@@ -656,31 +656,40 @@ Adults see everything about their own profile. Parents see full detail of kid pr
 
 First 3-4 weeks, behavioural signal is thin. "Picked for you" shows *"Eddy is still figuring out what you like — tell it more"* with a prompt to follow people and rate. Aligns with Drift's "Getting to know you" baseline.
 
-### Topics
+### Interests
 
-Topics are named interests with a set of yt-dlp search strings. The `search_terms` JSON array is what does the work — `ytsearch20:'minecraft redstone tutorial'` runs daily as a gap-filler when person-sourced candidates are thin. The label and emoji are purely display.
+Interests are named subjects with a set of yt-dlp search strings. The `search_terms` JSON array is what does the work — `ytsearch20:'minecraft redstone tutorial'` runs daily as a gap-filler when person-sourced candidates are thin. The label and emoji are purely display.
 
-**Two sources:**
+**Creation is freeform.** No taxonomy to pick from. User types an interest; one Gemma call generates the `search_terms` array and an emoji. Prompt: *"Generate 4 YouTube search queries that would find good videos about {interest}, plus a single emoji. Return JSON only."* Specificity is the input quality knob — *"minecraft redstone"* generates better search terms than *"minecraft"*; *"olympic distance triathlon training"* beats *"fitness"*. The input affordance prompts for it: *"Add an interest. Be specific."*
 
-**Seed list (`source = 'seed'`)** — a static JSON file shipped as a DB migration at Phase 5. Aim for 60–80 topics grouped by category:
+**Onboarding:** Same freeform input, used in a setup flow. Kid setup is parent-driven, so the parent types the kid's interests; adults seed their own. New interests append to the end of the rank order; expertise defaults to `comfortable`. Minimum to proceed: ≥1 interest and ≥1 followed person. Without both, discovery has nothing to work with.
 
-| Category | Examples |
-|---|---|
-| Gaming | Minecraft, Roblox, Pokémon, Zelda |
-| Sport | Football, Running, Cycling, Tennis |
-| Science | Space, Biology, Physics, Chemistry |
-| Tech | Programming, AI, Electronics |
-| Arts | Drawing, Music production, Photography |
-| Food | Cooking, Baking |
-| Fitness | Gym, Yoga, Martial arts |
+**Channel → interest inference (Phase 5):** When a user subscribes to a channel, Gemma reads the channel description and recent titles and suggests 1–2 existing interests to link to it. This is a mapping from `channel_id` to existing `interest_id` — not interest creation. Behavioural weight flows from there naturally.
 
-Age-gate anything warranting it (combat sports, some political commentary). The `age_gate` flag means it never surfaces in a kid's topic picker. The seed list doesn't need to be exhaustive on day one — `user_added` is the safety valve.
+### Profile editing
 
-**User-added (`source = 'user_added'`)** — user types a topic Eddy doesn't have. One Gemma call generates the `search_terms` array. Prompt: *"Generate 4 YouTube search queries that would find good videos about {topic}. Return a JSON array only."* Store and treat identically to seed topics from that point.
+The explicit profile (Layer 1) is editable on a single page. Three sections, no tabs:
 
-**Onboarding topic picker:** On first setup, show a categorised pill grid — topics grouped by category, scrollable. Kids see age-appropriate categories; adults see the full set. Tap to add; weight defaults to `1.0`. Minimum viable onboarding: ≥1 topic and ≥1 followed person. Without both, discovery has nothing to work with.
+- **Interests** — draggable ordered list of interest chips. Each chip shows label and a small expertise indicator (beginner / comfortable / deep). Tap a chip → bottom sheet with remove and expertise selector. Plus-button at the end of the list adds an interest via the freeform input flow.
+- **People** — links into the people management surface (Section 4a).
+- **Duration preference** — short/medium/long picker.
 
-**Channel → topic inference (Phase 5):** When a user subscribes to a channel, Gemma reads the channel description and recent titles and suggests 1–2 existing topics to link to it. This is a mapping from `channel_id` to existing `topic_id` — not topic creation. Behavioural weight flows from there naturally.
+The Profile page is also the only surface for editing interests — there is no separate `/interests` PWA route. The API route stays as the contract for the PWA and any future client.
+
+**Rank, not weight.** Ordering is the input. Stored as an integer `rank` per user per interest; reordering is a swap of two values. Discovery scoring derives the weight at runtime as `1 / sqrt(rank)` — the ranker gets honest total-order signal without a slider to fiddle.
+
+**Expertise.** Per user-interest enum: `beginner | comfortable | deep`. Defaults to `comfortable` on add. Passed to Gemma as scoring context so it prefers level-appropriate candidates. Per-user-per-interest, not global — the same interest can be `beginner` for one kid and `deep` for an adult.
+
+**Schema.** The `user_interests` join table carries `rank INTEGER NOT NULL` and `expertise TEXT NOT NULL CHECK (expertise IN ('beginner','comfortable','deep'))`. The legacy `weight` column is dropped (or kept as a generated column from `rank` only if a reader still depends on it during migration).
+
+**Kid vs adult asymmetry.**
+
+- Reordering and expertise changes are free for kids — they reshape ranking within already-approved interests, no new content fetched.
+- Removing an interest is free.
+- **Adding** a new interest for a kid routes through the guard as a request_type distinct from content requests, so the eval set stays clean and per-type metrics stay meaningful. Clear-yes adds it; uncertain escalates to parent; clear-no rejects with reason + appeal.
+- Hard exclusions remain parent-managed and invisible to kids.
+
+Layers 2–4 are not editable. Drift (Section 10) is where observations from those layers surface; Gemma never writes to the explicit profile directly.
 
 ---
 
@@ -692,13 +701,13 @@ Weekly. Not a score to optimise. A mirror to read.
 
 Every Sunday evening, Eddy generates a one-page summary:
 
-- **How you spent your time this week** — topic breakdown, visual bars
+- **How you spent your time this week** — interest breakdown, visual bars
 - **Who you spent it with** — people you followed and engaged with, qualitative
 - **What you kept watching** — completion rate, favourites
 - **What you asked for and got** — requested vs pipeline-surfaced
 - **One observation** — Gemma-written sentence: *"You watched a lot of Minecraft tutorials this week and finished most of them — looks like you're learning something specific."*
 
-No number. No target. No week-on-week comparison. Optional streak counter tracks *topic diversity*, not volume.
+No number. No target. No week-on-week comparison. Optional streak counter tracks *interest diversity*, not volume.
 
 Each row taps through to a filtered timeline view of the evidence. Drift is a guided tour of the week the kid can already see.
 
@@ -858,7 +867,7 @@ Tested with integration tests. Any MCP response that fails the privacy filter th
 | Video titles, channels, watch history | ✓ | ✗ |
 | Kids' profiles, consumption, Drift detail | ✓ | ✗ (ever) |
 | Article tap history | ✓ | ✗ |
-| Adult profile topics and followed people | ✓ | ✓ |
+| Adult profile interests and followed people | ✓ | ✓ |
 | Adult Drift summary | ✓ | ✓ |
 | System status, queue depth | ✓ | ✓ |
 
@@ -931,7 +940,7 @@ Deliberate, restrained, editorial. CSS custom properties consumed directly. No T
 │   [image 16:9]         [🔖][✕] │   Icons top-right, small, --text-tertiary
 │   [content type badge]          │   Top-left of image, semi-transparent
 ├─────────────────────────────────┤
-│  [topic pill]  ·  [person]      │   DM Sans --text-xs, uppercase
+│  [interest pill] ·  [person]    │   DM Sans --text-xs, uppercase
 │  Headline wraps to two lines    │   Source Serif 4 --text-lg
 │  "Personal hook, one sentence." │   Source Serif 4 italic --text-base, --text-secondary
 │  4 min  ·  2 hours ago          │   DM Sans --text-xs, --text-tertiary
@@ -1007,7 +1016,7 @@ Spec in Section 8. ~3-4 sessions.
 - Inline HTML5 player, full-screen, state machine
 - Watched indicator
 - Saved tab (bottom nav, never recycled)
-- Topic filter (flat list)
+- Interest filter (flat list)
 - Bottom nav
 - `/design-reference` route
 
@@ -1040,7 +1049,7 @@ Specs in Sections 4a and 8. ~3 sessions.
 - RSS polling per followed channel, 6h interval
 - New channel outputs flow through the same request pipeline — including the shadow guard, so channel-originated items contribute to the eval set
 - Today's feed gains a "From people you follow" section
-- Full-text search via FTS5 over titles, personal hooks, person names, topics
+- Full-text search via FTS5 over titles, personal hooks, person names, interests
 - Search UI in the PWA
 
 **Ends with:** kids follow channels, new videos appear automatically, search works across the whole library.
@@ -1051,20 +1060,24 @@ Specs in Sections 4a and 9a. ~2-3 sessions.
 
 **Shipped:**
 
-- `candidate_pool`, `person_recommendations`, `inferred_affinities`, `channel_topic_links`, `balance_prompts` tables
-- Discovery engine as a BullMQ repeatable job on M4 — topic search via `ytsearch`, daily cap with surplus carry-forward
+- `candidate_pool`, `person_recommendations`, `inferred_affinities`, `channel_topic_links`, `balance_prompts` tables (the `channel_topic_links` table renames to `channel_interest_links` as part of the rework below)
+- Discovery engine as a BullMQ repeatable job on M4 — interest search via `ytsearch`, daily cap with surplus carry-forward
 - Gemma scoring in batches, `why_text` stored per candidate
 - Shadow guard runs on discovered items the same way it runs on requested items
 - "Picked for you" section in Today, with "That's it for today — more tomorrow"
 - Balance prompt (>70% concentration, max once per 1-2 weeks)
-- Seed topics DB migration (~65 topics, categorised, age-gated where needed)
-- Onboarding topic picker at `/interests` (categorised pill grid, ≥1 topic + ≥1 person required to proceed)
-- User-added topic flow (Gemma generates `search_terms` from free-text input)
-- Channel → topic inference at subscribe time
+- Seed-interest DB migration (~65 entries, categorised, age-gated) — being deprecated, see Remaining
+- Onboarding picker at `/interests` (categorised pill grid, ≥1 interest + ≥1 person required to proceed) — being replaced, see Remaining
+- Freeform interest creation (Gemma generates `search_terms` from typed input) — becomes the only path
+- Channel → interest inference at subscribe time
 
 **Remaining:**
 
 - Recommendation extraction — Gemma reading followed people's text outputs to populate `person_recommendations`
+- Profile editing surface — single-page Interests/People/Duration on the existing Profile route; rank-replaces-weight migration on the join table (`rank INTEGER`, `expertise TEXT CHECK (...)`); kid interest-add routed through guard as a distinct request_type
+- Schema rename: `topics` → `interests`, `user_topics` → `user_interests`, `channel_topic_links` → `channel_interest_links`, `topic_id` → `interest_id` throughout. ntfy-topic naming in §12 is unrelated and stays
+- Drop the standalone `/interests` PWA route — the Profile page is the only edit surface. The interests API route stays as the contract
+- Replace onboarding pill-grid picker with freeform interest input (Gemma generates `search_terms` + emoji per entry); deprecate seed-interest taxonomy and `age_gate` flag (no taxonomy to gate against)
 - Four-layer profile enrichment — behavioural signals, per-person trust weights, richer `inferred_affinities` (statements + evidence)
 - Related-people expansion (for follow suggestions, not direct surfacing)
 - "Why this?" UI affordance on discovery cards, routing through a specific person where possible
