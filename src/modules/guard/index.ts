@@ -154,10 +154,13 @@ export async function scoreForRequest(params: ScoreParams): Promise<GuardVerdict
 
 const THUMB_CLASSIFY_PROMPT = `Look at this YouTube thumbnail image.
 
-Classify it as either "editorial" or "slop".
+Classify it as either "editorial" or "slop" by overall composition style.
 
-Editorial: clean photography or illustration, minimal/no text overlay, artistic or journalistic composition — the image speaks for itself.
-Slop: exaggerated facial expressions (open mouth, wide eyes), heavy text overlays, arrows or circles highlighting things, bright clashing colours, clickbait composition.
+Editorial: clean photography or illustration, journalistic or magazine-cover composition, considered typography. Prominent title text is fine when it's in an editorial style — serif headlines, clean sans-serif, publisher wordmarks, album/podcast-cover typography.
+
+Slop: manufactured shock expressions (open mouth, wide/bulging eyes, fake reactions), arrows or circles pointing at things, garish clashing colours, stroked/outlined "YouTuber" text styling, or composition clearly designed to bait clicks.
+
+Text presence alone does not decide it — a calm magazine-cover thumbnail with a large title is editorial; a shocked face with clickbait arrows is slop even with little text.
 
 Return ONLY valid JSON with no other text:
 {

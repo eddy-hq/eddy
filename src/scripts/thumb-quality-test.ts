@@ -11,10 +11,13 @@ const BOLD   = '\x1b[1m';
 
 const PROMPT = `Look at this YouTube thumbnail image.
 
-Classify it as either "editorial" or "slop".
+Classify it as either "editorial" or "slop" by overall composition style.
 
-Editorial: clean photography or illustration, minimal/no text overlay, artistic or journalistic composition, the image speaks for itself.
-Slop: exaggerated facial expressions (open mouth, wide eyes), heavy text overlays, arrows or circles highlighting things, bright clashing colours, clickbait composition.
+Editorial: clean photography or illustration, journalistic or magazine-cover composition, considered typography. Prominent title text is fine when it's in an editorial style — serif headlines, clean sans-serif, publisher wordmarks, album/podcast-cover typography.
+
+Slop: manufactured shock expressions (open mouth, wide/bulging eyes, fake reactions), arrows or circles pointing at things, garish clashing colours, stroked/outlined "YouTuber" text styling, or composition clearly designed to bait clicks.
+
+Text presence alone does not decide it — a calm magazine-cover thumbnail with a large title is editorial; a shocked face with clickbait arrows is slop even with little text.
 
 Return ONLY valid JSON with no other text:
 {
@@ -66,18 +69,28 @@ async function run(): Promise<void> {
 
   const limit = parseInt(getArg('limit') ?? '20', 10);
   const channelFilter = getArg('channel');
+  const idsArg = getArg('ids');
+  const ids = idsArg ? idsArg.split(',').map((s) => s.trim()).filter(Boolean) : null;
 
-  const rows = db.prepare(`
-    SELECT youtube_id, title, channel
-    FROM requests
-    WHERE youtube_id IS NOT NULL
-      AND status IN ('ready', 'watched')
-      ${channelFilter ? `AND lower(channel) LIKE lower('%' || ? || '%')` : ''}
-    ORDER BY added_at DESC
-    LIMIT ?
-  `).all(...(channelFilter ? [channelFilter, limit] : [limit])) as Array<{
-    youtube_id: string; title: string | null; channel: string | null;
-  }>;
+  let rows: Array<{ youtube_id: string; title: string | null; channel: string | null }>;
+  if (ids && ids.length > 0) {
+    const placeholders = ids.map(() => '?').join(',');
+    rows = db.prepare(`
+      SELECT youtube_id, title, channel
+      FROM requests
+      WHERE youtube_id IN (${placeholders})
+    `).all(...ids) as typeof rows;
+  } else {
+    rows = db.prepare(`
+      SELECT youtube_id, title, channel
+      FROM requests
+      WHERE youtube_id IS NOT NULL
+        AND status IN ('ready', 'watched')
+        ${channelFilter ? `AND lower(channel) LIKE lower('%' || ? || '%')` : ''}
+      ORDER BY added_at DESC
+      LIMIT ?
+    `).all(...(channelFilter ? [channelFilter, limit] : [limit])) as typeof rows;
+  }
 
   if (rows.length === 0) {
     // eslint-disable-next-line no-console
