@@ -12,7 +12,6 @@ type Expertise = 'beginner' | 'comfortable' | 'deep';
 interface MyInterest {
   interestId: string;
   label: string;
-  emoji: string | null;
   rank: number;
   expertise: Expertise;
 }
@@ -343,10 +342,6 @@ function InterestChip({
         }}
       />
 
-      <span style={{ fontSize: 18, lineHeight: 1, flexShrink: 0 }}>
-        {interest.emoji ?? '🔍'}
-      </span>
-
       <button
         onClick={(e) => {
           if (dragging) { e.preventDefault(); return; }
@@ -587,8 +582,7 @@ function InterestSheet({
           margin: '0 auto 14px',
         }} />
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 22 }}>
-          <span style={{ fontSize: 26, lineHeight: 1 }}>{interest.emoji ?? '🔍'}</span>
+        <div style={{ marginBottom: 22 }}>
           <h2 style={{
             fontFamily: 'var(--font-serif)', fontSize: 22, fontWeight: 500,
             letterSpacing: '-0.01em', margin: 0, color: 'var(--text-primary)',

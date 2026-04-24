@@ -22,10 +22,6 @@ interface InterestRow {
   category: string | null;
 }
 
-interface InterestFullRow extends InterestRow {
-  emoji: string | null;
-}
-
 interface UserRow {
   user_id: string;
   role: string;
@@ -623,15 +619,15 @@ function resolveUser(userId: unknown): UserRow {
 
 interface CategoryGroup {
   name: string;
-  interests: Array<{ id: string; label: string; emoji: string | null; selected: boolean }>;
+  interests: Array<{ id: string; label: string; selected: boolean }>;
 }
 
 interestsRouter.get('/', (req: Request, res: Response) => {
   const user = resolveUser(req.query['userId']);
 
   const allInterests = db.prepare(
-    `SELECT id, label, emoji, category FROM interests ORDER BY category, label`
-  ).all() as InterestFullRow[];
+    `SELECT id, label, category FROM interests ORDER BY category, label`
+  ).all() as InterestRow[];
 
   const selectedIds = new Set(
     (db.prepare('SELECT interest_id FROM user_interests WHERE user_id = ?').all(user.user_id) as Array<{ interest_id: string }>)
@@ -642,7 +638,7 @@ interestsRouter.get('/', (req: Request, res: Response) => {
   for (const t of allInterests) {
     const cat = t.category ?? 'Other';
     if (!categoryMap.has(cat)) categoryMap.set(cat, { name: cat, interests: [] });
-    categoryMap.get(cat)!.interests.push({ id: t.id, label: t.label, emoji: t.emoji, selected: selectedIds.has(t.id) });
+    categoryMap.get(cat)!.interests.push({ id: t.id, label: t.label, selected: selectedIds.has(t.id) });
   }
 
   res.json({ categories: Array.from(categoryMap.values()), selected_count: selectedIds.size });
@@ -683,7 +679,6 @@ interestsRouter.delete('/select', (req: Request, res: Response) => {
 interface MineRow {
   interest_id: string;
   label: string;
-  emoji: string | null;
   rank: number;
   expertise: 'beginner' | 'comfortable' | 'deep';
 }
@@ -692,7 +687,7 @@ interestsRouter.get('/mine', (req: Request, res: Response) => {
   const user = resolveUser(req.query['userId']);
 
   const rows = db.prepare(`
-    SELECT ui.interest_id, i.label, i.emoji, ui.rank, ui.expertise
+    SELECT ui.interest_id, i.label, ui.rank, ui.expertise
     FROM user_interests ui
     INNER JOIN interests i ON i.id = ui.interest_id
     WHERE ui.user_id = ?
@@ -703,7 +698,6 @@ interestsRouter.get('/mine', (req: Request, res: Response) => {
     interests: rows.map((r) => ({
       interestId: r.interest_id,
       label: r.label,
-      emoji: r.emoji,
       rank: r.rank,
       expertise: r.expertise,
     })),
@@ -784,8 +778,8 @@ interestsRouter.post('/user-add', (req: Request, res: Response) => {
 
   const now = new Date().toISOString();
   db.prepare(`
-    INSERT OR IGNORE INTO interests (id, label, emoji, category, source, search_terms)
-    VALUES (?, ?, '🔍', NULL, 'user_added', '[]')
+    INSERT OR IGNORE INTO interests (id, label, category, source, search_terms)
+    VALUES (?, ?, NULL, 'user_added', '[]')
   `).run(interestId, trimmed);
 
   db.prepare(`
