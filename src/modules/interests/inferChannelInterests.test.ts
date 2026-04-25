@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { inferChannelInterests } from './index';
 
 vi.mock('../../config', () => ({
@@ -55,6 +55,10 @@ beforeEach(() => {
     ok: true,
     text: async () => '<feed></feed>',
   })));
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
 });
 
 describe('inferChannelInterests', () => {

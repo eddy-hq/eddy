@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { normalizeUserAddedInterest } from './normalize';
 
 vi.mock('../../config', () => ({
@@ -49,6 +49,13 @@ beforeEach(() => {
 function flushMicrotasks(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve));
 }
+
+// `normalizeUserAddedInterest` fires `void generateSearchTermsAsync(...)`
+// for new interests. Flush after every test so background ollama/db work
+// can't bleed into the next test's mock state.
+afterEach(async () => {
+  await flushMicrotasks();
+});
 
 describe('normalizeUserAddedInterest', () => {
   it('derives a slug, inserts into interests + user_interests at next rank', async () => {
