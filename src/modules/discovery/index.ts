@@ -237,6 +237,13 @@ function daysSince(isoDate: string | null): number | null {
 // on ranking even when older items are present.
 const FRESHNESS_WINDOW_DAYS = 180;
 
+// Drop YouTube Shorts at intake. Sub-90s clips break the model Eddy is
+// built around: completion telemetry is meaningless, hooks ("max 15
+// words, specific not generic") are longer than the video, and the 9:16
+// format doesn't fit the 16:9 grid. Kids can still share individual
+// shorts via the iOS Shortcut → guard path.
+export const SHORTS_MAX_SECS = 90;
+
 async function refreshCandidatePool(userId: string, userInterests: UserInterestRow[]): Promise<number> {
   const now = new Date().toISOString();
   let added = 0;
@@ -262,6 +269,7 @@ async function refreshCandidatePool(userId: string, userInterests: UserInterestR
 
       for (const result of results) {
         if (isDuplicateCandidate(userId, result.videoId)) continue;
+        if (result.durationSecs !== null && result.durationSecs <= SHORTS_MAX_SECS) continue;
 
         const publishedAt = uploadDateToIso(result.uploadDate);
         const age = daysSince(publishedAt);

@@ -7,7 +7,7 @@ import { logger } from '../../logger';
 import { ValidationError, NotFoundError } from '../../errors';
 import { downloadQueue } from '../../queue';
 import type { DownloadJobData } from '../content';
-import { inferChannelInterests } from '../discovery';
+import { inferChannelInterests, SHORTS_MAX_SECS } from '../discovery';
 
 const execFileAsync = promisify(execFile);
 
@@ -107,6 +107,24 @@ function parseYoutubeRss(xml: string): { channelName: string; videos: RssVideo[]
 
 // ── RSS poller ────────────────────────────────────────────────────────────────
 
+// YouTube RSS doesn't carry duration, so we probe with yt-dlp before
+// queueing. On failure we return null and let the caller proceed —
+// better to download the occasional short than to silently drop a
+// followed creator's video because metadata flaked.
+async function fetchVideoDuration(videoId: string): Promise<number | null> {
+  try {
+    const { stdout } = await execFileAsync(YTDLP_BIN_M4, [
+      `https://www.youtube.com/watch?v=${videoId}`,
+      '--print', '%(duration)s',
+      '--no-download', '--quiet', '--no-warnings',
+    ], { maxBuffer: 1024 * 1024, timeout: 15_000 });
+    const n = Number(stdout.trim());
+    return Number.isFinite(n) && n > 0 ? n : null;
+  } catch {
+    return null;
+  }
+}
+
 interface OutputRow {
   output_id: string;
   channel_id: string;
@@ -157,6 +175,18 @@ async function pollChannel(output: OutputRow): Promise<void> {
     db.prepare(
       'INSERT OR IGNORE INTO seen_videos (channel_id, video_id, seen_at) VALUES (?, ?, ?)'
     ).run(output.channel_id, video.videoId, new Date().toISOString());
+
+    // Skip shorts before consuming the first-poll confirmation slot, so
+    // a channel whose latest upload is a short still confirms with the
+    // next non-short rather than queueing nothing.
+    const duration = await fetchVideoDuration(video.videoId);
+    if (duration !== null && duration <= SHORTS_MAX_SECS) {
+      logger.info(
+        { videoId: video.videoId, channelId: output.channel_id, duration },
+        'Skipping short from follow'
+      );
+      continue;
+    }
 
     // On first poll: skip downloading all but the single most recent video
     if (isFirstPoll && !firstUnseen) continue;
