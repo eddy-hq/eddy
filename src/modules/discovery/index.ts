@@ -733,6 +733,12 @@ function surfaceForToday(userId: string, isKid: boolean): number {
   const remaining = cap - alreadySurfaced.n;
   const eligibleGuard = isKid ? "AND (c.guard_verdict = 'clear_yes' OR c.guard_verdict IS NULL)" : '';
 
+  // History exclusion: anything we already have a record of — requested,
+  // downloaded, deleted, or rejected — must never resurface via discovery.
+  // The status filter handles candidates whose pool row has already
+  // changed state; the NOT EXISTS clause covers requests sourced
+  // independently (share-sheet, search) where the candidate_pool row
+  // wasn't updated.
   const candidates = db.prepare(`
     SELECT c.candidate_id, c.title, c.published_at, c.connection_score,
            c.quality_score, c.time_sensitivity, c.interest_id,
@@ -744,6 +750,10 @@ function surfaceForToday(userId: string, isKid: boolean): number {
       AND c.surfaced_date IS NULL
       AND c.connection_score >= ${MIN_CONNECTION_SCORE}
       AND c.quality_score >= ${MIN_QUALITY_SCORE}
+      AND NOT EXISTS (
+        SELECT 1 FROM requests r
+        WHERE r.user_id = c.user_id AND r.youtube_id = c.external_id
+      )
   `).all(userId) as Array<{
     candidate_id: string;
     title: string | null;

@@ -28,7 +28,6 @@ interface Candidate {
   interest_id: string | null;
   interest_label: string | null;
   rank: number;
-  surfaced_today: number;
 }
 
 type SlotTag = 'regular' | 'stretch' | 'cut' | 'low conn' | 'low qual' | 'low both' | 'low weight';
@@ -50,7 +49,6 @@ interface Section {
     rejected: number;
     selected: number;
     cap: number;
-    alreadySurfacedToday: number;
   };
 }
 
@@ -90,31 +88,35 @@ function failureReason(c: Candidate, weighted: number): SlotTag | null {
 function buildSection(user: UserRow): Section {
   const isKid = user.role === 'kid';
   const cap = isKid ? 5 : 15;
-  const today = new Date().toISOString().slice(0, 10);
 
   const guardClause = isKid
     ? "AND (c.guard_verdict = 'clear_yes' OR c.guard_verdict IS NULL)"
     : '';
 
-  // Pull every scored candidate regardless of surfaced_date so the
-  // simulation runs from scratch — what would the algorithm pick today
-  // if there were no prior surfacing on the books?
+  // Match production: only scored, never-surfaced candidates that have no
+  // history in requests. Anything with a record (surfaced previously,
+  // dismissed, requested via any path, downloaded, deleted, rejected)
+  // must not reappear in discovery.
   const rows = db.prepare(`
     SELECT c.candidate_id, c.external_id, c.url, c.title, c.channel,
            c.thumbnail_url, c.published_at, c.duration_secs,
            c.connection_score, c.quality_score, c.time_sensitivity,
            c.why_text, c.guard_verdict,
            c.interest_id, i.label AS interest_label,
-           COALESCE(ui.rank, 999) AS rank,
-           CASE WHEN c.surfaced_date = ? THEN 1 ELSE 0 END AS surfaced_today
+           COALESCE(ui.rank, 999) AS rank
     FROM candidate_pool c
     LEFT JOIN user_interests ui
       ON ui.user_id = c.user_id AND ui.interest_id = c.interest_id
     LEFT JOIN interests i ON i.id = c.interest_id
     WHERE c.user_id = ?
-      AND c.status IN ('scored', 'surfaced')
+      AND c.status = 'scored'
+      AND c.surfaced_date IS NULL
       ${guardClause}
-  `).all(today, user.user_id) as Candidate[];
+      AND NOT EXISTS (
+        SELECT 1 FROM requests r
+        WHERE r.user_id = c.user_id AND r.youtube_id = c.external_id
+      )
+  `).all(user.user_id) as Candidate[];
 
   const ranked = rows.map((r) => {
     const fresh = freshnessMultiplier(r.published_at, r.time_sensitivity);
@@ -161,7 +163,6 @@ function buildSection(user: UserRow): Section {
       rejected: ranked.filter((r) => r.reject !== null).length,
       selected: selected.length,
       cap,
-      alreadySurfacedToday: rows.filter((r) => r.surfaced_today === 1).length,
     },
   };
 }
@@ -244,15 +245,11 @@ function cardHtml(c: Card): string {
   const dur = durationLabel(r.duration_secs);
 
   const stretchCardClass = c.slot === 'stretch' ? ' stretch-card' : '';
-  const actuallySurfaced = r.surfaced_today === 1
-    ? '<div class="actually-surfaced">on feed today</div>'
-    : '';
 
   return `<div class="card${stretchCardClass}">
     <div class="thumb-wrap">
       ${thumb}
       <div class="${slotClasses}">${escapeHtml(slotKey)}</div>
-      ${actuallySurfaced}
       ${dur ? `<div class="duration">${escapeHtml(dur)}</div>` : ''}
     </div>
     <div class="body">
@@ -296,8 +293,8 @@ export function renderPreviewHtml(targetArg: string | null): string {
 <div class="section">
   <h1>${escapeHtml(s.user.display_name)} <span style="color:var(--fg-muted);font-weight:400;font-size:14px">(${escapeHtml(s.user.role)})</span></h1>
   <div class="summary">
-    Pool: <strong>${s.totals.pool}</strong> · eligible <strong>${s.totals.eligible}</strong> · rejected by floor <strong>${s.totals.rejected}</strong> ·
-    cap <strong>${s.totals.cap}</strong> · simulated selection <strong>${s.totals.selected}</strong> · already surfaced today <strong>${s.totals.alreadySurfacedToday}</strong>
+    Pool: <strong>${s.totals.pool}</strong> (eligible <strong>${s.totals.eligible}</strong>, rejected by floor <strong>${s.totals.rejected}</strong>) ·
+    cap <strong>${s.totals.cap}</strong> · simulated selection <strong>${s.totals.selected}</strong>
   </div>
   ${s.selected.length > 0 ? `
     <h2>Simulated feed <span class="muted">— what the algorithm picks today (${s.selected.length}/${s.totals.cap})</span></h2>
