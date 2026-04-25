@@ -62,6 +62,7 @@ interface SearchResult {
   viewCount: number | null;
   uploadDate: string | null;
   thumbnailUrl: string | null;
+  liveStatus: string | null;
   url: string;
 }
 
@@ -172,7 +173,7 @@ async function searchInterestVideos(searchTerm: string): Promise<SearchResult[]>
     const result = await execFileAsync(YTDLP_BIN_M4, [
       `ytsearch20:${searchTerm}`,
       '--print',
-      '%(.{id,title,channel,duration,view_count,upload_date,timestamp,thumbnail})j',
+      '%(.{id,title,channel,duration,view_count,upload_date,timestamp,thumbnail,live_status})j',
       '--no-download',
       '--quiet',
       '--no-warnings',
@@ -199,6 +200,7 @@ async function searchInterestVideos(searchTerm: string): Promise<SearchResult[]>
         viewCount: typeof item['view_count'] === 'number' ? item['view_count'] : null,
         uploadDate: typeof item['upload_date'] === 'string' ? item['upload_date'] : null,
         thumbnailUrl: typeof item['thumbnail'] === 'string' ? item['thumbnail'] : null,
+        liveStatus: typeof item['live_status'] === 'string' ? item['live_status'] : null,
         url: `https://www.youtube.com/watch?v=${videoId}`,
       });
     } catch {
@@ -271,6 +273,7 @@ async function refreshCandidatePool(userId: string, userInterests: UserInterestR
       for (const result of results) {
         if (isDuplicateCandidate(userId, result.videoId)) continue;
         if (result.durationSecs !== null && result.durationSecs <= SHORTS_MAX_SECS) continue;
+        if (result.liveStatus === 'is_live' || result.liveStatus === 'is_upcoming') continue;
 
         const publishedAt = uploadDateToIso(result.uploadDate);
         const age = daysSince(publishedAt);
@@ -324,6 +327,7 @@ interface PlaylistEntry {
   videoId: string;
   title: string;
   durationSecs: number | null;
+  liveStatus: string | null;
 }
 
 const PER_CHANNEL_BACKCATALOG_BUDGET = 3;
@@ -335,7 +339,7 @@ async function fetchChannelPlaylist(channelId: string): Promise<PlaylistEntry[]>
     const result = await execFileAsync(YTDLP_BIN_M4, [
       `https://www.youtube.com/channel/${channelId}/videos`,
       '--flat-playlist',
-      '--print', '%(.{id,title,duration})j',
+      '--print', '%(.{id,title,duration,live_status})j',
       '--no-download',
       '--quiet',
       '--no-warnings',
@@ -357,6 +361,7 @@ async function fetchChannelPlaylist(channelId: string): Promise<PlaylistEntry[]>
         videoId,
         title: String(item['title'] ?? ''),
         durationSecs: typeof item['duration'] === 'number' ? item['duration'] : null,
+        liveStatus: typeof item['live_status'] === 'string' ? item['live_status'] : null,
       });
     } catch {
       // skip malformed lines
@@ -406,6 +411,7 @@ async function seedBackCatalogCandidates(userId: string): Promise<number> {
     const eligible = playlist.filter((v) => {
       if (seenIds.has(v.videoId)) return false;
       if (v.durationSecs !== null && v.durationSecs <= SHORTS_MAX_SECS) return false;
+      if (v.liveStatus === 'is_live' || v.liveStatus === 'is_upcoming') return false;
       if (isDuplicateCandidate(userId, v.videoId)) return false;
       return true;
     });

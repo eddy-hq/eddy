@@ -94,6 +94,15 @@ export async function fetchMetadata(url: string): Promise<VideoMetadata> {
     throw new Error('yt-dlp returned invalid JSON for metadata');
   }
 
+  // Gate currently-live broadcasts before downloadVideo can attach to the HLS
+  // feed and pin a worker slot for the length of the stream. Non-terminal so
+  // BullMQ retries + the 5-min watchdog re-enqueue auto-pick up the VOD once
+  // YouTube publishes it. is_upcoming is handled by mapYtdlpError's premiere
+  // match (terminal — could be days away, no point polling).
+  if (json['live_status'] === 'is_live') {
+    throw new Error('Live broadcast in progress — will retry once the stream ends');
+  }
+
   // Extract auto-subtitle text if present (best-effort; null is fine)
   let transcript: string | null = null;
   const subtitles = json['automatic_captions'] as Record<string, unknown> | undefined;
