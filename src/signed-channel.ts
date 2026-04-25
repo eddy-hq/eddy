@@ -93,7 +93,16 @@ export async function postSigned(
     signal: AbortSignal.timeout(opts.timeoutMs ?? 15_000),
   });
   if (!resp.ok) {
-    throw new Error(`POST ${path} → ${resp.status}`);
+    throw new Error(`POST ${path} → ${resp.status} ${resp.statusText}: ${await readSnippet(resp)}`);
   }
   return resp;
+}
+
+async function readSnippet(resp: Response, max = 500): Promise<string> {
+  try {
+    const text = (await resp.text()).trim();
+    return text.length > max ? `${text.slice(0, max)}…` : text;
+  } catch {
+    return '';
+  }
 }

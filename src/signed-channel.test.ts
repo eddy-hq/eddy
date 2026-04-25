@@ -4,7 +4,7 @@ import crypto from 'crypto';
 vi.mock('./config', () => ({
   config: {
     INTERNAL_HMAC_SECRET: 'a'.repeat(32),
-    M4_INTERNAL_URL: 'http://m4.local:3737',
+    M4_INTERNAL_URL: 'http://m4.local:3737' as string | undefined,
   },
 }));
 
@@ -13,6 +13,7 @@ vi.mock('./logger', () => ({
 }));
 
 import { sign, verify, verifySignedJson, postSigned } from './signed-channel';
+import { config } from './config';
 
 const SECRET = 'a'.repeat(32);
 
@@ -163,14 +164,38 @@ describe('postSigned', () => {
     }
   });
 
-  it('throws when the response is non-2xx', async () => {
+  it('throws with status, statusText, and a body snippet on non-2xx', async () => {
     const fetchSpy = vi
       .spyOn(globalThis, 'fetch')
-      .mockResolvedValue(new Response('err', { status: 500 }));
+      .mockResolvedValue(new Response('boom: details', { status: 500, statusText: 'Internal Server Error' }));
     try {
-      await expect(postSigned('/internal/foo', {})).rejects.toThrow(/500/);
+      await expect(postSigned('/internal/foo', {})).rejects.toThrow(
+        /POST \/internal\/foo → 500 Internal Server Error: boom: details/,
+      );
     } finally {
       fetchSpy.mockRestore();
+    }
+  });
+
+  it('truncates long error bodies to ~500 chars', async () => {
+    const long = 'x'.repeat(800);
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(new Response(long, { status: 502 }));
+    try {
+      await expect(postSigned('/internal/foo', {})).rejects.toThrow(/x{500}…/);
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it('throws when M4_INTERNAL_URL is unset', async () => {
+    const original = config.M4_INTERNAL_URL;
+    config.M4_INTERNAL_URL = undefined;
+    try {
+      await expect(postSigned('/internal/foo', {})).rejects.toThrow(/M4_INTERNAL_URL not set/);
+    } finally {
+      config.M4_INTERNAL_URL = original;
     }
   });
 });

@@ -11,9 +11,9 @@ import type { DownloadJobData } from '../content';
 
 export const internalRouter = Router();
 
-// Internal routes use raw body so HMAC can be verified over the exact bytes sent.
-// express.json() is bypassed for these routes — see server.ts for the rawBody setup.
-// Signed endpoints route through verifySignedJson; the protocol lives in signed-channel.ts.
+// Internal routes verify HMAC over the exact bytes received. The rawBody buffer is
+// captured during express.json({ verify }) parsing in server.ts; verifySignedJson
+// reads it back. The signing/verifying protocol itself lives in signed-channel.ts.
 
 interface DownloadedPayload {
   requestId: string;
