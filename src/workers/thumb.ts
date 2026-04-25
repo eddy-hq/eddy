@@ -1,11 +1,11 @@
 import { promisify } from 'util';
 import { execFile } from 'child_process';
-import crypto from 'crypto';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
 import { config } from '../config';
 import { logger as rootLogger } from '../logger';
+import { postSigned } from '../signed-channel';
 
 const execFileAsync = promisify(execFile);
 
@@ -61,7 +61,7 @@ export async function generateThumbnail(
 
   // Step 1: maxresdefault (cached at the M4 side after first call).
   try {
-    const style = await classifyMaxresdefault(baseUrl, youtubeId);
+    const style = await classifyMaxresdefault(youtubeId);
     if (style === 'editorial') {
       log.info({ youtubeId }, 'maxresdefault editorial — using channel thumbnail');
       return ytUrl(youtubeId, 'maxresdefault');
@@ -73,7 +73,7 @@ export async function generateThumbnail(
   // Step 2: YT auto-frames (1/2/3) — short-circuit on first editorial.
   for (const slot of YT_AUTO_FRAMES) {
     try {
-      const style = await classifyVariant(baseUrl, youtubeId, slot.classifyVariant);
+      const style = await classifyVariant(youtubeId, slot.classifyVariant);
       if (style === 'editorial') {
         const display = await pickDisplayUrl(youtubeId, slot.displayVariant, slot.classifyVariant);
         log.info({ youtubeId, slot: slot.classifyVariant, display }, 'Auto-frame editorial — using YT URL');
@@ -90,7 +90,7 @@ export async function generateThumbnail(
     return buildLocalThumbUrl(youtubeId);
   }
 
-  const winner = await pickLocalFrame(youtubeId, filePath, durationSecs, baseUrl);
+  const winner = await pickLocalFrame(youtubeId, filePath, durationSecs);
   if (winner) {
     try {
       fs.copyFileSync(winner.webpPath, localThumbPath);
@@ -130,49 +130,21 @@ async function pickDisplayUrl(youtubeId: string, preferred: string, fallback: st
   return ytUrl(youtubeId, fallback);
 }
 
-function signBody(body: string): string {
-  return `sha256=${crypto
-    .createHmac('sha256', config.INTERNAL_HMAC_SECRET)
-    .update(body)
-    .digest('hex')}`;
-}
-
-async function classifyMaxresdefault(baseUrl: string, youtubeId: string): Promise<'editorial' | 'slop'> {
-  const body = JSON.stringify({ youtubeId });
-  const resp = await fetch(`${baseUrl}/internal/thumb/classify`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-Eddy-Signature': signBody(body) },
-    body,
-    signal: AbortSignal.timeout(60_000),
-  });
-  if (!resp.ok) throw new Error(`classify HTTP ${resp.status}: ${await resp.text()}`);
+async function classifyMaxresdefault(youtubeId: string): Promise<'editorial' | 'slop'> {
+  const resp = await postSigned('/internal/thumb/classify', { youtubeId }, { timeoutMs: 60_000 });
   const { style } = await resp.json() as { style: 'editorial' | 'slop' };
   return style;
 }
 
-async function classifyVariant(baseUrl: string, youtubeId: string, variant: string): Promise<'editorial' | 'slop'> {
-  const body = JSON.stringify({ youtubeId, variant });
-  const resp = await fetch(`${baseUrl}/internal/thumb/classify-variant`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-Eddy-Signature': signBody(body) },
-    body,
-    signal: AbortSignal.timeout(60_000),
-  });
-  if (!resp.ok) throw new Error(`classify-variant HTTP ${resp.status}: ${await resp.text()}`);
+async function classifyVariant(youtubeId: string, variant: string): Promise<'editorial' | 'slop'> {
+  const resp = await postSigned('/internal/thumb/classify-variant', { youtubeId, variant }, { timeoutMs: 60_000 });
   const { style } = await resp.json() as { style: 'editorial' | 'slop' };
   return style;
 }
 
-async function scoreFrame(baseUrl: string, b64Image: string): Promise<{ score: number; reason: string } | null> {
-  const body = JSON.stringify({ image: b64Image, prompt: SCORE_PROMPT });
+async function scoreFrame(b64Image: string): Promise<{ score: number; reason: string } | null> {
   try {
-    const resp = await fetch(`${baseUrl}/internal/thumb/score-frame`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Eddy-Signature': signBody(body) },
-      body,
-      signal: AbortSignal.timeout(60_000),
-    });
-    if (!resp.ok) return null;
+    const resp = await postSigned('/internal/thumb/score-frame', { image: b64Image, prompt: SCORE_PROMPT }, { timeoutMs: 60_000 });
     const { raw } = await resp.json() as { raw: string };
     const match = raw.match(/\{[\s\S]*\}/);
     if (!match) return null;
@@ -198,7 +170,6 @@ async function pickLocalFrame(
   youtubeId: string,
   filePath: string,
   durationSecs: number,
-  baseUrl: string,
 ): Promise<LocalWinner | null> {
   const log = rootLogger.child({ youtubeId });
   const tmpBase = path.join(os.tmpdir(), `eddy-thumb-${youtubeId}-${Date.now()}`);
@@ -232,7 +203,7 @@ async function pickLocalFrame(
   let best: LocalWinner | null = null;
   for (const cand of extracted) {
     const b64 = fs.readFileSync(cand.path).toString('base64');
-    const result = await scoreFrame(baseUrl, b64);
+    const result = await scoreFrame(b64);
     if (result && (best === null || result.score > best.score)) {
       best = { webpPath: cand.path, seekSecs: cand.seekSecs, score: result.score };
     }

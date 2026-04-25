@@ -1,11 +1,11 @@
 import 'dotenv/config';
 import { promisify } from 'util';
 import { execFile } from 'child_process';
-import crypto from 'crypto';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
 import { config } from '../config';
+import { postSigned } from '../signed-channel';
 
 const execFileAsync = promisify(execFile);
 
@@ -172,7 +172,6 @@ async function pickDisplayUrl(youtubeId: string, preferredVariant: string, fallb
 
 async function classifyYtThumbs(
   youtubeId: string,
-  baseUrl: string,
   { stopOnEditorial = false } = {},
 ): Promise<YtThumbResult[]> {
   const results: YtThumbResult[] = [];
@@ -186,7 +185,7 @@ async function classifyYtThumbs(
       continue;
     }
     try {
-      const raw = await callScoreFrame(baseUrl, b64, CLASSIFY_PROMPT);
+      const raw = await callScoreFrame(b64, CLASSIFY_PROMPT);
       const parsed = parseClassify(raw);
       results.push({ label: frame.label, displayUrl, style: parsed.style, reason: parsed.reason });
       if (stopOnEditorial && parsed.style === 'editorial') break;
@@ -214,25 +213,8 @@ function truncate(s: string, n: number): string {
   return s.length <= n ? s : s.slice(0, n - 1) + '…';
 }
 
-function signBody(body: string): string {
-  return `sha256=${crypto
-    .createHmac('sha256', config.INTERNAL_HMAC_SECRET)
-    .update(body)
-    .digest('hex')}`;
-}
-
-async function callScoreFrame(baseUrl: string, b64Image: string, prompt: string): Promise<string> {
-  const body = JSON.stringify({ image: b64Image, prompt });
-  const resp = await fetch(`${baseUrl}/internal/thumb/score-frame`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Eddy-Signature': signBody(body),
-    },
-    body,
-    signal: AbortSignal.timeout(60_000),
-  });
-  if (!resp.ok) throw new Error(`score-frame HTTP ${resp.status}: ${await resp.text()}`);
+async function callScoreFrame(b64Image: string, prompt: string): Promise<string> {
+  const resp = await postSigned('/internal/thumb/score-frame', { image: b64Image, prompt }, { timeoutMs: 60_000 });
   const { raw } = await resp.json() as { raw: string };
   return raw;
 }
@@ -267,7 +249,6 @@ async function fetchVideos(ids: string[], recentCount: number): Promise<VideoRow
 async function scoreVideo(
   row: VideoRow,
   videoOutDir: string | null,
-  baseUrl: string,
   seekFractions: number[],
 ): Promise<FrameScore[]> {
   const tmpBase = videoOutDir ?? os.tmpdir();
@@ -286,7 +267,7 @@ async function scoreVideo(
       await extractFrame(row.file_path, seekSecs, framePath);
       const buf = fs.readFileSync(framePath);
       const b64 = buf.toString('base64');
-      const raw = await callScoreFrame(baseUrl, b64, SCORE_PROMPT);
+      const raw = await callScoreFrame(b64, SCORE_PROMPT);
       const parsed = parseScore(raw);
       results.push({
         seekSecs,
@@ -523,7 +504,7 @@ async function run(): Promise<void> {
     const t0 = Date.now();
 
     // Step 1: classify YouTube thumbnails. In --pick mode we stop on the first editorial.
-    const ytThumbs = await classifyYtThumbs(row.youtube_id, baseUrl, { stopOnEditorial: pickMode });
+    const ytThumbs = await classifyYtThumbs(row.youtube_id, { stopOnEditorial: pickMode });
     for (const t of ytThumbs) {
       const styleColour = t.style === 'editorial' ? GREEN : t.style === 'slop' ? RED : DIM;
       // eslint-disable-next-line no-console
@@ -542,7 +523,7 @@ async function run(): Promise<void> {
     // Step 2: local frame scoring. Skipped in --pick mode when a YT winner is already found.
     let scores: FrameScore[] = [];
     if (!pickMode || !ytWinner) {
-      scores = await scoreVideo(row, videoOutDir, baseUrl, seekFractions);
+      scores = await scoreVideo(row, videoOutDir, seekFractions);
 
       const valid = scores.filter((s) => s.score >= 0);
       const best = valid.length > 0

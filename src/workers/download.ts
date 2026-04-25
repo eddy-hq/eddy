@@ -7,7 +7,6 @@
  * Entry point: npm run worker
  */
 import 'dotenv/config';
-import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { Worker, Job } from 'bullmq';
@@ -16,6 +15,7 @@ import { config } from '../config';
 import { logger } from '../logger';
 import { fetchMetadata, downloadVideo } from '../modules/content/ytdlp';
 import { triggerPlexScan } from '../modules/content/plex';
+import { postSigned } from '../signed-channel';
 import { generateThumbnail } from './thumb';
 import type { DownloadJobData } from '../modules/content';
 
@@ -27,24 +27,6 @@ interface ThumbJobData {
 }
 
 const PROGRESS_KEY = (requestId: string) => `eddy:progress:${requestId}`;
-
-interface CallbackPayload {
-  requestId: string;
-  youtubeId: string;
-  filePath: string;
-  nginxUrl: string | null;
-  thumbnailUrl: string | null;
-  title: string;
-  channel: string;
-  description: string;
-  durationSecs: number;
-  transcript: string | null;
-}
-
-interface RejectPayload {
-  requestId: string;
-  reason: string;
-}
 
 interface GuardScorePayload {
   requestId: string;
@@ -61,88 +43,9 @@ interface GuardScoreResponse {
   reason: string;
 }
 
-function signBody(body: string): string {
-  return `sha256=${crypto
-    .createHmac('sha256', config.INTERNAL_HMAC_SECRET)
-    .update(body)
-    .digest('hex')}`;
-}
-
-async function postCallback(payload: CallbackPayload): Promise<void> {
-  const baseUrl = config.M4_INTERNAL_URL;
-  if (!baseUrl) {
-    logger.warn('M4_INTERNAL_URL not set — skipping callback (DB will not be updated)');
-    return;
-  }
-
-  const url = `${baseUrl}/internal/videos/${payload.youtubeId}/downloaded`;
-  const body = JSON.stringify(payload);
-
-  const resp = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Eddy-Signature': signBody(body),
-    },
-    body,
-    signal: AbortSignal.timeout(15_000),
-  });
-
-  if (!resp.ok) {
-    throw new Error(`M4 callback returned ${resp.status}`);
-  }
-}
-
 async function postGuardScore(payload: GuardScorePayload): Promise<GuardScoreResponse> {
-  const baseUrl = config.M4_INTERNAL_URL;
-  if (!baseUrl) {
-    logger.debug('M4_INTERNAL_URL not set — skipping guard score');
-    return { proceed: true, verdict: 'uncertain', reason: 'Guard not configured' };
-  }
-
-  const url = `${baseUrl}/internal/guard/score`;
-  const body = JSON.stringify(payload);
-
-  const resp = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Eddy-Signature': signBody(body),
-    },
-    body,
-    signal: AbortSignal.timeout(30_000),
-  });
-
-  if (!resp.ok) {
-    throw new Error(`Guard score returned ${resp.status}`);
-  }
-
+  const resp = await postSigned('/internal/guard/score', payload, { timeoutMs: 30_000 });
   return (await resp.json()) as GuardScoreResponse;
-}
-
-async function postRejectCallback(payload: RejectPayload): Promise<void> {
-  const baseUrl = config.M4_INTERNAL_URL;
-  if (!baseUrl) {
-    logger.warn('M4_INTERNAL_URL not set — skipping reject callback');
-    return;
-  }
-
-  const url = `${baseUrl}/internal/requests/${payload.requestId}/rejected`;
-  const body = JSON.stringify(payload);
-
-  const resp = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Eddy-Signature': signBody(body),
-    },
-    body,
-    signal: AbortSignal.timeout(15_000),
-  });
-
-  if (!resp.ok) {
-    throw new Error(`M4 reject callback returned ${resp.status}`);
-  }
 }
 
 async function processJob(job: Job<DownloadJobData>): Promise<void> {
@@ -160,7 +63,7 @@ async function processJob(job: Job<DownloadJobData>): Promise<void> {
     log.warn({ err, isTerminal }, 'Metadata fetch failed');
     if (isTerminal) {
       const reason = (err as Error).message;
-      await postRejectCallback({ requestId, reason }).catch((cbErr: unknown) =>
+      await postSigned(`/internal/requests/${requestId}/rejected`, { requestId, reason }).catch((cbErr: unknown) =>
         log.error({ cbErr }, 'Failed to post rejection callback')
       );
       return;
@@ -198,7 +101,7 @@ async function processJob(job: Job<DownloadJobData>): Promise<void> {
     log.warn({ err, isTerminal }, 'Download failed');
     if (isTerminal) {
       const reason = (err as Error).message;
-      await postRejectCallback({ requestId, reason }).catch((cbErr: unknown) =>
+      await postSigned(`/internal/requests/${requestId}/rejected`, { requestId, reason }).catch((cbErr: unknown) =>
         log.error({ cbErr }, 'Failed to post rejection callback')
       );
       return;
@@ -219,7 +122,7 @@ async function processJob(job: Job<DownloadJobData>): Promise<void> {
     } catch (err) {
       log.error({ err, filePath }, 'Failed to delete blocked video file');
     }
-    await postRejectCallback({ requestId, reason: guardResult.reason }).catch((cbErr: unknown) =>
+    await postSigned(`/internal/requests/${requestId}/rejected`, { requestId, reason: guardResult.reason }).catch((cbErr: unknown) =>
       log.error({ cbErr }, 'Failed to post guard rejection callback')
     );
     return;
@@ -240,7 +143,7 @@ async function processJob(job: Job<DownloadJobData>): Promise<void> {
   const thumbnailUrl = `https://i.ytimg.com/vi/${youtubeId}/maxresdefault.jpg`;
 
   // Callback to M4 — M4 writes SQLite and sends ntfy
-  await postCallback({
+  await postSigned(`/internal/videos/${youtubeId}/downloaded`, {
     requestId,
     youtubeId,
     filePath,
@@ -280,22 +183,7 @@ async function processThumbJob(job: Job<ThumbJobData>): Promise<void> {
   }
 
   // Push the upgraded URL back to M4. Reuses the backfill endpoint.
-  const baseUrl = config.M4_INTERNAL_URL;
-  if (!baseUrl) {
-    log.warn('M4_INTERNAL_URL not set — cannot persist upgraded thumbnail');
-    return;
-  }
-
-  const body = JSON.stringify({ thumbnailUrl });
-  const resp = await fetch(`${baseUrl}/internal/backfill/thumb/${youtubeId}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-Eddy-Signature': signBody(body) },
-    body,
-    signal: AbortSignal.timeout(10_000),
-  });
-  if (!resp.ok) {
-    throw new Error(`Failed to persist upgraded thumbnail: HTTP ${resp.status}`);
-  }
+  await postSigned(`/internal/backfill/thumb/${youtubeId}`, { thumbnailUrl }, { timeoutMs: 10_000 });
   log.info({ thumbnailUrl }, 'Thumbnail upgraded');
 }
 
