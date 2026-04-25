@@ -1,9 +1,13 @@
 #!/usr/bin/env tsx
 /**
- * npm run discovery:run [userId]
+ * npm run discovery:run [userId] [--force]
  *
  * Runs the discovery engine for all users, or a single user if userId is provided.
  * Outputs what was found, scored, and surfaced.
+ *
+ * --force  Bypass the "already at daily cap" early skip — useful for testing.
+ *          Note: surfaceForToday still respects the cap, so additional items
+ *          aren't added to the feed. Search and scoring run regardless.
  */
 import 'dotenv/config';
 import { runMigrations } from '../db/migrate';
@@ -14,7 +18,9 @@ import { runDiscoveryForUser } from '../modules/discovery/index';
 runMigrations();
 seedUsers();
 
-const targetArg = process.argv[2] ?? null;
+const args = process.argv.slice(2);
+const force = args.includes('--force');
+const targetArg = args.find((a) => !a.startsWith('--')) ?? null;
 
 interface UserRow { user_id: string; role: string; age_gate: number; display_name: string; }
 
@@ -35,7 +41,7 @@ async function main() {
   for (const user of users) {
     // eslint-disable-next-line no-console
     console.log(`\n── ${user.display_name} (${user.role}) ──────────────────────`);
-    const result = await runDiscoveryForUser(user);
+    const result = await runDiscoveryForUser(user, { force });
 
     if (result.skipped) {
       // eslint-disable-next-line no-console

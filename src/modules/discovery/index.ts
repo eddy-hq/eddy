@@ -45,7 +45,12 @@ interface CandidateRow {
   published_at: string | null;
   source_type: string;
   interest_id: string | null;
+  interest_label: string | null;
   person_id: string | null;
+  channel: string | null;
+  duration_secs: number | null;
+  interest_expertise: string | null;
+  time_sensitivity: string | null;
 }
 
 interface SearchResult {
@@ -157,15 +162,20 @@ Select 1 or 2 interest IDs from the list above that best describe the content of
 // ── Discovery engine ──────────────────────────────────────────────────────────
 
 async function searchInterestVideos(searchTerm: string): Promise<SearchResult[]> {
+  // --print with a field template gives us upload_date (which --flat-playlist
+  // never returns) without dragging in all the format metadata that full
+  // extraction normally produces. Slower than flat-playlist but freshness
+  // ranking depends on real dates.
   let stdout: string;
   try {
     const result = await execFileAsync(YTDLP_BIN_M4, [
       `ytsearch20:${searchTerm}`,
-      '--flat-playlist',
-      '--dump-json',
+      '--print',
+      '%(.{id,title,channel,duration,view_count,upload_date,timestamp,thumbnail})j',
       '--no-download',
       '--quiet',
-    ], { maxBuffer: 10 * 1024 * 1024, timeout: 30_000 });
+      '--no-warnings',
+    ], { maxBuffer: 10 * 1024 * 1024, timeout: 90_000 });
     stdout = result.stdout;
   } catch (err) {
     logger.warn({ err, searchTerm }, 'Discovery: yt-dlp search failed');
@@ -180,19 +190,14 @@ async function searchInterestVideos(searchTerm: string): Promise<SearchResult[]>
       const videoId = item['id'] as string | undefined;
       if (!videoId) continue;
 
-      const thumbnails = item['thumbnails'] as Array<{ url: string }> | undefined;
-      const thumbUrl = thumbnails?.find((t) => t.url)?.url
-        ?? (item['thumbnail'] as string | undefined)
-        ?? null;
-
       results.push({
         videoId,
         title: String(item['title'] ?? ''),
-        channel: String(item['channel'] ?? item['uploader'] ?? ''),
+        channel: String(item['channel'] ?? ''),
         durationSecs: typeof item['duration'] === 'number' ? item['duration'] : null,
         viewCount: typeof item['view_count'] === 'number' ? item['view_count'] : null,
         uploadDate: typeof item['upload_date'] === 'string' ? item['upload_date'] : null,
-        thumbnailUrl: thumbUrl,
+        thumbnailUrl: typeof item['thumbnail'] === 'string' ? item['thumbnail'] : null,
         url: `https://www.youtube.com/watch?v=${videoId}`,
       });
     } catch {
@@ -226,14 +231,22 @@ function daysSince(isoDate: string | null): number | null {
   return Math.floor(ms / (1000 * 60 * 60 * 24));
 }
 
+// Freshness window at intake. Older content is dropped before it ever
+// reaches scoring. Set generous so the pool has volume — surfacing applies
+// a per-day decay (1.6× for <24h down to 0.4× for >90 days) so fresh wins
+// on ranking even when older items are present.
+const FRESHNESS_WINDOW_DAYS = 180;
+
 async function refreshCandidatePool(userId: string, userInterests: UserInterestRow[]): Promise<number> {
   const now = new Date().toISOString();
   let added = 0;
 
-  // Top 5 interests by rank, up to 2 search terms each
-  const topInterests = userInterests.slice(0, 5);
+  // Search up to 10 interests so lower-ranked ones can still surprise the
+  // feed. Top 3 get two search terms; ranks 4–10 get one to keep the search
+  // budget bounded (~13 yt-dlp calls/user/day worst case).
+  const interestsToSearch = userInterests.slice(0, 10);
 
-  for (const interest of topInterests) {
+  for (const interest of interestsToSearch) {
     let terms: string[];
     try {
       terms = JSON.parse(interest.search_terms) as string[];
@@ -242,7 +255,9 @@ async function refreshCandidatePool(userId: string, userInterests: UserInterestR
       terms = [];
     }
 
-    for (const term of terms.slice(0, 2)) {
+    const termCount = interest.rank <= 3 ? 2 : 1;
+
+    for (const term of terms.slice(0, termCount)) {
       const results = await searchInterestVideos(term);
 
       for (const result of results) {
@@ -250,18 +265,19 @@ async function refreshCandidatePool(userId: string, userInterests: UserInterestR
 
         const publishedAt = uploadDateToIso(result.uploadDate);
         const age = daysSince(publishedAt);
-        // Skip videos older than 6 months
-        if (age !== null && age > 180) continue;
+        if (age !== null && age > FRESHNESS_WINDOW_DAYS) continue;
 
         db.prepare(`
           INSERT OR IGNORE INTO candidate_pool
             (candidate_id, user_id, content_type, source_type, interest_id,
-             url, external_id, title, thumbnail_url, published_at, status, created_at)
+             url, external_id, title, channel, duration_secs, thumbnail_url,
+             published_at, status, created_at)
           VALUES
-            (?, ?, 'video', 'interest_search', ?, ?, ?, ?, ?, ?, 'pending', ?)
+            (?, ?, 'video', 'interest_search', ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
         `).run(
           uuidv7(), userId, interest.interest_id,
           result.url, result.videoId, result.title,
+          result.channel || null, result.durationSecs,
           result.thumbnailUrl, publishedAt, now
         );
         added++;
@@ -279,84 +295,195 @@ interface ScoringItem {
   channel: string;
   durationSecs: number | null;
   publishedAt: string | null;
+  interestLabel: string | null;
+  expertise: string | null;
 }
+
+// Brief §9a: "If Gemma can't explain why, the item doesn't surface."
+// Hard floor — items below either threshold are filtered at surface time.
+export const MIN_CONNECTION_SCORE = 6;
+export const MIN_QUALITY_SCORE = 5;
 
 function formatAge(isoDate: string | null): string {
   const days = daysSince(isoDate);
   if (days === null) return 'unknown age';
+  if (days < 1) return 'today';
+  if (days < 2) return 'yesterday';
   if (days < 7) return `${days}d ago`;
   if (days < 30) return `${Math.floor(days / 7)}w ago`;
   return `${Math.floor(days / 30)}mo ago`;
 }
 
-async function scoreCandidates(userId: string, userInterests: UserInterestRow[]): Promise<void> {
+function formatDuration(secs: number | null): string {
+  if (secs === null || secs <= 0) return 'unknown length';
+  if (secs < 60) return `${secs}s`;
+  if (secs < 3600) return `${Math.floor(secs / 60)}m`;
+  const h = Math.floor(secs / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  return m > 0 ? `${h}h${m}m` : `${h}h`;
+}
+
+export type TimeSensitivity = 'news' | 'standard' | 'evergreen';
+
+function normalizeSensitivity(s: string | null | undefined): TimeSensitivity {
+  if (s === 'news' || s === 'evergreen') return s;
+  return 'standard';
+}
+
+// Decay applied at surfacing time, picked per content type:
+//   news      — value drops fast (e.g. yesterday's match highlights)
+//   standard  — most tutorials, fairly time-bound but not urgent
+//   evergreen — technique fundamentals, philosophy, classic retrospectives
+// A null/unknown sensitivity falls back to 'standard'.
+export function freshnessMultiplier(
+  publishedAt: string | null,
+  sensitivity: string | null = 'standard',
+): number {
+  const days = daysSince(publishedAt);
+  const kind = normalizeSensitivity(sensitivity);
+
+  if (days === null) {
+    if (kind === 'news') return 0.5;
+    if (kind === 'evergreen') return 1.0;
+    return 0.8;
+  }
+
+  if (kind === 'news') {
+    if (days <= 1) return 1.6;
+    if (days <= 2) return 1.2;
+    if (days <= 7) return 0.6;
+    if (days <= 30) return 0.2;
+    if (days <= 90) return 0.1;
+    return 0.05;
+  }
+
+  if (kind === 'evergreen') {
+    if (days <= 1) return 1.4;
+    if (days <= 7) return 1.2;
+    if (days <= 30) return 1.1;
+    if (days <= 365) return 1.0;
+    return 0.9;
+  }
+
+  // standard
+  if (days <= 1) return 1.6;
+  if (days <= 2) return 1.4;
+  if (days <= 7) return 1.2;
+  if (days <= 30) return 1.0;
+  if (days <= 90) return 0.7;
+  return 0.4;
+}
+
+function clampScore(n: unknown): number | null {
+  if (typeof n !== 'number' || !Number.isFinite(n)) return null;
+  return Math.min(10, Math.max(0, n));
+}
+
+export async function scoreCandidates(userId: string, userInterests: UserInterestRow[]): Promise<void> {
+  // JOIN to surface the seeding interest's label + the user's expertise level
+  // for that interest, so Gemma can name the connection specifically rather
+  // than guess from a list of interests.
   const pending = db.prepare(`
-    SELECT candidate_id, external_id, title, url, thumbnail_url, published_at, source_type, interest_id, person_id
-    FROM candidate_pool
-    WHERE user_id = ? AND status = 'pending'
-    ORDER BY created_at DESC
+    SELECT c.candidate_id, c.external_id, c.title, c.url, c.thumbnail_url,
+           c.published_at, c.source_type, c.interest_id, c.person_id,
+           c.channel, c.duration_secs,
+           i.label AS interest_label,
+           ui.expertise AS interest_expertise
+    FROM candidate_pool c
+    LEFT JOIN interests i ON i.id = c.interest_id
+    LEFT JOIN user_interests ui
+      ON ui.user_id = c.user_id AND ui.interest_id = c.interest_id
+    WHERE c.user_id = ? AND c.status = 'pending'
+    ORDER BY c.created_at DESC
     LIMIT 100
   `).all(userId) as CandidateRow[];
 
   if (pending.length === 0) return;
 
   const interestSummary = userInterests
-    .map((t) => `${t.label} (${t.expertise})`)
+    .map((t) => `"${t.label}" (${t.expertise})`)
     .join(', ');
 
   const BATCH = 10;
   for (let i = 0; i < pending.length; i += BATCH) {
     const batch = pending.slice(i, i + BATCH);
 
-    const items: ScoringItem[] = batch.map((c, idx) => {
-      // Grab channel from candidate title heuristic; we store it in title as "Title | Channel"
-      // Actually title is just the title. We don't store channel separately in candidate_pool.
-      // Use what we have.
-      return {
-        index: idx + 1,
-        candidateId: c.candidate_id,
-        title: c.title ?? '(no title)',
-        channel: '',
-        durationSecs: null,
-        publishedAt: c.published_at,
-      };
-    });
+    const items: ScoringItem[] = batch.map((c, idx) => ({
+      index: idx + 1,
+      candidateId: c.candidate_id,
+      title: c.title ?? '(no title)',
+      channel: c.channel ?? '',
+      durationSecs: c.duration_secs,
+      publishedAt: c.published_at,
+      interestLabel: c.interest_label,
+      expertise: c.interest_expertise,
+    }));
 
-    const videoList = items.map((item) =>
-      `${item.index}. "${item.title}" | ${formatAge(item.publishedAt)}`
-    ).join('\n');
+    const videoList = items.map((item) => {
+      const channel = item.channel ? item.channel : 'unknown channel';
+      const seedTag = item.interestLabel
+        ? ` [seeded by interest: "${item.interestLabel}"${item.expertise ? `, ${item.expertise}` : ''}]`
+        : '';
+      return `${item.index}. "${item.title}" — ${channel} | ${formatDuration(item.durationSecs)} | ${formatAge(item.publishedAt)}${seedTag}`;
+    }).join('\n');
 
-    const prompt = `You are scoring YouTube videos for a personal discovery feed.
+    const prompt = `You are scoring YouTube videos for a personal discovery feed. Eddy routes attention through people and stated interests — never engagement metrics. Your job is to judge how strongly each video connects to the user's stated interests, how substantive (vs clickbait) it is, and how time-sensitive its value is.
 
 User interests (in priority order, with expertise level): ${interestSummary}
 
-Videos to score:
+Videos to score (title — channel | length | age [seeded by interest]):
 ${videoList}
 
-Return ONLY a compact JSON array — no whitespace, no other text:
-[{"index":1,"score":7.5,"why":"One sentence, max 15 words."},...]
+For each video return THREE scores plus a sensitivity tag and a specific reason. Return ONLY a compact JSON array — no whitespace, no extra text:
+[{"index":1,"connection":7,"quality":8,"time_sensitivity":"standard","why":"One sentence — must name the matched interest and a specific aspect of THIS video, max 20 words."}]
 
-Scoring (0–10):
-- 8–10: Directly relevant to stated interests, level-appropriate, and quality/substantive
-- 5–7: Reasonably relevant or interesting
-- 2–4: Weakly relevant
-- 0–2: Off-topic, generic, or clickbait
-- Penalise: mismatched depth (beginner videos for 'deep' interests, or vice versa), very old content, generic titles
-- Reward: specificity, depth matching stated expertise, niche subjects matching interests`;
+CONNECTION (0–10) — how strongly this video matches one of the user's named interests at their expertise level:
+- 9–10: Specifically and clearly matches a named interest, level-appropriate, content the user almost certainly wants to see
+- 7–8: Clearly matches a named interest; level may be slightly off
+- 5–6: Adjacent or partial match
+- 3–4: Weakly related — touches an interest but isn't really about it
+- 0–2: No clear connection to any named interest
+- If you cannot articulate WHICH interest matches and WHAT specific aspect, score connection ≤ 3.
+
+QUALITY (0–10) — substance vs engagement bait. Judge from title, channel, duration. Apply these caps strictly:
+- Money-promise titles ("$650M Exit", "$215M AI CEO", "Make $1M with X", "How I made $X doing Y"): cap quality at 4 unless the channel is clearly the company itself. Cash in a thumbnail-style title is bait.
+- "How I'd build / If I were starting over / What I'd do" framing: cap quality at 5. Invites parasocial engagement, rarely substantive.
+- "Read this guide and win", "Watch this to know X", "This is the only X you need": cap quality at 4. Cure-all framing.
+- Year + Roadmap/Complete Guide pairing ("2026 Roadmap", "Complete Guide for 2025", "in 2026"): cap quality at 6. Year stamp is freshness theatre.
+- "Top X SECRETS", "X Things Nobody Tells You", "X Things I Wish I Knew": cap quality at 5.
+- ALL CAPS shouting, reaction-bait, compilation-farm channels, durations mismatched to topic (60s shorts claiming to teach complex skills, 30min videos for trivial topics): cap quality at 3.
+- Emoji-stuffed titles, hyperbolic claims ("EXACTLY", "FAST", "INSANE"): cap quality at 5.
+- Generic restatement of an interest as title with no detail: cap quality at 5.
+
+Reward in quality: specificity (named techniques, specific scores, specific products), real creator credentials, sensible duration for depth claimed, descriptive titles beyond a hook.
+
+TIME SENSITIVITY — pick one:
+- "news": Time-pegged content where value drops fast within days. Match highlights, "X just announced", reaction videos, current weeks/dates in title, "this week", live streams, recent product reactions.
+- "standard": Generally useful but somewhat dated — most tutorials, year-stamped roadmaps, "2025/2026" content, trend pieces.
+- "evergreen": Timeless content — technique fundamentals, history, philosophy, classic retrospectives ("Greatest X of all time"), "how X works" without time refs.
+
+The "why" line is load-bearing. It MUST name (a) which interest matches and (b) something specific about this video — not a generic restatement of the title. Generic phrasing like "interesting video about X" or "you might enjoy this" means connection ≤ 3.
+
+Do not consider freshness in your scores — that's applied separately. Score connection, quality, and time_sensitivity only.`;
 
     let raw: string;
     try {
-      raw = await ollamaGenerate(prompt);
+      // Three-axis scoring + sensitivity tag + specific why-text runs ~200
+      // tokens per video. Batch of 10 needs headroom. Low temperature so the
+      // same video gets the same score across runs — score-prompt iteration
+      // shouldn't be fighting model variance.
+      raw = await ollamaGenerate(prompt, undefined, undefined, {
+        num_predict: 3000,
+        temperature: 0.2,
+      });
     } catch (err) {
       logger.warn({ err, userId, batchStart: i }, 'Discovery: scoring Gemma call failed');
       continue;
     }
 
-    interface ScoreEntry { index: number; score: number; why: string; }
+    interface ScoreEntry { index: number; connection?: number; quality?: number; time_sensitivity?: string; why?: string; score?: number; }
     let scores: ScoreEntry[];
     try {
-      // Try complete array first; fall back to extracting individual objects
-      // from a truncated response.
       const fullMatch = /\[[\s\S]*]/.exec(raw.trim());
       if (fullMatch) {
         scores = JSON.parse(fullMatch[0]) as ScoreEntry[];
@@ -380,14 +507,26 @@ Scoring (0–10):
     for (const entry of scores) {
       const item = items[entry.index - 1];
       if (!item) continue;
-      const score = typeof entry.score === 'number' ? Math.min(10, Math.max(0, entry.score)) : null;
-      if (score === null) continue;
+
+      const connection = clampScore(entry.connection);
+      const quality = clampScore(entry.quality);
+      if (connection === null || quality === null) continue;
+
+      const sensitivity = (() => {
+        const v = (entry.time_sensitivity ?? '').toString().toLowerCase().trim();
+        return v === 'news' || v === 'evergreen' ? v : 'standard';
+      })();
+
+      // gemma_score retained as connection × quality / 10 (0–10 range) so
+      // older code paths (e.g. guardCandidates' top-N) still work.
+      const combined = (connection * quality) / 10;
 
       db.prepare(`
         UPDATE candidate_pool
-        SET gemma_score = ?, why_text = ?, status = 'scored', scored_at = ?
+        SET connection_score = ?, quality_score = ?, gemma_score = ?,
+            time_sensitivity = ?, why_text = ?, status = 'scored', scored_at = ?
         WHERE candidate_id = ?
-      `).run(score, entry.why ?? null, now, item.candidateId);
+      `).run(connection, quality, combined, sensitivity, entry.why ?? null, now, item.candidateId);
     }
   }
 }
@@ -441,11 +580,126 @@ async function guardCandidates(userId: string): Promise<void> {
   }
 }
 
+// Brief §9a: weight = 1/sqrt(rank). Lower-ranked interests are down-weighted,
+// not eliminated, so the feed still leans on top interests but lets niche
+// ones surface when their content is fresh and high quality.
+export function rankWeight(rank: number): number {
+  return 1 / Math.sqrt(Math.max(1, rank));
+}
+
+// Diversity rules: a daily feed of 15 picks should span many interests. A
+// 2-per-interest cap with 12 interests yields ≥7 distinct interests in a
+// full slate. Title-similarity dedup catches the "5 nearly identical
+// running-form videos" case within a single interest.
+const MAX_PER_INTEREST_ADULT = 2;
+const MAX_PER_INTEREST_KID = 1;
+const TITLE_SIMILARITY_THRESHOLD = 0.4;
+
+const TITLE_STOPWORDS = new Set([
+  'the', 'and', 'for', 'with', 'you', 'your', 'are', 'was', 'how', 'what',
+  'why', 'this', 'that', 'these', 'those', 'just', 'will', 'from', 'into',
+  'about', 'over', 'than', 'when', 'where', 'best',
+]);
+
+function titleTokens(title: string): Set<string> {
+  return new Set(
+    title.toLowerCase()
+      .replace(/[^a-z0-9 ]+/g, ' ')
+      .split(/\s+/)
+      .filter((t) => t.length >= 3 && !TITLE_STOPWORDS.has(t))
+  );
+}
+
+function jaccardSimilarity(a: Set<string>, b: Set<string>): number {
+  if (a.size === 0 || b.size === 0) return 0;
+  let intersection = 0;
+  for (const t of a) if (b.has(t)) intersection++;
+  return intersection / (a.size + b.size - intersection);
+}
+
+export interface AllocatableItem {
+  candidateId: string;
+  title: string | null;
+  interestId: string | null;
+  rank: number;
+  weighted: number;
+}
+
+export interface AllocateOptions {
+  cap: number;
+  isKid: boolean;
+  prefilledTitles?: string[];
+  prefilledInterestCounts?: Map<string, number>;
+}
+
+// Greedy slot allocation honouring per-interest cap, title-similarity
+// dedup, and the rank>3 stretch reservation. Used by both surfaceForToday
+// and the preview's simulation so they always agree on selection rules.
+export function allocateSlots(
+  ranked: AllocatableItem[],
+  opts: AllocateOptions,
+): Map<string, 'regular' | 'stretch'> {
+  const { cap, isKid, prefilledTitles = [], prefilledInterestCounts = new Map() } = opts;
+  const maxPerInterest = isKid ? MAX_PER_INTEREST_KID : MAX_PER_INTEREST_ADULT;
+  const stretchQuota = Math.max(1, Math.floor(cap * 0.2));
+  const regularQuota = cap - stretchQuota;
+
+  const selected = new Map<string, 'regular' | 'stretch'>();
+  const interestCounts = new Map<string, number>(prefilledInterestCounts);
+  const selectedTokenSets: Set<string>[] = prefilledTitles.map(titleTokens);
+
+  function tryPick(item: AllocatableItem, slot: 'regular' | 'stretch', honourInterestCap: boolean): boolean {
+    if (selected.has(item.candidateId)) return false;
+
+    if (honourInterestCap && item.interestId) {
+      const count = interestCounts.get(item.interestId) ?? 0;
+      if (count >= maxPerInterest) return false;
+    }
+
+    if (item.title) {
+      const tokens = titleTokens(item.title);
+      for (const existing of selectedTokenSets) {
+        if (jaccardSimilarity(tokens, existing) >= TITLE_SIMILARITY_THRESHOLD) return false;
+      }
+      selectedTokenSets.push(tokens);
+    }
+
+    selected.set(item.candidateId, slot);
+    if (item.interestId) {
+      interestCounts.set(item.interestId, (interestCounts.get(item.interestId) ?? 0) + 1);
+    }
+    return true;
+  }
+
+  // Pass 1 — regular slots, top weighted, honour interest cap + similarity
+  for (const item of ranked) {
+    if (selected.size >= regularQuota) break;
+    tryPick(item, 'regular', true);
+  }
+
+  // Pass 2 — stretch slots, items from interests outside top-3 only
+  for (const item of ranked) {
+    if (selected.size >= regularQuota + stretchQuota) break;
+    if (item.rank <= 3) continue;
+    tryPick(item, 'stretch', true);
+  }
+
+  // Pass 3 — backfill if still under cap. Relax the per-interest cap so the
+  // feed isn't short, but keep similarity dedup so we never duplicate a pick.
+  if (selected.size < cap) {
+    for (const item of ranked) {
+      if (selected.size >= cap) break;
+      tryPick(item, 'regular', false);
+    }
+  }
+
+  return selected;
+}
+
 function surfaceForToday(userId: string, isKid: boolean): number {
   const today = new Date().toISOString().slice(0, 10);
   const cap = isKid ? 5 : 15;
 
-  // Already surfaced today?
   const alreadySurfaced = db.prepare(`
     SELECT COUNT(*) AS n FROM candidate_pool
     WHERE user_id = ? AND surfaced_date = ?
@@ -453,30 +707,81 @@ function surfaceForToday(userId: string, isKid: boolean): number {
   if (alreadySurfaced.n >= cap) return 0;
 
   const remaining = cap - alreadySurfaced.n;
-
-  // Candidates eligible to surface: scored (adults) or clear_yes guard (kids)
-  const eligibleStatus = isKid ? "'scored'" : "'scored'";
-  const eligibleGuard = isKid ? "AND (guard_verdict = 'clear_yes' OR guard_verdict IS NULL)" : '';
+  const eligibleGuard = isKid ? "AND (c.guard_verdict = 'clear_yes' OR c.guard_verdict IS NULL)" : '';
 
   const candidates = db.prepare(`
-    SELECT candidate_id FROM candidate_pool
-    WHERE user_id = ? AND status = ${eligibleStatus} ${eligibleGuard}
-      AND surfaced_date IS NULL
-    ORDER BY gemma_score DESC
-    LIMIT ?
-  `).all(userId, remaining) as Array<{ candidate_id: string }>;
+    SELECT c.candidate_id, c.title, c.published_at, c.connection_score,
+           c.quality_score, c.time_sensitivity, c.interest_id,
+           COALESCE(ui.rank, 999) AS rank
+    FROM candidate_pool c
+    LEFT JOIN user_interests ui
+      ON ui.user_id = c.user_id AND ui.interest_id = c.interest_id
+    WHERE c.user_id = ? AND c.status = 'scored' ${eligibleGuard}
+      AND c.surfaced_date IS NULL
+      AND c.connection_score >= ${MIN_CONNECTION_SCORE}
+      AND c.quality_score >= ${MIN_QUALITY_SCORE}
+  `).all(userId) as Array<{
+    candidate_id: string;
+    title: string | null;
+    published_at: string | null;
+    connection_score: number | null;
+    quality_score: number | null;
+    time_sensitivity: string | null;
+    interest_id: string | null;
+    rank: number;
+  }>;
 
   if (candidates.length === 0) return 0;
 
+  const ranked: AllocatableItem[] = candidates
+    .map((c) => ({
+      candidateId: c.candidate_id,
+      title: c.title,
+      interestId: c.interest_id,
+      rank: c.rank,
+      weighted: (c.connection_score ?? 0)
+        * (c.quality_score ?? 0)
+        * freshnessMultiplier(c.published_at, c.time_sensitivity)
+        * rankWeight(c.rank),
+    }))
+    .filter((x) => x.weighted > 0)
+    .sort((a, b) => b.weighted - a.weighted);
+
+  if (ranked.length === 0) return 0;
+
+  // Carry over today's already-surfaced titles + interest counts so a
+  // mid-day re-run doesn't pile more from the same interest or echo a
+  // similar title.
+  const surfacedToday = db.prepare(`
+    SELECT title, interest_id FROM candidate_pool
+    WHERE user_id = ? AND surfaced_date = ?
+  `).all(userId, today) as Array<{ title: string | null; interest_id: string | null }>;
+
+  const prefilledTitles = surfacedToday.map((r) => r.title ?? '').filter((t) => t.length > 0);
+  const prefilledInterestCounts = new Map<string, number>();
+  for (const r of surfacedToday) {
+    if (!r.interest_id) continue;
+    prefilledInterestCounts.set(r.interest_id, (prefilledInterestCounts.get(r.interest_id) ?? 0) + 1);
+  }
+
+  const picked = allocateSlots(ranked, {
+    cap: remaining,
+    isKid,
+    prefilledTitles,
+    prefilledInterestCounts,
+  });
+
+  if (picked.size === 0) return 0;
+
   const now = new Date().toISOString();
-  for (const c of candidates) {
+  for (const candidateId of picked.keys()) {
     db.prepare(`
       UPDATE candidate_pool SET status = 'surfaced', surfaced_date = ?, surfaced_at = ?
       WHERE candidate_id = ?
-    `).run(today, now, c.candidate_id);
+    `).run(today, now, candidateId);
   }
 
-  return candidates.length;
+  return picked.size;
 }
 
 function pruneStalePool(): void {
@@ -499,7 +804,7 @@ export interface DiscoveryRunResult {
   items: Array<{ title: string | null; score: number | null; why: string | null; guardVerdict: string | null }>;
 }
 
-export async function runDiscoveryForUser(user: UserRow): Promise<DiscoveryRunResult> {
+export async function runDiscoveryForUser(user: UserRow, options: { force?: boolean } = {}): Promise<DiscoveryRunResult> {
   const today = new Date().toISOString().slice(0, 10);
   const isKid = user.role === 'kid';
   const cap = isKid ? 5 : 15;
@@ -508,9 +813,9 @@ export async function runDiscoveryForUser(user: UserRow): Promise<DiscoveryRunRe
     SELECT COUNT(*) AS n FROM candidate_pool WHERE user_id = ? AND surfaced_date = ?
   `).get(user.user_id, today) as { n: number };
 
-  if (existing.n >= cap) {
+  if (existing.n >= cap && !options.force) {
     logger.info({ userId: user.user_id }, 'Discovery: already at cap for today, skipping');
-    return { userId: user.user_id, skipped: true, skipReason: 'Already at daily cap', interestsChecked: 0, candidatesAdded: 0, surfaced: 0, items: [] };
+    return { userId: user.user_id, skipped: true, skipReason: 'Already at daily cap (use --force to override)', interestsChecked: 0, candidatesAdded: 0, surfaced: 0, items: [] };
   }
 
   const userInterests = db.prepare(`
@@ -540,11 +845,36 @@ export async function runDiscoveryForUser(user: UserRow): Promise<DiscoveryRunRe
   logger.info({ userId: user.user_id, surfaced }, 'Discovery: surfaced for today');
 
   const items = db.prepare(`
-    SELECT title, gemma_score, why_text, guard_verdict
-    FROM candidate_pool
-    WHERE user_id = ? AND surfaced_date = ?
-    ORDER BY gemma_score DESC
-  `).all(user.user_id, today) as Array<{ title: string | null; gemma_score: number | null; why_text: string | null; guard_verdict: string | null }>;
+    SELECT c.title, c.gemma_score, c.connection_score, c.quality_score,
+           c.time_sensitivity, c.why_text, c.guard_verdict, c.published_at,
+           c.interest_id, COALESCE(ui.rank, 999) AS rank
+    FROM candidate_pool c
+    LEFT JOIN user_interests ui
+      ON ui.user_id = c.user_id AND ui.interest_id = c.interest_id
+    WHERE c.user_id = ? AND c.surfaced_date = ?
+  `).all(user.user_id, today) as Array<{
+    title: string | null;
+    gemma_score: number | null;
+    connection_score: number | null;
+    quality_score: number | null;
+    time_sensitivity: string | null;
+    why_text: string | null;
+    guard_verdict: string | null;
+    published_at: string | null;
+    interest_id: string | null;
+    rank: number;
+  }>;
+
+  const sortedItems = items
+    .map((r) => ({
+      row: r,
+      weighted: (r.connection_score ?? 0)
+        * (r.quality_score ?? 0)
+        * freshnessMultiplier(r.published_at, r.time_sensitivity)
+        * rankWeight(r.rank),
+    }))
+    .sort((a, b) => b.weighted - a.weighted)
+    .map((x) => x.row);
 
   return {
     userId: user.user_id,
@@ -552,7 +882,7 @@ export async function runDiscoveryForUser(user: UserRow): Promise<DiscoveryRunRe
     interestsChecked: userInterests.length,
     candidatesAdded: added,
     surfaced,
-    items: items.map((r) => ({ title: r.title, score: r.gemma_score, why: r.why_text, guardVerdict: r.guard_verdict })),
+    items: sortedItems.map((r) => ({ title: r.title, score: r.gemma_score, why: r.why_text, guardVerdict: r.guard_verdict })),
   };
 }
 
@@ -813,6 +1143,18 @@ interestsRouter.post('/user-add', (req: Request, res: Response) => {
 
 export const discoveryRouter = Router();
 
+// GET /discovery/preview-html?user=<name|id>
+// Visual dry-run of surfacing logic, served to the local network so it's
+// reachable from any device over Tailscale without copying files around.
+discoveryRouter.get('/preview-html', async (req: Request, res: Response) => {
+  // Dynamic import keeps preview.ts lazy and avoids circular-dep issues at
+  // module init time (preview.ts imports helpers from this module).
+  const { renderPreviewHtml } = await import('./preview');
+  const target = typeof req.query['user'] === 'string' ? req.query['user'] : null;
+  res.set('Content-Type', 'text/html; charset=utf-8');
+  res.send(renderPreviewHtml(target));
+});
+
 interface SurfacedCandidateRow {
   candidate_id: string;
   url: string;
@@ -821,9 +1163,13 @@ interface SurfacedCandidateRow {
   thumbnail_url: string | null;
   published_at: string | null;
   gemma_score: number | null;
+  connection_score: number | null;
+  quality_score: number | null;
+  time_sensitivity: string | null;
   why_text: string | null;
   interest_id: string | null;
   source_type: string;
+  rank: number;
 }
 
 // GET /discovery/feed?userId=
@@ -831,13 +1177,27 @@ discoveryRouter.get('/feed', (req: Request, res: Response) => {
   const user = resolveUser(req.query['userId']);
   const today = new Date().toISOString().slice(0, 10);
 
-  const candidates = db.prepare(`
-    SELECT candidate_id, url, external_id, title, thumbnail_url, published_at,
-           gemma_score, why_text, interest_id, source_type
-    FROM candidate_pool
-    WHERE user_id = ? AND surfaced_date = ? AND status = 'surfaced'
-    ORDER BY gemma_score DESC
+  const rows = db.prepare(`
+    SELECT c.candidate_id, c.url, c.external_id, c.title, c.thumbnail_url, c.published_at,
+           c.gemma_score, c.connection_score, c.quality_score, c.time_sensitivity,
+           c.why_text, c.interest_id, c.source_type,
+           COALESCE(ui.rank, 999) AS rank
+    FROM candidate_pool c
+    LEFT JOIN user_interests ui
+      ON ui.user_id = c.user_id AND ui.interest_id = c.interest_id
+    WHERE c.user_id = ? AND c.surfaced_date = ? AND c.status = 'surfaced'
   `).all(user.user_id, today) as SurfacedCandidateRow[];
+
+  const candidates = rows
+    .map((r) => ({
+      row: r,
+      weighted: (r.connection_score ?? 0)
+        * (r.quality_score ?? 0)
+        * freshnessMultiplier(r.published_at, r.time_sensitivity)
+        * rankWeight(r.rank),
+    }))
+    .sort((a, b) => b.weighted - a.weighted)
+    .map((x) => x.row);
 
   const interestCount = (db.prepare(
     'SELECT COUNT(*) AS n FROM user_interests WHERE user_id = ?'
