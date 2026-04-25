@@ -35,7 +35,6 @@ interface CandidateRow {
   channel: string | null;
   duration_secs: number | null;
   interest_expertise: string | null;
-  time_sensitivity: string | null;
 }
 
 interface ScoringItem {
