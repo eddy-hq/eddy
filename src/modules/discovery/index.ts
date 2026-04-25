@@ -47,6 +47,7 @@ interface CandidateRow {
   interest_id: string | null;
   interest_label: string | null;
   person_id: string | null;
+  person_name: string | null;
   channel: string | null;
   duration_secs: number | null;
   interest_expertise: string | null;
@@ -296,6 +297,155 @@ async function refreshCandidatePool(userId: string, userInterests: UserInterestR
   return added;
 }
 
+// ── Back-catalog seeder ───────────────────────────────────────────────────────
+//
+// Followed-channel uploads from the moment of follow forward arrive via the
+// RSS poller (modules/people) and land directly in `requests` under the
+// "From people you follow" feed section. That path never reaches the
+// candidate pool, so the back catalog of a creator a kid just started
+// following is invisible to discovery unless we deliberately mine it.
+//
+// `seedBackCatalogCandidates` does that: pulls a flat playlist for each
+// followed YouTube output, removes anything already touched by RSS or
+// already a candidate/request, samples a small budget per channel, and
+// inserts those into the candidate pool with `source_type =
+// 'person_backcatalog'`. From there they run through the same scoring,
+// guard, and surfacing pipeline as interest-search candidates — they
+// earn their place on score, not on source.
+
+interface FollowedYoutubeOutput {
+  output_id: string;
+  person_id: string;
+  channel_id: string;
+  display_name: string;
+}
+
+interface PlaylistEntry {
+  videoId: string;
+  title: string;
+  durationSecs: number | null;
+}
+
+const PER_CHANNEL_BACKCATALOG_BUDGET = 3;
+const MAX_BACKCATALOG_PER_USER = 20;
+
+async function fetchChannelPlaylist(channelId: string): Promise<PlaylistEntry[]> {
+  let stdout: string;
+  try {
+    const result = await execFileAsync(YTDLP_BIN_M4, [
+      `https://www.youtube.com/channel/${channelId}/videos`,
+      '--flat-playlist',
+      '--print', '%(.{id,title,duration})j',
+      '--no-download',
+      '--quiet',
+      '--no-warnings',
+    ], { maxBuffer: 50 * 1024 * 1024, timeout: 60_000 });
+    stdout = result.stdout;
+  } catch (err) {
+    logger.warn({ err, channelId }, 'Back-catalog: flat-playlist fetch failed');
+    return [];
+  }
+
+  const entries: PlaylistEntry[] = [];
+  for (const line of stdout.split('\n')) {
+    if (!line.trim()) continue;
+    try {
+      const item = JSON.parse(line) as Record<string, unknown>;
+      const videoId = item['id'] as string | undefined;
+      if (!videoId) continue;
+      entries.push({
+        videoId,
+        title: String(item['title'] ?? ''),
+        durationSecs: typeof item['duration'] === 'number' ? item['duration'] : null,
+      });
+    } catch {
+      // skip malformed lines
+    }
+  }
+  return entries;
+}
+
+function shuffleInPlace<T>(arr: T[]): T[] {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j]!, arr[i]!];
+  }
+  return arr;
+}
+
+async function seedBackCatalogCandidates(userId: string): Promise<number> {
+  const followed = db.prepare(`
+    SELECT po.output_id, po.person_id, po.external_id AS channel_id, p.display_name
+    FROM followed_people fp
+    INNER JOIN person_outputs po ON po.person_id = fp.person_id
+    INNER JOIN people p ON p.person_id = fp.person_id
+    WHERE fp.user_id = ? AND po.output_type = 'youtube' AND po.active = 1
+  `).all(userId) as FollowedYoutubeOutput[];
+
+  if (followed.length === 0) return 0;
+
+  // Process channels in a randomized order so a user with > MAX/PER_CHANNEL
+  // followed channels gets a different mix sampled each day.
+  shuffleInPlace(followed);
+
+  const now = new Date().toISOString();
+  let totalAdded = 0;
+
+  for (const output of followed) {
+    if (totalAdded >= MAX_BACKCATALOG_PER_USER) break;
+
+    const playlist = await fetchChannelPlaylist(output.channel_id);
+    if (playlist.length === 0) continue;
+
+    const seenIds = new Set(
+      (db.prepare(
+        'SELECT video_id FROM seen_videos WHERE channel_id = ?'
+      ).all(output.channel_id) as Array<{ video_id: string }>).map((r) => r.video_id)
+    );
+
+    const eligible = playlist.filter((v) => {
+      if (seenIds.has(v.videoId)) return false;
+      if (v.durationSecs !== null && v.durationSecs <= SHORTS_MAX_SECS) return false;
+      if (isDuplicateCandidate(userId, v.videoId)) return false;
+      return true;
+    });
+
+    if (eligible.length === 0) continue;
+
+    // Channel→interest mapping (from inferChannelInterests at follow time)
+    // gives the candidate an interest_id, so the per-interest cap engages
+    // and rank-weighted surfacing works the same way as interest-search.
+    const interestRow = db.prepare(`
+      SELECT interest_id FROM channel_interest_links
+      WHERE channel_id = ? ORDER BY confidence DESC LIMIT 1
+    `).get(output.channel_id) as { interest_id: string } | undefined;
+    const interestId = interestRow?.interest_id ?? null;
+
+    const sampled = shuffleInPlace(eligible).slice(0, PER_CHANNEL_BACKCATALOG_BUDGET);
+
+    for (const video of sampled) {
+      if (totalAdded >= MAX_BACKCATALOG_PER_USER) break;
+      const url = `https://www.youtube.com/watch?v=${video.videoId}`;
+      db.prepare(`
+        INSERT OR IGNORE INTO candidate_pool
+          (candidate_id, user_id, content_type, source_type, person_id, interest_id,
+           url, external_id, title, channel, duration_secs,
+           status, created_at)
+        VALUES
+          (?, ?, 'video', 'person_backcatalog', ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
+      `).run(
+        uuidv7(), userId, output.person_id, interestId,
+        url, video.videoId, video.title || null,
+        output.display_name, video.durationSecs,
+        now
+      );
+      totalAdded++;
+    }
+  }
+
+  return totalAdded;
+}
+
 interface ScoringItem {
   index: number;
   candidateId: string;
@@ -305,6 +455,8 @@ interface ScoringItem {
   publishedAt: string | null;
   interestLabel: string | null;
   expertise: string | null;
+  sourceType: string;
+  personName: string | null;
 }
 
 // Brief §9a: "If Gemma can't explain why, the item doesn't surface."
@@ -429,11 +581,13 @@ export async function scoreCandidates(userId: string, userInterests: UserInteres
            c.published_at, c.source_type, c.interest_id, c.person_id,
            c.channel, c.duration_secs,
            i.label AS interest_label,
-           ui.expertise AS interest_expertise
+           ui.expertise AS interest_expertise,
+           p.display_name AS person_name
     FROM candidate_pool c
     LEFT JOIN interests i ON i.id = c.interest_id
     LEFT JOIN user_interests ui
       ON ui.user_id = c.user_id AND ui.interest_id = c.interest_id
+    LEFT JOIN people p ON p.person_id = c.person_id
     WHERE c.user_id = ? AND c.status = 'pending'
     ORDER BY c.created_at DESC
     LIMIT 100
@@ -458,6 +612,8 @@ export async function scoreCandidates(userId: string, userInterests: UserInteres
       publishedAt: c.published_at,
       interestLabel: c.interest_label,
       expertise: c.interest_expertise,
+      sourceType: c.source_type,
+      personName: c.person_name,
     }));
 
     const videoList = items.map((item) => {
@@ -465,14 +621,17 @@ export async function scoreCandidates(userId: string, userInterests: UserInteres
       const seedTag = item.interestLabel
         ? ` [seeded by interest: "${item.interestLabel}"${item.expertise ? `, ${item.expertise}` : ''}]`
         : '';
-      return `${item.index}. "${item.title}" — ${channel} | ${formatDuration(item.durationSecs)} | ${formatAge(item.publishedAt)}${seedTag}`;
+      const followTag = item.sourceType === 'person_backcatalog' && item.personName
+        ? ` [back-catalog from a person you follow: ${item.personName}]`
+        : '';
+      return `${item.index}. "${item.title}" — ${channel} | ${formatDuration(item.durationSecs)} | ${formatAge(item.publishedAt)}${seedTag}${followTag}`;
     }).join('\n');
 
     const prompt = `Score YouTube videos for a personal discovery feed. For each video give a connection score, a quality score, a time-sensitivity tag, and a one-sentence reason.
 
 User interests (priority order, expertise): ${interestSummary}
 
-Videos (title — channel | length | age [seeded by interest]):
+Videos (title — channel | length | age [seeded by interest] [back-catalog from a person you follow]):
 ${videoList}
 
 Return ONLY this JSON, one entry per video, no other text:
@@ -499,6 +658,8 @@ TIME_SENSITIVITY:
 - "news": value drops within days — match highlights, "X just announced", recent dates
 - "standard": tutorials, year-stamped roadmaps, trend pieces
 - "evergreen": fundamentals, history, philosophy, classic retrospectives
+
+If a video is tagged "[back-catalog from a person you follow: NAME]", name that person in the "why" — e.g. "NAME has a video on {specific aspect} you haven't seen". The follow does not change the connection or quality scores; the user still has to want this specific video.
 
 The "why" must name the matched interest and something specific about THIS video. Generic phrasing means connection ≤ 3. Do not consider freshness or popularity in the scores — those are applied separately.`;
 
@@ -548,11 +709,18 @@ The "why" must name the matched interest and something specific about THIS video
       const quality = clampScore(entry.quality);
       if (connection === null || quality === null) continue;
 
-      const sensitivity = (() => {
-        const v = (entry.time_sensitivity ?? '').toString().toLowerCase().trim();
-        const modelSays: TimeSensitivity = v === 'news' || v === 'evergreen' ? v : 'standard';
-        return overrideTimeSensitivity(item.title, modelSays);
-      })();
+      const sensitivity: TimeSensitivity = item.sourceType === 'person_backcatalog'
+        // Back-catalog: the upload date is years old by definition, but the
+        // user's *discovery* of it is what's fresh. Forcing evergreen
+        // sidesteps the news/standard decay curves (which would crush a
+        // 5-year-old video to a 0.05–0.4× multiplier) and lets back-catalog
+        // candidates compete at face value on connection × quality.
+        ? 'evergreen'
+        : (() => {
+          const v = (entry.time_sensitivity ?? '').toString().toLowerCase().trim();
+          const modelSays: TimeSensitivity = v === 'news' || v === 'evergreen' ? v : 'standard';
+          return overrideTimeSensitivity(item.title, modelSays);
+        })();
 
       // gemma_score retained as connection × quality / 10 (0–10 range) so
       // older code paths (e.g. guardCandidates' top-N) still work.
@@ -874,8 +1042,13 @@ export async function runDiscoveryForUser(user: UserRow, options: { force?: bool
   }
 
   logger.info({ userId: user.user_id, interests: userInterests.length }, 'Discovery: refreshing candidate pool');
-  const added = await refreshCandidatePool(user.user_id, userInterests);
-  logger.info({ userId: user.user_id, added }, 'Discovery: candidates added to pool');
+  const interestSearchAdded = await refreshCandidatePool(user.user_id, userInterests);
+  logger.info({ userId: user.user_id, added: interestSearchAdded }, 'Discovery: interest-search candidates added');
+
+  const backCatalogAdded = await seedBackCatalogCandidates(user.user_id);
+  logger.info({ userId: user.user_id, added: backCatalogAdded }, 'Discovery: back-catalog candidates added');
+
+  const added = interestSearchAdded + backCatalogAdded;
 
   await scoreCandidates(user.user_id, userInterests);
 
