@@ -379,6 +379,30 @@ function clampScore(n: unknown): number | null {
   return Math.min(10, Math.max(0, n));
 }
 
+// Deterministic time-sensitivity override for patterns Gemma keeps flip-
+// flopping on. Match highlights and dated sports content are unambiguously
+// news; relying on the model gave inconsistent verdicts even at temp 0.2.
+// Only override TOWARD news — never override Gemma down to standard.
+function overrideTimeSensitivity(title: string | null, modelSays: TimeSensitivity): TimeSensitivity {
+  if (modelSays === 'news') return 'news';
+  if (!title) return modelSays;
+  const t = title.toLowerCase();
+
+  // Match highlights, recap-style sports content
+  if (/\bmatch highlights\b/.test(t)) return 'news';
+  if (/\bhighlights\s*[|:]/.test(t)) return 'news';
+
+  // Team-vs-team score patterns ("3-0", "5-1") with sport indicators
+  if (/\b\d{1,2}[-–]\d{1,2}\b/.test(t) && /\b(vs\.?|match|full match|fc|united|city|town)\b/i.test(title)) {
+    return 'news';
+  }
+
+  // Football season tags (e.g. "2024/25", "2025/26") — implies current season
+  if (/\b20\d{2}\/2\d\b/.test(t)) return 'news';
+
+  return modelSays;
+}
+
 export async function scoreCandidates(userId: string, userInterests: UserInterestRow[]): Promise<void> {
   // JOIN to surface the seeding interest's label + the user's expertise level
   // for that interest, so Gemma can name the connection specifically rather
@@ -509,7 +533,8 @@ The "why" must name the matched interest and something specific about THIS video
 
       const sensitivity = (() => {
         const v = (entry.time_sensitivity ?? '').toString().toLowerCase().trim();
-        return v === 'news' || v === 'evergreen' ? v : 'standard';
+        const modelSays: TimeSensitivity = v === 'news' || v === 'evergreen' ? v : 'standard';
+        return overrideTimeSensitivity(item.title, modelSays);
       })();
 
       // gemma_score retained as connection × quality / 10 (0–10 range) so
