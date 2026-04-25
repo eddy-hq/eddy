@@ -4,7 +4,7 @@ import { logger } from '../../logger';
 import { ollamaGenerate } from '../../ollama';
 import { config } from '../../config';
 
-export const PROMPT_VERSION = 'v1';
+const PROMPT_VERSION = 'v1';
 
 export interface ScoreParams {
   requestId: string;
@@ -38,7 +38,7 @@ function getChannelHistory(userId: string, channel: string): ChannelHistory {
   return { approved: row?.approved ?? 0, rejected: row?.rejected ?? 0 };
 }
 
-export function buildPrompt(params: ScoreParams & { channelHistory: ChannelHistory }): string {
+function buildPrompt(params: ScoreParams & { channelHistory: ChannelHistory }): string {
   const { title, channel, description, transcript, channelHistory } = params;
 
   const desc = description.length > 500 ? description.slice(0, 500) + '...' : description;
@@ -74,7 +74,7 @@ Guidelines:
 - Never auto-approve when uncertain`;
 }
 
-export function parseVerdict(response: string): GuardVerdict {
+function parseVerdict(response: string): GuardVerdict {
   const match = response.match(/\{[\s\S]*\}/);
   if (!match) throw new Error('No JSON block in Gemma response');
 
@@ -94,6 +94,42 @@ export function parseVerdict(response: string): GuardVerdict {
   };
 }
 
+// Shared Gemma round-trip + parse + guard_eval insert. Used by both the
+// request flow (scoreForRequest) and the candidate flow (evaluateCandidate)
+// so the eval logic exists in one place.
+async function runGuardEvaluation(
+  prompt: string,
+  ctx: { requestId: string | null; url: string },
+): Promise<GuardVerdict> {
+  let verdict: GuardVerdict;
+  try {
+    const raw = await ollamaGenerate(prompt);
+    verdict = parseVerdict(raw);
+  } catch (err) {
+    logger.warn({ err, requestId: ctx.requestId, url: ctx.url }, 'Guard scoring failed — defaulting to uncertain');
+    verdict = { verdict: 'uncertain', reason: 'Guard scoring error', confidence: 0 };
+  }
+
+  const now = new Date().toISOString();
+  db.prepare(`
+    INSERT INTO guard_eval
+      (eval_id, request_id, url, gemma_verdict, gemma_reason, gemma_confidence, prompt_version, scored_at, created_at)
+    VALUES
+      (@eval_id, @request_id, @url, @gemma_verdict, @gemma_reason, @gemma_confidence, @prompt_version, @scored_at, @scored_at)
+  `).run({
+    eval_id: uuidv7(),
+    request_id: ctx.requestId,
+    url: ctx.url,
+    gemma_verdict: verdict.verdict,
+    gemma_reason: verdict.reason,
+    gemma_confidence: verdict.confidence,
+    prompt_version: PROMPT_VERSION,
+    scored_at: now,
+  });
+
+  return verdict;
+}
+
 export async function scoreForRequest(params: ScoreParams): Promise<GuardVerdict> {
   const prior = db.prepare(
     'SELECT gemma_verdict, gemma_reason, gemma_confidence FROM guard_eval WHERE request_id = ? ORDER BY scored_at ASC LIMIT 1'
@@ -110,34 +146,7 @@ export async function scoreForRequest(params: ScoreParams): Promise<GuardVerdict
 
   const channelHistory = getChannelHistory(params.userId, params.channel);
   const prompt = buildPrompt({ ...params, channelHistory });
-
-  let verdict: GuardVerdict;
-  try {
-    const raw = await ollamaGenerate(prompt);
-    verdict = parseVerdict(raw);
-  } catch (err) {
-    logger.warn({ err, requestId: params.requestId }, 'Guard scoring failed — defaulting to uncertain');
-    verdict = { verdict: 'uncertain', reason: 'Guard scoring error', confidence: 0 };
-  }
-
-  const evalId = uuidv7();
-  const now = new Date().toISOString();
-
-  db.prepare(`
-    INSERT INTO guard_eval
-      (eval_id, request_id, url, gemma_verdict, gemma_reason, gemma_confidence, prompt_version, scored_at, created_at)
-    VALUES
-      (@eval_id, @request_id, @url, @gemma_verdict, @gemma_reason, @gemma_confidence, @prompt_version, @scored_at, @scored_at)
-  `).run({
-    eval_id: evalId,
-    request_id: params.requestId,
-    url: params.url,
-    gemma_verdict: verdict.verdict,
-    gemma_reason: verdict.reason,
-    gemma_confidence: verdict.confidence,
-    prompt_version: PROMPT_VERSION,
-    scored_at: now,
-  });
+  const verdict = await runGuardEvaluation(prompt, { requestId: params.requestId, url: params.url });
 
   db.prepare(`
     UPDATE requests SET guard_verdict = @verdict, guard_reason = @reason
@@ -150,6 +159,30 @@ export async function scoreForRequest(params: ScoreParams): Promise<GuardVerdict
   );
 
   return verdict;
+}
+
+export interface CandidateEvalParams {
+  candidateId: string;
+  userId: string;
+  url: string;
+  title: string;
+}
+
+// Evaluate a discovery candidate. The candidate flow has no request row,
+// so guard_eval.request_id is NULL and channel/description/transcript are
+// unavailable — only the title carries safety signal at this stage.
+export async function evaluateCandidate(params: CandidateEvalParams): Promise<GuardVerdict> {
+  const prompt = buildPrompt({
+    requestId: params.candidateId,
+    userId: params.userId,
+    url: params.url,
+    title: params.title,
+    channel: '',
+    description: '',
+    transcript: null,
+    channelHistory: { approved: 0, rejected: 0 },
+  });
+  return runGuardEvaluation(prompt, { requestId: null, url: params.url });
 }
 
 const THUMB_CLASSIFY_PROMPT = `Look at this YouTube thumbnail image.

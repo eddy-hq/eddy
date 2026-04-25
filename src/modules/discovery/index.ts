@@ -8,7 +8,7 @@ import { logger } from '../../logger';
 import { ollamaGenerate } from '../../ollama';
 import { redis, discoveryQueue, downloadQueue } from '../../queue';
 import { ValidationError, NotFoundError } from '../../errors';
-import { buildPrompt, parseVerdict, PROMPT_VERSION } from '../guard/index';
+import { evaluateCandidate } from '../guard/index';
 import type { DownloadJobData } from '../content';
 
 const execFileAsync = promisify(execFile);
@@ -641,55 +641,6 @@ The "why" must name the matched interest and something specific about THIS video
   }
 }
 
-async function guardCandidates(userId: string): Promise<void> {
-  const scored = db.prepare(`
-    SELECT candidate_id, external_id, title, url
-    FROM candidate_pool
-    WHERE user_id = ? AND status = 'scored'
-    ORDER BY gemma_score DESC
-    LIMIT 30
-  `).all(userId) as Array<{ candidate_id: string; external_id: string | null; title: string | null; url: string }>;
-
-  if (scored.length === 0) return;
-
-  const now = new Date().toISOString();
-
-  for (const c of scored) {
-    const prompt = buildPrompt({
-      requestId: c.candidate_id,
-      userId,
-      url: c.url,
-      title: c.title ?? '',
-      channel: '',
-      description: '',
-      transcript: null,
-      channelHistory: { approved: 0, rejected: 0 },
-    });
-
-    let verdict: ReturnType<typeof parseVerdict>;
-    try {
-      const raw = await ollamaGenerate(prompt);
-      verdict = parseVerdict(raw);
-    } catch {
-      verdict = { verdict: 'uncertain', reason: 'Guard error', confidence: 0 };
-    }
-
-    db.prepare(`
-      INSERT OR IGNORE INTO guard_eval
-        (eval_id, request_id, url, gemma_verdict, gemma_reason, gemma_confidence, prompt_version, scored_at, created_at)
-      VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?)
-    `).run(uuidv7(), c.url, verdict.verdict, verdict.reason, verdict.confidence, PROMPT_VERSION, now, now);
-
-    const nextStatus = verdict.verdict === 'clear_yes' ? 'scored'
-      : verdict.verdict === 'clear_no' ? 'guard_rejected'
-      : 'guard_pending';
-
-    db.prepare(`
-      UPDATE candidate_pool SET guard_verdict = ?, status = ? WHERE candidate_id = ?
-    `).run(verdict.verdict, nextStatus, c.candidate_id);
-  }
-}
-
 // Brief §9a: weight = 1/sqrt(rank). Lower-ranked interests are down-weighted,
 // not eliminated, so the feed still leans on top interests but lets niche
 // ones surface when their content is fresh and high quality.
@@ -958,7 +909,30 @@ export async function runDiscoveryForUser(user: UserRow, options: { force?: bool
   await scoreCandidates(user.user_id, userInterests);
 
   if (isKid) {
-    await guardCandidates(user.user_id);
+    const scored = db.prepare(`
+      SELECT candidate_id, external_id, title, url
+      FROM candidate_pool
+      WHERE user_id = ? AND status = 'scored'
+      ORDER BY gemma_score DESC
+      LIMIT 30
+    `).all(user.user_id) as Array<{ candidate_id: string; external_id: string | null; title: string | null; url: string }>;
+
+    for (const c of scored) {
+      const verdict = await evaluateCandidate({
+        candidateId: c.candidate_id,
+        userId: user.user_id,
+        url: c.url,
+        title: c.title ?? '',
+      });
+
+      const nextStatus = verdict.verdict === 'clear_yes' ? 'scored'
+        : verdict.verdict === 'clear_no' ? 'guard_rejected'
+        : 'guard_pending';
+
+      db.prepare(`
+        UPDATE candidate_pool SET guard_verdict = ?, status = ? WHERE candidate_id = ?
+      `).run(verdict.verdict, nextStatus, c.candidate_id);
+    }
   }
 
   const surfaced = surfaceForToday(user.user_id, isKid);

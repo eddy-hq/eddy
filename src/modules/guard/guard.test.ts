@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { parseVerdict, buildPrompt, scoreForRequest, PROMPT_VERSION } from './index';
+import { scoreForRequest, evaluateCandidate } from './index';
 
 vi.mock('../../config', () => ({
   config: {
@@ -16,145 +16,209 @@ vi.mock('../../ollama', () => ({
   ollamaGenerate: vi.fn(),
 }));
 
+// Routed by SQL substring so the prior-eval lookup returns undefined (fresh
+// scoring path) while the channel-history lookup still returns a row. The
+// `.run()` calls for every prepare are captured on `mockRun` so tests can
+// inspect insert/update args. Tests can override `priorEval` to exercise the
+// cached path or `channelHistory` to drive prompt-content assertions.
+let priorEval: { gemma_verdict: string; gemma_reason: string; gemma_confidence: number } | undefined;
+let channelHistory: { approved: number; rejected: number } = { approved: 0, rejected: 0 };
+const mockRun = vi.fn();
+
 vi.mock('../../db/client', () => ({
   db: {
-    prepare: vi.fn(() => ({
-      get: vi.fn(() => ({ approved: 2, rejected: 0 })),
-      run: vi.fn(),
+    prepare: vi.fn((sql: string) => ({
+      get: vi.fn(() => {
+        if (sql.includes('FROM guard_eval')) return priorEval;
+        if (sql.includes('FROM requests')) return channelHistory;
+        return undefined;
+      }),
+      run: mockRun,
     })),
   },
 }));
 
 import { ollamaGenerate } from '../../ollama';
 
-describe('parseVerdict', () => {
-  it('parses a clean JSON response', () => {
-    const result = parseVerdict(
+beforeEach(() => {
+  priorEval = undefined;
+  channelHistory = { approved: 0, rejected: 0 };
+  mockRun.mockReset();
+  vi.mocked(ollamaGenerate).mockReset();
+});
+
+describe('scoreForRequest verdict parsing', () => {
+  it('parses a clean JSON response', async () => {
+    vi.mocked(ollamaGenerate).mockResolvedValue(
       '{"verdict":"clear_yes","reason":"Educational coding content.","confidence":0.9}'
     );
+    const result = await scoreForRequest({
+      requestId: 'r1', userId: 'u1', url: 'https://x',
+      title: 't', channel: 'c', description: 'd', transcript: null,
+    });
     expect(result.verdict).toBe('clear_yes');
     expect(result.reason).toBe('Educational coding content.');
     expect(result.confidence).toBe(0.9);
   });
 
-  it('extracts JSON embedded in preamble text', () => {
-    const result = parseVerdict(
+  it('extracts JSON embedded in preamble text', async () => {
+    vi.mocked(ollamaGenerate).mockResolvedValue(
       'Sure, here is my assessment:\n{"verdict":"uncertain","reason":"Ambiguous content.","confidence":0.5}\nDone.'
     );
+    const result = await scoreForRequest({
+      requestId: 'r1', userId: 'u1', url: 'https://x',
+      title: 't', channel: 'c', description: 'd', transcript: null,
+    });
     expect(result.verdict).toBe('uncertain');
   });
 
-  it('clamps confidence to 0–1', () => {
-    const result = parseVerdict('{"verdict":"clear_no","reason":"Violence.","confidence":1.5}');
+  it('clamps confidence to 0–1', async () => {
+    vi.mocked(ollamaGenerate).mockResolvedValue(
+      '{"verdict":"clear_no","reason":"Violence.","confidence":1.5}'
+    );
+    const result = await scoreForRequest({
+      requestId: 'r1', userId: 'u1', url: 'https://x',
+      title: 't', channel: 'c', description: 'd', transcript: null,
+    });
     expect(result.confidence).toBe(1);
   });
 
-  it('throws on missing JSON', () => {
-    expect(() => parseVerdict('no json here')).toThrow('No JSON block');
+  it('defaults to uncertain on missing JSON', async () => {
+    vi.mocked(ollamaGenerate).mockResolvedValue('no json here');
+    const result = await scoreForRequest({
+      requestId: 'r1', userId: 'u1', url: 'https://x',
+      title: 't', channel: 'c', description: 'd', transcript: null,
+    });
+    expect(result.verdict).toBe('uncertain');
+    expect(result.confidence).toBe(0);
   });
 
-  it('throws on invalid verdict value', () => {
-    expect(() => parseVerdict('{"verdict":"maybe","reason":"x","confidence":0.5}')).toThrow(
-      'Unexpected verdict value'
-    );
+  it('defaults to uncertain on invalid verdict value', async () => {
+    vi.mocked(ollamaGenerate).mockResolvedValue('{"verdict":"maybe","reason":"x","confidence":0.5}');
+    const result = await scoreForRequest({
+      requestId: 'r1', userId: 'u1', url: 'https://x',
+      title: 't', channel: 'c', description: 'd', transcript: null,
+    });
+    expect(result.verdict).toBe('uncertain');
   });
 });
 
-describe('buildPrompt', () => {
-  it('includes title, channel, and history', () => {
-    const prompt = buildPrompt({
-      requestId: 'r1',
-      userId: 'u1',
-      url: 'https://youtube.com/watch?v=abc',
-      title: 'Intro to Python',
-      channel: 'CS Dojo',
-      description: 'Learn Python basics.',
-      transcript: null,
-      channelHistory: { approved: 3, rejected: 1 },
+describe('scoreForRequest prompt content', () => {
+  it('includes title, channel, and history', async () => {
+    channelHistory = { approved: 3, rejected: 1 };
+    vi.mocked(ollamaGenerate).mockResolvedValue('{"verdict":"clear_yes","reason":"ok","confidence":0.9}');
+    await scoreForRequest({
+      requestId: 'r1', userId: 'u1', url: 'https://x',
+      title: 'Intro to Python', channel: 'CS Dojo',
+      description: 'Learn Python basics.', transcript: null,
     });
+    const prompt = vi.mocked(ollamaGenerate).mock.calls[0]?.[0] ?? '';
     expect(prompt).toContain('Intro to Python');
     expect(prompt).toContain('CS Dojo');
     expect(prompt).toContain('3 previously approved');
     expect(prompt).toContain('1 previously rejected');
   });
 
-  it('truncates long descriptions', () => {
+  it('truncates long descriptions', async () => {
+    vi.mocked(ollamaGenerate).mockResolvedValue('{"verdict":"clear_yes","reason":"ok","confidence":0.9}');
     const longDesc = 'a'.repeat(1000);
-    const prompt = buildPrompt({
-      requestId: 'r1',
-      userId: 'u1',
-      url: 'https://youtube.com/watch?v=abc',
-      title: 'Test',
-      channel: 'Test',
-      description: longDesc,
-      transcript: null,
-      channelHistory: { approved: 0, rejected: 0 },
+    await scoreForRequest({
+      requestId: 'r1', userId: 'u1', url: 'https://x',
+      title: 'Test', channel: 'Test', description: longDesc, transcript: null,
     });
+    const prompt = vi.mocked(ollamaGenerate).mock.calls[0]?.[0] ?? '';
     expect(prompt).toContain('...');
     expect(prompt.length).toBeLessThan(longDesc.length + 500);
   });
 
-  it('includes transcript excerpt when provided', () => {
-    const prompt = buildPrompt({
-      requestId: 'r1',
-      userId: 'u1',
-      url: 'https://youtube.com/watch?v=abc',
-      title: 'Test',
-      channel: 'Test',
-      description: 'desc',
+  it('includes transcript excerpt when provided', async () => {
+    vi.mocked(ollamaGenerate).mockResolvedValue('{"verdict":"clear_yes","reason":"ok","confidence":0.9}');
+    await scoreForRequest({
+      requestId: 'r1', userId: 'u1', url: 'https://x',
+      title: 'Test', channel: 'Test', description: 'desc',
       transcript: 'Hello world this is a transcript',
-      channelHistory: { approved: 0, rejected: 0 },
     });
+    const prompt = vi.mocked(ollamaGenerate).mock.calls[0]?.[0] ?? '';
     expect(prompt).toContain('Transcript excerpt');
     expect(prompt).toContain('Hello world');
   });
 });
 
 describe('scoreForRequest', () => {
-  beforeEach(() => {
+  it('writes guard_eval row and returns verdict', async () => {
     vi.mocked(ollamaGenerate).mockResolvedValue(
       '{"verdict":"clear_yes","reason":"Family-friendly coding tutorial.","confidence":0.95}'
     );
-  });
-
-  it('writes guard_eval row and returns verdict', async () => {
-    const { db } = await import('../../db/client');
-    const mockRun = vi.fn();
-    vi.mocked(db.prepare).mockReturnValue({ get: vi.fn(() => ({ approved: 0, rejected: 0 })), run: mockRun } as unknown as ReturnType<typeof db.prepare>);
-
     const result = await scoreForRequest({
-      requestId: 'req-1',
-      userId: 'user-1',
-      url: 'https://youtube.com/watch?v=abc',
-      title: 'Learn Python',
-      channel: 'CS Dojo',
-      description: 'Python tutorial',
-      transcript: null,
+      requestId: 'req-1', userId: 'user-1', url: 'https://youtube.com/watch?v=abc',
+      title: 'Learn Python', channel: 'CS Dojo', description: 'Python tutorial', transcript: null,
     });
 
     expect(result.verdict).toBe('clear_yes');
     expect(result.confidence).toBe(0.95);
-    expect(mockRun).toHaveBeenCalledTimes(2); // guard_eval insert + requests update
-    const insertCall = mockRun.mock.calls[0]?.[0] as Record<string, unknown>;
-    expect(insertCall['prompt_version']).toBe(PROMPT_VERSION);
-    expect(insertCall['gemma_verdict']).toBe('clear_yes');
+
+    const insertCall = mockRun.mock.calls.find(
+      (c) => typeof c[0] === 'object' && c[0] !== null && 'eval_id' in (c[0] as Record<string, unknown>)
+    );
+    expect(insertCall).toBeDefined();
+    const row = insertCall?.[0] as Record<string, unknown>;
+    expect(row['prompt_version']).toBe('v1');
+    expect(row['gemma_verdict']).toBe('clear_yes');
+    expect(row['request_id']).toBe('req-1');
+    expect(row['url']).toBe('https://youtube.com/watch?v=abc');
   });
 
   it('defaults to uncertain when Ollama fails', async () => {
     vi.mocked(ollamaGenerate).mockRejectedValue(new Error('Ollama unreachable'));
-    const { db } = await import('../../db/client');
-    vi.mocked(db.prepare).mockReturnValue({ get: vi.fn(() => ({ approved: 0, rejected: 0 })), run: vi.fn() } as unknown as ReturnType<typeof db.prepare>);
-
     const result = await scoreForRequest({
-      requestId: 'req-2',
-      userId: 'user-1',
-      url: 'https://youtube.com/watch?v=xyz',
-      title: 'Test',
-      channel: 'Test',
-      description: '',
-      transcript: null,
+      requestId: 'req-2', userId: 'user-1', url: 'https://youtube.com/watch?v=xyz',
+      title: 'Test', channel: 'Test', description: '', transcript: null,
+    });
+    expect(result.verdict).toBe('uncertain');
+    expect(result.confidence).toBe(0);
+  });
+
+  it('skips Ollama when a prior eval exists for the request', async () => {
+    priorEval = { gemma_verdict: 'clear_no', gemma_reason: 'cached', gemma_confidence: 0.7 };
+    const result = await scoreForRequest({
+      requestId: 'req-3', userId: 'user-1', url: 'https://x',
+      title: 't', channel: 'c', description: 'd', transcript: null,
+    });
+    expect(result.verdict).toBe('clear_no');
+    expect(result.reason).toBe('cached');
+    expect(vi.mocked(ollamaGenerate)).not.toHaveBeenCalled();
+  });
+});
+
+describe('evaluateCandidate', () => {
+  it('writes guard_eval row with request_id NULL and returns verdict', async () => {
+    vi.mocked(ollamaGenerate).mockResolvedValue(
+      '{"verdict":"clear_yes","reason":"Looks fine.","confidence":0.8}'
+    );
+    const result = await evaluateCandidate({
+      candidateId: 'cand-1', userId: 'user-1',
+      url: 'https://youtube.com/watch?v=abc', title: 'Some video',
     });
 
+    expect(result.verdict).toBe('clear_yes');
+
+    const insertCall = mockRun.mock.calls.find(
+      (c) => typeof c[0] === 'object' && c[0] !== null && 'eval_id' in (c[0] as Record<string, unknown>)
+    );
+    expect(insertCall).toBeDefined();
+    const row = insertCall?.[0] as Record<string, unknown>;
+    expect(row['request_id']).toBeNull();
+    expect(row['url']).toBe('https://youtube.com/watch?v=abc');
+    expect(row['gemma_verdict']).toBe('clear_yes');
+    expect(row['prompt_version']).toBe('v1');
+  });
+
+  it('defaults to uncertain when Ollama fails', async () => {
+    vi.mocked(ollamaGenerate).mockRejectedValue(new Error('Ollama unreachable'));
+    const result = await evaluateCandidate({
+      candidateId: 'cand-2', userId: 'user-1',
+      url: 'https://youtube.com/watch?v=xyz', title: 'Some video',
+    });
     expect(result.verdict).toBe('uncertain');
     expect(result.confidence).toBe(0);
   });
