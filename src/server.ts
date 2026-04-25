@@ -10,7 +10,8 @@ import { requestsRouter } from './modules/requests/index';
 import { internalRouter } from './modules/internal/index';
 import { peopleRouter } from './modules/people/index';
 import { searchRouter } from './modules/search/index';
-import { interestsRouter, discoveryRouter } from './modules/discovery/index';
+import { discoveryRouter } from './modules/discovery/index';
+import { interestsRouter } from './modules/interests/index';
 import { watchEventsRouter } from './modules/watch-events/index';
 import { API_PREFIXES } from './api-prefixes';
 
