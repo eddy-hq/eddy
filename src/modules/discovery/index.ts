@@ -910,12 +910,12 @@ export async function runDiscoveryForUser(user: UserRow, options: { force?: bool
 
   if (isKid) {
     const scored = db.prepare(`
-      SELECT candidate_id, external_id, title, url
+      SELECT candidate_id, title, url
       FROM candidate_pool
       WHERE user_id = ? AND status = 'scored'
       ORDER BY gemma_score DESC
       LIMIT 30
-    `).all(user.user_id) as Array<{ candidate_id: string; external_id: string | null; title: string | null; url: string }>;
+    `).all(user.user_id) as Array<{ candidate_id: string; title: string | null; url: string }>;
 
     for (const c of scored) {
       const verdict = await evaluateCandidate({
