@@ -427,44 +427,39 @@ export async function scoreCandidates(userId: string, userInterests: UserInteres
       return `${item.index}. "${item.title}" — ${channel} | ${formatDuration(item.durationSecs)} | ${formatAge(item.publishedAt)}${seedTag}`;
     }).join('\n');
 
-    const prompt = `You are scoring YouTube videos for a personal discovery feed. Eddy routes attention through people and stated interests — never engagement metrics. Your job is to judge how strongly each video connects to the user's stated interests, how substantive (vs clickbait) it is, and how time-sensitive its value is.
+    const prompt = `Score YouTube videos for a personal discovery feed. For each video give a connection score, a quality score, a time-sensitivity tag, and a one-sentence reason.
 
-User interests (in priority order, with expertise level): ${interestSummary}
+User interests (priority order, expertise): ${interestSummary}
 
-Videos to score (title — channel | length | age [seeded by interest]):
+Videos (title — channel | length | age [seeded by interest]):
 ${videoList}
 
-For each video return THREE scores plus a sensitivity tag and a specific reason. Return ONLY a compact JSON array — no whitespace, no extra text:
-[{"index":1,"connection":7,"quality":8,"time_sensitivity":"standard","why":"One sentence — must name the matched interest and a specific aspect of THIS video, max 20 words."}]
+Return ONLY this JSON, one entry per video, no other text:
+[{"index":1,"connection":7,"quality":8,"time_sensitivity":"standard","why":"Names the matched interest and a specific aspect of THIS video, max 20 words."}]
 
-CONNECTION (0–10) — how strongly this video matches one of the user's named interests at their expertise level:
-- 9–10: Specifically and clearly matches a named interest, level-appropriate, content the user almost certainly wants to see
-- 7–8: Clearly matches a named interest; level may be slightly off
-- 5–6: Adjacent or partial match
-- 3–4: Weakly related — touches an interest but isn't really about it
-- 0–2: No clear connection to any named interest
-- If you cannot articulate WHICH interest matches and WHAT specific aspect, score connection ≤ 3.
+CONNECTION (0–10): match to a named interest at the user's expertise level.
+- 8–10: clearly and specifically matches a named interest
+- 5–7: adjacent or partial match
+- 0–4: weak or no clear match
+If you can't articulate which interest matches and what specific aspect, score ≤ 3.
 
-QUALITY (0–10) — substance vs engagement bait. Judge from title, channel, duration. Apply these caps strictly:
-- Money-promise titles ("$650M Exit", "$215M AI CEO", "Make $1M with X", "How I made $X doing Y"): cap quality at 4 unless the channel is clearly the company itself. Cash in a thumbnail-style title is bait.
-- "How I'd build / If I were starting over / What I'd do" framing: cap quality at 5. Invites parasocial engagement, rarely substantive.
-- "Read this guide and win", "Watch this to know X", "This is the only X you need": cap quality at 4. Cure-all framing.
-- Year + Roadmap/Complete Guide pairing ("2026 Roadmap", "Complete Guide for 2025", "in 2026"): cap quality at 6. Year stamp is freshness theatre.
-- "Top X SECRETS", "X Things Nobody Tells You", "X Things I Wish I Knew": cap quality at 5.
-- ALL CAPS shouting, reaction-bait, compilation-farm channels, durations mismatched to topic (60s shorts claiming to teach complex skills, 30min videos for trivial topics): cap quality at 3.
-- Emoji-stuffed titles, hyperbolic claims ("EXACTLY", "FAST", "INSANE"): cap quality at 5.
-- Generic restatement of an interest as title with no detail: cap quality at 5.
+QUALITY (0–10): substance over engagement bait. Score quality ≤ 4 if the title contains any of these bait patterns:
+- Money in title without specific company context — "$650M Exit", "Make $1M with X", "How I made $X"
+- Cure-all framing — "Read this and win", "Watch this to know X", "The only X you need"
+- ALL CAPS shouting or hyperbolic phrasing — "EXACTLY", "INSANE", "FAST", "SECRETS", "Don't waste"
+- Parasocial framing — "How I'd build", "If I were starting over", "What I wish I knew"
+- Year + Roadmap pairing where the year exists to look fresh — "Complete 2026 Roadmap"
+- Mismatched duration — 60s shorts claiming complex skills, 30min for trivial topics
+- Reaction or compilation-farm channels
 
-Reward in quality: specificity (named techniques, specific scores, specific products), real creator credentials, sensible duration for depth claimed, descriptive titles beyond a hook.
+Reward specificity (named techniques, specific scores, real expertise) and descriptive titles beyond a hook.
 
-TIME SENSITIVITY — pick one:
-- "news": Time-pegged content where value drops fast within days. Match highlights, "X just announced", reaction videos, current weeks/dates in title, "this week", live streams, recent product reactions.
-- "standard": Generally useful but somewhat dated — most tutorials, year-stamped roadmaps, "2025/2026" content, trend pieces.
-- "evergreen": Timeless content — technique fundamentals, history, philosophy, classic retrospectives ("Greatest X of all time"), "how X works" without time refs.
+TIME_SENSITIVITY:
+- "news": value drops within days — match highlights, "X just announced", recent dates
+- "standard": tutorials, year-stamped roadmaps, trend pieces
+- "evergreen": fundamentals, history, philosophy, classic retrospectives
 
-The "why" line is load-bearing. It MUST name (a) which interest matches and (b) something specific about this video — not a generic restatement of the title. Generic phrasing like "interesting video about X" or "you might enjoy this" means connection ≤ 3.
-
-Do not consider freshness in your scores — that's applied separately. Score connection, quality, and time_sensitivity only.`;
+The "why" must name the matched interest and something specific about THIS video. Generic phrasing means connection ≤ 3. Do not consider freshness or popularity in the scores — those are applied separately.`;
 
     let raw: string;
     try {
@@ -684,14 +679,9 @@ export function allocateSlots(
     tryPick(item, 'stretch', true);
   }
 
-  // Pass 3 — backfill if still under cap. Relax the per-interest cap so the
-  // feed isn't short, but keep similarity dedup so we never duplicate a pick.
-  if (selected.size < cap) {
-    for (const item of ranked) {
-      if (selected.size >= cap) break;
-      tryPick(item, 'regular', false);
-    }
-  }
+  // No Pass-3 cap-relaxing backfill: if diversity rules leave the feed
+  // short, that's a valid outcome. Brief §9a: "Finishing 'Picked for you'
+  // is a valid state — show 'That's it for today' rather than paginating."
 
   return selected;
 }
