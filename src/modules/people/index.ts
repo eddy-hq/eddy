@@ -7,7 +7,8 @@ import { logger } from '../../logger';
 import { ValidationError, NotFoundError } from '../../errors';
 import { downloadQueue } from '../../queue';
 import type { DownloadJobData } from '../content';
-import { inferChannelInterests, SHORTS_MAX_SECS } from '../discovery';
+import { SHORTS_MAX_SECS } from '../discovery';
+import { inferChannelInterests } from '../interests';
 
 const execFileAsync = promisify(execFile);
 
