@@ -12,7 +12,8 @@ vi.mock('../../logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), child: vi.fn(() => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn() })) },
 }));
 
-vi.mock('../../ollama', () => ({
+vi.mock('../../ollama', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../ollama')>()),
   ollamaGenerate: vi.fn(),
 }));
 

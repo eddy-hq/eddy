@@ -1,7 +1,7 @@
 import { v7 as uuidv7 } from 'uuid';
 import { db } from '../../db/client';
 import { logger } from '../../logger';
-import { ollamaGenerate } from '../../ollama';
+import { ollamaGenerate, parseOllamaJson } from '../../ollama';
 import { config } from '../../config';
 
 const PROMPT_VERSION = 'v1';
@@ -75,23 +75,22 @@ Guidelines:
 }
 
 function parseVerdict(response: string): GuardVerdict {
-  const match = response.match(/\{[\s\S]*\}/);
-  if (!match) throw new Error('No JSON block in Gemma response');
-
-  const parsed = JSON.parse(match[0]) as Record<string, unknown>;
-  const v = parsed['verdict'];
-  if (v !== 'clear_yes' && v !== 'clear_no' && v !== 'uncertain') {
-    throw new Error(`Unexpected verdict value: ${String(v)}`);
-  }
-
-  return {
-    verdict: v,
-    reason: typeof parsed['reason'] === 'string' ? parsed['reason'] : 'No reason provided',
-    confidence:
-      typeof parsed['confidence'] === 'number'
-        ? Math.min(1, Math.max(0, parsed['confidence']))
-        : 0.5,
-  };
+  const verdict = parseOllamaJson<GuardVerdict>(response, 'object', (parsed) => {
+    if (typeof parsed !== 'object' || parsed === null) return null;
+    const p = parsed as Record<string, unknown>;
+    const v = p['verdict'];
+    if (v !== 'clear_yes' && v !== 'clear_no' && v !== 'uncertain') return null;
+    return {
+      verdict: v,
+      reason: typeof p['reason'] === 'string' ? p['reason'] : 'No reason provided',
+      confidence:
+        typeof p['confidence'] === 'number'
+          ? Math.min(1, Math.max(0, p['confidence']))
+          : 0.5,
+    };
+  });
+  if (!verdict) throw new Error('Could not parse Gemma verdict');
+  return verdict;
 }
 
 // Shared Gemma round-trip + parse + guard_eval insert. Used by both the
@@ -242,16 +241,15 @@ export async function classifyYtImage(youtubeId: string, variant: string): Promi
     return 'slop';
   }
 
-  try {
-    const match = raw.match(/\{[\s\S]*\}/);
-    if (!match) throw new Error('No JSON in response');
-    const parsed = JSON.parse(match[0]) as Record<string, unknown>;
-    const style = parsed['style'];
-    if (style !== 'editorial' && style !== 'slop') throw new Error(`Unexpected style: ${String(style)}`);
-    logger.debug({ youtubeId, variant, style }, 'Thumbnail classified');
-    return style;
-  } catch (err) {
-    logger.warn({ err, youtubeId, variant, raw }, 'Failed to parse thumb classification response');
+  const style = parseOllamaJson<ThumbStyle>(raw, 'object', (parsed) => {
+    if (typeof parsed !== 'object' || parsed === null) return null;
+    const s = (parsed as Record<string, unknown>)['style'];
+    return s === 'editorial' || s === 'slop' ? s : null;
+  });
+  if (!style) {
+    logger.warn({ youtubeId, variant, raw }, 'Failed to parse thumb classification response');
     return 'slop';
   }
+  logger.debug({ youtubeId, variant, style }, 'Thumbnail classified');
+  return style;
 }

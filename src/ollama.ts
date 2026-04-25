@@ -52,6 +52,27 @@ export async function ollamaGenerate(
   return data.response;
 }
 
+// Extract a JSON {...} or [...] block from a possibly-prose-wrapped Ollama
+// response, then hand the parsed value to `validate`. Returns null on no match,
+// JSON.parse failure, or validator rejection — callers log with their own
+// context (channelId, youtubeId, etc.).
+export function parseOllamaJson<T>(
+  raw: string,
+  shape: 'object' | 'array',
+  validate: (parsed: unknown) => T | null,
+): T | null {
+  const re = shape === 'object' ? /\{[\s\S]*\}/ : /\[[\s\S]*\]/;
+  const match = raw.match(re);
+  if (!match) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(match[0]);
+  } catch {
+    return null;
+  }
+  return validate(parsed);
+}
+
 export async function ollamaHealthCheck(): Promise<{ ok: boolean; models: string[] }> {
   try {
     const response = await fetch(`${config.OLLAMA_URL}/api/tags`);

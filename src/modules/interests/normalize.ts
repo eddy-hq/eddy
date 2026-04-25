@@ -1,7 +1,7 @@
 import { v7 as uuidv7 } from 'uuid';
 import { db } from '../../db/client';
 import { logger } from '../../logger';
-import { ollamaGenerate } from '../../ollama';
+import { ollamaGenerate, parseOllamaJson } from '../../ollama';
 
 // Free-text interest normalization: takes a user-typed label, slugs it,
 // resolves to an existing interest if one matches by id or label, otherwise
@@ -56,18 +56,18 @@ export function normalizeUserAddedInterest(userId: string, label: string): Norma
 
 async function generateSearchTermsAsync(interestId: string, label: string): Promise<void> {
   const prompt = `Generate 4 YouTube search queries that would find good videos about "${label}". Return a JSON array of strings only, for example ["query one","query two","query three","query four"]. No explanation.`;
+  let raw: string;
   try {
-    const raw = await ollamaGenerate(prompt);
-    const match = /\[.*?]/s.exec(raw.trim());
-    if (match) {
-      const parsed: unknown = JSON.parse(match[0]);
-      if (Array.isArray(parsed)) {
-        const terms = (parsed as unknown[]).filter((v): v is string => typeof v === 'string').slice(0, 4);
-        db.prepare('UPDATE interests SET search_terms = ? WHERE id = ?').run(JSON.stringify(terms), interestId);
-        logger.info({ interestId, terms }, 'User-added interest search terms generated');
-      }
-    }
+    raw = await ollamaGenerate(prompt);
   } catch (err) {
     logger.warn({ err, interestId }, 'User-added interest: search term generation failed');
+    return;
   }
+  const terms = parseOllamaJson<string[]>(raw, 'array', (parsed) => {
+    if (!Array.isArray(parsed)) return null;
+    return (parsed as unknown[]).filter((v): v is string => typeof v === 'string').slice(0, 4);
+  });
+  if (!terms) return;
+  db.prepare('UPDATE interests SET search_terms = ? WHERE id = ?').run(JSON.stringify(terms), interestId);
+  logger.info({ interestId, terms }, 'User-added interest search terms generated');
 }
