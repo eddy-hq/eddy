@@ -5,24 +5,10 @@ import { logger } from '../../logger';
 import { downloadQueue } from '../../queue';
 import { ValidationError, NotFoundError } from '../../errors';
 import type { DownloadJobData } from '../content';
+import { resolveUserById } from '../users';
 import { freshnessMultiplier, rankWeight } from './surface';
 
-interface UserRow {
-  user_id: string;
-  role: string;
-  age_gate: number;
-}
-
 export const discoveryRouter = Router();
-
-function resolveUser(userId: unknown): UserRow {
-  if (typeof userId !== 'string' || !userId.trim()) throw new ValidationError('userId required');
-  const row = db.prepare(
-    'SELECT user_id, role, age_gate FROM users WHERE user_id = ?'
-  ).get(userId) as UserRow | undefined;
-  if (!row) throw new NotFoundError(`user ${userId}`);
-  return row;
-}
 
 // GET /discovery/preview-html?user=<name|id>
 // Visual dry-run of surfacing logic, served to the local network so it's
@@ -55,7 +41,7 @@ interface SurfacedCandidateRow {
 
 // GET /discovery/feed?userId=
 discoveryRouter.get('/feed', (req: Request, res: Response) => {
-  const user = resolveUser(req.query['userId']);
+  const user = resolveUserById(req.query['userId']);
   const today = new Date().toISOString().slice(0, 10);
 
   const rows = db.prepare(`
@@ -144,7 +130,7 @@ discoveryRouter.get('/feed', (req: Request, res: Response) => {
 // POST /discovery/dismiss — body: { userId, candidateId }
 discoveryRouter.post('/dismiss', (req: Request, res: Response) => {
   const { userId, candidateId } = req.body as { userId?: string; candidateId?: string };
-  const user = resolveUser(userId);
+  const user = resolveUserById(userId);
   if (!candidateId?.trim()) throw new ValidationError('candidateId required');
 
   const candidate = db.prepare(
@@ -160,7 +146,7 @@ discoveryRouter.post('/dismiss', (req: Request, res: Response) => {
 // POST /discovery/request — body: { userId, candidateId }
 discoveryRouter.post('/request', async (req: Request, res: Response) => {
   const { userId, candidateId } = req.body as { userId?: string; candidateId?: string };
-  const user = resolveUser(userId);
+  const user = resolveUserById(userId);
   if (!candidateId?.trim()) throw new ValidationError('candidateId required');
 
   const candidate = db.prepare(
