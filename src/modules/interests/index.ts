@@ -1,6 +1,6 @@
 import { db } from '../../db/client';
 import { logger } from '../../logger';
-import { ollamaGenerate } from '../../ollama';
+import { ollamaGenerate, parseOllamaJson } from '../../ollama';
 
 export { interestsRouter } from './router';
 export { normalizeUserAddedInterest, type NormalizedUserInterest } from './normalize';
@@ -74,16 +74,13 @@ Select 1 or 2 interest IDs from the list above that best describe the content of
     return;
   }
 
-  let interestIds: string[];
-  try {
-    const match = /\[.*?]/.exec(raw.trim());
-    if (!match) return;
-    const parsed: unknown = JSON.parse(match[0]);
-    if (!Array.isArray(parsed)) return;
-    interestIds = (parsed as unknown[])
+  const interestIds = parseOllamaJson<string[]>(raw, 'array', (parsed) => {
+    if (!Array.isArray(parsed)) return null;
+    return (parsed as unknown[])
       .filter((v): v is string => typeof v === 'string')
       .slice(0, 2);
-  } catch {
+  });
+  if (!interestIds) {
     logger.warn({ channelId, raw }, 'Channel interest inference: could not parse response');
     return;
   }

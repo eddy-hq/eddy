@@ -6,6 +6,7 @@ import os from 'os';
 import { config } from '../config';
 import { logger as rootLogger } from '../logger';
 import { postSigned } from '../signed-channel';
+import { parseOllamaJson } from '../ollama';
 
 const execFileAsync = promisify(execFile);
 
@@ -143,21 +144,23 @@ async function classifyVariant(youtubeId: string, variant: string): Promise<'edi
 }
 
 async function scoreFrame(b64Image: string): Promise<{ score: number; reason: string } | null> {
+  let raw: string;
   try {
     const resp = await postSigned('/internal/thumb/score-frame', { image: b64Image, prompt: SCORE_PROMPT }, { timeoutMs: 60_000 });
-    const { raw } = await resp.json() as { raw: string };
-    const match = raw.match(/\{[\s\S]*\}/);
-    if (!match) return null;
-    const parsed = JSON.parse(match[0]) as Record<string, unknown>;
-    const score = parsed['score'];
-    if (typeof score !== 'number' || score < 0 || score > 10) return null;
-    return {
-      score,
-      reason: typeof parsed['reason'] === 'string' ? parsed['reason'] : '',
-    };
+    ({ raw } = await resp.json() as { raw: string });
   } catch {
     return null;
   }
+  return parseOllamaJson<{ score: number; reason: string }>(raw, 'object', (parsed) => {
+    if (typeof parsed !== 'object' || parsed === null) return null;
+    const p = parsed as Record<string, unknown>;
+    const score = p['score'];
+    if (typeof score !== 'number' || score < 0 || score > 10) return null;
+    return {
+      score,
+      reason: typeof p['reason'] === 'string' ? p['reason'] : '',
+    };
+  });
 }
 
 interface LocalWinner {

@@ -1,6 +1,6 @@
 import { db } from '../../db/client';
 import { logger } from '../../logger';
-import { ollamaGenerate } from '../../ollama';
+import { ollamaGenerate, parseOllamaJson } from '../../ollama';
 import { formatAge, formatDuration } from './util';
 import type { UserInterestRow } from './intake';
 
@@ -138,21 +138,18 @@ The "why" must name the matched interest and something specific about THIS video
 interface ScoreEntry { index: number; connection?: number; quality?: number; time_sensitivity?: string; why?: string; score?: number }
 
 export function parseScoringVerdict(raw: string): ScoreEntry[] | null {
-  try {
-    const fullMatch = /\[[\s\S]*]/.exec(raw.trim());
-    if (fullMatch) {
-      const scores = JSON.parse(fullMatch[0]) as ScoreEntry[];
-      if (!Array.isArray(scores)) return null;
-      return scores;
-    }
-    const objects = [...raw.matchAll(/\{[^{}]+\}/g)].map((m) => {
-      try { return JSON.parse(m[0]) as ScoreEntry; } catch { return null; }
-    }).filter((o): o is ScoreEntry => o !== null);
-    if (objects.length === 0) return null;
-    return objects;
-  } catch {
-    return null;
-  }
+  const primary = parseOllamaJson<ScoreEntry[]>(raw, 'array', (parsed) =>
+    Array.isArray(parsed) ? (parsed as ScoreEntry[]) : null,
+  );
+  if (primary) return primary;
+
+  // Salvage path: when the model emits per-video objects with no surrounding
+  // array, scrape them individually. Kept at the callsite since no other
+  // helper consumer needs it.
+  const objects = [...raw.matchAll(/\{[^{}]+\}/g)].map((m) => {
+    try { return JSON.parse(m[0]) as ScoreEntry; } catch { return null; }
+  }).filter((o): o is ScoreEntry => o !== null);
+  return objects.length === 0 ? null : objects;
 }
 
 export async function scoreCandidates(userId: string, userInterests: UserInterestRow[]): Promise<void> {
