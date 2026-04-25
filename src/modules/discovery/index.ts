@@ -304,6 +304,15 @@ interface ScoringItem {
 export const MIN_CONNECTION_SCORE = 6;
 export const MIN_QUALITY_SCORE = 5;
 
+// Floor on the combined weighted score (connection × quality × freshness ×
+// (1/√rank)). Stops the per-interest cap from forcing in weak picks just
+// because nothing better exists for that interest — e.g. a 2-year-old
+// match highlight with freshness ×0.1 scores ≈ 1, which is noise.
+// Roughly equivalent to: a baseline candidate (conn 6, qual 5, fresh 0.5,
+// rank 5) clears it; an old news item (conn 9, qual 6, fresh 0.1, rank 11)
+// does not.
+export const MIN_WEIGHTED_SCORE = 5;
+
 function formatAge(isoDate: string | null): string {
   const days = daysSince(isoDate);
   if (days === null) return 'unknown age';
@@ -759,7 +768,7 @@ function surfaceForToday(userId: string, isKid: boolean): number {
         * freshnessMultiplier(c.published_at, c.time_sensitivity)
         * rankWeight(c.rank),
     }))
-    .filter((x) => x.weighted > 0)
+    .filter((x) => x.weighted >= MIN_WEIGHTED_SCORE)
     .sort((a, b) => b.weighted - a.weighted);
 
   if (ranked.length === 0) return 0;

@@ -5,6 +5,7 @@ import {
   allocateSlots,
   MIN_CONNECTION_SCORE,
   MIN_QUALITY_SCORE,
+  MIN_WEIGHTED_SCORE,
   type AllocatableItem,
 } from './index';
 
@@ -30,7 +31,7 @@ interface Candidate {
   surfaced_today: number;
 }
 
-type SlotTag = 'regular' | 'stretch' | 'cut' | 'low conn' | 'low qual' | 'low both';
+type SlotTag = 'regular' | 'stretch' | 'cut' | 'low conn' | 'low qual' | 'low both' | 'low weight';
 
 interface Card {
   row: Candidate;
@@ -76,12 +77,13 @@ function escapeHtml(s: string): string {
   return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] ?? c));
 }
 
-function failureReason(c: Candidate): SlotTag | null {
+function failureReason(c: Candidate, weighted: number): SlotTag | null {
   const conn = c.connection_score ?? 0;
   const qual = c.quality_score ?? 0;
   if (conn < MIN_CONNECTION_SCORE && qual < MIN_QUALITY_SCORE) return 'low both';
   if (conn < MIN_CONNECTION_SCORE) return 'low conn';
   if (qual < MIN_QUALITY_SCORE) return 'low qual';
+  if (weighted < MIN_WEIGHTED_SCORE) return 'low weight';
   return null;
 }
 
@@ -114,13 +116,17 @@ function buildSection(user: UserRow): Section {
       ${guardClause}
   `).all(today, user.user_id) as Candidate[];
 
-  const ranked = rows.map((r) => ({
-    row: r,
-    fresh: freshnessMultiplier(r.published_at, r.time_sensitivity),
-    weighted: (r.connection_score ?? 0) * (r.quality_score ?? 0)
-      * freshnessMultiplier(r.published_at, r.time_sensitivity) * rankWeight(r.rank),
-    reject: failureReason(r),
-  })).sort((a, b) => b.weighted - a.weighted);
+  const ranked = rows.map((r) => {
+    const fresh = freshnessMultiplier(r.published_at, r.time_sensitivity);
+    const weighted = (r.connection_score ?? 0) * (r.quality_score ?? 0)
+      * fresh * rankWeight(r.rank);
+    return {
+      row: r,
+      fresh,
+      weighted,
+      reject: failureReason(r, weighted),
+    };
+  }).sort((a, b) => b.weighted - a.weighted);
 
   const eligible = ranked.filter((r) => r.reject === null);
 
@@ -196,6 +202,7 @@ h2 .muted { color: var(--fg-dim); font-weight: 400; text-transform: none; letter
 .slot-tag.stretch { background: var(--slot-stretch); color: #1a1916; }
 .slot-tag.low { background: var(--slot-low); }
 .slot-tag.low-both { background: var(--slot-low-both); }
+.slot-tag.low-weight { background: var(--slot-cut); }
 .actually-surfaced { position: absolute; top: 8px; right: 8px; background: var(--tag-actually-surfaced); color: white; padding: 3px 8px; border-radius: 4px; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
 .body { padding: 14px 16px 16px; flex: 1; display: flex; flex-direction: column; }
 .title { font-size: 14px; font-weight: 600; line-height: 1.35; margin-bottom: 6px; color: var(--fg); }
@@ -225,6 +232,7 @@ function cardHtml(c: Card): string {
   const slotClasses =
     slotKey === 'low both' ? 'slot-tag low-both'
     : slotKey === 'low conn' || slotKey === 'low qual' ? 'slot-tag low'
+    : slotKey === 'low weight' ? 'slot-tag low-weight'
     : `slot-tag ${slotKey}`;
 
   const tsKey = (r.time_sensitivity ?? 'standard').toLowerCase();
