@@ -11,6 +11,7 @@ import { internalRouter } from './modules/internal/index';
 import { peopleRouter } from './modules/people/index';
 import { searchRouter } from './modules/search/index';
 import { interestsRouter, discoveryRouter } from './modules/discovery/index';
+import { watchEventsRouter } from './modules/watch-events/index';
 import { API_PREFIXES } from './api-prefixes';
 
 export const app = express();
@@ -32,6 +33,7 @@ app.use('/people', peopleRouter);
 app.use('/search', searchRouter);
 app.use('/interests', interestsRouter);
 app.use('/discovery', discoveryRouter);
+app.use('/watch-events', watchEventsRouter);
 
 app.get('/health', async (_req: Request, res: Response) => {
   // DB — synchronous probe; throws if SQLite is broken

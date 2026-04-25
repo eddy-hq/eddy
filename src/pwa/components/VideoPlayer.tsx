@@ -1,13 +1,16 @@
-import React, { useRef, useState } from 'react';
+import React, { Ref, useState } from 'react';
 import { motion } from 'framer-motion';
 
 interface VideoPlayerProps {
   src: string;
   title: string;
+  videoRef?: Ref<HTMLVideoElement>;
+  onPlay?: () => void;
+  onTimeUpdate?: () => void;
+  onEnded?: () => void;
 }
 
-export function VideoPlayer({ src, title }: VideoPlayerProps) {
-  const videoRef = useRef<HTMLVideoElement>(null);
+export function VideoPlayer({ src, title, videoRef, onPlay, onTimeUpdate, onEnded }: VideoPlayerProps) {
   const [error, setError] = useState(false);
 
   return (
@@ -42,6 +45,9 @@ export function VideoPlayer({ src, title }: VideoPlayerProps) {
           autoPlay
           playsInline
           onError={() => setError(true)}
+          onPlay={onPlay}
+          onTimeUpdate={onTimeUpdate}
+          onEnded={onEnded}
           aria-label={title}
           style={{ width: '100%', display: 'block', maxHeight: '80dvh' }}
         />

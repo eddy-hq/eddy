@@ -297,9 +297,13 @@ requestsRouter.delete('/:id', async (req: Request, res: Response) => {
 // GET /requests/:id — polled by PWA to check status
 requestsRouter.get('/:id', async (req: Request, res: Response) => {
   const row = db.prepare(
-    'SELECT request_id, status, title, rejection_reason, nginx_url FROM requests WHERE request_id = ?'
+    'SELECT request_id, user_id, youtube_id, status, title, rejection_reason, nginx_url FROM requests WHERE request_id = ?'
   ).get(req.params['id']) as
-    | { request_id: string; status: string; title: string | null; rejection_reason: string | null; nginx_url: string | null }
+    | {
+        request_id: string; user_id: string; youtube_id: string | null;
+        status: string; title: string | null;
+        rejection_reason: string | null; nginx_url: string | null;
+      }
     | undefined;
 
   if (!row) throw new NotFoundError('request');
@@ -316,6 +320,8 @@ requestsRouter.get('/:id', async (req: Request, res: Response) => {
 
   res.json({
     requestId: row.request_id,
+    userId: row.user_id,
+    videoId: row.youtube_id,
     status: row.status,
     progress,
     title: row.title,

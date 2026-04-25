@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { BottomNav } from '../components/BottomNav';
 import { Card } from '../components/Card';
@@ -153,6 +153,7 @@ function toCardData(r: LibraryResult): CardData {
 
 export function Search() {
   const [params] = useSearchParams();
+  const navigate = useNavigate();
   const userId = params.get('userId') ?? params.get('user') ?? '';
   const queryClient = useQueryClient();
 
@@ -374,7 +375,12 @@ export function Search() {
                 {library.length > 0 ? (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 12, padding: '0 16px' }}>
                     {library.map((r) => (
-                      <Card key={r.request_id} data={toCardData(r)} userId={userId} />
+                      <Card
+                        key={r.request_id}
+                        data={toCardData(r)}
+                        userId={userId}
+                        onSelect={(c) => navigate(`/watch/${c.requestId}?from=search`)}
+                      />
                     ))}
                   </div>
                 ) : libraryResults.isFetched && !libraryResults.isFetching ? (

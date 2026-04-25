@@ -1,8 +1,9 @@
-import React, { useState } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import React, { useRef, useState } from 'react';
+import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { ArrowLeft, Trash2 } from 'lucide-react';
 import { VideoPlayer } from '../components/VideoPlayer';
+import { useWatchEventTracker, type WatchSource } from '../lib/watchEvents';
 
 interface RequestData {
   requestId: string;
@@ -11,12 +12,23 @@ interface RequestData {
   title: string | null;
   rejectionReason: string | null;
   videoUrl: string | null;
+  videoId: string | null;
+  userId: string | null;
 }
 
 async function fetchRequest(id: string): Promise<RequestData> {
   const res = await fetch(`/requests/${id}`);
   if (!res.ok) throw new Error('Not found');
   return res.json() as Promise<RequestData>;
+}
+
+const ALLOWED_SOURCES: ReadonlySet<WatchSource> = new Set([
+  'feed', 'discovery', 'search', 'channel', 'history', 'saved', 'notification', 'direct',
+]);
+
+function parseSource(raw: string | null): WatchSource {
+  if (raw && (ALLOWED_SOURCES as Set<string>).has(raw)) return raw as WatchSource;
+  return 'direct';
 }
 
 async function deleteRequest(id: string): Promise<void> {
@@ -26,8 +38,10 @@ async function deleteRequest(id: string): Promise<void> {
 
 export function Watch() {
   const { requestId } = useParams<{ requestId: string }>();
+  const [params] = useSearchParams();
   const navigate = useNavigate();
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const videoRef = useRef<HTMLVideoElement>(null);
 
   const deleteMutation = useMutation({
     mutationFn: () => deleteRequest(requestId!),
@@ -42,6 +56,15 @@ export function Watch() {
       return status === 'ready' || status === 'rejected' ? false : 3000;
     },
     enabled: !!requestId,
+  });
+
+  const source = parseSource(params.get('from'));
+  const watchEvent = useWatchEventTracker({
+    videoRef,
+    userId: data?.userId ?? '',
+    requestId: requestId ?? '',
+    videoId: data?.videoId ?? null,
+    source,
   });
 
 
@@ -104,7 +127,14 @@ export function Watch() {
 
       {/* Player */}
       <div style={{ padding: 'var(--space-4)' }}>
-        <VideoPlayer src={data.videoUrl} title={data.title ?? 'Video'} />
+        <VideoPlayer
+          src={data.videoUrl}
+          title={data.title ?? 'Video'}
+          videoRef={videoRef}
+          onPlay={watchEvent.onPlay}
+          onTimeUpdate={watchEvent.onTimeUpdate}
+          onEnded={watchEvent.onEnded}
+        />
         {data.title && (
           <h1 style={{
             fontFamily: 'var(--font-serif)',

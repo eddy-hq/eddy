@@ -68,7 +68,7 @@ function groupByPeriod(cards: FeedCard[]): { thisWeek: FeedCard[]; earlier: Feed
 export function Saved() {
   const [params] = useSearchParams();
   const user = params.get('userId') ?? params.get('user') ?? '';
-  const { selectedCard, onSelect, onClose } = useVideoSheet();
+  const { selectedCard, selectedSource, onSelect, onClose } = useVideoSheet();
 
   const { data, isLoading, isError } = useQuery({
     queryKey: ['feed', user],
@@ -134,7 +134,7 @@ export function Saved() {
                         key={row.request_id}
                         data={toCardData(row)}
                         userId={user}
-                        onSelect={onSelect}
+                        onSelect={(c) => onSelect(c, 'saved')}
                         isSelected={selectedCard?.requestId === row.request_id}
                       />
                     ))}
@@ -154,7 +154,7 @@ export function Saved() {
                         key={row.request_id}
                         data={toCardData(row)}
                         userId={user}
-                        onSelect={onSelect}
+                        onSelect={(c) => onSelect(c, 'saved')}
                         isSelected={selectedCard?.requestId === row.request_id}
                       />
                     ))}
@@ -174,6 +174,7 @@ export function Saved() {
             key={selectedCard.requestId}
             card={selectedCard}
             userId={user}
+            source={selectedSource ?? 'saved'}
             onClose={onClose}
           />
         )}

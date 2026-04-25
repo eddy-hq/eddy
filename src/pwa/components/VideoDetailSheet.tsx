@@ -3,6 +3,7 @@ import { motion, useDragControls, AnimatePresence } from 'framer-motion';
 import { useQueryClient, useMutation } from '@tanstack/react-query';
 import { X, Bookmark, BookmarkCheck, Trash2 } from 'lucide-react';
 import { readProgress, writeProgress, clearProgress } from '../lib/videoProgress';
+import { useWatchEventTracker, type WatchSource } from '../lib/watchEvents';
 import type { CardData } from './Card';
 
 const EASE: [number, number, number, number] = [0.33, 1, 0.68, 1];
@@ -15,10 +16,11 @@ const SAVE_INTERVAL_MS = 4000;
 interface Props {
   card: CardData;
   userId: string;
+  source: WatchSource;
   onClose: () => void;
 }
 
-export function VideoDetailSheet({ card, userId, onClose }: Props) {
+export function VideoDetailSheet({ card, userId, source, onClose }: Props) {
   const dragControls = useDragControls();
   const videoRef = useRef<HTMLVideoElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -29,6 +31,14 @@ export function VideoDetailSheet({ card, userId, onClose }: Props) {
   const [saving, setSaving] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleteError, setDeleteError] = useState(false);
+
+  const watchEvent = useWatchEventTracker({
+    videoRef,
+    userId,
+    requestId: card.requestId,
+    videoId: card.youtubeId,
+    source,
+  });
 
   const deleteMutation = useMutation({
     mutationFn: async () => {
@@ -134,6 +144,7 @@ export function VideoDetailSheet({ card, userId, onClose }: Props) {
   }
 
   function handleTimeUpdate() {
+    watchEvent.onTimeUpdate();
     const v = videoRef.current;
     if (!v || !v.duration) return;
     const now = Date.now();
@@ -148,6 +159,7 @@ export function VideoDetailSheet({ card, userId, onClose }: Props) {
   }
 
   function handleEnded() {
+    watchEvent.onEnded();
     clearProgress(userId, card.requestId);
   }
 
@@ -210,6 +222,7 @@ export function VideoDetailSheet({ card, userId, onClose }: Props) {
               autoPlay
               playsInline
               onLoadedMetadata={handleLoadedMetadata}
+              onPlay={watchEvent.onPlay}
               onTimeUpdate={handleTimeUpdate}
               onPause={handlePause}
               onEnded={handleEnded}

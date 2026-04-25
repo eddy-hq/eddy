@@ -9,6 +9,7 @@ import { VideoDetailSheet } from '../components/VideoDetailSheet';
 import { BottomNav } from '../components/BottomNav';
 import { AppHeader } from '../components/AppHeader';
 import { useVideoSheet } from '../hooks/useVideoSheet';
+import type { WatchSource } from '../lib/watchEvents';
 
 // ── Discovery API ────────────────────────────────────────────────────────────
 
@@ -128,7 +129,7 @@ function sourceKind(src: string): SourceKind | null {
 
 export function Feed() {
   const [params] = useSearchParams();
-  const { selectedCard, onSelect, onClose } = useVideoSheet();
+  const { selectedCard, selectedSource, onSelect, onClose } = useVideoSheet();
   const user = params.get('userId') ?? params.get('user') ?? '';
   const queryClient = useQueryClient();
 
@@ -230,6 +231,7 @@ export function Feed() {
             key={selectedCard.requestId}
             card={selectedCard}
             userId={user}
+            source={selectedSource ?? 'feed'}
             onClose={onClose}
           />
         )}
@@ -249,7 +251,7 @@ function TodayBlock({
   coldStart: boolean;
   showDiscovery: boolean;
   selectedId: string | null;
-  onSelect: (data: CardData) => void;
+  onSelect: (data: CardData, source: WatchSource) => void;
   onDismiss: (id: string) => void;
   onAdd: (id: string) => void;
   userId: string;
@@ -291,7 +293,7 @@ function TodayBlock({
                   key={row.request_id}
                   data={toCardData(row)}
                   userId={userId}
-                  onSelect={onSelect}
+                  onSelect={(c) => onSelect(c, 'feed')}
                   isSelected={selectedId === row.request_id}
                   sourceKind="req"
                 />
@@ -313,7 +315,7 @@ function TodayBlock({
                     data={toCardData(row)}
                     userId={userId}
                     sourceKind="follow"
-                    onSelect={onSelect}
+                    onSelect={(c) => onSelect(c, 'feed')}
                   />
                 ))}
               </AnimatePresence>
@@ -326,7 +328,7 @@ function TodayBlock({
                     key={row.request_id}
                     data={toCardData(row)}
                     userId={userId}
-                    onSelect={onSelect}
+                    onSelect={(c) => onSelect(c, 'feed')}
                     isSelected={selectedId === row.request_id}
                     sourceKind="follow"
                   />
@@ -346,7 +348,7 @@ function TodayBlock({
                 key={row.request_id}
                 data={toCardData(row)}
                 userId={userId}
-                onSelect={onSelect}
+                onSelect={(c) => onSelect(c, 'discovery')}
                 isSelected={selectedId === row.request_id}
                 sourceKind="pick"
               />
@@ -386,7 +388,7 @@ function PastDayBlock({
   day, onSelect, userId,
 }: {
   day: Day;
-  onSelect: (data: CardData) => void;
+  onSelect: (data: CardData, source: WatchSource) => void;
   userId: string;
 }) {
   const lbl = day.label;
@@ -413,7 +415,7 @@ function PastDayBlock({
               data={toCardData(row)}
               userId={userId}
               sourceKind={sourceKind(row.source)}
-              onSelect={onSelect}
+              onSelect={(c) => onSelect(c, 'history')}
             />
           ))}
         </AnimatePresence>
