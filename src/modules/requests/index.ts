@@ -8,6 +8,7 @@ import { config } from '../../config';
 import { downloadQueue, redis } from '../../queue';
 import type { DownloadJobData } from '../content';
 import { sendVideoReady } from '../notifications';
+import { resolveUserByIdOrName } from '../users';
 
 export const requestsRouter = Router();
 
@@ -81,18 +82,7 @@ requestsRouter.post('/', async (req: Request, res: Response) => {
   if (!lookupValue) {
     throw new ValidationError('userId or user is required');
   }
-
-  const isUuid = /^[0-9a-f-]{36}$/.test(lookupValue);
-  const user = (isUuid
-    ? db.prepare('SELECT user_id, display_name, role FROM users WHERE user_id = ?').get(lookupValue)
-    : db.prepare('SELECT user_id, display_name, role FROM users WHERE lower(display_name) = lower(?)').get(lookupValue)
-  ) as
-    | { user_id: string; display_name: string; role: string }
-    | undefined;
-
-  if (!user) {
-    throw new NotFoundError(`user ${lookupValue}`);
-  }
+  const user = resolveUserByIdOrName(lookupValue);
 
   const youtubeId = extractYoutubeId(resolvedUrl);
 
@@ -159,13 +149,7 @@ requestsRouter.get('/feed', (req: Request, res: Response) => {
   const { userId, user: userName } = req.query as { userId?: string; user?: string };
   const lookupValue = userId ?? userName;
   if (!lookupValue) throw new ValidationError('userId or user query param required');
-
-  const isUuid = /^[0-9a-f-]{36}$/.test(lookupValue);
-  const found = (isUuid
-    ? db.prepare('SELECT user_id FROM users WHERE user_id = ?').get(lookupValue)
-    : db.prepare('SELECT user_id FROM users WHERE lower(display_name) = lower(?)').get(lookupValue)
-  ) as { user_id: string } | undefined;
-  if (!found) throw new NotFoundError(`user ${lookupValue}`);
+  const found = resolveUserByIdOrName(lookupValue);
 
   const rows = db.prepare(`
     SELECT
@@ -443,15 +427,7 @@ requestsRouter.get('/', (req: Request, res: Response) => {
   const { userId, user: userName } = req.query as { userId?: string; user?: string };
   const lookupValue = userId ?? userName;
   if (!lookupValue) throw new ValidationError('userId or user query param required');
-
-  const isUuid = /^[0-9a-f-]{36}$/.test(lookupValue);
-  const found = (isUuid
-    ? db.prepare('SELECT user_id FROM users WHERE user_id = ?').get(lookupValue)
-    : db.prepare('SELECT user_id FROM users WHERE lower(display_name) = lower(?)').get(lookupValue)
-  ) as { user_id: string } | undefined;
-
-  if (!found) throw new NotFoundError(`user ${lookupValue}`);
-  const resolvedUserId = found.user_id;
+  const resolvedUserId = resolveUserByIdOrName(lookupValue).user_id;
 
   const rows = db.prepare(`
     SELECT request_id, url, youtube_id, title, channel, status, rejection_reason, nginx_url, requested_at
