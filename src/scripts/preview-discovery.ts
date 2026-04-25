@@ -46,6 +46,7 @@ interface Candidate {
   published_at: string | null;
   connection_score: number | null;
   quality_score: number | null;
+  time_sensitivity: string | null;
   why_text: string | null;
   guard_verdict: string | null;
   interest_id: string | null;
@@ -101,7 +102,8 @@ for (const user of users) {
 
   const rows = db.prepare(`
     SELECT c.candidate_id, c.title, c.channel, c.published_at,
-           c.connection_score, c.quality_score, c.why_text, c.guard_verdict,
+           c.connection_score, c.quality_score, c.time_sensitivity,
+           c.why_text, c.guard_verdict,
            c.interest_id, c.source_type, i.label AS interest_label,
            COALESCE(ui.rank, 999) AS rank
     FROM candidate_pool c
@@ -118,16 +120,19 @@ for (const user of users) {
   }
 
   const ranked = rows
-    .map((r) => ({
-      row: r,
-      fresh: freshnessMultiplier(r.published_at),
-      rWeight: rankWeight(r.rank),
-      weighted: (r.connection_score ?? 0)
-        * (r.quality_score ?? 0)
-        * freshnessMultiplier(r.published_at)
-        * rankWeight(r.rank),
-      reject: failureReason(r),
-    }))
+    .map((r) => {
+      // Pass time_sensitivity so the preview matches surfaceForToday's
+      // weighting — without it, evergreen back-catalog with null
+      // published_at falls back to standard's 0.8 instead of 1.0.
+      const fresh = freshnessMultiplier(r.published_at, r.time_sensitivity);
+      return {
+        row: r,
+        fresh,
+        rWeight: rankWeight(r.rank),
+        weighted: (r.connection_score ?? 0) * (r.quality_score ?? 0) * fresh * rankWeight(r.rank),
+        reject: failureReason(r),
+      };
+    })
     .sort((a, b) => b.weighted - a.weighted);
 
   const eligible = ranked.filter((r) => r.reject === null);
