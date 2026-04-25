@@ -1,16 +1,9 @@
 import 'dotenv/config';
-import crypto from 'crypto';
 import { config } from '../config';
 import { logger } from '../logger';
 import { generateThumbnail } from '../workers/thumb';
 import { thumbsQueue, redis } from '../queue';
-
-function signBody(body: string): string {
-  return `sha256=${crypto
-    .createHmac('sha256', config.INTERNAL_HMAC_SECRET)
-    .update(body)
-    .digest('hex')}`;
-}
+import { postSigned } from '../signed-channel';
 
 async function run(): Promise<void> {
   const force = process.argv.includes('--force');
@@ -59,20 +52,11 @@ async function run(): Promise<void> {
       continue;
     }
 
-    const body = JSON.stringify({ thumbnailUrl: thumbUrl });
-    const writeResp = await fetch(`${baseUrl}/internal/backfill/thumb/${row.youtube_id}`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Eddy-Signature': signBody(body),
-      },
-      body,
-      signal: AbortSignal.timeout(10_000),
-    });
-
-    if (!writeResp.ok) {
+    try {
+      await postSigned(`/internal/backfill/thumb/${row.youtube_id}`, { thumbnailUrl: thumbUrl }, { timeoutMs: 10_000 });
+    } catch (err) {
       failed++;
-      logger.warn({ youtubeId: row.youtube_id, status: writeResp.status }, 'Failed to write thumbnail URL to M4');
+      logger.warn({ youtubeId: row.youtube_id, err }, 'Failed to write thumbnail URL to M4');
       continue;
     }
 

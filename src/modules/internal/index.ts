@@ -1,9 +1,8 @@
 import { Router, Request, Response } from 'express';
-import crypto from 'crypto';
 import { db } from '../../db/client';
 import { logger } from '../../logger';
-import { config } from '../../config';
 import { downloadQueue } from '../../queue';
+import { verifySignedJson } from '../../signed-channel';
 import { sendVideoReady } from '../notifications';
 import { checkStuckDownloads } from '../watchdog';
 import { scoreForRequest, classifyThumbnail, classifyYtImage } from '../guard';
@@ -12,20 +11,9 @@ import type { DownloadJobData } from '../content';
 
 export const internalRouter = Router();
 
-// Internal routes use raw body so we can verify HMAC over the exact bytes sent.
-// express.json() is bypassed for these routes — see server.ts for the rawBody setup.
-
-function verifyHmac(rawBody: Buffer, signature: string): boolean {
-  const expected = `sha256=${crypto
-    .createHmac('sha256', config.INTERNAL_HMAC_SECRET)
-    .update(rawBody)
-    .digest('hex')}`;
-  try {
-    return crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected));
-  } catch {
-    return false;
-  }
-}
+// Internal routes verify HMAC over the exact bytes received. The rawBody buffer is
+// captured during express.json({ verify }) parsing in server.ts; verifySignedJson
+// reads it back. The signing/verifying protocol itself lives in signed-channel.ts.
 
 interface DownloadedPayload {
   requestId: string;
@@ -41,29 +29,7 @@ interface DownloadedPayload {
 }
 
 // POST /internal/videos/:youtube_id/downloaded — called by Ubuntu worker on success
-internalRouter.post('/videos/:youtube_id/downloaded', (req: Request, res: Response) => {
-  const sig = req.headers['x-eddy-signature'];
-  if (!sig || typeof sig !== 'string') {
-    return res.status(401).json({ error: 'Missing signature' });
-  }
-
-  const rawBody = (req as Request & { rawBody?: Buffer }).rawBody;
-  if (!rawBody) {
-    return res.status(400).json({ error: 'No body' });
-  }
-
-  if (!verifyHmac(rawBody, sig)) {
-    logger.warn({ youtubeId: req.params['youtube_id'] }, 'HMAC verification failed on internal callback');
-    return res.status(401).json({ error: 'Invalid signature' });
-  }
-
-  let payload: DownloadedPayload;
-  try {
-    payload = JSON.parse(rawBody.toString()) as DownloadedPayload;
-  } catch {
-    return res.status(400).json({ error: 'Invalid JSON' });
-  }
-
+internalRouter.post('/videos/:youtube_id/downloaded', verifySignedJson<DownloadedPayload>((req, res, payload) => {
   const { requestId, filePath, nginxUrl, thumbnailUrl, title, channel, description, durationSecs, transcript } = payload;
 
   const row = db.prepare(`
@@ -100,32 +66,10 @@ internalRouter.post('/videos/:youtube_id/downloaded', (req: Request, res: Respon
   }
 
   res.status(204).end();
-});
+}));
 
 // POST /internal/requests/:id/rejected — called by Ubuntu worker on terminal failure
-internalRouter.post('/requests/:id/rejected', (req: Request, res: Response) => {
-  const sig = req.headers['x-eddy-signature'];
-  if (!sig || typeof sig !== 'string') {
-    return res.status(401).json({ error: 'Missing signature' });
-  }
-
-  const rawBody = (req as Request & { rawBody?: Buffer }).rawBody;
-  if (!rawBody) {
-    return res.status(400).json({ error: 'No body' });
-  }
-
-  if (!verifyHmac(rawBody, sig)) {
-    logger.warn({ requestId: req.params['id'] }, 'HMAC verification failed on reject callback');
-    return res.status(401).json({ error: 'Invalid signature' });
-  }
-
-  let payload: { requestId: string; reason: string };
-  try {
-    payload = JSON.parse(rawBody.toString()) as { requestId: string; reason: string };
-  } catch {
-    return res.status(400).json({ error: 'Invalid JSON' });
-  }
-
+internalRouter.post('/requests/:id/rejected', verifySignedJson<{ requestId: string; reason: string }>((_req, res, payload) => {
   db.prepare(`
     UPDATE requests
     SET status = 'rejected', rejection_reason = @reason
@@ -134,7 +78,7 @@ internalRouter.post('/requests/:id/rejected', (req: Request, res: Response) => {
 
   logger.info({ requestId: payload.requestId, reason: payload.reason }, 'Request rejected by worker');
   res.status(204).end();
-});
+}));
 
 // GET /internal/health/queue — queue stats + stuck downloads (no auth — internal network only)
 internalRouter.get('/health/queue', async (_req: Request, res: Response) => {
@@ -237,27 +181,7 @@ internalRouter.get('/backfill/pending-thumbs', (req: Request, res: Response) => 
 });
 
 // POST /internal/backfill/thumb/:youtube_id — write generated thumbnail URL back to DB
-internalRouter.post('/backfill/thumb/:youtube_id', (req: Request, res: Response) => {
-  const sig = req.headers['x-eddy-signature'];
-  if (!sig || typeof sig !== 'string') {
-    return res.status(401).json({ error: 'Missing signature' });
-  }
-
-  const rawBody = (req as Request & { rawBody?: Buffer }).rawBody;
-  if (!rawBody) return res.status(400).json({ error: 'No body' });
-
-  if (!verifyHmac(rawBody, sig)) {
-    logger.warn({ youtubeId: req.params['youtube_id'] }, 'HMAC verification failed on backfill thumb update');
-    return res.status(401).json({ error: 'Invalid signature' });
-  }
-
-  let payload: { thumbnailUrl: string };
-  try {
-    payload = JSON.parse(rawBody.toString()) as { thumbnailUrl: string };
-  } catch {
-    return res.status(400).json({ error: 'Invalid JSON' });
-  }
-
+internalRouter.post('/backfill/thumb/:youtube_id', verifySignedJson<{ thumbnailUrl: string }>((req, res, payload) => {
   db.prepare(`
     UPDATE requests SET thumbnail_url = @thumbnail_url
     WHERE youtube_id = @youtube_id
@@ -265,52 +189,17 @@ internalRouter.post('/backfill/thumb/:youtube_id', (req: Request, res: Response)
 
   logger.info({ youtubeId: req.params['youtube_id'] }, 'Thumbnail backfilled via worker');
   res.status(204).end();
-});
+}));
 
 // POST /internal/thumb/classify — called by Ubuntu worker; fetches YT thumbnail, classifies with Gemma vision
-internalRouter.post('/thumb/classify', async (req: Request, res: Response) => {
-  const sig = req.headers['x-eddy-signature'];
-  if (!sig || typeof sig !== 'string') return res.status(401).json({ error: 'Missing signature' });
-
-  const rawBody = (req as Request & { rawBody?: Buffer }).rawBody;
-  if (!rawBody) return res.status(400).json({ error: 'No body' });
-
-  if (!verifyHmac(rawBody, sig)) {
-    logger.warn('HMAC verification failed on thumb classify request');
-    return res.status(401).json({ error: 'Invalid signature' });
-  }
-
-  let payload: { youtubeId: string };
-  try {
-    payload = JSON.parse(rawBody.toString()) as { youtubeId: string };
-  } catch {
-    return res.status(400).json({ error: 'Invalid JSON' });
-  }
-
+internalRouter.post('/thumb/classify', verifySignedJson<{ youtubeId: string }>(async (_req, res, payload) => {
   const style = await classifyThumbnail(payload.youtubeId);
   res.json({ style });
-});
+}));
 
 // POST /internal/thumb/classify-variant — classify an arbitrary YT thumbnail variant (e.g. hq1, hq2, hq3).
 // Used by the worker during the editorial-selection chain for auto-generated frame thumbnails.
-internalRouter.post('/thumb/classify-variant', async (req: Request, res: Response) => {
-  const sig = req.headers['x-eddy-signature'];
-  if (!sig || typeof sig !== 'string') return res.status(401).json({ error: 'Missing signature' });
-
-  const rawBody = (req as Request & { rawBody?: Buffer }).rawBody;
-  if (!rawBody) return res.status(400).json({ error: 'No body' });
-
-  if (!verifyHmac(rawBody, sig)) {
-    logger.warn('HMAC verification failed on thumb classify-variant request');
-    return res.status(401).json({ error: 'Invalid signature' });
-  }
-
-  let payload: { youtubeId: string; variant: string };
-  try {
-    payload = JSON.parse(rawBody.toString()) as { youtubeId: string; variant: string };
-  } catch {
-    return res.status(400).json({ error: 'Invalid JSON' });
-  }
+internalRouter.post('/thumb/classify-variant', verifySignedJson<{ youtubeId: string; variant: string }>(async (_req, res, payload) => {
   if (typeof payload.youtubeId !== 'string' || typeof payload.variant !== 'string') {
     return res.status(400).json({ error: 'youtubeId and variant required' });
   }
@@ -320,28 +209,11 @@ internalRouter.post('/thumb/classify-variant', async (req: Request, res: Respons
 
   const style = await classifyYtImage(payload.youtubeId, payload.variant);
   res.json({ style });
-});
+}));
 
 // POST /internal/thumb/score-frame — proxy for Ubuntu worker to score a local frame against Gemma.
 // Ollama binds to localhost on M4, so the worker can't hit it directly; this relays.
-internalRouter.post('/thumb/score-frame', async (req: Request, res: Response) => {
-  const sig = req.headers['x-eddy-signature'];
-  if (!sig || typeof sig !== 'string') return res.status(401).json({ error: 'Missing signature' });
-
-  const rawBody = (req as Request & { rawBody?: Buffer }).rawBody;
-  if (!rawBody) return res.status(400).json({ error: 'No body' });
-
-  if (!verifyHmac(rawBody, sig)) {
-    logger.warn('HMAC verification failed on thumb score-frame request');
-    return res.status(401).json({ error: 'Invalid signature' });
-  }
-
-  let payload: { image: string; prompt: string };
-  try {
-    payload = JSON.parse(rawBody.toString()) as { image: string; prompt: string };
-  } catch {
-    return res.status(400).json({ error: 'Invalid JSON' });
-  }
+internalRouter.post('/thumb/score-frame', verifySignedJson<{ image: string; prompt: string }>(async (_req, res, payload) => {
   if (typeof payload.image !== 'string' || typeof payload.prompt !== 'string') {
     return res.status(400).json({ error: 'image and prompt required' });
   }
@@ -356,7 +228,7 @@ internalRouter.post('/thumb/score-frame', async (req: Request, res: Response) =>
     logger.warn({ err }, 'score-frame Ollama call failed');
     res.status(502).json({ error: String(err) });
   }
-});
+}));
 
 // POST /internal/watchdog/run — trigger an immediate watchdog check (for testing/ops)
 internalRouter.post('/watchdog/run', (_req: Request, res: Response) => {
@@ -377,27 +249,7 @@ interface GuardScorePayload {
 
 // POST /internal/guard/score — called by Ubuntu worker after metadata fetch, before download.
 // Shadow mode (Phase 3): always returns proceed:true. Phase 6: flip to return real verdict.
-internalRouter.post('/guard/score', async (req: Request, res: Response) => {
-  const sig = req.headers['x-eddy-signature'];
-  if (!sig || typeof sig !== 'string') {
-    return res.status(401).json({ error: 'Missing signature' });
-  }
-
-  const rawBody = (req as Request & { rawBody?: Buffer }).rawBody;
-  if (!rawBody) return res.status(400).json({ error: 'No body' });
-
-  if (!verifyHmac(rawBody, sig)) {
-    logger.warn('HMAC verification failed on guard score request');
-    return res.status(401).json({ error: 'Invalid signature' });
-  }
-
-  let payload: GuardScorePayload;
-  try {
-    payload = JSON.parse(rawBody.toString()) as GuardScorePayload;
-  } catch {
-    return res.status(400).json({ error: 'Invalid JSON' });
-  }
-
+internalRouter.post('/guard/score', verifySignedJson<GuardScorePayload>(async (_req, res, payload) => {
   const row = db.prepare('SELECT user_id FROM requests WHERE request_id = ?')
     .get(payload.requestId) as { user_id: string } | undefined;
 
@@ -422,4 +274,4 @@ internalRouter.post('/guard/score', async (req: Request, res: Response) => {
 
   // Shadow mode: always proceed regardless of verdict
   res.json({ proceed: true, verdict: verdict.verdict, reason: verdict.reason });
-});
+}));
