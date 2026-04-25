@@ -3,11 +3,13 @@ import {
   freshnessMultiplier,
   rankWeight,
   allocateSlots,
+  type AllocatableItem,
+} from './surface';
+import {
   MIN_CONNECTION_SCORE,
   MIN_QUALITY_SCORE,
   MIN_WEIGHTED_SCORE,
-  type AllocatableItem,
-} from './index';
+} from './scoring';
 
 interface UserRow { user_id: string; role: string; age_gate: number; display_name: string; }
 
