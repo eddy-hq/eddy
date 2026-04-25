@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { db } from '../../db/client';
 import { ValidationError, NotFoundError } from '../../errors';
-import { normalizeUserAddedInterest } from './index';
+import { normalizeUserAddedInterest } from './normalize';
 
 interface UserRow {
   user_id: string;
