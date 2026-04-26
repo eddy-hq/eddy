@@ -33,6 +33,11 @@ const schema = z.object({
   VIDEO_OUTPUT_PATH: z.string().default('/home/steveu/eddy/videos'),
   NGINX_VIDEO_BASE_URL: z.string().optional(),
   YTDLP_COOKIES_FILE: z.string().optional(), // path to cookies.txt; enables age-restricted downloads
+  // yt-dlp binary paths — separate vars because the Ubuntu worker (auth/PO-token
+  // download path) and the M4 (anonymous metadata calls) install yt-dlp in
+  // different locations.
+  YTDLP_BIN: z.string().default('yt-dlp'),
+  YTDLP_BIN_M4: z.string().default('/opt/homebrew/bin/yt-dlp'),
   // Thumbnails — generated post-download, served by nginx alongside videos
   THUMB_OUTPUT_PATH: z.string().default('/mnt/ssd/eddy/thumbs'),
   NGINX_THUMB_BASE_URL: z.string().optional(),
