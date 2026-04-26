@@ -59,9 +59,26 @@ interface RunOptions {
   maxBufferMb: number;
 }
 
-// Single private spawn helper — owns args boilerplate (--no-download / --quiet /
-// --no-warnings), JSON-line parsing, malformed-line skipping. Returns parsed
-// records; callers project into their own typed shape.
+// Parses yt-dlp's line-delimited JSON output: skips empty lines and
+// JSON.parse failures (yt-dlp occasionally emits warning text through the
+// print stream). Exported for tests; runYtdlpLines is the only runtime caller.
+// Records missing `id` are kept here — per-function projection drops them.
+export function parseYtdlpLines(stdout: string): Record<string, unknown>[] {
+  const records: Record<string, unknown>[] = [];
+  for (const line of stdout.split('\n')) {
+    if (!line.trim()) continue;
+    try {
+      records.push(JSON.parse(line) as Record<string, unknown>);
+    } catch {
+      // skip malformed
+    }
+  }
+  return records;
+}
+
+// Private spawn helper — owns process execution, timeout/buffer handling,
+// and delegates parsing to parseYtdlpLines. yt-dlp flags (--no-download,
+// --quiet, etc.) stay at the call site because they vary per command.
 async function runYtdlpLines(
   args: string[],
   { timeoutMs, maxBufferMb }: RunOptions,
@@ -76,34 +93,7 @@ async function runYtdlpLines(
   } catch (err) {
     throw new YtdlpError(`yt-dlp invocation failed: ${(err as Error).message}`, err);
   }
-
-  const records: Record<string, unknown>[] = [];
-  for (const line of stdout.split('\n')) {
-    if (!line.trim()) continue;
-    try {
-      records.push(JSON.parse(line) as Record<string, unknown>);
-    } catch {
-      // skip malformed lines — yt-dlp occasionally emits warning text
-      // through the print stream
-    }
-  }
-  return records;
-}
-
-// Internal — exported only for tests. Parses yt-dlp's line-delimited JSON
-// output: skips empty lines and JSON.parse failures, keeps records.
-// Records missing `id` are still parsed here; per-function projection drops them.
-export function parseYtdlpLines(stdout: string): Record<string, unknown>[] {
-  const records: Record<string, unknown>[] = [];
-  for (const line of stdout.split('\n')) {
-    if (!line.trim()) continue;
-    try {
-      records.push(JSON.parse(line) as Record<string, unknown>);
-    } catch {
-      // skip malformed
-    }
-  }
-  return records;
+  return parseYtdlpLines(stdout);
 }
 
 // `--print` template (slow, but `--flat-playlist` never returns upload_date,

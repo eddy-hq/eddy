@@ -2,7 +2,12 @@ import { v7 as uuidv7 } from 'uuid';
 import { db } from '../../db/client';
 import { logger } from '../../logger';
 import { SHORTS_MAX_SECS } from '../content';
-import { searchVideosWithDates, flatPlaylistChannel } from '../../ytdlp';
+import {
+  searchVideosWithDates,
+  flatPlaylistChannel,
+  type SearchVideoWithDate,
+  type PlaylistEntry,
+} from '../../ytdlp';
 import { daysSince, uploadDateToIso } from './util';
 
 export interface UserInterestRow {
@@ -52,7 +57,7 @@ export async function refreshCandidatePool(userId: string, userInterests: UserIn
     const termCount = interest.rank <= 3 ? 2 : 1;
 
     for (const term of terms.slice(0, termCount)) {
-      let results;
+      let results: SearchVideoWithDate[];
       try {
         results = await searchVideosWithDates(term);
       } catch (err) {
@@ -145,7 +150,7 @@ export async function seedBackCatalogCandidates(userId: string): Promise<number>
   for (const output of followed) {
     if (totalAdded >= MAX_BACKCATALOG_PER_USER) break;
 
-    let playlist;
+    let playlist: PlaylistEntry[];
     try {
       playlist = await flatPlaylistChannel(output.channel_id);
     } catch (err) {
