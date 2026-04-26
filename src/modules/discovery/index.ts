@@ -93,13 +93,14 @@ export async function runDiscoveryForUser(user: UserRow, options: { force?: bool
   // Verdicts are already in weighted-desc order. Build response payload
   // straight off the picks — no re-query, no recomputation. gemma_score
   // is connection × quality / 10 (0–10 range), kept in the response for
-  // legacy callers that still display it.
+  // legacy callers that still display it; preserve null when either axis
+  // is missing to match the DB column's nullable contract.
   const items = picks.map((v) => {
-    const conn = v.candidate.connectionScore ?? 0;
-    const qual = v.candidate.qualityScore ?? 0;
+    const conn = v.candidate.connectionScore;
+    const qual = v.candidate.qualityScore;
     return {
       title: v.candidate.title,
-      score: (conn * qual) / 10,
+      score: conn === null || qual === null ? null : (conn * qual) / 10,
       why: v.candidate.whyText ?? null,
       guardVerdict: v.candidate.guardVerdict ?? null,
     };

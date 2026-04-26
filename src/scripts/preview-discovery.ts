@@ -91,8 +91,14 @@ for (const user of users) {
   `).get(user.user_id, today) as { n: number }).n;
 
   const remaining = Math.max(0, cap - alreadySurfaced);
-  const stretchQuota = Math.min(remaining, Math.max(1, Math.floor(cap * 0.2)));
-  const regularQuota = Math.max(0, remaining - stretchQuota);
+  // Dry-run: when the user is already at cap, fall back to the full cap
+  // so the preview still shows what would have been picked. Quotas must
+  // be computed from the same value passed to rank() — otherwise the
+  // header lies about the split (e.g. remaining=2 prints 0+2 when the
+  // ranker is actually doing 1+1).
+  const rankCap = remaining || cap;
+  const stretchQuota = Math.max(1, Math.floor(rankCap * 0.2));
+  const regularQuota = Math.max(0, rankCap - stretchQuota);
 
   console.log(`  Cap ${cap} · already surfaced today ${alreadySurfaced} · remaining ${remaining} (regular ${regularQuota} + stretch ${stretchQuota})`);
   console.log(`  Floors: connection ≥ ${MIN_CONNECTION_SCORE} · quality ≥ ${MIN_QUALITY_SCORE}`);
@@ -134,7 +140,7 @@ for (const user of users) {
   const verdicts = rank(
     candidates,
     { now: new Date(), isKid, prefilledTitles: [], prefilledInterestCounts: new Map() },
-    { cap: remaining || cap },
+    { cap: rankCap },
   );
 
   const rowById = new Map(rows.map((r) => [r.candidate_id, r]));
@@ -171,7 +177,7 @@ for (const user of users) {
   const picks = verdicts.filter((v) => v.disposition === 'regular' || v.disposition === 'stretch').length;
   const rejected = verdicts.filter((v) => v.disposition.startsWith('low_')).length;
   const cuts = verdicts.filter((v) => v.disposition.startsWith('cut_')).length;
-  console.log(`\n  Eligible: ${verdicts.length - rejected} · rejected by floor: ${rejected} · cut: ${cuts} · would surface: ${picks} of ${remaining || cap} slot(s).`);
+  console.log(`\n  Eligible: ${verdicts.length - rejected} · rejected by floor: ${rejected} · cut: ${cuts} · would surface: ${picks} of ${rankCap} slot(s).`);
 }
 
 process.exit(0);
