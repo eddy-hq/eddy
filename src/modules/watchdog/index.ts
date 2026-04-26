@@ -3,6 +3,7 @@ import { logger } from '../../logger';
 import { downloadQueue } from '../../queue';
 import { sendDownloadAlert } from '../notifications';
 import type { DownloadJobData } from '../content';
+import * as requests from '../requests';
 
 const MIN_AGE_MS = 2 * 60 * 1000; // ignore requests younger than 2 min (callback may still be in-flight)
 const CHECK_INTERVAL_MS = 5 * 60 * 1000;
@@ -60,7 +61,7 @@ export async function checkStuckDownloads(): Promise<void> {
       log.info({ jobState }, 'Re-enqueued stuck download');
     } catch (err) {
       log.error({ err }, 'Failed to re-enqueue stuck download — marking failed');
-      db.prepare(`UPDATE requests SET status = 'failed' WHERE request_id = ?`).run(req.request_id);
+      requests.markFailed(req.request_id);
     }
 
     void sendDownloadAlert({

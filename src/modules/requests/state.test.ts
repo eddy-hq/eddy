@@ -11,16 +11,17 @@ vi.mock('../../logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 
-const { removeJobMock, getJobMock, redisDelMock, unlinkMock } = vi.hoisted(() => ({
+const { removeJobMock, getJobMock, addJobMock, redisDelMock, unlinkMock } = vi.hoisted(() => ({
   removeJobMock: vi.fn().mockResolvedValue(undefined),
   getJobMock: vi.fn(),
+  addJobMock: vi.fn().mockResolvedValue(undefined),
   redisDelMock: vi.fn().mockResolvedValue(1),
   unlinkMock: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock('../../queue', () => ({
   redis: { del: redisDelMock },
-  downloadQueue: { getJob: getJobMock },
+  downloadQueue: { getJob: getJobMock, add: addJobMock },
   guardQueue: {},
   discoveryQueue: {},
   thumbsQueue: {},
@@ -59,6 +60,8 @@ import {
   markDownloaded,
   markRejected,
   markGuardBlocked,
+  markFailed,
+  retry,
   CANCELLED_REASON,
   type DownloadedFields,
   type Status,
@@ -71,15 +74,19 @@ function insertRequest(opts: {
   status: Status;
   watched_at?: string | null;
   file_path?: string | null;
+  youtube_id?: string | null;
+  url?: string;
 }): void {
   const now = new Date().toISOString();
   db.prepare(
     `INSERT INTO requests
-       (request_id, user_id, source, url, status, file_path, requested_at, added_at, watched_at)
-     VALUES (?, ?, 'share_sheet', 'https://www.youtube.com/watch?v=abc', ?, ?, ?, ?, ?)`,
+       (request_id, user_id, source, url, youtube_id, status, file_path, requested_at, added_at, watched_at)
+     VALUES (?, ?, 'share_sheet', ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     opts.request_id,
     USER_ID,
+    opts.url ?? 'https://www.youtube.com/watch?v=abc',
+    opts.youtube_id ?? null,
     opts.status,
     opts.file_path ?? null,
     now,
@@ -99,6 +106,8 @@ beforeEach(() => {
   db.exec('DELETE FROM requests');
   getJobMock.mockReset();
   removeJobMock.mockClear();
+  addJobMock.mockReset();
+  addJobMock.mockResolvedValue(undefined);
   redisDelMock.mockClear();
   unlinkMock.mockReset();
   unlinkMock.mockResolvedValue(undefined);
@@ -513,5 +522,136 @@ describe('markGuardBlocked', () => {
     const result = markGuardBlocked('does-not-exist', 'unsafe');
 
     expect(result).toEqual({ transitioned: false, currentStatus: null });
+  });
+});
+
+describe('markFailed', () => {
+  it('transitions downloading → failed', () => {
+    insertRequest({ request_id: 'req-f1', status: 'downloading' });
+
+    const result = markFailed('req-f1');
+
+    expect(result).toEqual({ transitioned: true, userId: USER_ID });
+    const row = db
+      .prepare('SELECT status FROM requests WHERE request_id = ?')
+      .get('req-f1') as { status: string };
+    expect(row.status).toBe('failed');
+  });
+
+  it('is a no-op on a ready row and does not change status', () => {
+    insertRequest({ request_id: 'req-f2', status: 'ready' });
+
+    const result = markFailed('req-f2');
+
+    expect(result).toEqual({ transitioned: false, currentStatus: 'ready' });
+    const row = db
+      .prepare('SELECT status FROM requests WHERE request_id = ?')
+      .get('req-f2') as { status: string };
+    expect(row.status).toBe('ready');
+  });
+
+  it('returns currentStatus: null for an unknown id', () => {
+    const result = markFailed('does-not-exist');
+
+    expect(result).toEqual({ transitioned: false, currentStatus: null });
+  });
+});
+
+describe('retry', () => {
+  const URL = 'https://www.youtube.com/watch?v=zzz';
+  const YT_ID = 'zzz12345xyz';
+
+  it('transitions failed → downloading, removes existing job, and re-adds with stored youtube_id and url', async () => {
+    insertRequest({ request_id: 'req-r1', status: 'failed', youtube_id: YT_ID, url: URL });
+    getJobMock.mockResolvedValueOnce({ remove: removeJobMock });
+
+    const result = await retry('req-r1');
+
+    expect(result).toEqual({ transitioned: true, userId: USER_ID });
+    const row = db
+      .prepare('SELECT status FROM requests WHERE request_id = ?')
+      .get('req-r1') as { status: string };
+    expect(row.status).toBe('downloading');
+
+    expect(getJobMock).toHaveBeenCalledWith('req-r1');
+    expect(removeJobMock).toHaveBeenCalledTimes(1);
+    expect(addJobMock).toHaveBeenCalledWith(
+      'download',
+      { requestId: 'req-r1', youtubeId: YT_ID, url: URL },
+      { jobId: 'req-r1' },
+    );
+  });
+
+  it('transitions downloading → downloading (idempotent re-enqueue) — same removeJob + add', async () => {
+    insertRequest({ request_id: 'req-r2', status: 'downloading', youtube_id: YT_ID, url: URL });
+    getJobMock.mockResolvedValueOnce({ remove: removeJobMock });
+
+    const result = await retry('req-r2');
+
+    expect(result).toEqual({ transitioned: true, userId: USER_ID });
+    const row = db
+      .prepare('SELECT status FROM requests WHERE request_id = ?')
+      .get('req-r2') as { status: string };
+    expect(row.status).toBe('downloading');
+
+    expect(removeJobMock).toHaveBeenCalledTimes(1);
+    expect(addJobMock).toHaveBeenCalledWith(
+      'download',
+      { requestId: 'req-r2', youtubeId: YT_ID, url: URL },
+      { jobId: 'req-r2' },
+    );
+  });
+
+  it('is a no-op on a rejected row and does not touch the queue', async () => {
+    insertRequest({ request_id: 'req-r3', status: 'rejected' });
+
+    const result = await retry('req-r3');
+
+    expect(result).toEqual({ transitioned: false, currentStatus: 'rejected' });
+    expect(getJobMock).not.toHaveBeenCalled();
+    expect(addJobMock).not.toHaveBeenCalled();
+  });
+
+  it('returns currentStatus: null for an unknown id and does not touch the queue', async () => {
+    const result = await retry('does-not-exist');
+
+    expect(result).toEqual({ transitioned: false, currentStatus: null });
+    expect(getJobMock).not.toHaveBeenCalled();
+    expect(addJobMock).not.toHaveBeenCalled();
+  });
+
+  it('logs-warned but still re-adds when removing the existing job throws', async () => {
+    insertRequest({ request_id: 'req-r4', status: 'failed', youtube_id: YT_ID, url: URL });
+    getJobMock.mockRejectedValueOnce(new Error('redis down'));
+
+    const result = await retry('req-r4');
+
+    expect(result).toEqual({ transitioned: true, userId: USER_ID });
+    expect(vi.mocked(logger.warn)).toHaveBeenCalledTimes(1);
+    expect(addJobMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('logs-warned and does not throw when adding the new job fails', async () => {
+    insertRequest({ request_id: 'req-r5', status: 'failed', youtube_id: YT_ID, url: URL });
+    getJobMock.mockResolvedValueOnce(null);
+    addJobMock.mockRejectedValueOnce(new Error('redis down'));
+
+    const result = await retry('req-r5');
+
+    expect(result).toEqual({ transitioned: true, userId: USER_ID });
+    expect(vi.mocked(logger.warn)).toHaveBeenCalledTimes(1);
+  });
+
+  it('passes empty string when youtube_id is null on the row', async () => {
+    insertRequest({ request_id: 'req-r6', status: 'failed', youtube_id: null, url: URL });
+    getJobMock.mockResolvedValueOnce(null);
+
+    await retry('req-r6');
+
+    expect(addJobMock).toHaveBeenCalledWith(
+      'download',
+      { requestId: 'req-r6', youtubeId: '', url: URL },
+      { jobId: 'req-r6' },
+    );
   });
 });

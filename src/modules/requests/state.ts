@@ -3,6 +3,7 @@ import { db } from '../../db/client';
 import { logger } from '../../logger';
 import { sendVideoReady } from '../notifications';
 import { downloadQueue, redis } from '../../queue';
+import type { DownloadJobData } from '../content';
 
 export type Status =
   | 'pending'
@@ -31,7 +32,7 @@ export type TransitionResult =
 // Subsequent slices fill in entries as they migrate transitions into this module.
 export const LEGAL: Record<Status, Status[]> = {
   pending: ['dismissed', 'rejected'],
-  downloading: ['ready', 'rejected'],
+  downloading: ['ready', 'rejected', 'failed'],
   guard_review: ['rejected'],
   parent_review: ['rejected'],
   approved: ['dismissed', 'rejected'],
@@ -269,6 +270,75 @@ export function markCancelled(id: string): TransitionResult {
   void redis
     .del(`eddy:progress:${id}`)
     .catch((err) => logger.warn({ err, requestId: id }, 'Cancel: failed to delete progress key'));
+
+  return { transitioned: true, userId: updated.user_id };
+}
+
+// Watchdog-only terminal transition for stuck downloads we couldn't re-enqueue.
+// No side-effects: the row's job is already gone (or unreachable) by the time
+// the watchdog calls this; notifying the user is the watchdog's job, not the
+// transition's.
+export function markFailed(id: string): TransitionResult {
+  const sources = legalSourcesFor('failed');
+  const placeholders = sources.map(() => '?').join(', ');
+
+  const updated = db
+    .prepare(
+      `UPDATE requests SET status = 'failed'
+       WHERE request_id = ? AND status IN (${placeholders})
+       RETURNING user_id`,
+    )
+    .get(id, ...sources) as { user_id: string } | undefined;
+
+  if (updated) return { transitioned: true, userId: updated.user_id };
+  return { transitioned: false, currentStatus: readStatus(id) };
+}
+
+// Retry sources are declared explicitly rather than via LEGAL: a
+// `downloading → downloading` self-loop would clutter the allow-list map, and
+// retry is operations-flavoured (re-enqueue), not a typical state transition.
+// `failed` (terminal error) re-enters the queue; `downloading` (idempotent
+// re-enqueue) covers the watchdog path. Same SQL for both: status stays or
+// becomes `downloading`.
+const RETRY_FROM: Status[] = ['downloading', 'failed'];
+
+export async function retry(id: string): Promise<TransitionResult> {
+  const placeholders = RETRY_FROM.map(() => '?').join(', ');
+
+  const updated = db
+    .prepare(
+      `UPDATE requests SET status = 'downloading'
+       WHERE request_id = ? AND status IN (${placeholders})
+       RETURNING user_id, youtube_id, url`,
+    )
+    .get(id, ...RETRY_FROM) as
+      | { user_id: string; youtube_id: string | null; url: string }
+      | undefined;
+
+  if (!updated) return { transitioned: false, currentStatus: readStatus(id) };
+
+  // Side-effects fire only after a real transition. Both queue calls are
+  // best-effort: a missing job (already gone) or unreachable Redis must not
+  // throw out of the transition. The watchdog will pick up rows that end up
+  // `downloading` without a live job.
+  try {
+    const existing = await downloadQueue.getJob(id);
+    await existing?.remove();
+  } catch (err) {
+    logger.warn({ err, requestId: id }, 'Retry: failed to remove existing BullMQ job');
+  }
+
+  const jobData: DownloadJobData = {
+    requestId: id,
+    youtubeId: updated.youtube_id ?? '',
+    url: updated.url,
+  };
+
+  try {
+    await downloadQueue.add('download', jobData, { jobId: id });
+  } catch (err) {
+    logger.warn({ err, requestId: id }, 'Retry: failed to enqueue BullMQ job');
+  }
 
   return { transitioned: true, userId: updated.user_id };
 }

@@ -18,6 +18,8 @@ export {
   markDownloaded,
   markRejected,
   markGuardBlocked,
+  markFailed,
+  retry,
   CANCELLED_REASON,
   displayRejectionReason,
 } from './state';
