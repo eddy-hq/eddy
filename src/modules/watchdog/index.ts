@@ -3,6 +3,7 @@ import { logger } from '../../logger';
 import { downloadQueue } from '../../queue';
 import { sendDownloadAlert } from '../notifications';
 import type { DownloadJobData } from '../content';
+import * as requests from '../requests';
 
 const MIN_AGE_MS = 2 * 60 * 1000; // ignore requests younger than 2 min (callback may still be in-flight)
 const CHECK_INTERVAL_MS = 5 * 60 * 1000;
@@ -60,7 +61,17 @@ export async function checkStuckDownloads(): Promise<void> {
       log.info({ jobState }, 'Re-enqueued stuck download');
     } catch (err) {
       log.error({ err }, 'Failed to re-enqueue stuck download — marking failed');
-      db.prepare(`UPDATE requests SET status = 'failed' WHERE request_id = ?`).run(req.request_id);
+      const result = requests.markFailed(req.request_id);
+      if (!result.transitioned) {
+        // Row changed state between the SELECT and this catch (e.g. a worker
+        // callback landed concurrently). Whatever owns the new state owns the
+        // user-facing outcome — don't double-alert with stale "failed" wording.
+        log.warn(
+          { currentStatus: result.currentStatus },
+          'Watchdog markFailed no-op — row already changed state, skipping alert',
+        );
+        continue;
+      }
     }
 
     void sendDownloadAlert({

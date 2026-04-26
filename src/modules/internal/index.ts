@@ -7,7 +7,6 @@ import * as requests from '../requests';
 import { checkStuckDownloads } from '../watchdog';
 import { scoreForRequest, classifyThumbnail, classifyYtImage } from '../guard';
 import { ollamaGenerate } from '../../ollama';
-import type { DownloadJobData } from '../content';
 
 export const internalRouter = Router();
 
@@ -118,38 +117,22 @@ internalRouter.get('/health/queue', async (_req: Request, res: Response) => {
 
 // POST /internal/requests/:id/retry — re-enqueue a stuck or failed download
 internalRouter.post('/requests/:id/retry', async (req: Request, res: Response) => {
-  const requestId = req.params['id'];
+  const requestId = req.params['id']!;
+  const result = await requests.retry(requestId);
 
-  const row = db.prepare(`
-    SELECT request_id, youtube_id, url, status FROM requests WHERE request_id = ?
-  `).get(requestId) as { request_id: string; youtube_id: string | null; url: string; status: string } | undefined;
-
-  if (!row) {
-    return res.status(404).json({ error: 'NOT_FOUND', message: 'Request not found' });
+  if (!result.transitioned) {
+    if (result.currentStatus === null) {
+      return res.status(404).json({ error: 'NOT_FOUND', message: 'Request not found' });
+    }
+    return res.status(400).json({ error: 'INVALID_STATE', message: `Cannot retry a request in status '${result.currentStatus}'` });
   }
 
-  if (!['downloading', 'failed'].includes(row.status)) {
-    return res.status(400).json({ error: 'INVALID_STATE', message: `Cannot retry a request in status '${row.status}'` });
-  }
-
-  // Remove old BullMQ job if present
-  try {
-    const existing = await downloadQueue.getJob(requestId);
-    await existing?.remove();
-  } catch { /* ignore */ }
-
-  const jobData: DownloadJobData = {
-    requestId,
-    youtubeId: row.youtube_id ?? '',
-    url: row.url,
-  };
-
-  await downloadQueue.add('download', jobData, { jobId: requestId });
-
-  db.prepare(`UPDATE requests SET status = 'downloading' WHERE request_id = ?`).run(requestId);
-  logger.info({ requestId }, 'Manual retry enqueued');
-
-  res.json({ ok: true, requestId, message: 'Re-enqueued' });
+  // requests.retry() is best-effort about the BullMQ enqueue — a failed add()
+  // is logged-warned, not surfaced. The watchdog will pick up rows that end up
+  // `downloading` without a live job. So response wording reflects what's
+  // guaranteed (the transition), not the queue side-effect.
+  logger.info({ requestId }, 'Manual retry — request returned to downloading');
+  res.json({ ok: true, requestId, message: 'Retry requested' });
 });
 
 // GET /internal/backfill/pending-thumbs — list videos needing thumbnail generation (no HMAC, internal network only)
