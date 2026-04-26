@@ -1,11 +1,9 @@
 import { Router, Request, Response } from 'express';
-import { v7 as uuidv7 } from 'uuid';
 import { db } from '../../db/client';
 import { logger } from '../../logger';
 import { ValidationError, NotFoundError } from '../../errors';
 import { config } from '../../config';
 import { downloadQueue, redis } from '../../queue';
-import type { DownloadJobData } from '../content';
 import { sendVideoReady } from '../notifications';
 import { resolveUserByIdOrName } from '../users';
 import * as state from './state';
@@ -20,10 +18,20 @@ export {
   markGuardBlocked,
   markFailed,
   retry,
+  createFromShareSheet,
+  createFromChannelPoll,
+  createFromCandidate,
   CANCELLED_REASON,
   displayRejectionReason,
 } from './state';
-export type { Status, TransitionResult, DownloadedFields } from './state';
+export type {
+  Status,
+  TransitionResult,
+  DownloadedFields,
+  CreateFromShareSheetInput,
+  CreateFromChannelPollInput,
+  CreateFromCandidateInput,
+} from './state';
 
 export const requestsRouter = Router();
 
@@ -127,28 +135,13 @@ requestsRouter.post('/', async (req: Request, res: Response) => {
     }
   }
 
-  const requestId = uuidv7();
-  const now = new Date().toISOString();
-
-  // Phase 1: auto-approve and immediately mark downloading (worker picks it up momentarily)
-  db.prepare(`
-    INSERT INTO requests
-      (request_id, user_id, source, url, youtube_id, status, decided_by, decided_at, requested_at, added_at)
-    VALUES
-      (@request_id, @user_id, @source, @url, @youtube_id, 'downloading', 'auto', @now, @now, @now)
-  `).run({
-    request_id: requestId,
-    user_id: user.user_id,
-    source: 'share_sheet',
+  const { requestId } = await state.createFromShareSheet({
     url: resolvedUrl,
-    youtube_id: youtubeId,
-    now,
+    userId: user.user_id,
+    youtubeId,
   });
 
   logger.info({ requestId, userId: user.user_id, url: resolvedUrl }, 'Request received');
-
-  const jobData: DownloadJobData = { requestId, youtubeId: youtubeId ?? '', url: resolvedUrl };
-  await downloadQueue.add('download', jobData, { jobId: requestId });
 
   res.status(202).json({
     requestId,

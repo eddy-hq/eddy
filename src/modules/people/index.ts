@@ -3,9 +3,9 @@ import { v7 as uuidv7 } from 'uuid';
 import { db } from '../../db/client';
 import { logger } from '../../logger';
 import { ValidationError, NotFoundError } from '../../errors';
-import { downloadQueue } from '../../queue';
-import { SHORTS_MAX_SECS, type DownloadJobData } from '../content';
+import { SHORTS_MAX_SECS } from '../content';
 import { inferChannelInterests } from '../interests';
+import { createFromChannelPoll } from '../requests';
 import { resolveUserById } from '../users';
 import { searchChannelsFlat, videoDuration, type SearchChannel } from '../../ytdlp';
 
@@ -147,27 +147,13 @@ async function pollChannel(output: OutputRow): Promise<void> {
       ).get(follower.user_id, video.videoId);
       if (exists) continue;
 
-      const requestId = uuidv7();
-      const now = new Date().toISOString();
-
-      db.prepare(`
-        INSERT INTO requests
-          (request_id, user_id, source, url, youtube_id, title, channel, status, requested_at, added_at, file_state)
-        VALUES
-          (@requestId, @userId, 'channel_subscription', @url, @youtubeId, @title, @channel,
-           'downloading', @now, @now, 'live')
-      `).run({
-        requestId,
-        userId: follower.user_id,
+      const { requestId } = await createFromChannelPoll({
         url,
+        userId: follower.user_id,
         youtubeId: video.videoId,
         title: video.title,
         channel: output.channel_name,
-        now,
       });
-
-      const jobData: DownloadJobData = { requestId, youtubeId: video.videoId, url };
-      await downloadQueue.add('download', jobData, { jobId: requestId });
 
       logger.info({ requestId, videoId: video.videoId, userId: follower.user_id }, 'Channel subscription request created');
     }

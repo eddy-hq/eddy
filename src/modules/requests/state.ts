@@ -1,4 +1,5 @@
 import fs from 'fs';
+import { v7 as uuidv7 } from 'uuid';
 import { db } from '../../db/client';
 import { logger } from '../../logger';
 import { sendVideoReady } from '../notifications';
@@ -341,4 +342,118 @@ export async function retry(id: string): Promise<TransitionResult> {
   }
 
   return { transitioned: true, userId: updated.user_id };
+}
+
+// Per-source constructors below. Each one INSERTs the row and enqueues the
+// download job together so creation and enqueue can never diverge — callers
+// pass only intrinsic fields, source-specific defaults (`source`, `decided_by`,
+// `file_state`) live here. If `downloadQueue.add` throws, the row stays in
+// `downloading` and the watchdog will pick it up — matching today's behaviour.
+
+export interface CreateFromShareSheetInput {
+  url: string;
+  userId: string;
+  youtubeId?: string | null;
+}
+
+export async function createFromShareSheet(
+  input: CreateFromShareSheetInput,
+): Promise<{ requestId: string }> {
+  const requestId = uuidv7();
+  const now = new Date().toISOString();
+  const youtubeId = input.youtubeId ?? null;
+
+  db.prepare(
+    `INSERT INTO requests
+       (request_id, user_id, source, url, youtube_id, status, decided_by, decided_at, requested_at, added_at)
+     VALUES
+       (?, ?, 'share_sheet', ?, ?, 'downloading', 'auto', ?, ?, ?)`,
+  ).run(requestId, input.userId, input.url, youtubeId, now, now, now);
+
+  const jobData: DownloadJobData = { requestId, youtubeId: youtubeId ?? '', url: input.url };
+  try {
+    await downloadQueue.add('download', jobData, { jobId: requestId });
+  } catch (err) {
+    logger.warn({ err, requestId }, 'createFromShareSheet: failed to enqueue BullMQ job');
+  }
+
+  return { requestId };
+}
+
+export interface CreateFromChannelPollInput {
+  url: string;
+  userId: string;
+  youtubeId: string;
+  title: string;
+  channel: string;
+}
+
+export async function createFromChannelPoll(
+  input: CreateFromChannelPollInput,
+): Promise<{ requestId: string }> {
+  const requestId = uuidv7();
+  const now = new Date().toISOString();
+
+  db.prepare(
+    `INSERT INTO requests
+       (request_id, user_id, source, url, youtube_id, title, channel, status, requested_at, added_at, file_state)
+     VALUES
+       (?, ?, 'channel_subscription', ?, ?, ?, ?, 'downloading', ?, ?, 'live')`,
+  ).run(
+    requestId,
+    input.userId,
+    input.url,
+    input.youtubeId,
+    input.title,
+    input.channel,
+    now,
+    now,
+  );
+
+  const jobData: DownloadJobData = { requestId, youtubeId: input.youtubeId, url: input.url };
+  try {
+    await downloadQueue.add('download', jobData, { jobId: requestId });
+  } catch (err) {
+    logger.warn({ err, requestId }, 'createFromChannelPoll: failed to enqueue BullMQ job');
+  }
+
+  return { requestId };
+}
+
+export interface CreateFromCandidateInput {
+  url: string;
+  userId: string;
+  youtubeId: string | null;
+  title: string | null;
+}
+
+// Candidate accept does not set added_at — preserved from the prior inline
+// INSERT in discovery/router.ts. The feed query orders by added_at DESC, but
+// recommended cards land in their own section so a NULL there doesn't disturb
+// share-sheet ordering.
+export async function createFromCandidate(
+  input: CreateFromCandidateInput,
+): Promise<{ requestId: string }> {
+  const requestId = uuidv7();
+  const now = new Date().toISOString();
+
+  db.prepare(
+    `INSERT INTO requests
+       (request_id, user_id, source, url, youtube_id, title, status, decided_by, decided_at, requested_at)
+     VALUES
+       (?, ?, 'recommended', ?, ?, ?, 'downloading', 'auto', ?, ?)`,
+  ).run(requestId, input.userId, input.url, input.youtubeId, input.title, now, now);
+
+  const jobData: DownloadJobData = {
+    requestId,
+    youtubeId: input.youtubeId ?? '',
+    url: input.url,
+  };
+  try {
+    await downloadQueue.add('download', jobData, { jobId: requestId });
+  } catch (err) {
+    logger.warn({ err, requestId }, 'createFromCandidate: failed to enqueue BullMQ job');
+  }
+
+  return { requestId };
 }

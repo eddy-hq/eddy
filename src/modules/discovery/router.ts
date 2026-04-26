@@ -2,9 +2,8 @@ import { Router, Request, Response } from 'express';
 import { v7 as uuidv7 } from 'uuid';
 import { db } from '../../db/client';
 import { logger } from '../../logger';
-import { downloadQueue } from '../../queue';
 import { ValidationError, NotFoundError } from '../../errors';
-import type { DownloadJobData } from '../content';
+import { createFromCandidate } from '../requests';
 import { resolveUserById } from '../users';
 import { freshnessMultiplier, rankWeight } from './ranker';
 
@@ -160,18 +159,12 @@ discoveryRouter.post('/request', async (req: Request, res: Response) => {
   } | undefined;
   if (!candidate) throw new NotFoundError(`candidate ${candidateId}`);
 
-  const requestId = uuidv7();
-  const now = new Date().toISOString();
-
-  db.prepare(`
-    INSERT INTO requests
-      (request_id, user_id, source, url, youtube_id, title, status, decided_by, decided_at, requested_at)
-    VALUES
-      (?, ?, 'recommended', ?, ?, ?, 'downloading', 'auto', ?, ?)
-  `).run(requestId, user.user_id, candidate.url, candidate.external_id, candidate.title, now, now);
-
-  const jobData: DownloadJobData = { requestId, youtubeId: candidate.external_id ?? '', url: candidate.url };
-  await downloadQueue.add('download', jobData, { jobId: requestId });
+  const { requestId } = await createFromCandidate({
+    url: candidate.url,
+    userId: user.user_id,
+    youtubeId: candidate.external_id,
+    title: candidate.title,
+  });
 
   db.prepare(`UPDATE candidate_pool SET status = 'requested' WHERE candidate_id = ?`).run(candidateId);
 
