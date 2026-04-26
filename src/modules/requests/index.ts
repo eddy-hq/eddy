@@ -11,7 +11,13 @@ import { sendVideoReady } from '../notifications';
 import { resolveUserByIdOrName } from '../users';
 import * as state from './state';
 
-export { markWatched } from './state';
+export {
+  markWatched,
+  markDismissed,
+  markCancelled,
+  CANCELLED_REASON,
+  displayRejectionReason,
+} from './state';
 export type { Status, TransitionResult } from './state';
 
 export const requestsRouter = Router();
@@ -178,6 +184,10 @@ requestsRouter.get('/feed', (req: Request, res: Response) => {
   const todayStr = new Date().toISOString().slice(0, 10);
   const yesterdayStr = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
 
+  for (const row of rows) {
+    row.rejection_reason = state.displayRejectionReason(row.rejection_reason);
+  }
+
   const dayMap = new Map<string, typeof rows>();
   for (const row of rows) {
     const day = (row.added_at ?? row.requested_at).slice(0, 10);
@@ -252,9 +262,13 @@ requestsRouter.get('/admin/pipeline', async (_req: Request, res: Response) => {
           progress = val !== null ? parseInt(val, 10) : null;
         } catch { /* Redis unavailable */ }
       }
-      return { ...r, jobState, progress };
+      return { ...r, rejection_reason: state.displayRejectionReason(r.rejection_reason), jobState, progress };
     })
   );
+
+  for (const r of recentRejected) {
+    r.rejection_reason = state.displayRejectionReason(r.rejection_reason);
+  }
 
   res.json({ active: activeWithJobState, recentRejected });
 });
@@ -313,7 +327,7 @@ requestsRouter.get('/:id', async (req: Request, res: Response) => {
     status: row.status,
     progress,
     title: row.title,
-    rejectionReason: row.rejection_reason,
+    rejectionReason: state.displayRejectionReason(row.rejection_reason),
     videoUrl: row.nginx_url,
   });
 });
@@ -382,35 +396,16 @@ requestsRouter.post('/:id/delete', async (req: Request, res: Response) => {
 });
 
 // POST /requests/:id/cancel — PWA cancels an in-progress download
-requestsRouter.post('/:id/cancel', async (req: Request, res: Response) => {
-  const requestId = req.params['id'];
+requestsRouter.post('/:id/cancel', (req: Request, res: Response) => {
+  const requestId = req.params['id']!;
+  const result = state.markCancelled(requestId);
 
-  const row = db.prepare(
-    `SELECT status FROM requests WHERE request_id = ?`
-  ).get(requestId) as { status: string } | undefined;
-
-  if (!row) throw new NotFoundError('request');
-
-  const cancellable = ['downloading', 'guard_review', 'parent_review', 'pending', 'approved'];
-  if (!cancellable.includes(row.status)) {
-    return res.status(409).json({ error: 'INVALID_STATE', message: `Cannot cancel a request in status '${row.status}'` });
+  if (!result.transitioned) {
+    if (result.currentStatus === null) throw new NotFoundError('request');
+    return res
+      .status(409)
+      .json({ error: 'INVALID_STATE', message: `Cannot cancel a request in status '${result.currentStatus}'` });
   }
-
-  // Remove BullMQ job if still queued; ignore errors (job may be active or already gone)
-  try {
-    const job = await downloadQueue.getJob(requestId);
-    await job?.remove();
-  } catch { /* best-effort */ }
-
-  // Clean up progress key
-  try {
-    await redis.del(`eddy:progress:${requestId}`);
-  } catch { /* best-effort */ }
-
-  db.prepare(`
-    UPDATE requests SET status = 'rejected', rejection_reason = 'Cancelled'
-    WHERE request_id = ? AND status IN ('downloading', 'guard_review', 'parent_review', 'pending', 'approved')
-  `).run(requestId);
 
   logger.info({ requestId }, 'Request cancelled');
   res.status(204).end();
@@ -418,9 +413,7 @@ requestsRouter.post('/:id/cancel', async (req: Request, res: Response) => {
 
 // POST /requests/:id/dismiss — PWA dismisses a request
 requestsRouter.post('/:id/dismiss', (req: Request, res: Response) => {
-  db.prepare(
-    `UPDATE requests SET status = 'dismissed' WHERE request_id = ? AND status NOT IN ('downloading', 'guard_review', 'parent_review')`
-  ).run(req.params['id']);
+  state.markDismissed(req.params['id']!);
   res.status(204).end();
 });
 
@@ -443,6 +436,10 @@ requestsRouter.get('/', (req: Request, res: Response) => {
     title: string | null; channel: string | null; status: string;
     rejection_reason: string | null; nginx_url: string | null; requested_at: string;
   }>;
+
+  for (const row of rows) {
+    row.rejection_reason = state.displayRejectionReason(row.rejection_reason);
+  }
 
   res.json({ requests: rows });
 });
