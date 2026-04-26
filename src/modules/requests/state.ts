@@ -1,3 +1,4 @@
+import fs from 'fs';
 import { db } from '../../db/client';
 import { logger } from '../../logger';
 import { downloadQueue, redis } from '../../queue';
@@ -33,10 +34,10 @@ export const LEGAL: Record<Status, Status[]> = {
   guard_review: ['rejected'],
   parent_review: ['rejected'],
   approved: ['dismissed', 'rejected'],
-  ready: ['watched', 'dismissed'],
+  ready: ['watched', 'dismissed', 'deleted'],
   rejected: ['dismissed'],
   failed: ['dismissed'],
-  watched: ['dismissed'],
+  watched: ['dismissed', 'deleted'],
   dismissed: [],
   deleted: ['dismissed'],
 };
@@ -103,6 +104,45 @@ export function markDismissed(id: string): TransitionResult {
 
   if (updated) return { transitioned: true, userId: updated.user_id };
   return { transitioned: false, currentStatus: readStatus(id) };
+}
+
+// Best-effort: a missing or unlinkable file must not roll back the soft-delete.
+async function unlinkVideoAndSidecars(filePath: string, requestId: string): Promise<void> {
+  try {
+    await fs.promises.unlink(filePath);
+    const base = filePath.replace(/\.[^.]+$/, '');
+    for (const ext of ['.en.vtt', '.en.srt', '.vtt', '.srt']) {
+      await fs.promises.unlink(base + ext).catch(() => { /* sidecar may not exist */ });
+    }
+    logger.info({ requestId }, 'Video file deleted');
+  } catch (err) {
+    logger.warn({ err, requestId }, 'Could not delete video file — record still marked deleted');
+  }
+}
+
+export function markSoftDeleted(id: string): TransitionResult {
+  const sources = legalSourcesFor('deleted');
+  const placeholders = sources.map(() => '?').join(', ');
+  const now = new Date().toISOString();
+
+  const updated = db
+    .prepare(
+      `UPDATE requests SET status = 'deleted', file_state = 'gone', deleted_at = ?
+       WHERE request_id = ? AND status IN (${placeholders})
+       RETURNING user_id, file_path`,
+    )
+    .get(now, id, ...sources) as { user_id: string; file_path: string | null } | undefined;
+
+  if (!updated) return { transitioned: false, currentStatus: readStatus(id) };
+
+  // Side-effects fire only after a real transition. Filesystem failures are
+  // logged-warned, not thrown — the row stays `deleted` even if the file is
+  // already gone or unlinkable.
+  if (updated.file_path) {
+    void unlinkVideoAndSidecars(updated.file_path, id);
+  }
+
+  return { transitioned: true, userId: updated.user_id };
 }
 
 export function markCancelled(id: string): TransitionResult {

@@ -11,10 +11,11 @@ vi.mock('../../logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 
-const { removeJobMock, getJobMock, redisDelMock } = vi.hoisted(() => ({
+const { removeJobMock, getJobMock, redisDelMock, unlinkMock } = vi.hoisted(() => ({
   removeJobMock: vi.fn().mockResolvedValue(undefined),
   getJobMock: vi.fn(),
   redisDelMock: vi.fn().mockResolvedValue(1),
+  unlinkMock: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock('../../queue', () => ({
@@ -25,6 +26,18 @@ vi.mock('../../queue', () => ({
   thumbsQueue: {},
   closeQueues: vi.fn(),
 }));
+
+vi.mock('fs', async () => {
+  const actual = await vi.importActual<typeof import('fs')>('fs');
+  return {
+    ...actual,
+    default: {
+      ...actual,
+      promises: { ...actual.promises, unlink: unlinkMock },
+    },
+    promises: { ...actual.promises, unlink: unlinkMock },
+  };
+});
 
 vi.mock('../notifications', () => ({
   sendVideoReady: vi.fn(),
@@ -40,6 +53,7 @@ import {
   markWatched,
   markDismissed,
   markCancelled,
+  markSoftDeleted,
   CANCELLED_REASON,
   type Status,
 } from './state';
@@ -50,13 +64,22 @@ function insertRequest(opts: {
   request_id: string;
   status: Status;
   watched_at?: string | null;
+  file_path?: string | null;
 }): void {
   const now = new Date().toISOString();
   db.prepare(
     `INSERT INTO requests
-       (request_id, user_id, source, url, status, requested_at, added_at, watched_at)
-     VALUES (?, ?, 'share_sheet', 'https://www.youtube.com/watch?v=abc', ?, ?, ?, ?)`,
-  ).run(opts.request_id, USER_ID, opts.status, now, now, opts.watched_at ?? null);
+       (request_id, user_id, source, url, status, file_path, requested_at, added_at, watched_at)
+     VALUES (?, ?, 'share_sheet', 'https://www.youtube.com/watch?v=abc', ?, ?, ?, ?, ?)`,
+  ).run(
+    opts.request_id,
+    USER_ID,
+    opts.status,
+    opts.file_path ?? null,
+    now,
+    now,
+    opts.watched_at ?? null,
+  );
 }
 
 beforeAll(() => {
@@ -71,6 +94,8 @@ beforeEach(() => {
   getJobMock.mockReset();
   removeJobMock.mockClear();
   redisDelMock.mockClear();
+  unlinkMock.mockReset();
+  unlinkMock.mockResolvedValue(undefined);
 });
 
 describe('markWatched', () => {
@@ -193,5 +218,96 @@ describe('markCancelled', () => {
     expect(result).toEqual({ transitioned: false, currentStatus: null });
     expect(getJobMock).not.toHaveBeenCalled();
     expect(redisDelMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('markSoftDeleted', () => {
+  const FILE_PATH = '/videos/abc123.mp4';
+
+  it('transitions ready → deleted, sets columns, and unlinks video + sidecars', async () => {
+    insertRequest({ request_id: 'req-s1', status: 'ready', file_path: FILE_PATH });
+    const before = Date.now();
+
+    const result = markSoftDeleted('req-s1');
+
+    expect(result).toEqual({ transitioned: true, userId: USER_ID });
+    const row = db
+      .prepare('SELECT status, file_state, deleted_at FROM requests WHERE request_id = ?')
+      .get('req-s1') as { status: string; file_state: string; deleted_at: string | null };
+    expect(row.status).toBe('deleted');
+    expect(row.file_state).toBe('gone');
+    expect(row.deleted_at).not.toBeNull();
+    expect(new Date(row.deleted_at!).getTime()).toBeGreaterThanOrEqual(before);
+
+    // Let the fire-and-forget unlink chain settle.
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(unlinkMock).toHaveBeenCalledWith(FILE_PATH);
+    expect(unlinkMock).toHaveBeenCalledWith('/videos/abc123.en.vtt');
+    expect(unlinkMock).toHaveBeenCalledWith('/videos/abc123.en.srt');
+    expect(unlinkMock).toHaveBeenCalledWith('/videos/abc123.vtt');
+    expect(unlinkMock).toHaveBeenCalledWith('/videos/abc123.srt');
+  });
+
+  it('transitions watched → deleted', async () => {
+    insertRequest({ request_id: 'req-s2', status: 'watched', file_path: FILE_PATH });
+
+    const result = markSoftDeleted('req-s2');
+
+    expect(result).toEqual({ transitioned: true, userId: USER_ID });
+    const row = db
+      .prepare('SELECT status, file_state FROM requests WHERE request_id = ?')
+      .get('req-s2') as { status: string; file_state: string };
+    expect(row.status).toBe('deleted');
+    expect(row.file_state).toBe('gone');
+
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(unlinkMock).toHaveBeenCalledWith(FILE_PATH);
+  });
+
+  it('is a no-op on a downloading row and makes no filesystem calls', () => {
+    insertRequest({ request_id: 'req-s3', status: 'downloading', file_path: FILE_PATH });
+
+    const result = markSoftDeleted('req-s3');
+
+    expect(result).toEqual({ transitioned: false, currentStatus: 'downloading' });
+    const row = db
+      .prepare('SELECT status, file_state FROM requests WHERE request_id = ?')
+      .get('req-s3') as { status: string; file_state: string };
+    expect(row.status).toBe('downloading');
+    expect(row.file_state).toBe('live');
+    expect(unlinkMock).not.toHaveBeenCalled();
+  });
+
+  it('is a no-op on a rejected row and makes no filesystem calls', () => {
+    insertRequest({ request_id: 'req-s4', status: 'rejected', file_path: FILE_PATH });
+
+    const result = markSoftDeleted('req-s4');
+
+    expect(result).toEqual({ transitioned: false, currentStatus: 'rejected' });
+    expect(unlinkMock).not.toHaveBeenCalled();
+  });
+
+  it('returns currentStatus: null for an unknown id and makes no filesystem calls', () => {
+    const result = markSoftDeleted('does-not-exist');
+
+    expect(result).toEqual({ transitioned: false, currentStatus: null });
+    expect(unlinkMock).not.toHaveBeenCalled();
+  });
+
+  it('does not throw when the video file unlink fails — row stays deleted', async () => {
+    insertRequest({ request_id: 'req-s5', status: 'ready', file_path: FILE_PATH });
+    unlinkMock.mockRejectedValue(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
+
+    const result = markSoftDeleted('req-s5');
+
+    expect(result).toEqual({ transitioned: true, userId: USER_ID });
+    // Allow the rejected unlink to settle; assertion is that nothing throws.
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const row = db
+      .prepare('SELECT status, file_state FROM requests WHERE request_id = ?')
+      .get('req-s5') as { status: string; file_state: string };
+    expect(row.status).toBe('deleted');
+    expect(row.file_state).toBe('gone');
   });
 });
