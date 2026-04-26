@@ -9,6 +9,10 @@ import { downloadQueue, redis } from '../../queue';
 import type { DownloadJobData } from '../content';
 import { sendVideoReady } from '../notifications';
 import { resolveUserByIdOrName } from '../users';
+import * as state from './state';
+
+export { markWatched } from './state';
+export type { Status, TransitionResult } from './state';
 
 export const requestsRouter = Router();
 
@@ -316,9 +320,7 @@ requestsRouter.get('/:id', async (req: Request, res: Response) => {
 
 // POST /requests/:id/watched — PWA marks video as watched
 requestsRouter.post('/:id/watched', (req: Request, res: Response) => {
-  db.prepare(
-    `UPDATE requests SET status = 'watched', watched_at = ? WHERE request_id = ? AND status = 'ready'`
-  ).run(new Date().toISOString(), req.params['id']);
+  state.markWatched(req.params['id']!);
   res.status(204).end();
 });
 
