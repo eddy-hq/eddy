@@ -2,23 +2,10 @@ import { db } from '../../db/client';
 import { logger } from '../../logger';
 import { ollamaGenerate, parseOllamaJson } from '../../ollama';
 import { formatAge, formatDuration } from './util';
+import { clampScore, normalizeSensitivity, type TimeSensitivity } from './ranker';
 import type { UserInterestRow } from './intake';
 
-// Brief §9a: "If Gemma can't explain why, the item doesn't surface."
-// Hard floor — items below either threshold are filtered at surface time.
-export const MIN_CONNECTION_SCORE = 6;
-export const MIN_QUALITY_SCORE = 5;
-
-// Floor on the combined weighted score (connection × quality × freshness ×
-// (1/√rank)). Stops the per-interest cap from forcing in weak picks just
-// because nothing better exists for that interest — e.g. a 2-year-old
-// match highlight with freshness ×0.1 scores ≈ 1, which is noise.
-// Roughly equivalent to: a baseline candidate (conn 6, qual 5, fresh 0.5,
-// rank 5) clears it; an old news item (conn 9, qual 6, fresh 0.1, rank 11)
-// does not.
-export const MIN_WEIGHTED_SCORE = 5;
-
-export type TimeSensitivity = 'news' | 'standard' | 'evergreen';
+export type { TimeSensitivity };
 
 interface CandidateRow {
   candidate_id: string;
@@ -48,18 +35,6 @@ interface ScoringItem {
   expertise: string | null;
   sourceType: string;
   personName: string | null;
-}
-
-export function normalizeSensitivity(s: string | null | undefined): TimeSensitivity {
-  if (typeof s !== 'string') return 'standard';
-  const v = s.toLowerCase().trim();
-  if (v === 'news' || v === 'evergreen') return v;
-  return 'standard';
-}
-
-export function clampScore(n: unknown): number | null {
-  if (typeof n !== 'number' || !Number.isFinite(n)) return null;
-  return Math.min(10, Math.max(0, n));
 }
 
 // Deterministic time-sensitivity override for patterns Gemma keeps flip-

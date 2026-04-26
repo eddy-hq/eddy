@@ -3,22 +3,20 @@
 /**
  * npm run discovery:preview [userId]
  *
- * Dry-run of surfacing logic. Shows the two-axis score table for every
- * scored candidate in the pool — connection × quality × freshness × rank
- * weight — and which slot (regular / stretch / —) they would fill today.
- * Candidates that fail the connection or quality floor are still listed so
- * you can see what was rejected and why. Does NOT write surfaced_date.
+ * Dry-run of surfacing logic. Pipes the candidate pool through the same
+ * `rank()` the production surfacer uses and prints a per-row table with
+ * the disposition each item would receive. Does NOT write surfaced_date.
  */
 import 'dotenv/config';
 import { runMigrations } from '../db/migrate';
 import { seedUsers } from '../db/seed';
 import { db } from '../db/client';
 import {
-  freshnessMultiplier,
-  rankWeight,
+  rank,
   MIN_CONNECTION_SCORE,
   MIN_QUALITY_SCORE,
-} from '../modules/discovery/index';
+  type RankerCandidate,
+} from '../modules/discovery/ranker';
 
 runMigrations();
 seedUsers();
@@ -68,14 +66,17 @@ function ageLabel(iso: string | null): string {
   return `${Math.floor(days / 30)}mo`;
 }
 
-function failureReason(c: Candidate): string | null {
-  const conn = c.connection_score ?? 0;
-  const qual = c.quality_score ?? 0;
-  if (conn < MIN_CONNECTION_SCORE && qual < MIN_QUALITY_SCORE) return 'low both';
-  if (conn < MIN_CONNECTION_SCORE) return 'low conn';
-  if (qual < MIN_QUALITY_SCORE) return 'low qual';
-  return null;
-}
+const SLOT_LABEL: Record<string, string> = {
+  regular: 'regular',
+  stretch: 'stretch',
+  low_conn: 'low conn',
+  low_qual: 'low qual',
+  low_both: 'low both',
+  low_weight: 'low weight',
+  cut_interest_cap: 'cut cap',
+  cut_dedup: 'cut dedup',
+  cut_stretch_rank: 'cut rank',
+};
 
 for (const user of users) {
   console.log(`\n── ${user.display_name} (${user.role}) ──────────────────────`);
@@ -90,8 +91,14 @@ for (const user of users) {
   `).get(user.user_id, today) as { n: number }).n;
 
   const remaining = Math.max(0, cap - alreadySurfaced);
-  const stretchQuota = Math.min(remaining, Math.max(1, Math.floor(cap * 0.2)));
-  const regularQuota = remaining - stretchQuota;
+  // Dry-run: when the user is already at cap, fall back to the full cap
+  // so the preview still shows what would have been picked. Quotas must
+  // be computed from the same value passed to rank() — otherwise the
+  // header lies about the split (e.g. remaining=2 prints 0+2 when the
+  // ranker is actually doing 1+1).
+  const rankCap = remaining || cap;
+  const stretchQuota = Math.max(1, Math.floor(rankCap * 0.2));
+  const regularQuota = Math.max(0, rankCap - stretchQuota);
 
   console.log(`  Cap ${cap} · already surfaced today ${alreadySurfaced} · remaining ${remaining} (regular ${regularQuota} + stretch ${stretchQuota})`);
   console.log(`  Floors: connection ≥ ${MIN_CONNECTION_SCORE} · quality ≥ ${MIN_QUALITY_SCORE}`);
@@ -119,48 +126,26 @@ for (const user of users) {
     continue;
   }
 
-  const ranked = rows
-    .map((r) => {
-      // Pass time_sensitivity so the preview matches surfaceForToday's
-      // weighting — without it, evergreen back-catalog with null
-      // published_at falls back to standard's 0.8 instead of 1.0.
-      const fresh = freshnessMultiplier(r.published_at, r.time_sensitivity);
-      return {
-        row: r,
-        fresh,
-        rWeight: rankWeight(r.rank),
-        weighted: (r.connection_score ?? 0) * (r.quality_score ?? 0) * fresh * rankWeight(r.rank),
-        reject: failureReason(r),
-      };
-    })
-    .sort((a, b) => b.weighted - a.weighted);
+  const candidates: RankerCandidate[] = rows.map((r) => ({
+    candidateId: r.candidate_id,
+    title: r.title,
+    publishedAt: r.published_at,
+    connectionScore: r.connection_score,
+    qualityScore: r.quality_score,
+    timeSensitivity: r.time_sensitivity,
+    interestId: r.interest_id,
+    rank: r.rank,
+  }));
 
-  const eligible = ranked.filter((r) => r.reject === null);
+  const verdicts = rank(
+    candidates,
+    { now: new Date(), isKid, prefilledTitles: [], prefilledInterestCounts: new Map() },
+    { cap: rankCap },
+  );
 
-  // Replicate surfaceForToday allocation without writing.
-  const slot = new Map<string, 'regular' | 'stretch'>();
-  for (const r of eligible) {
-    if (slot.size >= regularQuota) break;
-    slot.set(r.row.candidate_id, 'regular');
-  }
-  const stretchPool = eligible.filter((r) => !slot.has(r.row.candidate_id) && r.row.rank > 3);
-  for (const s of stretchPool) {
-    if (slot.size >= regularQuota + stretchQuota) break;
-    slot.set(s.row.candidate_id, 'stretch');
-  }
-  if (slot.size < remaining) {
-    for (const r of eligible) {
-      if (slot.has(r.row.candidate_id)) continue;
-      slot.set(r.row.candidate_id, 'regular');
-      if (slot.size >= remaining) break;
-    }
-  }
+  const rowById = new Map(rows.map((r) => [r.candidate_id, r]));
 
-  const headers = ['conn', 'qual', 'fresh', 'rank', 'weighted', 'slot', 'source', 'age', 'interest', 'title'];
-  console.log(`\n  ${headers[0]?.padStart(4)}  ${headers[1]?.padStart(4)}  ${headers[2]?.padStart(5)}  ${headers[3]?.padStart(4)}  ${headers[4]?.padStart(8)}  ${headers[5]?.padEnd(9)}  ${headers[6]?.padEnd(12)}  ${headers[7]?.padStart(4)}  ${headers[8]?.padEnd(16)}  ${headers[9]}`);
-
-  // Compress source_type for column width — full values are like
-  // 'interest_search' / 'person_backcatalog' which won't fit cleanly.
+  // Compress source_type for column width.
   const sourceLabel = (s: string): string => {
     if (s === 'person_backcatalog') return 'backcat';
     if (s === 'interest_search') return 'interest';
@@ -169,25 +154,30 @@ for (const user of users) {
     return s;
   };
 
-  for (const r of ranked) {
-    const conn = (r.row.connection_score ?? 0).toFixed(1).padStart(4);
-    const qual = (r.row.quality_score ?? 0).toFixed(1).padStart(4);
-    const fresh = `×${r.fresh.toFixed(1)}`.padStart(5);
-    const rank = (r.row.rank === 999 ? '—' : String(r.row.rank)).padStart(4);
-    const weighted = r.weighted.toFixed(1).padStart(8);
-    const slotRaw = r.reject !== null ? r.reject : (slot.get(r.row.candidate_id) ?? '—');
-    const slotLabel = slotRaw.padEnd(9);
-    const source = sourceLabel(r.row.source_type).padEnd(12);
-    const age = ageLabel(r.row.published_at).padStart(4);
-    const interest = trunc(r.row.interest_label ?? '—', 16).padEnd(16);
-    const title = trunc(r.row.title ?? '(no title)', 70);
-    console.log(`  ${conn}  ${qual}  ${fresh}  ${rank}  ${weighted}  ${slotLabel}  ${source}  ${age}  ${interest}  ${title}`);
-    if (r.row.why_text) console.log(`        why → ${trunc(r.row.why_text, 110)}`);
+  const headers = ['conn', 'qual', 'fresh', 'rank', 'weighted', 'slot', 'source', 'age', 'interest', 'title'];
+  console.log(`\n  ${headers[0]?.padStart(4)}  ${headers[1]?.padStart(4)}  ${headers[2]?.padStart(5)}  ${headers[3]?.padStart(4)}  ${headers[4]?.padStart(8)}  ${headers[5]?.padEnd(10)}  ${headers[6]?.padEnd(12)}  ${headers[7]?.padStart(4)}  ${headers[8]?.padEnd(16)}  ${headers[9]}`);
+
+  for (const v of verdicts) {
+    const row = rowById.get(v.candidate.candidateId);
+    if (!row) continue;
+    const conn = (row.connection_score ?? 0).toFixed(1).padStart(4);
+    const qual = (row.quality_score ?? 0).toFixed(1).padStart(4);
+    const fresh = `×${v.fresh.toFixed(1)}`.padStart(5);
+    const rankStr = (row.rank === 999 ? '—' : String(row.rank)).padStart(4);
+    const weighted = v.weighted.toFixed(1).padStart(8);
+    const slotLabel = (SLOT_LABEL[v.disposition] ?? v.disposition).padEnd(10);
+    const source = sourceLabel(row.source_type).padEnd(12);
+    const age = ageLabel(row.published_at).padStart(4);
+    const interest = trunc(row.interest_label ?? '—', 16).padEnd(16);
+    const title = trunc(row.title ?? '(no title)', 70);
+    console.log(`  ${conn}  ${qual}  ${fresh}  ${rankStr}  ${weighted}  ${slotLabel}  ${source}  ${age}  ${interest}  ${title}`);
+    if (row.why_text) console.log(`        why → ${trunc(row.why_text, 110)}`);
   }
 
-  const picks = ranked.filter((r) => slot.has(r.row.candidate_id)).length;
-  const rejected = ranked.filter((r) => r.reject !== null).length;
-  console.log(`\n  Eligible: ${eligible.length} · rejected by floor: ${rejected} · would surface: ${picks} of ${remaining} slot(s).`);
+  const picks = verdicts.filter((v) => v.disposition === 'regular' || v.disposition === 'stretch').length;
+  const rejected = verdicts.filter((v) => v.disposition.startsWith('low_')).length;
+  const cuts = verdicts.filter((v) => v.disposition.startsWith('cut_')).length;
+  console.log(`\n  Eligible: ${verdicts.length - rejected} · rejected by floor: ${rejected} · cut: ${cuts} · would surface: ${picks} of ${rankCap} slot(s).`);
 }
 
 process.exit(0);
