@@ -110,25 +110,20 @@ requestsRouter.post('/', async (req: Request, res: Response) => {
 
   const youtubeId = extractYoutubeId(resolvedUrl);
 
-  // Dedup: if this user already has an active request for the same video, return it
+  // Dedup: if this user already has a still-live request for the same video, return it
   if (youtubeId) {
-    const existing = db.prepare(`
-      SELECT request_id, status FROM requests
-      WHERE user_id = ? AND youtube_id = ?
-        AND status NOT IN ('rejected', 'dismissed', 'watched')
-      ORDER BY requested_at DESC LIMIT 1
-    `).get(user.user_id, youtubeId) as { request_id: string; status: string } | undefined;
+    const existing = state.findActiveDuplicateRequest(user.user_id, youtubeId);
 
     if (existing) {
-      logger.info({ requestId: existing.request_id, youtubeId }, 'Returning existing request');
+      logger.info({ requestId: existing.requestId, youtubeId }, 'Returning existing request');
       // Re-send the ready notification in case the user missed it
       if (existing.status === 'ready') {
         const row = db.prepare('SELECT title FROM requests WHERE request_id = ?')
-          .get(existing.request_id) as { title: string | null } | undefined;
-        void sendVideoReady(user.user_id, existing.request_id, row?.title ?? youtubeId ?? '');
+          .get(existing.requestId) as { title: string | null } | undefined;
+        void sendVideoReady(user.user_id, existing.requestId, row?.title ?? youtubeId ?? '');
       }
       return res.status(202).json({
-        requestId: existing.request_id,
+        requestId: existing.requestId,
         status: existing.status,
         message: `Got it${user.role === 'kid' ? `, ${user.display_name}` : ''}. Working on it.`,
         pwaUrl: pwaFeedUrl(user.user_id),
