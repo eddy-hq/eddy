@@ -3,6 +3,7 @@ import { db } from '../../db/client';
 import { logger } from '../../logger';
 import { ValidationError } from '../../errors';
 import { resolveUserByIdOrName } from '../users';
+import { displayRejectionReason } from '../requests';
 import { searchVideosFlat, type SearchVideoFlat } from '../../ytdlp';
 
 export const searchRouter = Router();
@@ -35,7 +36,11 @@ searchRouter.get('/', (req: Request, res: Response) => {
     AND r.status NOT IN ('dismissed')
     ORDER BY r.added_at DESC
     LIMIT 50
-  `).all(matchExpr, uid);
+  `).all(matchExpr, uid) as Array<{ rejection_reason: string | null }>;
+
+  for (const r of rows) {
+    r.rejection_reason = displayRejectionReason(r.rejection_reason);
+  }
 
   res.json({ results: rows, query: q.trim() });
 });
