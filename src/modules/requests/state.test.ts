@@ -54,6 +54,7 @@ import {
   createFromShareSheet,
   createFromChannelPoll,
   createFromCandidate,
+  findActiveDuplicateRequest,
   CANCELLED_REASON,
   type DownloadedFields,
   type Status,
@@ -844,5 +845,86 @@ describe('createFromCandidate', () => {
       .get(requestId) as { status: string };
     expect(row.status).toBe('downloading');
     expect(vi.mocked(logger.warn)).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('findActiveDuplicateRequest', () => {
+  const YT_ID = 'dedup12345x';
+
+  it('returns the row for an active downloading request', () => {
+    insertRequest({ request_id: 'req-dup1', status: 'downloading', youtube_id: YT_ID });
+
+    const result = findActiveDuplicateRequest(USER_ID, YT_ID);
+
+    expect(result).toEqual({ requestId: 'req-dup1', status: 'downloading' });
+  });
+
+  it('returns the row for a ready request', () => {
+    insertRequest({ request_id: 'req-dup2', status: 'ready', youtube_id: YT_ID });
+
+    const result = findActiveDuplicateRequest(USER_ID, YT_ID);
+
+    expect(result).toEqual({ requestId: 'req-dup2', status: 'ready' });
+  });
+
+  // The bug from #36: a soft-deleted row used to dedup against fresh requests,
+  // making re-requests after delete silently no-op.
+  it('returns null when the only matching row is soft-deleted', () => {
+    insertRequest({ request_id: 'req-dup3', status: 'deleted', youtube_id: YT_ID });
+
+    const result = findActiveDuplicateRequest(USER_ID, YT_ID);
+
+    expect(result).toBeNull();
+  });
+
+  it('returns null when the only matching rows are rejected / dismissed / watched', () => {
+    insertRequest({ request_id: 'req-dup4a', status: 'rejected', youtube_id: YT_ID });
+    insertRequest({ request_id: 'req-dup4b', status: 'dismissed', youtube_id: 'other-id-1' });
+    insertRequest({ request_id: 'req-dup4c', status: 'watched', youtube_id: 'other-id-2' });
+
+    expect(findActiveDuplicateRequest(USER_ID, YT_ID)).toBeNull();
+    expect(findActiveDuplicateRequest(USER_ID, 'other-id-1')).toBeNull();
+    expect(findActiveDuplicateRequest(USER_ID, 'other-id-2')).toBeNull();
+  });
+
+  it('prefers the most recent live row when an older deleted row also matches', () => {
+    db.prepare(
+      `INSERT INTO requests
+         (request_id, user_id, source, url, youtube_id, status, requested_at, added_at)
+       VALUES (?, ?, 'share_sheet', ?, ?, ?, ?, ?)`,
+    ).run(
+      'req-dup5-old',
+      USER_ID,
+      'https://www.youtube.com/watch?v=dedup',
+      YT_ID,
+      'deleted',
+      '2026-04-01T00:00:00.000Z',
+      '2026-04-01T00:00:00.000Z',
+    );
+    db.prepare(
+      `INSERT INTO requests
+         (request_id, user_id, source, url, youtube_id, status, requested_at, added_at)
+       VALUES (?, ?, 'share_sheet', ?, ?, ?, ?, ?)`,
+    ).run(
+      'req-dup5-new',
+      USER_ID,
+      'https://www.youtube.com/watch?v=dedup',
+      YT_ID,
+      'downloading',
+      '2026-04-26T00:00:00.000Z',
+      '2026-04-26T00:00:00.000Z',
+    );
+
+    const result = findActiveDuplicateRequest(USER_ID, YT_ID);
+
+    expect(result).toEqual({ requestId: 'req-dup5-new', status: 'downloading' });
+  });
+
+  it('returns null when nothing matches the user / youtube_id', () => {
+    insertRequest({ request_id: 'req-dup6', status: 'ready', youtube_id: 'different' });
+
+    const result = findActiveDuplicateRequest(USER_ID, YT_ID);
+
+    expect(result).toBeNull();
   });
 });

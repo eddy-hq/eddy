@@ -83,6 +83,32 @@ export function displayRejectionReason(reason: string | null): string | null {
   return reason;
 }
 
+// Statuses that should NOT block a fresh re-request for the same video.
+// `deleted` belongs here: soft-delete frees disk + removes from feed, but a
+// later re-request must produce a brand-new download, not return the dead row.
+const DEDUP_TERMINAL: Status[] = ['rejected', 'dismissed', 'watched', 'deleted'];
+
+// Find a still-live request for this user + video that a fresh POST should
+// dedup against. Returns null when no such row exists (including when the only
+// matching row is in a terminal state — that's the soft-delete re-request path).
+export function findActiveDuplicateRequest(
+  userId: string,
+  youtubeId: string,
+): { requestId: string; status: string } | null {
+  const placeholders = DEDUP_TERMINAL.map(() => '?').join(', ');
+  const row = db
+    .prepare(
+      `SELECT request_id, status FROM requests
+        WHERE user_id = ? AND youtube_id = ?
+          AND status NOT IN (${placeholders})
+        ORDER BY requested_at DESC LIMIT 1`,
+    )
+    .get(userId, youtubeId, ...DEDUP_TERMINAL) as
+      | { request_id: string; status: string }
+      | undefined;
+  return row ? { requestId: row.request_id, status: row.status } : null;
+}
+
 export function markWatched(id: string): TransitionResult {
   const sources = legalSourcesFor('watched');
   const placeholders = sources.map(() => '?').join(', ');
