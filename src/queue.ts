@@ -59,12 +59,25 @@ export const thumbsQueue = new Queue('thumbs', {
   },
 });
 
+// Delete queue — symmetric with downloads. The M4 enqueues; the Ubuntu worker
+// owns the unlink because the video files only exist on the worker's disk.
+export const deleteQueue = new Queue('deletes', {
+  connection: redis,
+  defaultJobOptions: {
+    attempts: 3,
+    backoff: { type: 'exponential', delay: 10_000 },
+    removeOnComplete: { count: 100 },
+    removeOnFail: { count: 200 },
+  },
+});
+
 export async function closeQueues(): Promise<void> {
   await Promise.all([
     downloadQueue.close(),
     guardQueue.close(),
     discoveryQueue.close(),
     thumbsQueue.close(),
+    deleteQueue.close(),
   ]);
   await redis.quit();
 }

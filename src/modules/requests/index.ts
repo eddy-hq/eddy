@@ -28,6 +28,7 @@ export type {
   Status,
   TransitionResult,
   DownloadedFields,
+  DeleteJobData,
   CreateFromShareSheetInput,
   CreateFromChannelPollInput,
   CreateFromCandidateInput,

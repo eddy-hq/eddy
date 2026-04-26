@@ -18,6 +18,7 @@ import { triggerPlexScan } from '../modules/content/plex';
 import { postSigned } from '../signed-channel';
 import { generateThumbnail } from './thumb';
 import type { DownloadJobData } from '../modules/content';
+import type { DeleteJobData } from '../modules/requests';
 
 interface ThumbJobData {
   requestId: string;
@@ -167,6 +168,49 @@ async function processJob(job: Job<DownloadJobData>): Promise<void> {
   log.info({ nginxUrl }, 'Job complete');
 }
 
+interface DeleteFailure {
+  path: string;
+  code: string;
+}
+
+// Worker-side soft-delete: the M4 has already marked the row deleted, so this
+// is best-effort cleanup of the .mp4 + sidecars on Ubuntu disk. All five paths
+// are attempted independently — a missing sidecar must not stop the .mp4
+// being unlinked, and vice versa. ENOENT stays silent (file already absent —
+// that's the goal); any other code is a real failure and surfaces both here
+// and on the M4 via the callback.
+async function processDeleteJob(job: Job<DeleteJobData>): Promise<void> {
+  const { requestId, filePath } = job.data;
+  const log = logger.child({ requestId, filePath });
+
+  const base = filePath.replace(/\.[^.]+$/, '');
+  const paths = [filePath, `${base}.en.vtt`, `${base}.en.srt`, `${base}.vtt`, `${base}.srt`];
+
+  const results = await Promise.allSettled(paths.map((p) => fs.promises.unlink(p)));
+
+  const failures: DeleteFailure[] = results.flatMap((r, i) => {
+    if (r.status !== 'rejected') return [];
+    const err = r.reason as NodeJS.ErrnoException;
+    if (err.code === 'ENOENT') return [];
+    return [{ path: paths[i]!, code: err.code ?? 'UNKNOWN' }];
+  });
+
+  if (failures.length > 0) {
+    log.warn({ failures }, 'Some files failed to unlink — record still marked deleted');
+  } else {
+    log.info('Delete job complete');
+  }
+
+  // Callback to M4 reports outcome so non-ENOENT failures are visible in M4
+  // logs — the original bug was that they were silently swallowed. Callback
+  // failures don't re-throw: the row is already `deleted` and BullMQ retries
+  // would only re-run unlinks on already-absent files.
+  await postSigned(`/internal/requests/${requestId}/file-deleted`, {
+    requestId,
+    failures,
+  }).catch((cbErr: unknown) => log.warn({ cbErr }, 'Failed to post file-deleted callback'));
+}
+
 async function processThumbJob(job: Job<ThumbJobData>): Promise<void> {
   const { requestId, youtubeId, filePath, durationSecs } = job.data;
   const log = logger.child({ requestId, youtubeId });
@@ -217,12 +261,28 @@ async function start(): Promise<void> {
     logger.warn({ jobId: job?.id, requestId: job?.data.requestId, err }, 'Thumb upgrade failed');
   });
 
+  // Delete worker: concurrency 1 — unlinks are cheap but serial keeps log lines
+  // and callbacks ordered for any single request that's deleted then recreated.
+  const deleteWorker = new Worker<DeleteJobData>('deletes', processDeleteJob, {
+    connection: redis,
+    concurrency: 1,
+  });
+
+  deleteWorker.on('completed', (job) => {
+    logger.info({ jobId: job.id, requestId: job.data.requestId }, 'Delete job completed');
+  });
+
+  deleteWorker.on('failed', (job, err) => {
+    logger.warn({ jobId: job?.id, requestId: job?.data.requestId, err }, 'Delete job failed');
+  });
+
   logger.info('Download worker running');
 
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'Shutting down worker');
     await worker.close();
     await thumbsWorker.close();
+    await deleteWorker.close();
     await closeQueues();
     process.exit(0);
   };
