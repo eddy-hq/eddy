@@ -15,10 +15,13 @@ export {
   markDismissed,
   markCancelled,
   markSoftDeleted,
+  markDownloaded,
+  markRejected,
+  markGuardBlocked,
   CANCELLED_REASON,
   displayRejectionReason,
 } from './state';
-export type { Status, TransitionResult } from './state';
+export type { Status, TransitionResult, DownloadedFields } from './state';
 
 export const requestsRouter = Router();
 
