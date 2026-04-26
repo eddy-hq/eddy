@@ -344,11 +344,12 @@ export async function retry(id: string): Promise<TransitionResult> {
   return { transitioned: true, userId: updated.user_id };
 }
 
-// Per-source constructors below. Each one INSERTs the row and enqueues the
-// download job together so creation and enqueue can never diverge — callers
-// pass only intrinsic fields, source-specific defaults (`source`, `decided_by`,
-// `file_state`) live here. If `downloadQueue.add` throws, the row stays in
-// `downloading` and the watchdog will pick it up — matching today's behaviour.
+// Per-source constructors below. Each one INSERTs the row and attempts to
+// enqueue the download job together — callers can't create a row without also
+// attempting to enqueue. Source-specific defaults (`source`, `decided_by`,
+// `file_state`) live here so callers pass only intrinsic fields. If
+// `downloadQueue.add` throws, the row stays in `downloading` and the watchdog
+// will pick it up — matching today's behaviour.
 
 export interface CreateFromShareSheetInput {
   url: string;
