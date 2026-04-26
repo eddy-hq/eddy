@@ -30,13 +30,13 @@ vi.mock('../notifications', () => ({
 
 import { db } from '../../db/client';
 import { runMigrations } from '../../db/migrate';
-import { markWatched } from './state';
+import { markWatched, type Status } from './state';
 
 const USER_ID = '11111111-1111-7111-8111-111111111111';
 
 function insertRequest(opts: {
   request_id: string;
-  status: string;
+  status: Status;
   watched_at?: string | null;
 }): void {
   const now = new Date().toISOString();

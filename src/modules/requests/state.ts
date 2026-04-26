@@ -9,9 +9,12 @@ export type Status =
   | 'dismissed'
   | 'deleted';
 
+// currentStatus is `string` (not `Status`) because the DB can hold statuses
+// outside this module's machine-recognized set (e.g. `pending`, `guard_review`)
+// until later slices broaden the union.
 export type TransitionResult =
   | { transitioned: true; userId: string }
-  | { transitioned: false; currentStatus: Status | null };
+  | { transitioned: false; currentStatus: string | null };
 
 // Allow-list: source status → permitted destination statuses.
 // Subsequent slices fill in entries as they migrate transitions into this module.
@@ -46,6 +49,6 @@ export function markWatched(id: string): TransitionResult {
 
   const row = db
     .prepare(`SELECT status FROM requests WHERE request_id = ?`)
-    .get(id) as { status: Status } | undefined;
+    .get(id) as { status: string } | undefined;
   return { transitioned: false, currentStatus: row?.status ?? null };
 }
