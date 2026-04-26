@@ -107,16 +107,24 @@ export function markDismissed(id: string): TransitionResult {
 }
 
 // Best-effort: a missing or unlinkable file must not roll back the soft-delete.
+// All five paths are attempted independently — the .mp4 being already-gone
+// (or unlinkable) does not prevent sidecar cleanup, and vice versa. ENOENT is
+// silent (file already absent — that's the goal); any other code is warn-logged.
 async function unlinkVideoAndSidecars(filePath: string, requestId: string): Promise<void> {
-  try {
-    await fs.promises.unlink(filePath);
-    const base = filePath.replace(/\.[^.]+$/, '');
-    for (const ext of ['.en.vtt', '.en.srt', '.vtt', '.srt']) {
-      await fs.promises.unlink(base + ext).catch(() => { /* sidecar may not exist */ });
-    }
-    logger.info({ requestId }, 'Video file deleted');
-  } catch (err) {
-    logger.warn({ err, requestId }, 'Could not delete video file — record still marked deleted');
+  const base = filePath.replace(/\.[^.]+$/, '');
+  const paths = [filePath, `${base}.en.vtt`, `${base}.en.srt`, `${base}.vtt`, `${base}.srt`];
+
+  const results = await Promise.allSettled(paths.map((p) => fs.promises.unlink(p)));
+
+  const failures = results.flatMap((r, i) => {
+    if (r.status !== 'rejected') return [];
+    const err = r.reason as NodeJS.ErrnoException;
+    if (err.code === 'ENOENT') return [];
+    return [{ path: paths[i], code: err.code ?? 'UNKNOWN' }];
+  });
+
+  if (failures.length > 0) {
+    logger.warn({ requestId, failures }, 'Some files failed to unlink — record still marked deleted');
   }
 }
 

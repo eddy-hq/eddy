@@ -48,6 +48,7 @@ vi.mock('../notifications', () => ({
 }));
 
 import { db } from '../../db/client';
+import { logger } from '../../logger';
 import { runMigrations } from '../../db/migrate';
 import {
   markWatched,
@@ -96,6 +97,8 @@ beforeEach(() => {
   redisDelMock.mockClear();
   unlinkMock.mockReset();
   unlinkMock.mockResolvedValue(undefined);
+  vi.mocked(logger.info).mockClear();
+  vi.mocked(logger.warn).mockClear();
 });
 
 describe('markWatched', () => {
@@ -294,20 +297,52 @@ describe('markSoftDeleted', () => {
     expect(unlinkMock).not.toHaveBeenCalled();
   });
 
-  it('does not throw when the video file unlink fails — row stays deleted', async () => {
+  it('attempts all five unlinks even when the main video unlink fails (ENOENT) and emits no warn', async () => {
     insertRequest({ request_id: 'req-s5', status: 'ready', file_path: FILE_PATH });
     unlinkMock.mockRejectedValue(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
 
     const result = markSoftDeleted('req-s5');
 
     expect(result).toEqual({ transitioned: true, userId: USER_ID });
-    // Allow the rejected unlink to settle; assertion is that nothing throws.
     await new Promise((resolve) => setImmediate(resolve));
+
+    // All five paths attempted independently — main video failing does not
+    // short-circuit sidecar cleanup.
+    expect(unlinkMock).toHaveBeenCalledWith(FILE_PATH);
+    expect(unlinkMock).toHaveBeenCalledWith('/videos/abc123.en.vtt');
+    expect(unlinkMock).toHaveBeenCalledWith('/videos/abc123.en.srt');
+    expect(unlinkMock).toHaveBeenCalledWith('/videos/abc123.vtt');
+    expect(unlinkMock).toHaveBeenCalledWith('/videos/abc123.srt');
+    expect(unlinkMock).toHaveBeenCalledTimes(5);
+
+    // ENOENT is silent — file already absent is the goal.
+    expect(vi.mocked(logger.warn)).not.toHaveBeenCalled();
 
     const row = db
       .prepare('SELECT status, file_state FROM requests WHERE request_id = ?')
       .get('req-s5') as { status: string; file_state: string };
     expect(row.status).toBe('deleted');
     expect(row.file_state).toBe('gone');
+  });
+
+  it('warn-logs non-ENOENT unlink failures with structured failure list', async () => {
+    insertRequest({ request_id: 'req-s6', status: 'ready', file_path: FILE_PATH });
+    unlinkMock.mockImplementation((p: string) => {
+      if (p === FILE_PATH) return Promise.reject(Object.assign(new Error('EACCES'), { code: 'EACCES' }));
+      if (p === '/videos/abc123.en.vtt') return Promise.reject(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
+      return Promise.resolve(undefined);
+    });
+
+    const result = markSoftDeleted('req-s6');
+    expect(result).toEqual({ transitioned: true, userId: USER_ID });
+
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(vi.mocked(logger.warn)).toHaveBeenCalledTimes(1);
+    const [meta] = vi.mocked(logger.warn).mock.calls[0]!;
+    expect(meta).toMatchObject({
+      requestId: 'req-s6',
+      failures: [{ path: FILE_PATH, code: 'EACCES' }],
+    });
   });
 });
