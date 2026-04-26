@@ -70,6 +70,24 @@ internalRouter.post('/requests/:id/rejected', verifySignedJson<{ requestId: stri
   res.status(204).end();
 }));
 
+// POST /internal/requests/:id/file-deleted — called by Ubuntu worker after the
+// soft-delete unlink. Surfaces non-ENOENT failures on the M4 (the M4 used to
+// run the unlink itself against an Ubuntu-only path; every call returned ENOENT
+// and looked like success). DB row is already `deleted` — this is purely
+// observability; nothing here writes back to SQLite.
+interface FileDeletedPayload {
+  requestId: string;
+  failures: Array<{ path: string; code: string }>;
+}
+internalRouter.post('/requests/:id/file-deleted', verifySignedJson<FileDeletedPayload>((_req, res, payload) => {
+  if (payload.failures.length > 0) {
+    logger.warn({ requestId: payload.requestId, failures: payload.failures }, 'Worker reported file-delete failures');
+  } else {
+    logger.info({ requestId: payload.requestId }, 'Worker confirmed file delete');
+  }
+  res.status(204).end();
+}));
+
 // GET /internal/health/queue — queue stats + stuck downloads (no auth — internal network only)
 internalRouter.get('/health/queue', async (_req: Request, res: Response) => {
   const cutoff = new Date(Date.now() - 2 * 60 * 1000).toISOString();

@@ -1,10 +1,17 @@
-import fs from 'fs';
 import { v7 as uuidv7 } from 'uuid';
 import { db } from '../../db/client';
 import { logger } from '../../logger';
 import { sendVideoReady } from '../notifications';
-import { downloadQueue, redis } from '../../queue';
+import { downloadQueue, deleteQueue, redis } from '../../queue';
 import type { DownloadJobData } from '../content';
+
+// Shared job data for the delete queue. The worker uses filePath to unlink the
+// .mp4 + sidecars; requestId is carried so the callback can report which row
+// the unlink corresponds to.
+export interface DeleteJobData {
+  requestId: string;
+  filePath: string;
+}
 
 export type Status =
   | 'pending'
@@ -109,28 +116,6 @@ export function markDismissed(id: string): TransitionResult {
   return { transitioned: false, currentStatus: readStatus(id) };
 }
 
-// Best-effort: a missing or unlinkable file must not roll back the soft-delete.
-// All five paths are attempted independently — the .mp4 being already-gone
-// (or unlinkable) does not prevent sidecar cleanup, and vice versa. ENOENT is
-// silent (file already absent — that's the goal); any other code is warn-logged.
-async function unlinkVideoAndSidecars(filePath: string, requestId: string): Promise<void> {
-  const base = filePath.replace(/\.[^.]+$/, '');
-  const paths = [filePath, `${base}.en.vtt`, `${base}.en.srt`, `${base}.vtt`, `${base}.srt`];
-
-  const results = await Promise.allSettled(paths.map((p) => fs.promises.unlink(p)));
-
-  const failures = results.flatMap((r, i) => {
-    if (r.status !== 'rejected') return [];
-    const err = r.reason as NodeJS.ErrnoException;
-    if (err.code === 'ENOENT') return [];
-    return [{ path: paths[i], code: err.code ?? 'UNKNOWN' }];
-  });
-
-  if (failures.length > 0) {
-    logger.warn({ requestId, failures }, 'Some files failed to unlink — record still marked deleted');
-  }
-}
-
 export function markSoftDeleted(id: string): TransitionResult {
   const sources = legalSourcesFor('deleted');
   const placeholders = sources.map(() => '?').join(', ');
@@ -146,11 +131,16 @@ export function markSoftDeleted(id: string): TransitionResult {
 
   if (!updated) return { transitioned: false, currentStatus: readStatus(id) };
 
-  // Side-effects fire only after a real transition. Filesystem failures are
-  // logged-warned, not thrown — the row stays `deleted` even if the file is
-  // already gone or unlinkable.
+  // The video files live on the Ubuntu worker, not the M4 — so the unlink is
+  // delegated via the delete queue. Best-effort: an enqueue failure is
+  // logged-warned, not thrown. The row stays `deleted` regardless; an orphaned
+  // file is a recoverable nuisance, but rolling back the user's delete intent
+  // would be worse.
   if (updated.file_path) {
-    void unlinkVideoAndSidecars(updated.file_path, id);
+    const jobData: DeleteJobData = { requestId: id, filePath: updated.file_path };
+    void deleteQueue
+      .add('delete', jobData, { jobId: `delete:${id}` })
+      .catch((err) => logger.warn({ err, requestId: id }, 'markSoftDeleted: failed to enqueue delete job'));
   }
 
   return { transitioned: true, userId: updated.user_id };
