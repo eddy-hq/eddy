@@ -7,7 +7,6 @@ import { logger } from '../../logger';
 
 const execFileAsync = promisify(execFile);
 
-const YTDLP_BIN = process.env['YTDLP_BIN'] ?? 'yt-dlp';
 // Node binary for yt-dlp JS challenge solving (signature/n-challenge).
 // Falls back to 'node' if not explicitly set — systemd PATH includes nvm bin dir.
 const NODE_BIN = process.env['NODE_BIN'] ?? 'node';
@@ -65,7 +64,7 @@ export function mapYtdlpError(stderr: string): string | null {
 }
 
 export async function fetchMetadata(url: string): Promise<VideoMetadata> {
-  const { stdout, stderr } = await execFileAsync(YTDLP_BIN, [
+  const { stdout, stderr } = await execFileAsync(config.YTDLP_BIN, [
     ...baseArgs(),
     '--dump-json',
     '--no-playlist',
@@ -174,7 +173,7 @@ export async function downloadVideo(
       url,
     ];
 
-    const proc = spawn(YTDLP_BIN, args);
+    const proc = spawn(config.YTDLP_BIN, args);
     const stderrChunks: Buffer[] = [];
 
     proc.stdout.on('data', (chunk: Buffer) => {

@@ -1,13 +1,9 @@
-import { execFile } from 'child_process';
-import { promisify } from 'util';
 import { Router, Request, Response } from 'express';
 import { db } from '../../db/client';
 import { logger } from '../../logger';
 import { ValidationError } from '../../errors';
 import { resolveUserByIdOrName } from '../users';
-
-const execFileAsync = promisify(execFile);
-const YTDLP_BIN_M4 = process.env['YTDLP_BIN_M4'] ?? '/opt/homebrew/bin/yt-dlp';
+import { searchVideosFlat, type SearchVideoFlat } from '../../ytdlp';
 
 export const searchRouter = Router();
 
@@ -52,44 +48,16 @@ searchRouter.get('/videos', async (req: Request, res: Response) => {
 
   const uid = resolveUserByIdOrName(userId ?? user).user_id;
 
-  let stdout = '';
+  let videos: SearchVideoFlat[] = [];
   let searchError = false;
   try {
-    ({ stdout } = await execFileAsync(YTDLP_BIN_M4, [
-      `ytsearch10:${q.trim()}`,
-      '--flat-playlist', '--dump-json', '--no-download', '--quiet',
-    ], { maxBuffer: 5 * 1024 * 1024, timeout: 20_000 }));
+    videos = await searchVideosFlat(q.trim());
   } catch (err) {
-    logger.error({ err, ytdlpBin: YTDLP_BIN_M4 }, 'Video search failed');
+    logger.error({ err }, 'Video search failed');
     searchError = true;
   }
 
-  const videoIds: string[] = [];
-  const videos: Array<{
-    videoId: string; title: string; channel: string; channelId: string;
-    durationSecs: number | null; thumbnailUrl: string | null; url: string;
-  }> = [];
-
-  for (const line of stdout.split('\n')) {
-    if (!line.trim()) continue;
-    try {
-      const item = JSON.parse(line) as Record<string, unknown>;
-      const videoId = item['id'] as string | undefined;
-      if (!videoId) continue;
-      videoIds.push(videoId);
-      const thumbs = (item['thumbnails'] as Array<{ url: string; height?: number }> | undefined) ?? [];
-      const thumb = thumbs.find((t) => t.height && t.height >= 180) ?? thumbs[0];
-      videos.push({
-        videoId,
-        title:       String(item['title'] ?? ''),
-        channel:     String(item['channel'] ?? item['uploader'] ?? ''),
-        channelId:   String(item['channel_id'] ?? ''),
-        durationSecs: typeof item['duration'] === 'number' ? item['duration'] : null,
-        thumbnailUrl: thumb?.url ?? null,
-        url: `https://www.youtube.com/watch?v=${videoId}`,
-      });
-    } catch { /* skip malformed */ }
-  }
+  const videoIds = videos.map((v) => v.videoId);
 
   // Mark videos already in this user's library
   const inLibrary = new Set<string>();

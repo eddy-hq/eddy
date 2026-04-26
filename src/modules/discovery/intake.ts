@@ -1,13 +1,9 @@
-import { execFile } from 'child_process';
-import { promisify } from 'util';
 import { v7 as uuidv7 } from 'uuid';
 import { db } from '../../db/client';
 import { logger } from '../../logger';
 import { SHORTS_MAX_SECS } from '../content';
+import { searchVideosWithDates, flatPlaylistChannel } from '../../ytdlp';
 import { daysSince, uploadDateToIso } from './util';
-
-const execFileAsync = promisify(execFile);
-const YTDLP_BIN_M4 = process.env['YTDLP_BIN_M4'] ?? '/opt/homebrew/bin/yt-dlp';
 
 export interface UserInterestRow {
   interest_id: string;
@@ -17,71 +13,11 @@ export interface UserInterestRow {
   search_terms: string;
 }
 
-interface SearchResult {
-  videoId: string;
-  title: string;
-  channel: string;
-  durationSecs: number | null;
-  viewCount: number | null;
-  uploadDate: string | null;
-  thumbnailUrl: string | null;
-  liveStatus: string | null;
-  url: string;
-}
-
 // Freshness window at intake. Older content is dropped before it ever
 // reaches scoring. Set generous so the pool has volume — surfacing applies
 // a per-day decay (1.6× for <24h down to 0.4× for >90 days) so fresh wins
 // on ranking even when older items are present.
 const FRESHNESS_WINDOW_DAYS = 180;
-
-async function searchInterestVideos(searchTerm: string): Promise<SearchResult[]> {
-  // --print with a field template gives us upload_date (which --flat-playlist
-  // never returns) without dragging in all the format metadata that full
-  // extraction normally produces. Slower than flat-playlist but freshness
-  // ranking depends on real dates.
-  let stdout: string;
-  try {
-    const result = await execFileAsync(YTDLP_BIN_M4, [
-      `ytsearch20:${searchTerm}`,
-      '--print',
-      '%(.{id,title,channel,duration,view_count,upload_date,timestamp,thumbnail,live_status})j',
-      '--no-download',
-      '--quiet',
-      '--no-warnings',
-    ], { maxBuffer: 10 * 1024 * 1024, timeout: 90_000 });
-    stdout = result.stdout;
-  } catch (err) {
-    logger.warn({ err, searchTerm }, 'Discovery: yt-dlp search failed');
-    return [];
-  }
-
-  const results: SearchResult[] = [];
-  for (const line of stdout.split('\n')) {
-    if (!line.trim()) continue;
-    try {
-      const item = JSON.parse(line) as Record<string, unknown>;
-      const videoId = item['id'] as string | undefined;
-      if (!videoId) continue;
-
-      results.push({
-        videoId,
-        title: String(item['title'] ?? ''),
-        channel: String(item['channel'] ?? ''),
-        durationSecs: typeof item['duration'] === 'number' ? item['duration'] : null,
-        viewCount: typeof item['view_count'] === 'number' ? item['view_count'] : null,
-        uploadDate: typeof item['upload_date'] === 'string' ? item['upload_date'] : null,
-        thumbnailUrl: typeof item['thumbnail'] === 'string' ? item['thumbnail'] : null,
-        liveStatus: typeof item['live_status'] === 'string' ? item['live_status'] : null,
-        url: `https://www.youtube.com/watch?v=${videoId}`,
-      });
-    } catch {
-      // skip malformed lines
-    }
-  }
-
-  return results;
-}
 
 function isDuplicateCandidate(userId: string, videoId: string): boolean {
   const inPool = db.prepare(
@@ -116,7 +52,13 @@ export async function refreshCandidatePool(userId: string, userInterests: UserIn
     const termCount = interest.rank <= 3 ? 2 : 1;
 
     for (const term of terms.slice(0, termCount)) {
-      const results = await searchInterestVideos(term);
+      let results;
+      try {
+        results = await searchVideosWithDates(term);
+      } catch (err) {
+        logger.warn({ err, searchTerm: term }, 'Discovery: yt-dlp search failed');
+        continue;
+      }
 
       for (const result of results) {
         if (isDuplicateCandidate(userId, result.videoId)) continue;
@@ -171,52 +113,8 @@ interface FollowedYoutubeOutput {
   display_name: string;
 }
 
-interface PlaylistEntry {
-  videoId: string;
-  title: string;
-  durationSecs: number | null;
-  liveStatus: string | null;
-}
-
 const PER_CHANNEL_BACKCATALOG_BUDGET = 3;
 const MAX_BACKCATALOG_PER_USER = 20;
-
-async function fetchChannelPlaylist(channelId: string): Promise<PlaylistEntry[]> {
-  let stdout: string;
-  try {
-    const result = await execFileAsync(YTDLP_BIN_M4, [
-      `https://www.youtube.com/channel/${channelId}/videos`,
-      '--flat-playlist',
-      '--print', '%(.{id,title,duration,live_status})j',
-      '--no-download',
-      '--quiet',
-      '--no-warnings',
-    ], { maxBuffer: 50 * 1024 * 1024, timeout: 60_000 });
-    stdout = result.stdout;
-  } catch (err) {
-    logger.warn({ err, channelId }, 'Back-catalog: flat-playlist fetch failed');
-    return [];
-  }
-
-  const entries: PlaylistEntry[] = [];
-  for (const line of stdout.split('\n')) {
-    if (!line.trim()) continue;
-    try {
-      const item = JSON.parse(line) as Record<string, unknown>;
-      const videoId = item['id'] as string | undefined;
-      if (!videoId) continue;
-      entries.push({
-        videoId,
-        title: String(item['title'] ?? ''),
-        durationSecs: typeof item['duration'] === 'number' ? item['duration'] : null,
-        liveStatus: typeof item['live_status'] === 'string' ? item['live_status'] : null,
-      });
-    } catch {
-      // skip malformed lines
-    }
-  }
-  return entries;
-}
 
 function shuffleInPlace<T>(arr: T[]): T[] {
   for (let i = arr.length - 1; i > 0; i--) {
@@ -247,7 +145,13 @@ export async function seedBackCatalogCandidates(userId: string): Promise<number>
   for (const output of followed) {
     if (totalAdded >= MAX_BACKCATALOG_PER_USER) break;
 
-    const playlist = await fetchChannelPlaylist(output.channel_id);
+    let playlist;
+    try {
+      playlist = await flatPlaylistChannel(output.channel_id);
+    } catch (err) {
+      logger.warn({ err, channelId: output.channel_id }, 'Back-catalog: flat-playlist fetch failed');
+      continue;
+    }
     if (playlist.length === 0) continue;
 
     const seenIds = new Set(

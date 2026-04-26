@@ -13,7 +13,7 @@ import { Worker, Job } from 'bullmq';
 import { redis, closeQueues, thumbsQueue } from '../queue';
 import { config } from '../config';
 import { logger } from '../logger';
-import { fetchMetadata, downloadVideo } from '../modules/content/ytdlp';
+import { fetchMetadata, downloadVideo } from '../modules/content/download';
 import { triggerPlexScan } from '../modules/content/plex';
 import { postSigned } from '../signed-channel';
 import { generateThumbnail } from './thumb';

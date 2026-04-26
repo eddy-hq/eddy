@@ -1,5 +1,3 @@
-import { execFile } from 'child_process';
-import { promisify } from 'util';
 import { Router, Request, Response, NextFunction } from 'express';
 import { v7 as uuidv7 } from 'uuid';
 import { db } from '../../db/client';
@@ -9,55 +7,9 @@ import { downloadQueue } from '../../queue';
 import { SHORTS_MAX_SECS, type DownloadJobData } from '../content';
 import { inferChannelInterests } from '../interests';
 import { resolveUserById } from '../users';
+import { searchChannelsFlat, videoDuration, type SearchChannel } from '../../ytdlp';
 
-const execFileAsync = promisify(execFile);
-
-// YTDLP_BIN points to the Ubuntu worker path; M4 channel search needs a separate var.
-// Default to the Homebrew path which is where yt-dlp lives on the M4.
-const YTDLP_BIN_M4 = process.env['YTDLP_BIN_M4'] ?? '/opt/homebrew/bin/yt-dlp';
 const RSS_POLL_INTERVAL_MS = 6 * 60 * 60 * 1000;
-
-// ── Channel search ────────────────────────────────────────────────────────────
-
-export interface ChannelResult {
-  channelId: string;
-  channelName: string;
-  channelUrl: string;
-}
-
-export async function searchYoutubeChannels(query: string): Promise<ChannelResult[]> {
-  // Search doesn't need the mweb/PO-token/remote-components stack — that's for video downloads.
-  // Plain yt-dlp ytsearch works without auth for metadata-only queries.
-  const { stdout } = await execFileAsync(YTDLP_BIN_M4, [
-    `ytsearch10:${query}`,
-    '--flat-playlist',
-    '--dump-json',
-    '--no-download',
-    '--quiet',
-  ], { maxBuffer: 5 * 1024 * 1024, timeout: 20_000 });
-
-  const seen = new Set<string>();
-  const results: ChannelResult[] = [];
-
-  for (const line of stdout.split('\n')) {
-    if (!line.trim()) continue;
-    try {
-      const item = JSON.parse(line) as Record<string, unknown>;
-      const channelId = item['channel_id'] as string | undefined;
-      if (!channelId || seen.has(channelId)) continue;
-      seen.add(channelId);
-      results.push({
-        channelId,
-        channelName: String(item['channel'] ?? item['uploader'] ?? ''),
-        channelUrl: String(item['uploader_url'] ?? `https://www.youtube.com/channel/${channelId}`),
-      });
-    } catch {
-      // skip malformed lines
-    }
-  }
-
-  return results;
-}
 
 // ── RSS parsing ───────────────────────────────────────────────────────────────
 
@@ -114,13 +66,7 @@ function parseYoutubeRss(xml: string): { channelName: string; videos: RssVideo[]
 // followed creator's video because metadata flaked.
 async function fetchVideoDuration(videoId: string): Promise<number | null> {
   try {
-    const { stdout } = await execFileAsync(YTDLP_BIN_M4, [
-      `https://www.youtube.com/watch?v=${videoId}`,
-      '--print', '%(duration)s',
-      '--no-download', '--quiet', '--no-warnings',
-    ], { maxBuffer: 1024 * 1024, timeout: 15_000 });
-    const n = Number(stdout.trim());
-    return Number.isFinite(n) && n > 0 ? n : null;
+    return await videoDuration(videoId);
   } catch {
     return null;
   }
@@ -296,12 +242,12 @@ peopleRouter.get('/search', ra(async (req, res) => {
   if (!q?.trim()) throw new ValidationError('q required');
   const uid = resolveUserById(userId).user_id;
 
-  let channels: ChannelResult[];
+  let channels: SearchChannel[];
   let searchError = false;
   try {
-    channels = await searchYoutubeChannels(q.trim());
+    channels = await searchChannelsFlat(q.trim());
   } catch (err) {
-    logger.error({ err, ytdlpBin: YTDLP_BIN_M4 }, 'Channel search failed');
+    logger.error({ err }, 'Channel search failed');
     channels = [];
     searchError = true;
   }
