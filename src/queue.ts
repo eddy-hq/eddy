@@ -59,13 +59,16 @@ export const thumbsQueue = new Queue('thumbs', {
   },
 });
 
-// Delete queue — symmetric with downloads. The M4 enqueues; the Ubuntu worker
-// owns the unlink because the video files only exist on the worker's disk.
+// Delete queue — best-effort. The M4 enqueues; the Ubuntu worker owns the
+// unlink because the video files only exist on the worker's disk.
+// `attempts: 1` matches the worker semantics: it never throws (it collects
+// failures and reports them via the file-deleted callback), so retries would
+// only re-run unlinks against now-absent files. Real failure is observed via
+// the M4 logger.warn from the callback handler, not via BullMQ retries.
 export const deleteQueue = new Queue('deletes', {
   connection: redis,
   defaultJobOptions: {
-    attempts: 3,
-    backoff: { type: 'exponential', delay: 10_000 },
+    attempts: 1,
     removeOnComplete: { count: 100 },
     removeOnFail: { count: 200 },
   },

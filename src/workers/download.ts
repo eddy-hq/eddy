@@ -261,8 +261,6 @@ async function start(): Promise<void> {
     logger.warn({ jobId: job?.id, requestId: job?.data.requestId, err }, 'Thumb upgrade failed');
   });
 
-  // Delete worker: concurrency 1 — unlinks are cheap but serial keeps log lines
-  // and callbacks ordered for any single request that's deleted then recreated.
   const deleteWorker = new Worker<DeleteJobData>('deletes', processDeleteJob, {
     connection: redis,
     concurrency: 1,
