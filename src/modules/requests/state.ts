@@ -45,6 +45,19 @@ function legalSourcesFor(target: Status): Status[] {
   return (Object.keys(LEGAL) as Status[]).filter((s) => LEGAL[s].includes(target));
 }
 
+// Cancel is bound to user intent and must stay independent of other transitions
+// that may also write `rejected` (e.g. guard verdicts). Declared explicitly
+// rather than derived from LEGAL so a future non-cancel rejection path can't
+// silently broaden cancel eligibility — or, worse, overwrite a guard-set
+// rejection_reason with the cancel sentinel.
+const CANCELLABLE_FROM: Status[] = [
+  'pending',
+  'downloading',
+  'guard_review',
+  'parent_review',
+  'approved',
+];
+
 function readStatus(id: string): string | null {
   const row = db.prepare(`SELECT status FROM requests WHERE request_id = ?`).get(id) as
     | { status: string }
@@ -93,8 +106,7 @@ export function markDismissed(id: string): TransitionResult {
 }
 
 export function markCancelled(id: string): TransitionResult {
-  const sources = legalSourcesFor('rejected');
-  const placeholders = sources.map(() => '?').join(', ');
+  const placeholders = CANCELLABLE_FROM.map(() => '?').join(', ');
 
   const updated = db
     .prepare(
@@ -102,7 +114,7 @@ export function markCancelled(id: string): TransitionResult {
        WHERE request_id = ? AND status IN (${placeholders})
        RETURNING user_id`,
     )
-    .get(CANCELLED_REASON, id, ...sources) as { user_id: string } | undefined;
+    .get(CANCELLED_REASON, id, ...CANCELLABLE_FROM) as { user_id: string } | undefined;
 
   if (!updated) return { transitioned: false, currentStatus: readStatus(id) };
 
