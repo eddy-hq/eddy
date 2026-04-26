@@ -50,12 +50,17 @@ vi.mock('../notifications', () => ({
 import { db } from '../../db/client';
 import { logger } from '../../logger';
 import { runMigrations } from '../../db/migrate';
+import { sendVideoReady } from '../notifications';
 import {
   markWatched,
   markDismissed,
   markCancelled,
   markSoftDeleted,
+  markDownloaded,
+  markRejected,
+  markGuardBlocked,
   CANCELLED_REASON,
+  type DownloadedFields,
   type Status,
 } from './state';
 
@@ -99,6 +104,7 @@ beforeEach(() => {
   unlinkMock.mockResolvedValue(undefined);
   vi.mocked(logger.info).mockClear();
   vi.mocked(logger.warn).mockClear();
+  vi.mocked(sendVideoReady).mockClear();
 });
 
 describe('markWatched', () => {
@@ -344,5 +350,152 @@ describe('markSoftDeleted', () => {
       requestId: 'req-s6',
       failures: [{ path: FILE_PATH, code: 'EACCES' }],
     });
+  });
+});
+
+describe('markDownloaded', () => {
+  const FIELDS: DownloadedFields = {
+    title: 'A grand title',
+    channel: 'Channel One',
+    description: 'A description',
+    durationSecs: 123,
+    transcript: 'transcript text',
+    filePath: '/videos/abc123.mp4',
+    nginxUrl: 'https://m4.local/videos/abc123.mp4',
+    thumbnailUrl: 'https://m4.local/videos/abc123.jpg',
+  };
+
+  it('transitions downloading → ready, writes all fields, and fires sendVideoReady', () => {
+    insertRequest({ request_id: 'req-dl1', status: 'downloading' });
+    const before = Date.now();
+
+    const result = markDownloaded('req-dl1', FIELDS);
+
+    expect(result).toEqual({ transitioned: true, userId: USER_ID });
+    const row = db
+      .prepare(
+        `SELECT status, title, channel, description, duration_secs, transcript,
+                file_path, nginx_url, thumbnail_url, downloaded_at
+         FROM requests WHERE request_id = ?`,
+      )
+      .get('req-dl1') as {
+        status: string; title: string; channel: string; description: string;
+        duration_secs: number; transcript: string; file_path: string;
+        nginx_url: string; thumbnail_url: string; downloaded_at: string;
+      };
+    expect(row.status).toBe('ready');
+    expect(row.title).toBe(FIELDS.title);
+    expect(row.channel).toBe(FIELDS.channel);
+    expect(row.description).toBe(FIELDS.description);
+    expect(row.duration_secs).toBe(FIELDS.durationSecs);
+    expect(row.transcript).toBe(FIELDS.transcript);
+    expect(row.file_path).toBe(FIELDS.filePath);
+    expect(row.nginx_url).toBe(FIELDS.nginxUrl);
+    expect(row.thumbnail_url).toBe(FIELDS.thumbnailUrl);
+    expect(new Date(row.downloaded_at).getTime()).toBeGreaterThanOrEqual(before);
+
+    expect(vi.mocked(sendVideoReady)).toHaveBeenCalledWith(USER_ID, 'req-dl1', FIELDS.title);
+  });
+
+  it('is a no-op on an already-rejected row and does not fire the notification', () => {
+    insertRequest({ request_id: 'req-dl2', status: 'rejected' });
+
+    const result = markDownloaded('req-dl2', FIELDS);
+
+    expect(result).toEqual({ transitioned: false, currentStatus: 'rejected' });
+    const row = db
+      .prepare('SELECT status, title FROM requests WHERE request_id = ?')
+      .get('req-dl2') as { status: string; title: string | null };
+    expect(row.status).toBe('rejected');
+    expect(row.title).toBeNull();
+    expect(vi.mocked(sendVideoReady)).not.toHaveBeenCalled();
+  });
+
+  it('is a no-op on an already-ready row and does not re-fire the notification', () => {
+    insertRequest({ request_id: 'req-dl3', status: 'ready' });
+
+    const result = markDownloaded('req-dl3', FIELDS);
+
+    expect(result).toEqual({ transitioned: false, currentStatus: 'ready' });
+    expect(vi.mocked(sendVideoReady)).not.toHaveBeenCalled();
+  });
+
+  it('returns currentStatus: null for an unknown id and does not fire the notification', () => {
+    const result = markDownloaded('does-not-exist', FIELDS);
+
+    expect(result).toEqual({ transitioned: false, currentStatus: null });
+    expect(vi.mocked(sendVideoReady)).not.toHaveBeenCalled();
+  });
+});
+
+describe('markRejected', () => {
+  it('transitions downloading → rejected and writes the reason', () => {
+    insertRequest({ request_id: 'req-rj1', status: 'downloading' });
+
+    const result = markRejected('req-rj1', 'yt-dlp 403');
+
+    expect(result).toEqual({ transitioned: true, userId: USER_ID });
+    const row = db
+      .prepare('SELECT status, rejection_reason FROM requests WHERE request_id = ?')
+      .get('req-rj1') as { status: string; rejection_reason: string };
+    expect(row.status).toBe('rejected');
+    expect(row.rejection_reason).toBe('yt-dlp 403');
+  });
+
+  it('is a no-op on an already-rejected row and does not overwrite the reason', () => {
+    insertRequest({ request_id: 'req-rj2', status: 'rejected' });
+    db.prepare('UPDATE requests SET rejection_reason = ? WHERE request_id = ?')
+      .run('original reason', 'req-rj2');
+
+    const result = markRejected('req-rj2', 'new reason');
+
+    expect(result).toEqual({ transitioned: false, currentStatus: 'rejected' });
+    const row = db
+      .prepare('SELECT rejection_reason FROM requests WHERE request_id = ?')
+      .get('req-rj2') as { rejection_reason: string };
+    expect(row.rejection_reason).toBe('original reason');
+  });
+
+  it('is a no-op on a non-downloading source (e.g. ready)', () => {
+    insertRequest({ request_id: 'req-rj3', status: 'ready' });
+
+    const result = markRejected('req-rj3', 'too late');
+
+    expect(result).toEqual({ transitioned: false, currentStatus: 'ready' });
+  });
+
+  it('returns currentStatus: null for an unknown id', () => {
+    const result = markRejected('does-not-exist', 'reason');
+
+    expect(result).toEqual({ transitioned: false, currentStatus: null });
+  });
+});
+
+describe('markGuardBlocked', () => {
+  it('transitions downloading → rejected with reason — same SQL as markRejected', () => {
+    insertRequest({ request_id: 'req-gb1', status: 'downloading' });
+
+    const result = markGuardBlocked('req-gb1', 'unsafe content');
+
+    expect(result).toEqual({ transitioned: true, userId: USER_ID });
+    const row = db
+      .prepare('SELECT status, rejection_reason FROM requests WHERE request_id = ?')
+      .get('req-gb1') as { status: string; rejection_reason: string };
+    expect(row.status).toBe('rejected');
+    expect(row.rejection_reason).toBe('unsafe content');
+  });
+
+  it('is a no-op on a non-downloading source', () => {
+    insertRequest({ request_id: 'req-gb2', status: 'rejected' });
+
+    const result = markGuardBlocked('req-gb2', 'unsafe content');
+
+    expect(result).toEqual({ transitioned: false, currentStatus: 'rejected' });
+  });
+
+  it('returns currentStatus: null for an unknown id', () => {
+    const result = markGuardBlocked('does-not-exist', 'unsafe');
+
+    expect(result).toEqual({ transitioned: false, currentStatus: null });
   });
 });

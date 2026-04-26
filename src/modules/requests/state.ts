@@ -1,6 +1,7 @@
 import fs from 'fs';
 import { db } from '../../db/client';
 import { logger } from '../../logger';
+import { sendVideoReady } from '../notifications';
 import { downloadQueue, redis } from '../../queue';
 
 export type Status =
@@ -30,7 +31,7 @@ export type TransitionResult =
 // Subsequent slices fill in entries as they migrate transitions into this module.
 export const LEGAL: Record<Status, Status[]> = {
   pending: ['dismissed', 'rejected'],
-  downloading: ['rejected'],
+  downloading: ['ready', 'rejected'],
   guard_review: ['rejected'],
   parent_review: ['rejected'],
   approved: ['dismissed', 'rejected'],
@@ -151,6 +152,94 @@ export function markSoftDeleted(id: string): TransitionResult {
   }
 
   return { transitioned: true, userId: updated.user_id };
+}
+
+export interface DownloadedFields {
+  title: string;
+  channel: string;
+  description: string;
+  durationSecs: number;
+  transcript: string | null;
+  filePath: string;
+  nginxUrl: string | null;
+  thumbnailUrl: string | null;
+}
+
+export function markDownloaded(id: string, fields: DownloadedFields): TransitionResult {
+  const sources = legalSourcesFor('ready');
+  const placeholders = sources.map(() => '?').join(', ');
+  const now = new Date().toISOString();
+
+  const updated = db
+    .prepare(
+      `UPDATE requests
+         SET status        = 'ready',
+             title         = ?,
+             channel       = ?,
+             description   = ?,
+             duration_secs = ?,
+             transcript    = ?,
+             file_path     = ?,
+             nginx_url     = ?,
+             thumbnail_url = ?,
+             downloaded_at = ?
+       WHERE request_id = ? AND status IN (${placeholders})
+       RETURNING user_id`,
+    )
+    .get(
+      fields.title,
+      fields.channel,
+      fields.description,
+      fields.durationSecs,
+      fields.transcript,
+      fields.filePath,
+      fields.nginxUrl,
+      fields.thumbnailUrl,
+      now,
+      id,
+      ...sources,
+    ) as { user_id: string } | undefined;
+
+  if (!updated) return { transitioned: false, currentStatus: readStatus(id) };
+
+  // Side-effect fires only after a real transition — a no-op (e.g. user
+  // cancelled mid-download) must not page the user that their video is ready.
+  void sendVideoReady(updated.user_id, id, fields.title);
+
+  return { transitioned: true, userId: updated.user_id };
+}
+
+// Worker terminal download error. Constrained to `downloading` because LEGAL's
+// `rejected` destination is reachable from many sources (guard, parent, cancel)
+// — those have their own methods and must not collapse into this one.
+export function markRejected(id: string, reason: string): TransitionResult {
+  const updated = db
+    .prepare(
+      `UPDATE requests SET status = 'rejected', rejection_reason = ?
+       WHERE request_id = ? AND status = 'downloading'
+       RETURNING user_id`,
+    )
+    .get(reason, id) as { user_id: string } | undefined;
+
+  if (updated) return { transitioned: true, userId: updated.user_id };
+  return { transitioned: false, currentStatus: readStatus(id) };
+}
+
+// Functionally identical SQL to markRejected — kept distinct so call sites
+// reading `state.markGuardBlocked(...)` vs `state.markRejected(...)` reflect
+// the actual cause. The endpoint that wraps both still funnels through one
+// route; this split is for internal callers that already know the cause.
+export function markGuardBlocked(id: string, reason: string): TransitionResult {
+  const updated = db
+    .prepare(
+      `UPDATE requests SET status = 'rejected', rejection_reason = ?
+       WHERE request_id = ? AND status = 'downloading'
+       RETURNING user_id`,
+    )
+    .get(reason, id) as { user_id: string } | undefined;
+
+  if (updated) return { transitioned: true, userId: updated.user_id };
+  return { transitioned: false, currentStatus: readStatus(id) };
 }
 
 export function markCancelled(id: string): TransitionResult {

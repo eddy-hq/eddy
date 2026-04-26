@@ -3,7 +3,7 @@ import { db } from '../../db/client';
 import { logger } from '../../logger';
 import { downloadQueue } from '../../queue';
 import { verifySignedJson } from '../../signed-channel';
-import { sendVideoReady } from '../notifications';
+import * as requests from '../requests';
 import { checkStuckDownloads } from '../watchdog';
 import { scoreForRequest, classifyThumbnail, classifyYtImage } from '../guard';
 import { ollamaGenerate } from '../../ollama';
@@ -32,50 +32,24 @@ interface DownloadedPayload {
 internalRouter.post('/videos/:youtube_id/downloaded', verifySignedJson<DownloadedPayload>((req, res, payload) => {
   const { requestId, filePath, nginxUrl, thumbnailUrl, title, channel, description, durationSecs, transcript } = payload;
 
-  const row = db.prepare(`
-    UPDATE requests
-    SET status        = 'ready',
-        title         = @title,
-        channel       = @channel,
-        description   = @description,
-        duration_secs = @duration_secs,
-        transcript    = @transcript,
-        file_path     = @file_path,
-        nginx_url     = @nginx_url,
-        thumbnail_url = @thumbnail_url,
-        downloaded_at = @downloaded_at
-    WHERE request_id = @request_id AND status = 'downloading'
-    RETURNING user_id
-  `).get({
+  requests.markDownloaded(requestId, {
     title,
     channel,
     description,
-    duration_secs: durationSecs,
+    durationSecs,
     transcript,
-    file_path: filePath,
-    nginx_url: nginxUrl,
-    thumbnail_url: thumbnailUrl,
-    downloaded_at: new Date().toISOString(),
-    request_id: requestId,
-  }) as { user_id: string } | undefined;
+    filePath,
+    nginxUrl,
+    thumbnailUrl,
+  });
 
   logger.info({ requestId, youtubeId: req.params['youtube_id'] }, 'Request marked ready');
-
-  if (row?.user_id) {
-    void sendVideoReady(row.user_id, requestId, title);
-  }
-
   res.status(204).end();
 }));
 
 // POST /internal/requests/:id/rejected — called by Ubuntu worker on terminal failure
 internalRouter.post('/requests/:id/rejected', verifySignedJson<{ requestId: string; reason: string }>((_req, res, payload) => {
-  db.prepare(`
-    UPDATE requests
-    SET status = 'rejected', rejection_reason = @reason
-    WHERE request_id = @request_id AND status = 'downloading'
-  `).run({ request_id: payload.requestId, reason: payload.reason });
-
+  requests.markRejected(payload.requestId, payload.reason);
   logger.info({ requestId: payload.requestId, reason: payload.reason }, 'Request rejected by worker');
   res.status(204).end();
 }));
