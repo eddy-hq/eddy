@@ -1,4 +1,3 @@
-import fs from 'fs';
 import { Router, Request, Response } from 'express';
 import { v7 as uuidv7 } from 'uuid';
 import { db } from '../../db/client';
@@ -15,6 +14,7 @@ export {
   markWatched,
   markDismissed,
   markCancelled,
+  markSoftDeleted,
   CANCELLED_REASON,
   displayRejectionReason,
 } from './state';
@@ -355,43 +355,18 @@ requestsRouter.delete('/:id/save', (req: Request, res: Response) => {
 });
 
 // POST /requests/:id/delete — soft-delete: marks record deleted, removes video file
-requestsRouter.post('/:id/delete', async (req: Request, res: Response) => {
-  const requestId = req.params['id'];
+requestsRouter.post('/:id/delete', (req: Request, res: Response) => {
+  const requestId = req.params['id']!;
+  const result = state.markSoftDeleted(requestId);
 
-  const row = db.prepare(
-    `SELECT status, file_path, youtube_id, user_id FROM requests WHERE request_id = ?`
-  ).get(requestId) as {
-    status: string;
-    file_path: string | null;
-    youtube_id: string | null;
-    user_id: string;
-  } | undefined;
-
-  if (!row) throw new NotFoundError('request');
-
-  if (!['ready', 'watched'].includes(row.status)) {
-    return res.status(409).json({ error: 'INVALID_STATE', message: `Cannot delete a request in status '${row.status}'` });
+  if (!result.transitioned) {
+    if (result.currentStatus === null) throw new NotFoundError('request');
+    return res
+      .status(409)
+      .json({ error: 'INVALID_STATE', message: `Cannot delete a request in status '${result.currentStatus}'` });
   }
 
-  const now = new Date().toISOString();
-  db.prepare(`
-    UPDATE requests SET status = 'deleted', file_state = 'gone', deleted_at = ?
-    WHERE request_id = ?
-  `).run(now, requestId);
-
-  if (row.file_path) {
-    try {
-      await fs.promises.unlink(row.file_path);
-      const base = row.file_path.replace(/\.[^.]+$/, '');
-      for (const ext of ['.en.vtt', '.en.srt', '.vtt', '.srt']) {
-        await fs.promises.unlink(base + ext).catch(() => { /* sidecar may not exist */ });
-      }
-      logger.info({ requestId }, 'Video file deleted');
-    } catch (err) {
-      logger.warn({ err, requestId }, 'Could not delete video file — record still marked deleted');
-    }
-  }
-
+  logger.info({ requestId }, 'Request soft-deleted');
   res.status(204).end();
 });
 
