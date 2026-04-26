@@ -61,7 +61,17 @@ export async function checkStuckDownloads(): Promise<void> {
       log.info({ jobState }, 'Re-enqueued stuck download');
     } catch (err) {
       log.error({ err }, 'Failed to re-enqueue stuck download — marking failed');
-      requests.markFailed(req.request_id);
+      const result = requests.markFailed(req.request_id);
+      if (!result.transitioned) {
+        // Row changed state between the SELECT and this catch (e.g. a worker
+        // callback landed concurrently). Whatever owns the new state owns the
+        // user-facing outcome — don't double-alert with stale "failed" wording.
+        log.warn(
+          { currentStatus: result.currentStatus },
+          'Watchdog markFailed no-op — row already changed state, skipping alert',
+        );
+        continue;
+      }
     }
 
     void sendDownloadAlert({

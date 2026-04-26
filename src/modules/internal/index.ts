@@ -127,8 +127,12 @@ internalRouter.post('/requests/:id/retry', async (req: Request, res: Response) =
     return res.status(400).json({ error: 'INVALID_STATE', message: `Cannot retry a request in status '${result.currentStatus}'` });
   }
 
-  logger.info({ requestId }, 'Manual retry enqueued');
-  res.json({ ok: true, requestId, message: 'Re-enqueued' });
+  // requests.retry() is best-effort about the BullMQ enqueue — a failed add()
+  // is logged-warned, not surfaced. The watchdog will pick up rows that end up
+  // `downloading` without a live job. So response wording reflects what's
+  // guaranteed (the transition), not the queue side-effect.
+  logger.info({ requestId }, 'Manual retry — request returned to downloading');
+  res.json({ ok: true, requestId, message: 'Retry requested' });
 });
 
 // GET /internal/backfill/pending-thumbs — list videos needing thumbnail generation (no HMAC, internal network only)
