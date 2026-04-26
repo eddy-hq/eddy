@@ -62,6 +62,9 @@ import {
   markGuardBlocked,
   markFailed,
   retry,
+  createFromShareSheet,
+  createFromChannelPoll,
+  createFromCandidate,
   CANCELLED_REASON,
   type DownloadedFields,
   type Status,
@@ -653,5 +656,221 @@ describe('retry', () => {
       { requestId: 'req-r6', youtubeId: '', url: URL },
       { jobId: 'req-r6' },
     );
+  });
+});
+
+describe('createFromShareSheet', () => {
+  const URL = 'https://www.youtube.com/watch?v=abc';
+  const YT_ID = 'abc12345xyz';
+
+  it('inserts a downloading share_sheet row with auto decision and enqueues with the new id', async () => {
+    const before = Date.now();
+
+    const { requestId } = await createFromShareSheet({
+      url: URL,
+      userId: USER_ID,
+      youtubeId: YT_ID,
+    });
+
+    expect(requestId).toMatch(/^[0-9a-f-]{36}$/i);
+
+    const row = db
+      .prepare(
+        `SELECT user_id, source, url, youtube_id, status, decided_by, decided_at, requested_at, added_at
+           FROM requests WHERE request_id = ?`,
+      )
+      .get(requestId) as {
+        user_id: string; source: string; url: string; youtube_id: string;
+        status: string; decided_by: string; decided_at: string;
+        requested_at: string; added_at: string;
+      };
+    expect(row.user_id).toBe(USER_ID);
+    expect(row.source).toBe('share_sheet');
+    expect(row.url).toBe(URL);
+    expect(row.youtube_id).toBe(YT_ID);
+    expect(row.status).toBe('downloading');
+    expect(row.decided_by).toBe('auto');
+    expect(new Date(row.decided_at).getTime()).toBeGreaterThanOrEqual(before);
+    expect(new Date(row.requested_at).getTime()).toBeGreaterThanOrEqual(before);
+    expect(new Date(row.added_at).getTime()).toBeGreaterThanOrEqual(before);
+
+    expect(addJobMock).toHaveBeenCalledWith(
+      'download',
+      { requestId, youtubeId: YT_ID, url: URL },
+      { jobId: requestId },
+    );
+  });
+
+  it('passes empty string youtubeId to queue when caller omits it', async () => {
+    const { requestId } = await createFromShareSheet({ url: URL, userId: USER_ID });
+
+    const row = db
+      .prepare('SELECT youtube_id FROM requests WHERE request_id = ?')
+      .get(requestId) as { youtube_id: string | null };
+    expect(row.youtube_id).toBeNull();
+
+    expect(addJobMock).toHaveBeenCalledWith(
+      'download',
+      { requestId, youtubeId: '', url: URL },
+      { jobId: requestId },
+    );
+  });
+
+  it('leaves the row in place and warn-logs when queue add throws', async () => {
+    addJobMock.mockRejectedValueOnce(new Error('redis down'));
+
+    const { requestId } = await createFromShareSheet({
+      url: URL,
+      userId: USER_ID,
+      youtubeId: YT_ID,
+    });
+
+    const row = db
+      .prepare('SELECT status FROM requests WHERE request_id = ?')
+      .get(requestId) as { status: string };
+    expect(row.status).toBe('downloading');
+    expect(vi.mocked(logger.warn)).toHaveBeenCalledTimes(1);
+    const [meta] = vi.mocked(logger.warn).mock.calls[0]!;
+    expect(meta).toMatchObject({ requestId });
+  });
+});
+
+describe('createFromChannelPoll', () => {
+  const URL = 'https://www.youtube.com/watch?v=poll1';
+  const YT_ID = 'poll1xxxxxx';
+  const TITLE = 'Episode 42';
+  const CHANNEL = 'A Followed Creator';
+
+  it('inserts a downloading channel_subscription row with title/channel/file_state=live and no decided_by', async () => {
+    const before = Date.now();
+
+    const { requestId } = await createFromChannelPoll({
+      url: URL,
+      userId: USER_ID,
+      youtubeId: YT_ID,
+      title: TITLE,
+      channel: CHANNEL,
+    });
+
+    const row = db
+      .prepare(
+        `SELECT source, url, youtube_id, title, channel, status, file_state,
+                decided_by, decided_at, requested_at, added_at
+           FROM requests WHERE request_id = ?`,
+      )
+      .get(requestId) as {
+        source: string; url: string; youtube_id: string; title: string;
+        channel: string; status: string; file_state: string;
+        decided_by: string | null; decided_at: string | null;
+        requested_at: string; added_at: string;
+      };
+    expect(row.source).toBe('channel_subscription');
+    expect(row.url).toBe(URL);
+    expect(row.youtube_id).toBe(YT_ID);
+    expect(row.title).toBe(TITLE);
+    expect(row.channel).toBe(CHANNEL);
+    expect(row.status).toBe('downloading');
+    expect(row.file_state).toBe('live');
+    expect(row.decided_by).toBeNull();
+    expect(row.decided_at).toBeNull();
+    expect(new Date(row.requested_at).getTime()).toBeGreaterThanOrEqual(before);
+    expect(new Date(row.added_at).getTime()).toBeGreaterThanOrEqual(before);
+
+    expect(addJobMock).toHaveBeenCalledWith(
+      'download',
+      { requestId, youtubeId: YT_ID, url: URL },
+      { jobId: requestId },
+    );
+  });
+
+  it('leaves the row in place and warn-logs when queue add throws', async () => {
+    addJobMock.mockRejectedValueOnce(new Error('redis down'));
+
+    const { requestId } = await createFromChannelPoll({
+      url: URL,
+      userId: USER_ID,
+      youtubeId: YT_ID,
+      title: TITLE,
+      channel: CHANNEL,
+    });
+
+    const row = db
+      .prepare('SELECT status FROM requests WHERE request_id = ?')
+      .get(requestId) as { status: string };
+    expect(row.status).toBe('downloading');
+    expect(vi.mocked(logger.warn)).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('createFromCandidate', () => {
+  const URL = 'https://www.youtube.com/watch?v=cand1';
+  const YT_ID = 'cand1xxxxxx';
+  const TITLE = 'A picked-for-you title';
+
+  it('inserts a downloading recommended row with title and auto decision', async () => {
+    const before = Date.now();
+
+    const { requestId } = await createFromCandidate({
+      url: URL,
+      userId: USER_ID,
+      youtubeId: YT_ID,
+      title: TITLE,
+    });
+
+    const row = db
+      .prepare(
+        `SELECT source, url, youtube_id, title, status, decided_by, decided_at, requested_at
+           FROM requests WHERE request_id = ?`,
+      )
+      .get(requestId) as {
+        source: string; url: string; youtube_id: string; title: string;
+        status: string; decided_by: string; decided_at: string; requested_at: string;
+      };
+    expect(row.source).toBe('recommended');
+    expect(row.url).toBe(URL);
+    expect(row.youtube_id).toBe(YT_ID);
+    expect(row.title).toBe(TITLE);
+    expect(row.status).toBe('downloading');
+    expect(row.decided_by).toBe('auto');
+    expect(new Date(row.decided_at).getTime()).toBeGreaterThanOrEqual(before);
+    expect(new Date(row.requested_at).getTime()).toBeGreaterThanOrEqual(before);
+
+    expect(addJobMock).toHaveBeenCalledWith(
+      'download',
+      { requestId, youtubeId: YT_ID, url: URL },
+      { jobId: requestId },
+    );
+  });
+
+  it('passes empty string youtubeId to queue when external_id is null', async () => {
+    const { requestId } = await createFromCandidate({
+      url: URL,
+      userId: USER_ID,
+      youtubeId: null,
+      title: TITLE,
+    });
+
+    expect(addJobMock).toHaveBeenCalledWith(
+      'download',
+      { requestId, youtubeId: '', url: URL },
+      { jobId: requestId },
+    );
+  });
+
+  it('leaves the row in place and warn-logs when queue add throws', async () => {
+    addJobMock.mockRejectedValueOnce(new Error('redis down'));
+
+    const { requestId } = await createFromCandidate({
+      url: URL,
+      userId: USER_ID,
+      youtubeId: YT_ID,
+      title: TITLE,
+    });
+
+    const row = db
+      .prepare('SELECT status FROM requests WHERE request_id = ?')
+      .get(requestId) as { status: string };
+    expect(row.status).toBe('downloading');
+    expect(vi.mocked(logger.warn)).toHaveBeenCalledTimes(1);
   });
 });
