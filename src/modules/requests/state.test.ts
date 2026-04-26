@@ -40,7 +40,7 @@ vi.mock('fs', async () => {
 });
 
 vi.mock('../notifications', () => ({
-  sendVideoReady: vi.fn(),
+  sendVideoReady: vi.fn().mockResolvedValue(undefined),
   sendDownloadAlert: vi.fn(),
   sendParentReview: vi.fn(),
   generateActionToken: vi.fn(),
@@ -104,7 +104,8 @@ beforeEach(() => {
   unlinkMock.mockResolvedValue(undefined);
   vi.mocked(logger.info).mockClear();
   vi.mocked(logger.warn).mockClear();
-  vi.mocked(sendVideoReady).mockClear();
+  vi.mocked(sendVideoReady).mockReset();
+  vi.mocked(sendVideoReady).mockResolvedValue(undefined);
 });
 
 describe('markWatched', () => {
@@ -425,6 +426,21 @@ describe('markDownloaded', () => {
 
     expect(result).toEqual({ transitioned: false, currentStatus: null });
     expect(vi.mocked(sendVideoReady)).not.toHaveBeenCalled();
+  });
+
+  it('warn-logs when sendVideoReady rejects and does not surface as unhandled rejection', async () => {
+    insertRequest({ request_id: 'req-dl4', status: 'downloading' });
+    vi.mocked(sendVideoReady).mockRejectedValueOnce(new Error('ntfy down'));
+
+    const result = markDownloaded('req-dl4', FIELDS);
+    expect(result).toEqual({ transitioned: true, userId: USER_ID });
+
+    // Let the rejected fire-and-forget settle.
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(vi.mocked(logger.warn)).toHaveBeenCalledTimes(1);
+    const [meta] = vi.mocked(logger.warn).mock.calls[0]!;
+    expect(meta).toMatchObject({ requestId: 'req-dl4', userId: USER_ID });
   });
 });
 

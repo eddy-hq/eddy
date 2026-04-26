@@ -32,7 +32,7 @@ interface DownloadedPayload {
 internalRouter.post('/videos/:youtube_id/downloaded', verifySignedJson<DownloadedPayload>((req, res, payload) => {
   const { requestId, filePath, nginxUrl, thumbnailUrl, title, channel, description, durationSecs, transcript } = payload;
 
-  requests.markDownloaded(requestId, {
+  const result = requests.markDownloaded(requestId, {
     title,
     channel,
     description,
@@ -43,14 +43,31 @@ internalRouter.post('/videos/:youtube_id/downloaded', verifySignedJson<Downloade
     thumbnailUrl,
   });
 
-  logger.info({ requestId, youtubeId: req.params['youtube_id'] }, 'Request marked ready');
+  if (result.transitioned) {
+    logger.info({ requestId, youtubeId: req.params['youtube_id'] }, 'Request marked ready');
+  } else {
+    // No-op: row was no longer `downloading` (e.g. user cancelled mid-download).
+    // The worker callback raced with a state change; downstream is unaffected.
+    logger.info(
+      { requestId, youtubeId: req.params['youtube_id'], currentStatus: result.currentStatus },
+      'Worker downloaded callback ignored — request not in downloading state',
+    );
+  }
   res.status(204).end();
 }));
 
 // POST /internal/requests/:id/rejected — called by Ubuntu worker on terminal failure
 internalRouter.post('/requests/:id/rejected', verifySignedJson<{ requestId: string; reason: string }>((_req, res, payload) => {
-  requests.markRejected(payload.requestId, payload.reason);
-  logger.info({ requestId: payload.requestId, reason: payload.reason }, 'Request rejected by worker');
+  const result = requests.markRejected(payload.requestId, payload.reason);
+
+  if (result.transitioned) {
+    logger.info({ requestId: payload.requestId, reason: payload.reason }, 'Request rejected by worker');
+  } else {
+    logger.info(
+      { requestId: payload.requestId, reason: payload.reason, currentStatus: result.currentStatus },
+      'Worker rejection callback ignored — request not in downloading state',
+    );
+  }
   res.status(204).end();
 }));
 

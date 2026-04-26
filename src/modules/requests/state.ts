@@ -204,7 +204,11 @@ export function markDownloaded(id: string, fields: DownloadedFields): Transition
 
   // Side-effect fires only after a real transition — a no-op (e.g. user
   // cancelled mid-download) must not page the user that their video is ready.
-  void sendVideoReady(updated.user_id, id, fields.title);
+  // .catch is best-effort: an ntfy outage must not surface as an unhandled
+  // rejection, and the row stays `ready` regardless.
+  void sendVideoReady(updated.user_id, id, fields.title).catch((err) =>
+    logger.warn({ err, requestId: id, userId: updated.user_id }, 'markDownloaded: failed to send video-ready notification'),
+  );
 
   return { transitioned: true, userId: updated.user_id };
 }
