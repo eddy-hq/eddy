@@ -1,13 +1,8 @@
 import { Router, Request, Response } from 'express';
 import { db } from '../../db/client';
 import { ValidationError, NotFoundError } from '../../errors';
+import { resolveUserById } from '../users';
 import { normalizeUserAddedInterest } from './normalize';
-
-interface UserRow {
-  user_id: string;
-  role: string;
-  age_gate: number;
-}
 
 interface InterestRow {
   id: string;
@@ -27,19 +22,10 @@ interface MineRow {
   expertise: 'beginner' | 'comfortable' | 'deep';
 }
 
-function resolveUser(userId: unknown): UserRow {
-  if (typeof userId !== 'string' || !userId.trim()) throw new ValidationError('userId required');
-  const row = db.prepare(
-    'SELECT user_id, role, age_gate FROM users WHERE user_id = ?'
-  ).get(userId) as UserRow | undefined;
-  if (!row) throw new NotFoundError(`user ${userId}`);
-  return row;
-}
-
 export const interestsRouter = Router();
 
 interestsRouter.get('/', (req: Request, res: Response) => {
-  const user = resolveUser(req.query['userId']);
+  const user = resolveUserById(req.query['userId']);
 
   const allInterests = db.prepare(
     `SELECT id, label, category FROM interests ORDER BY category, label`
@@ -62,7 +48,7 @@ interestsRouter.get('/', (req: Request, res: Response) => {
 
 interestsRouter.post('/select', (req: Request, res: Response) => {
   const { userId, interestId } = req.body as { userId?: string; interestId?: string };
-  const user = resolveUser(userId);
+  const user = resolveUserById(userId);
   if (!interestId?.trim()) throw new ValidationError('interestId required');
 
   const interest = db.prepare('SELECT id FROM interests WHERE id = ?').get(interestId) as { id: string } | undefined;
@@ -83,7 +69,7 @@ interestsRouter.post('/select', (req: Request, res: Response) => {
 
 interestsRouter.delete('/select', (req: Request, res: Response) => {
   const { userId, interestId } = req.body as { userId?: string; interestId?: string };
-  const user = resolveUser(userId);
+  const user = resolveUserById(userId);
   if (!interestId?.trim()) throw new ValidationError('interestId required');
 
   db.prepare('DELETE FROM user_interests WHERE user_id = ? AND interest_id = ?')
@@ -93,7 +79,7 @@ interestsRouter.delete('/select', (req: Request, res: Response) => {
 });
 
 interestsRouter.get('/mine', (req: Request, res: Response) => {
-  const user = resolveUser(req.query['userId']);
+  const user = resolveUserById(req.query['userId']);
 
   const rows = db.prepare(`
     SELECT ui.interest_id, i.label, ui.rank, ui.expertise
@@ -115,7 +101,7 @@ interestsRouter.get('/mine', (req: Request, res: Response) => {
 
 interestsRouter.post('/reorder', (req: Request, res: Response) => {
   const { userId, interestIds } = req.body as { userId?: string; interestIds?: unknown };
-  const user = resolveUser(userId);
+  const user = resolveUserById(userId);
   if (!Array.isArray(interestIds) || interestIds.some((v) => typeof v !== 'string')) {
     throw new ValidationError('interestIds must be an array of strings');
   }
@@ -146,7 +132,7 @@ interestsRouter.patch('/expertise', (req: Request, res: Response) => {
     interestId?: string;
     expertise?: string;
   };
-  const user = resolveUser(userId);
+  const user = resolveUserById(userId);
   if (!interestId?.trim()) throw new ValidationError('interestId required');
   if (expertise !== 'beginner' && expertise !== 'comfortable' && expertise !== 'deep') {
     throw new ValidationError('expertise must be beginner | comfortable | deep');
@@ -163,7 +149,7 @@ interestsRouter.patch('/expertise', (req: Request, res: Response) => {
 
 interestsRouter.post('/user-add', (req: Request, res: Response) => {
   const { userId, label } = req.body as { userId?: string; label?: string };
-  const user = resolveUser(userId);
+  const user = resolveUserById(userId);
   if (!label?.trim()) throw new ValidationError('label required');
 
   const result = normalizeUserAddedInterest(user.user_id, label);

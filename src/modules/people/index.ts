@@ -8,6 +8,7 @@ import { ValidationError, NotFoundError } from '../../errors';
 import { downloadQueue } from '../../queue';
 import { SHORTS_MAX_SECS, type DownloadJobData } from '../content';
 import { inferChannelInterests } from '../interests';
+import { resolveUserById } from '../users';
 
 const execFileAsync = promisify(execFile);
 
@@ -289,18 +290,11 @@ function ra(fn: AsyncHandler) {
   };
 }
 
-function resolveUserId(userId?: string): string {
-  if (!userId) throw new ValidationError('userId required');
-  const found = db.prepare('SELECT user_id FROM users WHERE user_id = ?').get(userId) as { user_id: string } | undefined;
-  if (!found) throw new NotFoundError(`user ${userId}`);
-  return found.user_id;
-}
-
 // GET /people/search?q=&userId=
 peopleRouter.get('/search', ra(async (req, res) => {
   const { q, userId } = req.query as { q?: string; userId?: string };
   if (!q?.trim()) throw new ValidationError('q required');
-  const uid = resolveUserId(userId);
+  const uid = resolveUserById(userId).user_id;
 
   let channels: ChannelResult[];
   let searchError = false;
@@ -324,7 +318,7 @@ peopleRouter.get('/search', ra(async (req, res) => {
 // GET /people/following?userId=
 peopleRouter.get('/following', (req: Request, res: Response) => {
   const { userId } = req.query as { userId?: string };
-  const uid = resolveUserId(userId);
+  const uid = resolveUserById(userId).user_id;
 
   const rows = db.prepare(`
     SELECT p.person_id, p.display_name, p.person_type, p.photo_url,
@@ -347,7 +341,7 @@ peopleRouter.post('/follow', (req: Request, res: Response) => {
   };
   if (!channelId?.trim()) throw new ValidationError('channelId required');
   if (!channelName?.trim()) throw new ValidationError('channelName required');
-  const uid = resolveUserId(userId);
+  const uid = resolveUserById(userId).user_id;
 
   // Find or create person + output by channel_id
   const existingOutput = db.prepare(
@@ -404,7 +398,7 @@ peopleRouter.post('/follow', (req: Request, res: Response) => {
 peopleRouter.delete('/follow/:channelId', (req: Request, res: Response) => {
   const { channelId } = req.params as { channelId: string };
   const { userId } = req.query as { userId?: string };
-  const uid = resolveUserId(userId);
+  const uid = resolveUserById(userId).user_id;
 
   const output = db.prepare(
     'SELECT person_id FROM person_outputs WHERE output_type = ? AND external_id = ?'

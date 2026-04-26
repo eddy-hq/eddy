@@ -3,7 +3,8 @@ import { promisify } from 'util';
 import { Router, Request, Response } from 'express';
 import { db } from '../../db/client';
 import { logger } from '../../logger';
-import { ValidationError, NotFoundError } from '../../errors';
+import { ValidationError } from '../../errors';
+import { resolveUserByIdOrName } from '../users';
 
 const execFileAsync = promisify(execFile);
 const YTDLP_BIN_M4 = process.env['YTDLP_BIN_M4'] ?? '/opt/homebrew/bin/yt-dlp';
@@ -17,24 +18,13 @@ function ftsQuery(raw: string): string {
   return escaped.join(' OR ');
 }
 
-function resolveUserId(value: string | undefined): string {
-  if (!value) throw new ValidationError('userId required');
-  const isUuid = /^[0-9a-f-]{36}$/.test(value);
-  const found = (isUuid
-    ? db.prepare('SELECT user_id FROM users WHERE user_id = ?').get(value)
-    : db.prepare('SELECT user_id FROM users WHERE lower(display_name) = lower(?)').get(value)
-  ) as { user_id: string } | undefined;
-  if (!found) throw new NotFoundError(`user ${value}`);
-  return found.user_id;
-}
-
 // GET /search?q=&userId=
 // Returns flat list of matching requests, ordered by recency.
 searchRouter.get('/', (req: Request, res: Response) => {
   const { q, userId, user } = req.query as { q?: string; userId?: string; user?: string };
   if (!q?.trim()) throw new ValidationError('q required');
 
-  const uid = resolveUserId(userId ?? user);
+  const uid = resolveUserByIdOrName(userId ?? user).user_id;
   const matchExpr = ftsQuery(q.trim());
 
   const rows = db.prepare(`
@@ -60,7 +50,7 @@ searchRouter.get('/videos', async (req: Request, res: Response) => {
   const { q, userId, user } = req.query as { q?: string; userId?: string; user?: string };
   if (!q?.trim()) throw new ValidationError('q required');
 
-  const uid = resolveUserId(userId ?? user);
+  const uid = resolveUserByIdOrName(userId ?? user).user_id;
 
   let stdout = '';
   let searchError = false;
