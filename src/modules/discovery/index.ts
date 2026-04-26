@@ -7,8 +7,6 @@ import { refreshCandidatePool, seedBackCatalogCandidates, type UserInterestRow }
 import { scoreCandidates } from './scoring';
 import {
   surfaceForToday,
-  freshnessMultiplier,
-  rankWeight,
   readScoredCandidates,
   updateCandidatePoolStatus,
 } from './surface';
@@ -88,48 +86,32 @@ export async function runDiscoveryForUser(user: UserRow, options: { force?: bool
     }
   }
 
-  const surfaced = surfaceForToday(user.user_id, isKid);
-  logger.info({ userId: user.user_id, surfaced }, 'Discovery: surfaced for today');
+  const verdicts = surfaceForToday(user.user_id, isKid);
+  const picks = verdicts.filter((v) => v.disposition === 'regular' || v.disposition === 'stretch');
+  logger.info({ userId: user.user_id, surfaced: picks.length }, 'Discovery: surfaced for today');
 
-  const items = db.prepare(`
-    SELECT c.title, c.gemma_score, c.connection_score, c.quality_score,
-           c.time_sensitivity, c.why_text, c.guard_verdict, c.published_at,
-           c.interest_id, COALESCE(ui.rank, 999) AS rank
-    FROM candidate_pool c
-    LEFT JOIN user_interests ui
-      ON ui.user_id = c.user_id AND ui.interest_id = c.interest_id
-    WHERE c.user_id = ? AND c.surfaced_date = ?
-  `).all(user.user_id, today) as Array<{
-    title: string | null;
-    gemma_score: number | null;
-    connection_score: number | null;
-    quality_score: number | null;
-    time_sensitivity: string | null;
-    why_text: string | null;
-    guard_verdict: string | null;
-    published_at: string | null;
-    interest_id: string | null;
-    rank: number;
-  }>;
-
-  const sortedItems = items
-    .map((r) => ({
-      row: r,
-      weighted: (r.connection_score ?? 0)
-        * (r.quality_score ?? 0)
-        * freshnessMultiplier(r.published_at, r.time_sensitivity)
-        * rankWeight(r.rank),
-    }))
-    .sort((a, b) => b.weighted - a.weighted)
-    .map((x) => x.row);
+  // Verdicts are already in weighted-desc order. Build response payload
+  // straight off the picks — no re-query, no recomputation. gemma_score
+  // is connection × quality / 10 (0–10 range), kept in the response for
+  // legacy callers that still display it.
+  const items = picks.map((v) => {
+    const conn = v.candidate.connectionScore ?? 0;
+    const qual = v.candidate.qualityScore ?? 0;
+    return {
+      title: v.candidate.title,
+      score: (conn * qual) / 10,
+      why: v.candidate.whyText ?? null,
+      guardVerdict: v.candidate.guardVerdict ?? null,
+    };
+  });
 
   return {
     userId: user.user_id,
     skipped: false,
     interestsChecked: userInterests.length,
     candidatesAdded: added,
-    surfaced,
-    items: sortedItems.map((r) => ({ title: r.title, score: r.gemma_score, why: r.why_text, guardVerdict: r.guard_verdict })),
+    surfaced: picks.length,
+    items,
   };
 }
 
@@ -189,9 +171,5 @@ export async function stopDiscoveryScheduler(): Promise<void> {
   }
 }
 
-// Re-exports kept for scripts/preview that import from the discovery barrel.
 export { scoreCandidates } from './scoring';
-export { MIN_CONNECTION_SCORE, MIN_QUALITY_SCORE, MIN_WEIGHTED_SCORE } from './scoring';
-export { freshnessMultiplier, rankWeight, allocateSlots } from './surface';
-export type { AllocatableItem } from './surface';
 export { discoveryRouter } from './router';

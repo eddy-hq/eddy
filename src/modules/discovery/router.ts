@@ -6,7 +6,7 @@ import { downloadQueue } from '../../queue';
 import { ValidationError, NotFoundError } from '../../errors';
 import type { DownloadJobData } from '../content';
 import { resolveUserById } from '../users';
-import { freshnessMultiplier, rankWeight } from './surface';
+import { freshnessMultiplier, rankWeight } from './ranker';
 
 export const discoveryRouter = Router();
 
@@ -55,12 +55,13 @@ discoveryRouter.get('/feed', (req: Request, res: Response) => {
     WHERE c.user_id = ? AND c.surfaced_date = ? AND c.status = 'surfaced'
   `).all(user.user_id, today) as SurfacedCandidateRow[];
 
+  const now = new Date();
   const candidates = rows
     .map((r) => ({
       row: r,
       weighted: (r.connection_score ?? 0)
         * (r.quality_score ?? 0)
-        * freshnessMultiplier(r.published_at, r.time_sensitivity)
+        * freshnessMultiplier(r.published_at, r.time_sensitivity, now)
         * rankWeight(r.rank),
     }))
     .sort((a, b) => b.weighted - a.weighted)

@@ -1,19 +1,9 @@
 import { db } from '../../db/client';
-import {
-  freshnessMultiplier,
-  rankWeight,
-  allocateSlots,
-  type AllocatableItem,
-} from './surface';
-import {
-  MIN_CONNECTION_SCORE,
-  MIN_QUALITY_SCORE,
-  MIN_WEIGHTED_SCORE,
-} from './scoring';
+import { rank, type RankerCandidate, type Verdict, type Disposition } from './ranker';
 
 interface UserRow { user_id: string; role: string; age_gate: number; display_name: string; }
 
-interface Candidate {
+interface CandidateRow {
   candidate_id: string;
   external_id: string | null;
   url: string;
@@ -32,13 +22,9 @@ interface Candidate {
   rank: number;
 }
 
-type SlotTag = 'regular' | 'stretch' | 'cut' | 'low conn' | 'low qual' | 'low both' | 'low weight';
-
 interface Card {
-  row: Candidate;
-  weighted: number;
-  fresh: number;
-  slot: SlotTag;
+  row: CandidateRow;
+  verdict: Verdict;
 }
 
 interface Section {
@@ -77,15 +63,29 @@ function escapeHtml(s: string): string {
   return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] ?? c));
 }
 
-function failureReason(c: Candidate, weighted: number): SlotTag | null {
-  const conn = c.connection_score ?? 0;
-  const qual = c.quality_score ?? 0;
-  if (conn < MIN_CONNECTION_SCORE && qual < MIN_QUALITY_SCORE) return 'low both';
-  if (conn < MIN_CONNECTION_SCORE) return 'low conn';
-  if (qual < MIN_QUALITY_SCORE) return 'low qual';
-  if (weighted < MIN_WEIGHTED_SCORE) return 'low weight';
-  return null;
-}
+const DISPOSITION_LABEL: Record<Disposition, string> = {
+  regular: 'regular',
+  stretch: 'stretch',
+  low_conn: 'low conn',
+  low_qual: 'low qual',
+  low_both: 'low both',
+  low_weight: 'low weight',
+  cut_interest_cap: 'cut · interest cap',
+  cut_dedup: 'cut · dedup',
+  cut_stretch_rank: 'cut · stretch rank',
+};
+
+const DISPOSITION_CLASS: Record<Disposition, string> = {
+  regular: 'regular',
+  stretch: 'stretch',
+  low_conn: 'low',
+  low_qual: 'low',
+  low_both: 'low-both',
+  low_weight: 'low-weight',
+  cut_interest_cap: 'cut-interest-cap',
+  cut_dedup: 'cut-dedup',
+  cut_stretch_rank: 'cut-stretch-rank',
+};
 
 function buildSection(user: UserRow): Section {
   const isKid = user.role === 'kid';
@@ -95,10 +95,8 @@ function buildSection(user: UserRow): Section {
     ? "AND (c.guard_verdict = 'clear_yes' OR c.guard_verdict IS NULL)"
     : '';
 
-  // Match production: only scored, never-surfaced candidates that have no
-  // history in requests. Anything with a record (surfaced previously,
-  // dismissed, requested via any path, downloaded, deleted, rejected)
-  // must not reappear in discovery.
+  // Data-shape SQL only — identical filters to surface.ts. Floors live
+  // in the ranker; preview never re-applies them in JS.
   const rows = db.prepare(`
     SELECT c.candidate_id, c.external_id, c.url, c.title, c.channel,
            c.thumbnail_url, c.published_at, c.duration_secs,
@@ -118,42 +116,36 @@ function buildSection(user: UserRow): Section {
         SELECT 1 FROM requests r
         WHERE r.user_id = c.user_id AND r.youtube_id = c.external_id
       )
-  `).all(user.user_id) as Candidate[];
+  `).all(user.user_id) as CandidateRow[];
 
-  const ranked = rows.map((r) => {
-    const fresh = freshnessMultiplier(r.published_at, r.time_sensitivity);
-    const weighted = (r.connection_score ?? 0) * (r.quality_score ?? 0)
-      * fresh * rankWeight(r.rank);
-    return {
-      row: r,
-      fresh,
-      weighted,
-      reject: failureReason(r, weighted),
-    };
-  }).sort((a, b) => b.weighted - a.weighted);
-
-  const eligible = ranked.filter((r) => r.reject === null);
-
-  // Use the same allocation function surfaceForToday uses so the simulation
-  // mirrors production. No prefill — simulation runs from scratch.
-  const allocatable: AllocatableItem[] = eligible.map((r) => ({
-    candidateId: r.row.candidate_id,
-    title: r.row.title,
-    interestId: r.row.interest_id,
-    rank: r.row.rank,
-    weighted: r.weighted,
-  }));
-  const slotMap = allocateSlots(allocatable, { cap, isKid });
-
-  const cards: Card[] = ranked.map((r) => ({
-    row: r.row,
-    weighted: r.weighted,
-    fresh: r.fresh,
-    slot: r.reject !== null ? r.reject : (slotMap.get(r.row.candidate_id) ?? 'cut'),
+  const candidates: RankerCandidate[] = rows.map((r) => ({
+    candidateId: r.candidate_id,
+    title: r.title,
+    publishedAt: r.published_at,
+    connectionScore: r.connection_score,
+    qualityScore: r.quality_score,
+    timeSensitivity: r.time_sensitivity,
+    interestId: r.interest_id,
+    rank: r.rank,
   }));
 
-  const selected = cards.filter((c) => c.slot === 'regular' || c.slot === 'stretch');
-  const rest = cards.filter((c) => c.slot !== 'regular' && c.slot !== 'stretch');
+  // Preview always simulates a clean run — no prefill.
+  const verdicts = rank(
+    candidates,
+    { now: new Date(), isKid, prefilledTitles: [], prefilledInterestCounts: new Map() },
+    { cap },
+  );
+
+  const rowById = new Map(rows.map((r) => [r.candidate_id, r]));
+  const cards: Card[] = verdicts.map((v) => {
+    const row = rowById.get(v.candidate.candidateId);
+    if (!row) throw new Error(`preview: missing row for ${v.candidate.candidateId}`);
+    return { row, verdict: v };
+  });
+
+  const selected = cards.filter((c) => c.verdict.disposition === 'regular' || c.verdict.disposition === 'stretch');
+  const rest = cards.filter((c) => c.verdict.disposition !== 'regular' && c.verdict.disposition !== 'stretch');
+  const rejected = cards.filter((c) => c.verdict.disposition.startsWith('low_')).length;
 
   return {
     user,
@@ -161,8 +153,8 @@ function buildSection(user: UserRow): Section {
     rest,
     totals: {
       pool: rows.length,
-      eligible: eligible.length,
-      rejected: ranked.filter((r) => r.reject !== null).length,
+      eligible: rows.length - rejected,
+      rejected,
       selected: selected.length,
       cap,
     },
@@ -176,6 +168,9 @@ const css = `
   --border: #353330; --accent: #d4a85a;
   --slot-regular: #6ba368; --slot-stretch: #d4a85a;
   --slot-low: #c97a4a; --slot-low-both: #b8534a; --slot-cut: #5a5854;
+  --slot-cut-interest-cap: #7a4a8a; /* purple — interest-cap rejections */
+  --slot-cut-dedup: #4a6a8a;        /* blue — title-similarity rejections */
+  --slot-cut-stretch-rank: #5a8a5a; /* green-grey — stretch-rank rejections */
   --tag-news: #8a4a4a; --tag-evergreen: #4a8a8a; --tag-standard: #5a5854;
   --tag-actually-surfaced: #5a8a9a;
 }
@@ -206,6 +201,9 @@ h2 .muted { color: var(--fg-dim); font-weight: 400; text-transform: none; letter
 .slot-tag.low { background: var(--slot-low); }
 .slot-tag.low-both { background: var(--slot-low-both); }
 .slot-tag.low-weight { background: var(--slot-cut); }
+.slot-tag.cut-interest-cap { background: var(--slot-cut-interest-cap); }
+.slot-tag.cut-dedup { background: var(--slot-cut-dedup); }
+.slot-tag.cut-stretch-rank { background: var(--slot-cut-stretch-rank); }
 .actually-surfaced { position: absolute; top: 8px; right: 8px; background: var(--tag-actually-surfaced); color: white; padding: 3px 8px; border-radius: 4px; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
 .body { padding: 14px 16px 16px; flex: 1; display: flex; flex-direction: column; }
 .title { font-size: 14px; font-weight: 600; line-height: 1.35; margin-bottom: 6px; color: var(--fg); }
@@ -223,20 +221,19 @@ h2 .muted { color: var(--fg-dim); font-weight: 400; text-transform: none; letter
 .chip.ts-news { background: var(--tag-news); color: white; }
 .chip.ts-evergreen { background: var(--tag-evergreen); color: white; }
 .chip.ts-standard { color: var(--fg-muted); }
+.dedup-partner { color: var(--fg-muted); font-size: 12px; margin-bottom: 10px; padding: 6px 10px; background: var(--bg-elevated); border-radius: 6px; border-left: 3px solid var(--slot-cut-dedup); }
+.dedup-partner strong { color: var(--fg); font-weight: 600; }
 .why { color: var(--fg-muted); font-size: 12px; line-height: 1.5; padding-top: 10px; border-top: 1px solid var(--border); margin-top: auto; }
 .why em { color: var(--accent); font-style: normal; font-weight: 500; }
 `;
 
-function cardHtml(c: Card): string {
-  const r = c.row;
+function cardHtml(card: Card, dedupPartnerTitle: (id: string) => string | null): string {
+  const r = card.row;
+  const v = card.verdict;
   const conn = (r.connection_score ?? 0).toFixed(1);
   const qual = (r.quality_score ?? 0).toFixed(1);
-  const slotKey = c.slot;
-  const slotClasses =
-    slotKey === 'low both' ? 'slot-tag low-both'
-    : slotKey === 'low conn' || slotKey === 'low qual' ? 'slot-tag low'
-    : slotKey === 'low weight' ? 'slot-tag low-weight'
-    : `slot-tag ${slotKey}`;
+  const slotClass = DISPOSITION_CLASS[v.disposition];
+  const slotLabel = DISPOSITION_LABEL[v.disposition];
 
   const tsKey = (r.time_sensitivity ?? 'standard').toLowerCase();
   const tsClass = tsKey === 'news' ? 'ts-news' : tsKey === 'evergreen' ? 'ts-evergreen' : 'ts-standard';
@@ -246,12 +243,21 @@ function cardHtml(c: Card): string {
     : `<div class="thumb-fallback">no thumbnail</div>`;
   const dur = durationLabel(r.duration_secs);
 
-  const stretchCardClass = c.slot === 'stretch' ? ' stretch-card' : '';
+  const stretchCardClass = v.disposition === 'stretch' ? ' stretch-card' : '';
+
+  const dedupBlock = v.disposition === 'cut_dedup' && v.dedupedAgainst
+    ? (() => {
+        const partner = dedupPartnerTitle(v.dedupedAgainst!);
+        return partner
+          ? `<div class="dedup-partner"><strong>deduped against:</strong> ${escapeHtml(partner)}</div>`
+          : '';
+      })()
+    : '';
 
   return `<div class="card${stretchCardClass}">
     <div class="thumb-wrap">
       ${thumb}
-      <div class="${slotClasses}">${escapeHtml(slotKey)}</div>
+      <div class="slot-tag ${slotClass}">${escapeHtml(slotLabel)}</div>
       ${dur ? `<div class="duration">${escapeHtml(dur)}</div>` : ''}
     </div>
     <div class="body">
@@ -261,10 +267,11 @@ function cardHtml(c: Card): string {
         <span class="chip conn">conn ${conn}</span>
         <span class="chip qual">qual ${qual}</span>
         <span class="chip ${tsClass}">${escapeHtml(tsKey)}</span>
-        <span class="chip fresh">×${c.fresh.toFixed(1)} fresh</span>
-        <span class="chip weighted">${c.weighted.toFixed(1)}</span>
+        <span class="chip fresh">×${v.fresh.toFixed(1)} fresh</span>
+        <span class="chip weighted">${v.weighted.toFixed(1)}</span>
         ${r.interest_label ? `<span class="chip interest">${escapeHtml(r.interest_label)}${r.rank !== 999 ? ` · rank ${r.rank}` : ''}</span>` : ''}
       </div>
+      ${dedupBlock}
       ${r.why_text ? `<div class="why"><em>why →</em> ${escapeHtml(r.why_text)}</div>` : ''}
     </div>
   </div>`;
@@ -291,7 +298,10 @@ export function renderPreviewHtml(targetArg: string | null): string {
   }).join('');
   const allActive = users.length === allUsers.length ? ' active' : '';
 
-  const sectionsHtml = sections.map((s) => `
+  const sectionsHtml = sections.map((s) => {
+    const titleById = new Map(s.selected.concat(s.rest).map((c) => [c.row.candidate_id, c.row.title ?? '(no title)']));
+    const lookup = (id: string): string | null => titleById.get(id) ?? null;
+    return `
 <div class="section">
   <h1>${escapeHtml(s.user.display_name)} <span style="color:var(--fg-muted);font-weight:400;font-size:14px">(${escapeHtml(s.user.role)})</span></h1>
   <div class="summary">
@@ -300,17 +310,18 @@ export function renderPreviewHtml(targetArg: string | null): string {
   </div>
   ${s.selected.length > 0 ? `
     <h2>Simulated feed <span class="muted">— what the algorithm picks today (${s.selected.length}/${s.totals.cap})</span></h2>
-    <div class="grid selected">${s.selected.map(cardHtml).join('')}</div>
+    <div class="grid selected">${s.selected.map((c) => cardHtml(c, lookup)).join('')}</div>
   ` : `
     <h2>Simulated feed</h2>
     <p style="color:var(--fg-muted)">No eligible candidates pass the floor. Rescore or refresh the pool.</p>
   `}
   ${s.rest.length > 0 ? `
     <h2>Rest of pool <span class="muted">— ranked by weighted score (${s.rest.length})</span></h2>
-    <div class="grid">${s.rest.map(cardHtml).join('')}</div>
+    <div class="grid">${s.rest.map((c) => cardHtml(c, lookup)).join('')}</div>
   ` : ''}
 </div>
-`).join('');
+`;
+  }).join('');
 
   return `<!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Eddy discovery preview</title><style>${css}</style></head>

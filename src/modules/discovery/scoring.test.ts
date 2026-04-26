@@ -1,7 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
-  normalizeSensitivity,
-  clampScore,
   overrideTimeSensitivity,
   parseScoringVerdict,
   buildScoringPrompt,
@@ -26,50 +24,6 @@ vi.mock('../../ollama', async (importOriginal) => ({
 vi.mock('../../db/client', () => ({
   db: { prepare: vi.fn() },
 }));
-
-describe('normalizeSensitivity', () => {
-  it('passes "news" through', () => {
-    expect(normalizeSensitivity('news')).toBe('news');
-  });
-
-  it('passes "evergreen" through, including mixed-case + whitespace', () => {
-    expect(normalizeSensitivity('Evergreen')).toBe('evergreen');
-    expect(normalizeSensitivity('  EVERGREEN  ')).toBe('evergreen');
-  });
-
-  it('passes "standard" through', () => {
-    expect(normalizeSensitivity('standard')).toBe('standard');
-  });
-
-  it('falls back to "standard" on unknown values', () => {
-    expect(normalizeSensitivity('whatever')).toBe('standard');
-    expect(normalizeSensitivity(null)).toBe('standard');
-    expect(normalizeSensitivity(undefined)).toBe('standard');
-  });
-});
-
-describe('clampScore', () => {
-  it('passes in-range numbers through', () => {
-    expect(clampScore(0)).toBe(0);
-    expect(clampScore(5.5)).toBe(5.5);
-    expect(clampScore(10)).toBe(10);
-  });
-
-  it('clamps below 0 to 0', () => {
-    expect(clampScore(-3)).toBe(0);
-  });
-
-  it('clamps above 10 to 10', () => {
-    expect(clampScore(15)).toBe(10);
-  });
-
-  it('returns null for non-finite or non-number input', () => {
-    expect(clampScore(NaN)).toBeNull();
-    expect(clampScore(Infinity)).toBeNull();
-    expect(clampScore('7')).toBeNull();
-    expect(clampScore(undefined)).toBeNull();
-  });
-});
 
 describe('overrideTimeSensitivity', () => {
   it('overrides match-highlights titles to news', () => {
