@@ -280,6 +280,60 @@ peopleRouter.get('/following', (req: Request, res: Response) => {
   res.json({ following: rows });
 });
 
+// Find or create the person + youtube output for a channel. No follow side
+// effect — both /follow and /resolve route through this so the row layout
+// stays consistent and a search-tap can land on a person view before any
+// follow has happened. Wrapped in a transaction so a failure on the second
+// insert doesn't orphan the people row.
+const ensurePersonForChannel = db.transaction((channelId: string, channelName: string): { personId: string; outputId: string } => {
+  const existing = db.prepare(
+    'SELECT person_id, output_id FROM person_outputs WHERE output_type = ? AND external_id = ?'
+  ).get('youtube', channelId) as { person_id: string; output_id: string } | undefined;
+
+  if (existing) return { personId: existing.person_id, outputId: existing.output_id };
+
+  const personId = uuidv7();
+  const outputId = uuidv7();
+  const feedUrl = `https://www.youtube.com/feeds/videos.xml?channel_id=${channelId}`;
+  const now = new Date().toISOString();
+
+  db.prepare(`
+    INSERT INTO people (person_id, display_name, person_type, created_at)
+    VALUES (?, ?, 'individual', ?)
+  `).run(personId, channelName, now);
+
+  db.prepare(`
+    INSERT INTO person_outputs (output_id, person_id, output_type, fetcher_type, feed_url, external_id, active)
+    VALUES (?, ?, 'youtube', 'youtube-rss', ?, ?, 1)
+  `).run(outputId, personId, feedUrl, channelId);
+
+  return { personId, outputId };
+});
+
+// POST /people/resolve — body: { userId, channelId, channelName }
+// Returns the personId for a channel, creating the person row on demand. Used
+// by the search tap-through, where the user may navigate to a person view for
+// a channel they don't yet follow. Requires userId — same gate as every other
+// write endpoint in this module, even though no follow row is created.
+peopleRouter.post('/resolve', (req: Request, res: Response) => {
+  const { userId, channelId, channelName } = req.body as {
+    userId?: string; channelId?: string; channelName?: string;
+  };
+  if (!channelId?.trim()) throw new ValidationError('channelId required');
+  if (!channelName?.trim()) throw new ValidationError('channelName required');
+  resolveUserById(userId);
+
+  const { personId } = ensurePersonForChannel(channelId.trim(), channelName.trim());
+
+  // Best-effort bio + photo capture so a thin page (no items, never followed)
+  // still has something visible. Fire-and-forget — the /resolve response
+  // returns the personId immediately and the page poll picks up the rest.
+  void applyChannelInfoToPerson(personId, channelId.trim())
+    .catch((err: unknown) => logger.debug({ err, channelId }, 'Capture channel info on resolve failed'));
+
+  res.json({ personId });
+});
+
 // POST /people/follow — body: { userId, channelId, channelName, channelUrl }
 peopleRouter.post('/follow', (req: Request, res: Response) => {
   const { userId, channelId, channelName } = req.body as {
@@ -289,32 +343,7 @@ peopleRouter.post('/follow', (req: Request, res: Response) => {
   if (!channelName?.trim()) throw new ValidationError('channelName required');
   const uid = resolveUserById(userId).user_id;
 
-  // Find or create person + output by channel_id
-  const existingOutput = db.prepare(
-    'SELECT person_id, output_id FROM person_outputs WHERE output_type = ? AND external_id = ?'
-  ).get('youtube', channelId) as { person_id: string; output_id: string } | undefined;
-
-  let personId: string;
-  let outputId: string;
-  if (existingOutput) {
-    personId = existingOutput.person_id;
-    outputId = existingOutput.output_id;
-  } else {
-    personId = uuidv7();
-    outputId = uuidv7();
-    const feedUrl = `https://www.youtube.com/feeds/videos.xml?channel_id=${channelId}`;
-    const now = new Date().toISOString();
-
-    db.prepare(`
-      INSERT INTO people (person_id, display_name, person_type, created_at)
-      VALUES (?, ?, 'individual', ?)
-    `).run(personId, channelName.trim(), now);
-
-    db.prepare(`
-      INSERT INTO person_outputs (output_id, person_id, output_type, fetcher_type, feed_url, external_id, active)
-      VALUES (?, ?, 'youtube', 'youtube-rss', ?, ?, 1)
-    `).run(outputId, personId, feedUrl, channelId);
-  }
+  const { personId, outputId } = ensurePersonForChannel(channelId.trim(), channelName.trim());
 
   // Upsert follow
   const alreadyFollowing = db.prepare(

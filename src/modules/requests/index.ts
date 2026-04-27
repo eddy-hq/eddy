@@ -293,11 +293,11 @@ requestsRouter.delete('/:id', async (req: Request, res: Response) => {
 // GET /requests/:id — polled by PWA to check status
 requestsRouter.get('/:id', async (req: Request, res: Response) => {
   const row = db.prepare(
-    'SELECT request_id, user_id, youtube_id, status, title, rejection_reason, nginx_url FROM requests WHERE request_id = ?'
+    'SELECT request_id, user_id, youtube_id, status, title, channel, rejection_reason, nginx_url FROM requests WHERE request_id = ?'
   ).get(req.params['id']) as
     | {
         request_id: string; user_id: string; youtube_id: string | null;
-        status: string; title: string | null;
+        status: string; title: string | null; channel: string | null;
         rejection_reason: string | null; nginx_url: string | null;
       }
     | undefined;
@@ -321,6 +321,7 @@ requestsRouter.get('/:id', async (req: Request, res: Response) => {
     status: row.status,
     progress,
     title: row.title,
+    channel: row.channel,
     rejectionReason: state.displayRejectionReason(row.rejection_reason),
     videoUrl: row.nginx_url,
   });

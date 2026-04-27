@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { readProgress, onProgressChange } from '../lib/videoProgress';
+import { useFollowedByChannelName } from '../hooks/useFollowedByChannelName';
 import { EddySpinner } from './EddySpinner';
 
 export interface CardData {
@@ -85,6 +86,15 @@ export function Card({
   sourceKind?: 'req' | 'follow' | 'pick' | null;
 }) {
   const navigate = useNavigate();
+  const followedByName = useFollowedByChannelName(userId ?? null);
+  const personId = data.channel ? followedByName.get(data.channel.toLowerCase()) ?? null : null;
+
+  function goToPerson(e: React.MouseEvent | React.KeyboardEvent) {
+    if (!personId) return;
+    e.stopPropagation();
+    const qs = userId ? `?userId=${encodeURIComponent(userId)}` : '';
+    navigate(`/person/${personId}${qs}`);
+  }
 
   const isLive        = ['ready', 'watched'].includes(data.status) && data.fileState === 'live' && !!data.nginxUrl;
   const isRecycled    = ['ready', 'watched'].includes(data.status) && data.fileState === 'recycled';
@@ -309,7 +319,8 @@ export function Card({
                   : sourceKind === 'pick' ? 'var(--save)'
                   : 'var(--accent)',
               }} />
-              {sourceKind === 'follow' ? (data.channel ?? 'Follow')
+              {sourceKind === 'follow'
+                ? <ChannelTap label={data.channel ?? 'Follow'} personId={personId} onTap={goToPerson} />
                 : sourceKind === 'req' ? 'You asked'
                 : 'Picked'}
             </span>
@@ -317,13 +328,16 @@ export function Card({
           {sourceKind && sourceKind !== 'follow' && data.channel && (
             <>
               <span style={{ color: 'var(--text-tertiary)' }}>·</span>
-              <span>{data.channel}</span>
+              <ChannelTap label={data.channel} personId={personId} onTap={goToPerson} />
             </>
           )}
           {!sourceKind && data.channel && (
-            <span style={{ fontWeight: 600, color: 'var(--text-primary)' }}>
-              {data.channel}
-            </span>
+            <ChannelTap
+              label={data.channel}
+              personId={personId}
+              onTap={goToPerson}
+              style={{ fontWeight: 600, color: 'var(--text-primary)' }}
+            />
           )}
           {((sourceKind || data.channel)) && (
             <span style={{ color: 'var(--text-tertiary)' }}>·</span>
@@ -332,6 +346,35 @@ export function Card({
         </div>
       </div>
     </motion.article>
+  );
+}
+
+function ChannelTap({
+  label, personId, onTap, style,
+}: {
+  label: string;
+  personId: string | null;
+  onTap: (e: React.MouseEvent | React.KeyboardEvent) => void;
+  style?: React.CSSProperties;
+}) {
+  if (!personId) return <span style={style}>{label}</span>;
+  return (
+    <span
+      role="link"
+      tabIndex={0}
+      onClick={onTap}
+      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onTap(e); } }}
+      style={{
+        ...style,
+        cursor: 'pointer',
+        textDecoration: 'underline',
+        textDecorationColor: 'var(--border-subtle)',
+        textUnderlineOffset: 2,
+        WebkitTapHighlightColor: 'transparent',
+      }}
+    >
+      {label}
+    </span>
   );
 }
 
