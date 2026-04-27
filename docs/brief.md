@@ -624,7 +624,8 @@ For each active user:
        - Dedupe against seen_items and content_items
   2. Score candidates with Gemma
        - Batches of 10-20
-       - Person-trust-weight × relevance × quality × freshness
+       - Two-axis scoring per candidate (relevance + quality), combined with person-trust and freshness
+       - Time-sensitivity classification (livestream / dated / evergreen) drives ranking decay
        - Reject dismissed-pattern matches, blocked people, hard-exclusions
   3. Guard pipeline for kids
        - Clear-yes → surface. Uncertain → parent queue. Clear-no → logged.
@@ -632,9 +633,22 @@ For each active user:
        - Kids: 3-5 items. Adults: 10-20. Surplus retained for tomorrow.
 ```
 
+### Scoring axes and time sensitivity
+
+Gemma scores each candidate on two independent axes rather than collapsing them into one number:
+
+- **`relevance_axis`** — does this match what this user is interested in right now? Driven by interest match, person trust, recent engagement patterns.
+- **`quality_axis`** — is this a good piece of content on its own terms? Driven by signals about the item: clear subject, production quality, length appropriate to claim, not engagement-bait.
+
+Splitting the axes lets the ranker weight them differently per surface (a kid's "Picked for you" leans heavier on quality; an adult's leans heavier on relevance) and lets us spot-check failures cleanly — a 9 on relevance and a 2 on quality is a different problem from the reverse.
+
+A separate **`time_sensitivity`** column classifies each candidate as `livestream`, `dated`, or `evergreen`. Livestreams should never sit in the candidate pool overnight; dated items decay rapidly; evergreens carry forward without penalty. This stops the surplus-carry mechanism from dragging stale time-sensitive items into a future day's picks.
+
+Both columns live on `candidate_pool` (migrations 018–020).
+
 ### Scarcity
 
-Cap is firm. Surplus carries forward but never inflates a single day. Finishing "Picked for you" is a valid state — show *"That's it for today — more tomorrow"* at the bottom rather than paginating.
+Cap is firm. Surplus carries forward but never inflates a single day. Finishing "Picked for you" is a valid state — show *"That's Today."* at the bottom rather than paginating.
 
 ### Balance: a choice, not imposed
 
@@ -1064,24 +1078,25 @@ Specs in Sections 4a and 9a. ~2-3 sessions.
 
 **Shipped:**
 
-- `candidate_pool`, `person_recommendations`, `inferred_affinities`, `channel_topic_links`, `balance_prompts` tables (the `channel_topic_links` table renames to `channel_interest_links` as part of the rework below)
+- `candidate_pool`, `person_recommendations`, `inferred_affinities`, `channel_interest_links`, `balance_prompts` tables
 - Discovery engine as a BullMQ repeatable job on M4 — interest search via `ytsearch`, daily cap with surplus carry-forward
-- Gemma scoring in batches, `why_text` stored per candidate
+- Gemma scoring in batches, `why_text` stored per candidate; two-axis scoring (relevance + quality) and time-sensitivity classification on `candidate_pool` (migrations 018–020)
 - Shadow guard runs on discovered items the same way it runs on requested items
-- "Picked for you" section in Today, with "That's it for today — more tomorrow"
+- "Picked for you" cluster in Today, with end-of-list state (*"That's Today."*)
 - Balance prompt (>70% concentration, max once per 1-2 weeks)
-- Seed-interest DB migration (~65 entries, categorised, age-gated) — being deprecated, see Remaining
-- Onboarding picker at `/interests` (categorised pill grid, ≥1 interest + ≥1 person required to proceed) — being replaced, see Remaining
-- Freeform interest creation (Gemma generates `search_terms` from typed input) — becomes the only path
+- Schema rename: topics → interests across tables and columns (migration 014). ntfy-topic naming in §12 is unrelated and unchanged
+- `age_gate` flag and `emoji` column dropped from interests (migrations 016, 017)
+- Standalone `/interests` PWA route removed — Profile is the only edit surface; `/interests/*` API endpoints retained
+- Freeform interest creation is the only path (Gemma generates `search_terms` from typed input)
 - Channel → interest inference at subscribe time
+- Profile editing surface — `Profile.tsx` with rank-ordered draggable interest list, expertise picker, freeform add. Rank-replaces-weight on `user_interests` (migration 015: `rank INTEGER`, `expertise TEXT CHECK (...)`)
+- Person bio + photo captured from YouTube channel info, person view page, tap-through from cards/watch/search (issues #40–43)
+- `watch_events` table (migration 021) capturing per-play-attempt signal — feeds Layer 2 behavioural signals and Drift dwell observations
 
 **Remaining:**
 
 - Recommendation extraction — Gemma reading followed people's text outputs to populate `person_recommendations`
-- Profile editing surface — single-page Interests/People/Duration on the existing Profile route; rank-replaces-weight migration on the join table (`rank INTEGER`, `expertise TEXT CHECK (...)`); kid interest-add routed through guard as a distinct request_type
-- Schema rename: `topics` → `interests`, `user_topics` → `user_interests`, `channel_topic_links` → `channel_interest_links`, `topic_id` → `interest_id` throughout. ntfy-topic naming in §12 is unrelated and stays
-- Drop the standalone `/interests` PWA route — the Profile page is the only edit surface. The interests API route stays as the contract
-- Replace onboarding pill-grid picker with freeform interest input (Gemma generates `search_terms` + emoji per entry); deprecate seed-interest taxonomy and `age_gate` flag (no taxonomy to gate against)
+- Kid interest-add routed through the guard as a distinct request_type (so the eval set per type stays clean)
 - Four-layer profile enrichment — behavioural signals, per-person trust weights, richer `inferred_affinities` (statements + evidence)
 - Related-people expansion (for follow suggestions, not direct surfacing)
 - "Why this?" UI affordance on discovery cards, routing through a specific person where possible

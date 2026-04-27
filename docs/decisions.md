@@ -97,6 +97,8 @@ A mixed-density day looks intentional, not inconsistent, because each section ow
 
 ## Why the timeline uses a memory gradient, not uniform scrollback
 
+> **Status (April 2026):** Tiers 1 and 2 shipped in Phase 2 (`Feed.tsx` `Tier 1 — Today block` and `Tier 2 — Past-day block`). Tiers 3 (day rollups, 7–30 days) and 4 (week rollups with editorial summary, 30+ days) are deferred — implement when scrollback friction shows up in real use. The four-tier model below stands as the design; the rationale doesn't change.
+
 Original timeline model had every past day render identically — compact cards under a quiet day header, scrolling continuously backward. Rejected once the feed accumulated real history because:
 
 - **Scrollback becomes prohibitive.** A month is ~150 cards. Three months is ~450. The timeline is supposed to be reachable, not traversable only in long bursts.
