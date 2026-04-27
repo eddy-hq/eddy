@@ -52,9 +52,10 @@ export interface PersonView {
 
 const ITEMS_CAP = 6;
 
-// Items "in library": status has progressed past pending/download/reject —
-// the kid either has the file, has watched it, or actively dismissed it. Same
-// set the timeline draws on, scoped to this person's channel name.
+// Items considered "in library" for this person view: the kid either has the
+// file, has watched it, or actively dismissed it. Broader than the timeline
+// feed (which hides dismissed) — on a person page, "I dismissed this one"
+// is part of the relationship the page is reflecting.
 const IN_LIBRARY_STATUSES = ['ready', 'watched', 'dismissed'] as const;
 
 interface PersonRow {

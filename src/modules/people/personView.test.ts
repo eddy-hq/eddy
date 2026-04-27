@@ -53,9 +53,6 @@ function insertRequest(opts: {
 
 beforeAll(() => {
   runMigrations();
-  db.prepare(
-    'INSERT INTO users (user_id, display_name, role, age_gate, created_at) VALUES (?, ?, ?, ?, ?)',
-  ).run(USER_ID, 'Boy1', 'kid', 0, new Date().toISOString());
 });
 
 beforeEach(() => {
@@ -63,6 +60,10 @@ beforeEach(() => {
   db.exec('DELETE FROM followed_people');
   db.exec('DELETE FROM person_outputs');
   db.exec('DELETE FROM people');
+  db.exec('DELETE FROM users');
+  db.prepare(
+    'INSERT INTO users (user_id, display_name, role, age_gate, created_at) VALUES (?, ?, ?, ?, ?)',
+  ).run(USER_ID, 'Boy1', 'kid', 0, new Date().toISOString());
 });
 
 function seedPerson(opts: {

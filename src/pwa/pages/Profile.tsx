@@ -282,20 +282,18 @@ function InterestsTab({ userId }: { userId: string }) {
 function PeopleTab({ userId }: { userId: string }) {
   const navigate = useNavigate();
   const [params] = useSearchParams();
-  const userParam = params.get('userId')
-    ? `userId=${params.get('userId')}`
-    : params.get('user')
-    ? `user=${params.get('user')}`
-    : '';
 
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isError } = useQuery({
     queryKey: ['person-following', userId],
     queryFn: () => fetchFollowing(userId),
     enabled: !!userId,
   });
 
+  // Forward the full current search string (userId/user, tab=people, anything
+  // else) so the person page → back-to-Profile round-trip lands on the same tab.
   function go(personId: string) {
-    navigate(userParam ? `/person/${personId}?${userParam}` : `/person/${personId}`);
+    const qs = params.toString();
+    navigate(qs ? `/person/${personId}?${qs}` : `/person/${personId}`);
   }
 
   return (
@@ -306,6 +304,13 @@ function PeopleTab({ userId }: { userId: string }) {
           padding: '0 22px', margin: 0,
         }}>
           Loading…
+        </p>
+      ) : isError ? (
+        <p style={{
+          color: 'var(--text-tertiary)', fontSize: 13,
+          padding: '0 22px', margin: 0, lineHeight: 1.5,
+        }}>
+          Couldn't load the people you follow. Pull down to retry.
         </p>
       ) : (data?.following.length ?? 0) === 0 ? (
         <p style={{

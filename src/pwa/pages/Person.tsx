@@ -97,7 +97,15 @@ export function Person() {
   const queryClient = useQueryClient();
 
   const userId = params.get('userId') ?? params.get('user') ?? '';
-  const userParam = params.get('userId') ? `userId=${params.get('userId')}` : params.get('user') ? `user=${params.get('user')}` : '';
+
+  // Profile is reached via the People tab, so default the back-target to that
+  // tab. If the URL arrived with an explicit ?tab= we preserve it as-is.
+  const profileQs = (() => {
+    const next = new URLSearchParams(params);
+    if (!next.has('tab')) next.set('tab', 'people');
+    return next.toString();
+  })();
+  const profileHref = profileQs ? `/profile?${profileQs}` : '/profile';
 
   const { selectedCard, selectedSource, onSelect, onClose } = useVideoSheet();
   const [showConfirm, setShowConfirm] = useState(false);
@@ -115,7 +123,7 @@ export function Person() {
     },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['person-following', userId] });
-      navigate(userParam ? `/profile?${userParam}` : '/profile');
+      navigate(profileHref);
     },
   });
 
