@@ -1,15 +1,17 @@
 import React, { useRef, useState } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { useQuery, useMutation } from '@tanstack/react-query';
-import { ArrowLeft, Trash2 } from 'lucide-react';
+import { ArrowLeft, ChevronRight, Trash2 } from 'lucide-react';
 import { VideoPlayer } from '../components/VideoPlayer';
 import { useWatchEventTracker, type WatchSource } from '../lib/watchEvents';
+import { useFollowedByChannelName } from '../hooks/useFollowedByChannelName';
 
 interface RequestData {
   requestId: string;
   status: string;
   progress: number | null;
   title: string | null;
+  channel: string | null;
   rejectionReason: string | null;
   videoUrl: string | null;
   videoId: string | null;
@@ -66,6 +68,15 @@ export function Watch() {
     videoId: data?.videoId ?? null,
     source,
   });
+
+  const followedByName = useFollowedByChannelName(data?.userId ?? null);
+  const personId = data?.channel ? followedByName.get(data.channel.toLowerCase()) ?? null : null;
+
+  function goToPerson() {
+    if (!personId) return;
+    const qs = data?.userId ? `?userId=${encodeURIComponent(data.userId)}` : '';
+    navigate(`/person/${personId}${qs}`);
+  }
 
 
   if (isLoading) return <Screen><Spinner /></Screen>;
@@ -145,6 +156,41 @@ export function Watch() {
           }}>
             {data.title}
           </h1>
+        )}
+
+        {data.channel && (
+          personId ? (
+            <button
+              onClick={goToPerson}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 6,
+                width: '100%',
+                marginTop: 'var(--space-3)',
+                padding: '12px 0',
+                background: 'none', border: 'none',
+                color: 'var(--text-primary)',
+                fontFamily: 'inherit',
+                fontSize: 'var(--text-sm)', fontWeight: 600,
+                textAlign: 'left',
+                cursor: 'pointer',
+                minHeight: 44,
+                WebkitTapHighlightColor: 'transparent',
+              }}
+            >
+              <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {data.channel}
+              </span>
+              <ChevronRight size={16} strokeWidth={2} aria-hidden style={{ color: 'var(--text-tertiary)' }} />
+            </button>
+          ) : (
+            <p style={{
+              marginTop: 'var(--space-3)', marginBottom: 0,
+              fontSize: 'var(--text-sm)', fontWeight: 600,
+              color: 'var(--text-secondary)',
+            }}>
+              {data.channel}
+            </p>
+          )
         )}
 
         <div style={{ marginTop: 'var(--space-5)', borderTop: '1px solid var(--border-subtle)', paddingTop: 'var(--space-4)' }}>

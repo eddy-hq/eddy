@@ -129,6 +129,17 @@ async function unfollowChannel(userId: string, channelId: string): Promise<void>
   if (!resp.ok) throw new Error('Unfollow failed');
 }
 
+async function resolvePerson(channelId: string, channelName: string): Promise<string> {
+  const resp = await fetch('/people/resolve', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ channelId, channelName }),
+  });
+  if (!resp.ok) throw new Error('Resolve failed');
+  const body = await resp.json() as { personId: string };
+  return body.personId;
+}
+
 function toCardData(r: LibraryResult): CardData {
   return {
     requestId: r.request_id,
@@ -208,7 +219,7 @@ export function Search() {
         ['search-channels', externalQuery, userId],
         (old) => old ? { ...old, channels: old.channels.map((c) => c.channelId === channel.channelId ? { ...c, following: true } : c) } : old
       );
-      void queryClient.invalidateQueries({ queryKey: ['people-following', userId] });
+      void queryClient.invalidateQueries({ queryKey: ['person-following', userId] });
     },
   });
 
@@ -219,7 +230,7 @@ export function Search() {
         ['search-channels', externalQuery, userId],
         (old) => old ? { ...old, channels: old.channels.map((c) => c.channelId === channelId ? { ...c, following: false } : c) } : old
       );
-      void queryClient.invalidateQueries({ queryKey: ['people-following', userId] });
+      void queryClient.invalidateQueries({ queryKey: ['person-following', userId] });
     },
   });
 
@@ -332,6 +343,10 @@ export function Search() {
                         channel={ch}
                         onFollow={() => followMutation.mutate(ch)}
                         onUnfollow={() => unfollowMutation.mutate(ch.channelId)}
+                        onOpen={async () => {
+                          const personId = await resolvePerson(ch.channelId, ch.channelName);
+                          navigate(`/person/${personId}?userId=${encodeURIComponent(userId)}`);
+                        }}
                       />
                     ))}
                   </div>
@@ -472,33 +487,65 @@ function VideoRow({ video, onRequest, requesting }: {
 
 // ── Channel row ───────────────────────────────────────────────────────────────
 
-function ChannelRow({ channel, onFollow, onUnfollow }: {
-  channel: ChannelResult; onFollow: () => void; onUnfollow: () => void;
+function ChannelRow({ channel, onFollow, onUnfollow, onOpen }: {
+  channel: ChannelResult;
+  onFollow: () => void;
+  onUnfollow: () => void;
+  onOpen: () => void;
 }) {
+  const [opening, setOpening] = useState(false);
+
+  function handleOpen() {
+    if (opening) return;
+    setOpening(true);
+    try { onOpen(); } finally {
+      // Reset on the next tick so a failed resolve unblocks future taps; the
+      // happy path navigates away before this matters.
+      setTimeout(() => setOpening(false), 400);
+    }
+  }
+
   return (
     <div style={{
-      display: 'flex', alignItems: 'center', gap: 12,
-      padding: '10px 0', borderBottom: '1px solid var(--border-subtle)',
+      display: 'flex', alignItems: 'stretch', gap: 12,
+      padding: '0', borderBottom: '1px solid var(--border-subtle)',
     }}>
-      <div style={{
-        width: 40, height: 40, borderRadius: '50%',
-        background: 'var(--bg-elevated)',
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-        flexShrink: 0, fontSize: 16, fontWeight: 600, color: 'var(--text-secondary)',
-      }}>
-        {channel.channelName.charAt(0).toUpperCase()}
-      </div>
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          {channel.channelName}
+      <button
+        onClick={handleOpen}
+        disabled={opening}
+        aria-label={`Open ${channel.channelName}`}
+        style={{
+          display: 'flex', alignItems: 'center', gap: 12,
+          flex: 1, minWidth: 0,
+          padding: '10px 0',
+          background: 'none', border: 'none',
+          cursor: opening ? 'default' : 'pointer',
+          textAlign: 'left', fontFamily: 'inherit',
+          color: 'var(--text-primary)',
+          WebkitTapHighlightColor: 'transparent',
+        }}
+      >
+        <div style={{
+          width: 40, height: 40, borderRadius: '50%',
+          background: 'var(--bg-elevated)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          flexShrink: 0, fontSize: 16, fontWeight: 600, color: 'var(--text-secondary)',
+        }}>
+          {channel.channelName.charAt(0).toUpperCase()}
         </div>
-        <div style={{ fontSize: 12, color: 'var(--text-tertiary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          {channel.channelUrl.replace('https://www.youtube.com/', 'youtube.com/')}
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {channel.channelName}
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--text-tertiary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {channel.channelUrl.replace('https://www.youtube.com/', 'youtube.com/')}
+          </div>
         </div>
-      </div>
+      </button>
       <button
         onClick={channel.following ? onUnfollow : onFollow}
         style={{
+          alignSelf: 'center',
           padding: '6px 14px', borderRadius: 20, border: 'none',
           fontSize: 13, fontWeight: 600, cursor: 'pointer', flexShrink: 0,
           background: channel.following ? 'var(--bg-elevated)' : 'var(--accent)',

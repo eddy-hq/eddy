@@ -1,9 +1,11 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { motion, useDragControls, AnimatePresence } from 'framer-motion';
 import { useQueryClient, useMutation } from '@tanstack/react-query';
-import { X, Bookmark, BookmarkCheck, Trash2 } from 'lucide-react';
+import { X, Bookmark, BookmarkCheck, ChevronRight, Trash2 } from 'lucide-react';
 import { readProgress, writeProgress, clearProgress } from '../lib/videoProgress';
 import { useWatchEventTracker, type WatchSource } from '../lib/watchEvents';
+import { useFollowedByChannelName } from '../hooks/useFollowedByChannelName';
 import type { CardData } from './Card';
 
 const EASE: [number, number, number, number] = [0.33, 1, 0.68, 1];
@@ -22,10 +24,21 @@ interface Props {
 
 export function VideoDetailSheet({ card, userId, source, onClose }: Props) {
   const dragControls = useDragControls();
+  const navigate = useNavigate();
   const videoRef = useRef<HTMLVideoElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const lastSaveRef = useRef(0);
   const queryClient = useQueryClient();
+
+  const followedByName = useFollowedByChannelName(userId);
+  const personId = card.channel ? followedByName.get(card.channel.toLowerCase()) ?? null : null;
+
+  function goToPerson() {
+    if (!personId) return;
+    onClose();
+    const qs = userId ? `?userId=${encodeURIComponent(userId)}` : '';
+    navigate(`/person/${personId}${qs}`);
+  }
 
   const [isSaved, setIsSaved] = useState(!!card.savedAt);
   const [saving, setSaving] = useState(false);
@@ -259,12 +272,32 @@ export function VideoDetailSheet({ card, userId, source, onClose }: Props) {
           style={{ flex: 1, overflowY: 'auto', padding: '20px 20px 100px' }}
         >
           {card.channel && (
-            <p style={{
-              fontSize: 11, fontWeight: 600, letterSpacing: '0.07em',
-              textTransform: 'uppercase', color: 'var(--text-tertiary)', marginBottom: 6,
-            }}>
-              {card.channel}
-            </p>
+            personId ? (
+              <button
+                onClick={goToPerson}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 6,
+                  padding: '6px 0',
+                  marginBottom: 4, marginLeft: -2,
+                  background: 'none', border: 'none',
+                  fontFamily: 'inherit',
+                  fontSize: 11, fontWeight: 600, letterSpacing: '0.07em',
+                  textTransform: 'uppercase', color: 'var(--text-secondary)',
+                  cursor: 'pointer', minHeight: 36,
+                  WebkitTapHighlightColor: 'transparent',
+                }}
+              >
+                <span>{card.channel}</span>
+                <ChevronRight size={13} strokeWidth={2.2} aria-hidden style={{ color: 'var(--text-tertiary)' }} />
+              </button>
+            ) : (
+              <p style={{
+                fontSize: 11, fontWeight: 600, letterSpacing: '0.07em',
+                textTransform: 'uppercase', color: 'var(--text-tertiary)', marginBottom: 6,
+              }}>
+                {card.channel}
+              </p>
+            )
           )}
 
           <h1 style={{
