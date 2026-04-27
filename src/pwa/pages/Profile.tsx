@@ -1,13 +1,14 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { useSearchParams, useNavigate } from 'react-router-dom';
-import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query';
+import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { AnimatePresence, motion, Reorder, useDragControls } from 'framer-motion';
-import { Plus, X, ChevronLeft, Trash2 } from 'lucide-react';
+import { ChevronLeft, Plus, Trash2, X } from 'lucide-react';
 import { BottomNav } from '../components/BottomNav';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
 type Expertise = 'beginner' | 'comfortable' | 'deep';
+type TabKey = 'interests' | 'people';
 
 interface MyInterest {
   interestId: string;
@@ -17,6 +18,17 @@ interface MyInterest {
 }
 
 interface MineResponse { interests: MyInterest[] }
+
+interface FollowedPerson {
+  person_id: string;
+  display_name: string;
+  person_type: string | null;
+  photo_url: string | null;
+  channel_id: string | null;
+  followed_at: string;
+}
+
+interface FollowingResponse { following: FollowedPerson[] }
 
 // ── API ──────────────────────────────────────────────────────────────────────
 
@@ -62,12 +74,109 @@ async function addInterest(userId: string, label: string): Promise<void> {
   if (!res.ok) throw new Error('Add failed');
 }
 
+async function fetchFollowing(userId: string): Promise<FollowingResponse> {
+  const res = await fetch(`/people/following?userId=${encodeURIComponent(userId)}`);
+  if (!res.ok) throw new Error('Failed to load people');
+  return res.json() as Promise<FollowingResponse>;
+}
+
 // ── Page ─────────────────────────────────────────────────────────────────────
 
 export function Profile() {
-  const [params] = useSearchParams();
+  const [params, setParams] = useSearchParams();
   const navigate = useNavigate();
   const userId = params.get('userId') ?? params.get('user') ?? '';
+
+  const tabParam = params.get('tab');
+  const activeTab: TabKey = tabParam === 'people' ? 'people' : 'interests';
+
+  function setActiveTab(tab: TabKey) {
+    const next = new URLSearchParams(params);
+    if (tab === 'interests') next.delete('tab');
+    else next.set('tab', tab);
+    setParams(next, { replace: true });
+  }
+
+  if (!userId) return <Empty text="No user selected." />;
+
+  return (
+    <div style={{ minHeight: '100dvh', background: 'var(--bg-primary)' }}>
+      <div style={{
+        position: 'sticky', top: 0, zIndex: 10,
+        background: 'var(--bg-primary)',
+        borderBottom: '1px solid var(--border-subtle)',
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', padding: '6px 10px 10px' }}>
+          <button
+            onClick={() => navigate(-1)}
+            aria-label="Back"
+            style={{
+              width: 40, height: 40, display: 'flex',
+              alignItems: 'center', justifyContent: 'center',
+              background: 'none', border: 'none', cursor: 'pointer',
+              color: 'var(--text-secondary)',
+            }}
+          >
+            <ChevronLeft size={22} strokeWidth={2} />
+          </button>
+          <h1 style={{
+            fontFamily: 'var(--font-serif)',
+            fontSize: 20, fontWeight: 500, letterSpacing: '-0.01em',
+            color: 'var(--text-primary)', margin: 0,
+          }}>
+            Profile
+          </h1>
+        </div>
+        <TabBar active={activeTab} onChange={setActiveTab} />
+      </div>
+
+      <main style={{ paddingBottom: 120 }}>
+        {activeTab === 'interests' ? (
+          <InterestsTab userId={userId} />
+        ) : (
+          <PeopleTab userId={userId} />
+        )}
+      </main>
+
+      <BottomNav />
+    </div>
+  );
+}
+
+// ── Tab bar ──────────────────────────────────────────────────────────────────
+
+function TabBar({ active, onChange }: { active: TabKey; onChange: (t: TabKey) => void }) {
+  return (
+    <div style={{ display: 'flex', padding: '0 8px' }}>
+      <TabButton label="Interests" active={active === 'interests'} onClick={() => onChange('interests')} />
+      <TabButton label="People"    active={active === 'people'}    onClick={() => onChange('people')} />
+    </div>
+  );
+}
+
+function TabButton({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        flex: 1, padding: '12px 0',
+        background: 'none', border: 'none', cursor: 'pointer',
+        color: active ? 'var(--accent)' : 'var(--text-tertiary)',
+        fontFamily: 'inherit',
+        fontSize: 13, fontWeight: 600, letterSpacing: '0.04em',
+        textTransform: 'uppercase',
+        borderBottom: `2px solid ${active ? 'var(--accent)' : 'transparent'}`,
+        transition: 'color 200ms ease, border-color 200ms ease',
+      }}
+    >
+      {label}
+    </button>
+  );
+}
+
+// ── Interests tab ────────────────────────────────────────────────────────────
+
+function InterestsTab({ userId }: { userId: string }) {
   const queryClient = useQueryClient();
 
   const { data, isLoading } = useQuery({
@@ -126,67 +235,30 @@ export function Profile() {
 
   const activeInterest = order.find((i) => i.interestId === activeId) ?? null;
 
-  if (!userId) {
-    return <Empty text="No user selected." />;
-  }
-
   return (
-    <div style={{ minHeight: '100dvh', background: 'var(--bg-primary)' }}>
-      {/* Header */}
-      <div style={{
-        position: 'sticky', top: 0, zIndex: 10,
-        background: 'var(--bg-primary)',
-        borderBottom: '1px solid var(--border-subtle)',
-      }}>
-        <div style={{ display: 'flex', alignItems: 'center', padding: '6px 10px 10px' }}>
-          <button
-            onClick={() => navigate(-1)}
-            aria-label="Back"
-            style={{
-              width: 40, height: 40, display: 'flex',
-              alignItems: 'center', justifyContent: 'center',
-              background: 'none', border: 'none', cursor: 'pointer',
-              color: 'var(--text-secondary)',
-            }}
-          >
-            <ChevronLeft size={22} strokeWidth={2} />
-          </button>
-          <h1 style={{
-            fontFamily: 'var(--font-serif)',
-            fontSize: 20, fontWeight: 500, letterSpacing: '-0.01em',
-            color: 'var(--text-primary)', margin: 0,
+    <>
+      <Section title="Interests" hint="Drag to reorder. Tap to set level or remove.">
+        {isLoading ? (
+          <p style={{
+            color: 'var(--text-tertiary)', fontSize: 13,
+            padding: '0 22px', margin: 0,
           }}>
-            Profile
-          </h1>
-        </div>
-      </div>
-
-      <main style={{ paddingBottom: 120 }}>
-        <Section title="Interests" hint="Drag to reorder. Tap to set level or remove.">
-          {isLoading ? (
-            <p style={{
-              color: 'var(--text-tertiary)', fontSize: 13,
-              padding: '0 22px', margin: 0,
-            }}>
-              Loading…
-            </p>
-          ) : (
-            <InterestChips
-              order={order}
-              onReorder={handleReorder}
-              onReorderCommit={handleReorderCommit}
-              onTap={(id) => setActiveId(id)}
-              onAdd={() => setIsAdding(true)}
-              isAdding={isAdding}
-              isAddPending={addMutation.isPending}
-              onAddSubmit={(label) => addMutation.mutate(label)}
-              onAddCancel={() => setIsAdding(false)}
-            />
-          )}
-        </Section>
-      </main>
-
-      <BottomNav />
+            Loading…
+          </p>
+        ) : (
+          <InterestChips
+            order={order}
+            onReorder={handleReorder}
+            onReorderCommit={handleReorderCommit}
+            onTap={(id) => setActiveId(id)}
+            onAdd={() => setIsAdding(true)}
+            isAdding={isAdding}
+            isAddPending={addMutation.isPending}
+            onAddSubmit={(label) => addMutation.mutate(label)}
+            onAddCancel={() => setIsAdding(false)}
+          />
+        )}
+      </Section>
 
       <AnimatePresence>
         {activeInterest && (
@@ -201,8 +273,128 @@ export function Profile() {
           />
         )}
       </AnimatePresence>
-    </div>
+    </>
   );
+}
+
+// ── People tab ───────────────────────────────────────────────────────────────
+
+function PeopleTab({ userId }: { userId: string }) {
+  const navigate = useNavigate();
+  const [params] = useSearchParams();
+
+  const { data, isLoading, isError } = useQuery({
+    queryKey: ['person-following', userId],
+    queryFn: () => fetchFollowing(userId),
+    enabled: !!userId,
+  });
+
+  // Forward the full current search string (userId/user, tab=people, anything
+  // else) so the person page → back-to-Profile round-trip lands on the same tab.
+  function go(personId: string) {
+    const qs = params.toString();
+    navigate(qs ? `/person/${personId}?${qs}` : `/person/${personId}`);
+  }
+
+  return (
+    <Section title="People" hint="Tap a person for their page.">
+      {isLoading ? (
+        <p style={{
+          color: 'var(--text-tertiary)', fontSize: 13,
+          padding: '0 22px', margin: 0,
+        }}>
+          Loading…
+        </p>
+      ) : isError ? (
+        <p style={{
+          color: 'var(--text-tertiary)', fontSize: 13,
+          padding: '0 22px', margin: 0, lineHeight: 1.5,
+        }}>
+          Couldn't load the people you follow. Pull down to retry.
+        </p>
+      ) : (data?.following.length ?? 0) === 0 ? (
+        <p style={{
+          color: 'var(--text-tertiary)', fontSize: 13,
+          padding: '0 22px', margin: 0, lineHeight: 1.5,
+        }}>
+          You're not following anyone yet. Search for a creator to follow.
+        </p>
+      ) : (
+        <ul style={{
+          listStyle: 'none', margin: 0, padding: '4px 14px 0',
+          display: 'flex', flexDirection: 'column', gap: 8,
+        }}>
+          {data!.following.map((p) => (
+            <li key={p.person_id}>
+              <button
+                onClick={() => go(p.person_id)}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 12,
+                  width: '100%', padding: '10px 12px',
+                  background: 'var(--bg-surface)',
+                  border: '1px solid var(--border-subtle)',
+                  borderRadius: 12,
+                  color: 'var(--text-primary)',
+                  fontFamily: 'inherit', textAlign: 'left',
+                  cursor: 'pointer',
+                  WebkitTapHighlightColor: 'transparent',
+                }}
+              >
+                <PersonAvatar photoUrl={p.photo_url} alt={p.display_name} />
+                <span style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 }}>
+                  <span style={{
+                    fontSize: 15, fontWeight: 500,
+                    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                  }}>
+                    {p.display_name}
+                  </span>
+                  <span style={{
+                    fontSize: 12, color: 'var(--text-tertiary)',
+                  }}>
+                    Following since {monthYear(p.followed_at)}
+                  </span>
+                </span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </Section>
+  );
+}
+
+function PersonAvatar({ photoUrl, alt }: { photoUrl: string | null; alt: string }) {
+  const [errored, setErrored] = useState(false);
+  const showImage = photoUrl && !errored;
+  return (
+    <span style={{
+      width: 44, height: 44, borderRadius: '50%',
+      overflow: 'hidden',
+      background: 'var(--bg-elevated)',
+      border: '1px solid var(--border-subtle)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      flexShrink: 0,
+    }}>
+      {showImage ? (
+        <img
+          src={photoUrl}
+          alt={alt}
+          onError={() => setErrored(true)}
+          style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+        />
+      ) : (
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden>
+          <circle cx="12" cy="9" r="3.6" fill="var(--text-tertiary)" />
+          <path d="M4.5 20.5c1.4-3.4 4.2-5 7.5-5s6.1 1.6 7.5 5" stroke="var(--text-tertiary)" strokeWidth="2" strokeLinecap="round" fill="none" />
+        </svg>
+      )}
+    </span>
+  );
+}
+
+function monthYear(iso: string): string {
+  const d = new Date(iso);
+  return d.toLocaleString('en-GB', { month: 'long', year: 'numeric' });
 }
 
 // ── Section scaffolding ──────────────────────────────────────────────────────

@@ -1,6 +1,6 @@
 # Eddy — Implementation Document
 
-**Status:** Phase 5 in progress. Phases 0–4 shipped (feed, guard shadow mode, RSS poller, channel follow, search). Discovery engine, interest picker, balance prompts, channel→interest inference all live; recommendation extraction, profile-editing surface, and freeform-interest rework still to come.
+**Status:** Phase 5 in progress. Phases 0–4 shipped (feed, guard shadow mode, RSS poller, channel follow, search). Discovery engine, interest picker, balance prompts, channel→interest inference, profile-editing surface (Interests + People), freeform-interest input, person bio/photo capture, and topic→interest schema rename all live; recommendation extraction and "why this?" UI affordance still to come.
 
 Reasoning and trade-offs that led to these decisions live in `docs/decisions.md`. This document is the spec.
 
@@ -70,7 +70,7 @@ Partner's profile and the Pi-hole blocker both wait for her explicit buy-in.
 
 **Storage on Ubuntu:**
 - HDD — existing Plex library, untouched
-- SSD — `$VIDEO_OUTPUT_PATH` for video files, `$THUMB_OUTPUT_PATH` for stylised thumbnails (see `.env.example`). Eddy owns. yt-dlp writes, Eddy recycles, Plex and nginx read.
+- SSD — `$VIDEO_OUTPUT_PATH` for video files, `$THUMB_OUTPUT_PATH` for selected thumbnails (see `.env.example`). Eddy owns. yt-dlp writes, Eddy recycles, Plex and nginx read.
 
 **Network:** BT Home Hub 2. Tailscale across both machines and all family devices. HH2 cannot push DNS to DHCP clients — Pi-hole will only reach Tailscale-joined devices. Fine, stated explicitly.
 
@@ -237,9 +237,19 @@ Flag notes: `mweb` client is the path the plugin supports. Sleep intervals keep 
 
 Metadata and auto-subs stored in SQLite for guard + hook generation.
 
-### Stylised thumbnails
+### Thumbnails — frame selection, not stylisation
 
-Raw YouTube thumbnails don't fit Eddy's editorial feel — high-contrast, saturated, engineered to pull clicks. After each successful download, the Ubuntu worker generates a dimmed, desaturated `.webp` to `$THUMB_OUTPUT_PATH/{youtube_id}.webp` (sharp pipeline: blur + saturation drop + brightness reduction). The PWA shows these; nginx serves them. Tunable via `EDDY_THUMB_BLUR_SIGMA`, `EDDY_THUMB_SATURATION`, `EDDY_THUMB_BRIGHTNESS`. Stylising at download time avoids runtime processing, and thumbnails persist across file recycling so "recycled" cards stay recognisable.
+YouTube's creator-uploaded thumbnails are often the most clickbaity surface on the platform — title-card text, exaggerated faces, saturated graphics. Earlier exploration considered a sharp pipeline (blur + desaturate + dim) to neutralise them; that was rejected. Blurred thumbnails read as broken, and the editorial register the rest of the design aims at depends on *high-quality* imagery, not muted imagery.
+
+Instead, after each successful download the Ubuntu worker picks the best available frame and writes it to `$THUMB_OUTPUT_PATH/{youtube_id}.webp`:
+
+1. **YouTube auto-frames first.** YT exposes 3–4 algorithmically-chosen frames per video (`maxres` + `hq1`/`hq2`/`hq3`). Gemma 4 E4B scores each one 0–10 against a "good family-video thumbnail" rubric (clear subject, no full-screen text/graphics, no transitions). The first variant scoring ≥ a "good enough" threshold short-circuits the rest.
+2. **Local ffmpeg fallback.** If every YT auto-frame scores low (rare — usually the video is mostly title cards or overlays), the worker extracts 3 frames from the middle of the video file via ffmpeg (`30%`, `50%`, `70%` of duration) and Gemma scores those.
+3. **The highest-scoring frame is saved as `.webp`.** PWA shows it, nginx serves it, Plex doesn't care.
+
+The verdict per video (which slot won, the score, the reason) is logged in `requests.thumb_verdict` for spot-checking. Code: `src/workers/thumb.ts`.
+
+Thumbnails persist across file recycling so "recycled" cards stay recognisable.
 
 ### No Google credentials in the kids' path
 
@@ -432,21 +442,14 @@ The feed is *what was offered to me*. Drift is *what did I do with it*. Differen
 
 ### Structure
 
-```
-┌─ Today ────────────────────────────────────────────┐
-│   My requests           (shared via Shortcut)      │
-│   From people you follow (new outputs from them)   │
-│   Picked for you        (Phase 5 — discovery)      │
-├─ Yesterday ────────────────────────────────────────┤
-│   [unified list]                                   │
-├─ Tuesday 8 April ──────────────────────────────────┤
-│   [...continuous scroll back...]                   │
-└────────────────────────────────────────────────────┘
-```
+Today is structured as three short stretches in a fixed order — **You asked → From people you follow → Picked for you**. Past days are unified lists by date.
 
-**Today** is the only day with sub-sections — it's the only day still being written. Past days are unified lists.
+- **Provenance lives on the card, not in section headers.** Every card carries a small pill (dot + short label): *You asked* (amber), creator name (teal) for follows, *Picked* (terracotta) for picks. Cards are self-describing wherever they appear — Saved, search, history, Drift — without needing a header above them.
+- **Section dividers are structural, not categorical.** Today shows small serif labels with a hairline rule for the *You asked* and *From people you follow* sections. The Picks section has no divider label — its cluster intro line ("I thought you'd like this one…") *is* the section opener (see decisions.md).
+- **Single-source days suppress dividers.** A day with only requests just reads as a list — there's nothing to divide.
+- **Past days don't use dividers at all.** Past days are unified by date.
 
-**Continuous scroll only** in v1. Day headers separate sections. No date picker, no calendar, no time-jump.
+**Continuous scroll only** in v1. Day headers separate days. No date picker, no calendar, no time-jump.
 
 ### Card states
 
@@ -569,7 +572,9 @@ Eddy proactively finds content worth surfacing. Small number of genuinely good p
 
 ### Profile: four layers
 
-**Layer 1 — Explicit.** Interests in user-defined rank order with per-interest expertise level, followed people (Section 4a), hard exclusions (kids' invisible to them), duration preferences.
+**Layer 1 — Explicit.** Interests in user-defined rank order with per-interest expertise level, followed people (Section 4a), hard exclusions (kids' invisible to them).
+
+Duration preference is deliberately *not* a Layer 1 input. People watch a wide range of lengths for different reasons; asking them to pick "short / medium / long" produces a knob that's easy to mis-set and hard to update. If a duration pattern shows up in real engagement, it surfaces through Drift as observation, not configuration.
 
 **Layer 2 — Behavioural.** Completion rate per interest/person/duration-band, save rate, dwell-before-dismiss, re-watch count, requested-and-finished rate.
 
@@ -644,7 +649,7 @@ Kids see this too. Noticing your own patterns in real time is part of the litera
 
 ### Kid transparency
 
-Kids see: their own interests/people followed/durations, watch history via timeline, "why this?" on every surfaced item, balance prompts.
+Kids see: their own interests, people followed, watch history via timeline, "why this?" on every surfaced item, balance prompts.
 
 Person-level observation for kids is qualitative: *"You've been really into this creator lately."* Never quantitative or ranked.
 
@@ -658,9 +663,9 @@ First 3-4 weeks, behavioural signal is thin. "Picked for you" shows *"Eddy is st
 
 ### Interests
 
-Interests are named subjects with a set of yt-dlp search strings. The `search_terms` JSON array is what does the work — `ytsearch20:'minecraft redstone tutorial'` runs daily as a gap-filler when person-sourced candidates are thin. The label and emoji are purely display.
+Interests are named subjects with a set of yt-dlp search strings. The `search_terms` JSON array is what does the work — `ytsearch20:'minecraft redstone tutorial'` runs daily as a gap-filler when person-sourced candidates are thin. The label is the only display field (an emoji column was tried and dropped — it added noise without helping recognition).
 
-**Creation is freeform.** No taxonomy to pick from. User types an interest; one Gemma call generates the `search_terms` array and an emoji. Prompt: *"Generate 4 YouTube search queries that would find good videos about {interest}, plus a single emoji. Return JSON only."* Specificity is the input quality knob — *"minecraft redstone"* generates better search terms than *"minecraft"*; *"olympic distance triathlon training"* beats *"fitness"*. The input affordance prompts for it: *"Add an interest. Be specific."*
+**Creation is freeform.** No taxonomy to pick from. User types an interest; one Gemma call generates the `search_terms` array. Specificity is the input quality knob — *"minecraft redstone"* generates better search terms than *"minecraft"*; *"olympic distance triathlon training"* beats *"fitness"*. The input affordance prompts for it: *"Add an interest. Be specific."*
 
 **Onboarding:** Same freeform input, used in a setup flow. Kid setup is parent-driven, so the parent types the kid's interests; adults seed their own. New interests append to the end of the rank order; expertise defaults to `comfortable`. Minimum to proceed: ≥1 interest and ≥1 followed person. Without both, discovery has nothing to work with.
 
@@ -668,13 +673,12 @@ Interests are named subjects with a set of yt-dlp search strings. The `search_te
 
 ### Profile editing
 
-The explicit profile (Layer 1) is editable on a single page. Three sections, no tabs:
+The explicit profile (Layer 1) is editable on a single page. Two sections, no tabs:
 
 - **Interests** — draggable ordered list of interest chips. Each chip shows label and a small expertise indicator (beginner / comfortable / deep). Tap a chip → bottom sheet with remove and expertise selector. Plus-button at the end of the list adds an interest via the freeform input flow.
 - **People** — links into the people management surface (Section 4a).
-- **Duration preference** — short/medium/long picker.
 
-The Profile page is also the only surface for editing interests — there is no separate `/interests` PWA route. The API route stays as the contract for the PWA and any future client.
+The Profile page is the only surface for editing interests — there is no separate `/interests` PWA route. The API routes under `/interests/*` stay as the contract for the PWA and any future client.
 
 **Rank, not weight.** Ordering is the input. Stored as an integer `rank` per user per interest; reordering is a swap of two values. Discovery scoring derives the weight at runtime as `1 / sqrt(rank)` — the ranker gets honest total-order signal without a slider to fiddle.
 
@@ -1020,7 +1024,7 @@ Spec in Section 8. ~3-4 sessions.
 - Bottom nav
 - `/design-reference` route
 
-Default-allow pipeline: every request auto-approves and downloads. `requests.status` and `requests.decided_by` fields exist but `decided_by` is always `auto_approve`. Schema is correct for Phase 3 onward; no retrofit needed.
+Default-allow pipeline: every request auto-approves and downloads. `requests.status` and `requests.decided_by` fields exist but `decided_by` is always `'auto'`. Phase 6 introduces `'gemma'` for clear verdicts and a parent's `user_id` for adjudicated/appealed ones — schema is correct for Phase 3 onward, no retrofit needed.
 
 No channels, no subscriptions, no search, no discovery, no guard. Those are later phases.
 

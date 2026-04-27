@@ -9,6 +9,7 @@ import { Admin } from './pages/Admin';
 import { Watch } from './pages/Watch';
 import { Search } from './pages/Search';
 import { Profile } from './pages/Profile';
+import { Person } from './pages/Person';
 import './index.css';
 
 const queryClient = new QueryClient({
@@ -35,6 +36,7 @@ createRoot(root).render(
           <Route path="/watch/:requestId" element={<Watch />} />
           <Route path="/search"    element={<Search />} />
           <Route path="/profile"   element={<Profile />} />
+          <Route path="/person/:personId" element={<Person />} />
           <Route path="*" element={<Navigate to="/feed" replace />} />
         </Routes>
       </BrowserRouter>

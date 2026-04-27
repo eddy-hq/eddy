@@ -9,9 +9,12 @@ import { createFromChannelPoll } from '../requests';
 import { resolveUserById } from '../users';
 import { searchChannelsFlat, videoDuration, type SearchChannel } from '../../ytdlp';
 import { applyChannelInfoToPerson } from './applyChannelInfo';
+import { getPersonView } from './personView';
 
 export { applyChannelInfoToPerson } from './applyChannelInfo';
 export { extractBio } from './util';
+export { getPersonView, parseSupportUrls, isKidVisibleSupport } from './personView';
+export type { PersonView, PersonViewItem, PersonViewPerson, PersonViewSupport, SupportKind } from './personView';
 
 const RSS_POLL_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
@@ -341,6 +344,15 @@ peopleRouter.post('/follow', (req: Request, res: Response) => {
 
   logger.info({ userId: uid, personId, channelId }, 'User followed channel');
   res.json({ personId, channelId, following: true });
+});
+
+// GET /people/:personId?userId=
+peopleRouter.get('/:personId', (req: Request, res: Response) => {
+  const { personId } = req.params as { personId: string };
+  const { userId } = req.query as { userId?: string };
+  const user = resolveUserById(userId);
+  const view = getPersonView(personId, user.user_id);
+  res.json({ ...view, userRole: user.role });
 });
 
 // DELETE /people/follow/:channelId?userId=
