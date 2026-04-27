@@ -129,3 +129,26 @@ This also means the tier boundaries (~7 days, ~30 days) are display rules, not d
 Observational, never evaluative. *"Mostly Minecraft, some football"* — fine. *"A quiet week"* — fine when genuinely quiet. *"You should have watched more science"* — never. Gemma generates the summary at render time from the week's actual items; tone is restrained, factual, short. The voice is consistent with Eddy's picks voice but in third person (the week row isn't Eddy speaking *to* the kid, it's a description *of* the week).
 
 ---
+
+## Why the person view is a reflective surface, not a discovery one
+
+The person view is the page a user lands on when they tap a followed creator from the People tab in Profile (or, later, from a creator pill on a content card). The temptation when designing it is to make it a mini-feed — every video Eddy has ever pulled from this person, sortable, searchable, with "see all" affordances. Rejected.
+
+A person view in Eddy is *reflective*: a quiet acknowledgement of the relationship the user has with this creator. Not a place to browse. Specifically:
+
+- **Photo, name, bio.** Captured once from the channel about page (#41) and refreshed silently on RSS poll. Bio is shown if present, omitted if null — there is no "no bio" state, because the absence of a sentence isn't a story worth telling.
+- **"Following since [Month YYYY]."** A single line of context. People remember when they started following someone the way they remember when they started reading a book; this is the line that makes the relationship feel real.
+- **Up to 6 most-recent in-library items.** History-mode cards (watched flag visible inline). Reverse-chronological. No header label, no "see all," no pagination. Older items remain reachable via the timeline and Saved — the person view is not the surface for that traversal.
+- **Support sources.** Direct support links (Patreon, Substack, Bandcamp, Ko-fi, Bookshop.org, merch) captured from the channel about page. Adults get tappable links; kids get plain-text labels from a fixed allowlist — they see *that* the creator is supportable, not a path off the family network. Anything outside the allowlist is hidden from kids entirely.
+- **Unfollow.** Confirm modal: *"Stop following [Name]? You'll keep the videos you have. New uploads won't arrive."* The reassurance about kept videos matters — kids worry their library will be ransacked.
+
+What the page deliberately does *not* do:
+
+- **No browse-everything affordance.** Six items is enough to remind you who this creator is. More items would make the page a search surface, and search is a different surface in the app.
+- **No play counts, watch percentages, ranked metrics.** Person-level transparency for kids is qualitative (Section 4a); the same restraint applies to adults here, because a leaderboard register is wrong for the relationship the page is trying to depict.
+- **No "recommended by them" feed yet.** When recommendation extraction lands (Phase 5 close-out), it gets its own treatment — possibly inline, possibly its own surface. Not relitigated here.
+- **No first-month emptiness handling.** A person you just followed renders thin but valid: bio + photo + follow line + whatever items exist (zero, one). No "loading" placeholder, no "come back later" copy. Thinness is fine.
+
+The page exists so the user can confirm *"yes, this is the creator I follow, here's what's recent, here's how to support them, here's how to stop."* That's the whole brief.
+
+---
