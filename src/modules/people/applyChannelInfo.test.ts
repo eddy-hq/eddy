@@ -81,4 +81,15 @@ describe('applyChannelInfoToPerson', () => {
 
     expect(updateRun).not.toHaveBeenCalled();
   });
+
+  it('skips the UPDATE entirely when both bio and avatarUrl are null (no-op)', async () => {
+    vi.mocked(channelInfo).mockResolvedValue({
+      description: 'SUBSCRIBE for daily uploads',
+      avatarUrl: null,
+    });
+
+    await applyChannelInfoToPerson('person-5', 'UC111');
+
+    expect(updateRun).not.toHaveBeenCalled();
+  });
 });

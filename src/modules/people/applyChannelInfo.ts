@@ -19,6 +19,10 @@ export async function applyChannelInfoToPerson(personId: string, channelId: stri
 
   const bio = extractBio(info.description);
 
+  // Skip the no-op UPDATE — every poll cycle hits this path, no point taking
+  // a write lock just to write the row back to itself.
+  if (bio === null && info.avatarUrl === null) return;
+
   db.prepare(
     'UPDATE people SET bio = COALESCE(?, bio), photo_url = COALESCE(?, photo_url) WHERE person_id = ?'
   ).run(bio, info.avatarUrl, personId);

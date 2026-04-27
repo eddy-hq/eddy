@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import { db } from '../db/client';
 import { logger } from '../logger';
-import { applyChannelInfoToPerson } from '../modules/people';
+import { applyChannelInfoToPerson } from '../modules/people/applyChannelInfo';
 
 interface PersonRow {
   person_id: string;
@@ -11,14 +11,16 @@ interface PersonRow {
 // Idempotent — only picks up rows where bio OR photo_url is still null.
 // Already-populated rows are skipped without a yt-dlp call.
 async function run(): Promise<void> {
+  // person_outputs has no uniqueness on (person_id, output_type, external_id),
+  // so DISTINCT keeps us from hitting yt-dlp twice for the same channel.
   const rows = db.prepare(`
-    SELECT p.person_id, po.external_id AS channel_id
+    SELECT DISTINCT p.person_id, po.external_id AS channel_id
     FROM people p
     INNER JOIN person_outputs po ON po.person_id = p.person_id
     WHERE po.output_type = 'youtube'
       AND po.active = 1
       AND (p.bio IS NULL OR p.photo_url IS NULL)
-    ORDER BY p.created_at
+    ORDER BY p.person_id
   `).all() as PersonRow[];
 
   if (rows.length === 0) {
