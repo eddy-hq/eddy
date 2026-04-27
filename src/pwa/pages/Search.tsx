@@ -129,11 +129,11 @@ async function unfollowChannel(userId: string, channelId: string): Promise<void>
   if (!resp.ok) throw new Error('Unfollow failed');
 }
 
-async function resolvePerson(channelId: string, channelName: string): Promise<string> {
+async function resolvePerson(userId: string, channelId: string, channelName: string): Promise<string> {
   const resp = await fetch('/people/resolve', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ channelId, channelName }),
+    body: JSON.stringify({ userId, channelId, channelName }),
   });
   if (!resp.ok) throw new Error('Resolve failed');
   const body = await resp.json() as { personId: string };
@@ -344,7 +344,7 @@ export function Search() {
                         onFollow={() => followMutation.mutate(ch)}
                         onUnfollow={() => unfollowMutation.mutate(ch.channelId)}
                         onOpen={async () => {
-                          const personId = await resolvePerson(ch.channelId, ch.channelName);
+                          const personId = await resolvePerson(userId, ch.channelId, ch.channelName);
                           navigate(`/person/${personId}?userId=${encodeURIComponent(userId)}`);
                         }}
                       />
@@ -491,17 +491,17 @@ function ChannelRow({ channel, onFollow, onUnfollow, onOpen }: {
   channel: ChannelResult;
   onFollow: () => void;
   onUnfollow: () => void;
-  onOpen: () => void;
+  onOpen: () => Promise<void>;
 }) {
   const [opening, setOpening] = useState(false);
 
-  function handleOpen() {
+  async function handleOpen() {
     if (opening) return;
     setOpening(true);
-    try { onOpen(); } finally {
-      // Reset on the next tick so a failed resolve unblocks future taps; the
-      // happy path navigates away before this matters.
-      setTimeout(() => setOpening(false), 400);
+    try {
+      await onOpen();
+    } finally {
+      setOpening(false);
     }
   }
 
@@ -511,7 +511,7 @@ function ChannelRow({ channel, onFollow, onUnfollow, onOpen }: {
       padding: '0', borderBottom: '1px solid var(--border-subtle)',
     }}>
       <button
-        onClick={handleOpen}
+        onClick={() => { void handleOpen(); }}
         disabled={opening}
         aria-label={`Open ${channel.channelName}`}
         style={{

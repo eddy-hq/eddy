@@ -283,8 +283,9 @@ peopleRouter.get('/following', (req: Request, res: Response) => {
 // Find or create the person + youtube output for a channel. No follow side
 // effect — both /follow and /resolve route through this so the row layout
 // stays consistent and a search-tap can land on a person view before any
-// follow has happened.
-function ensurePersonForChannel(channelId: string, channelName: string): { personId: string; outputId: string } {
+// follow has happened. Wrapped in a transaction so a failure on the second
+// insert doesn't orphan the people row.
+const ensurePersonForChannel = db.transaction((channelId: string, channelName: string): { personId: string; outputId: string } => {
   const existing = db.prepare(
     'SELECT person_id, output_id FROM person_outputs WHERE output_type = ? AND external_id = ?'
   ).get('youtube', channelId) as { person_id: string; output_id: string } | undefined;
@@ -307,16 +308,20 @@ function ensurePersonForChannel(channelId: string, channelName: string): { perso
   `).run(outputId, personId, feedUrl, channelId);
 
   return { personId, outputId };
-}
+});
 
-// POST /people/resolve — body: { channelId, channelName }
+// POST /people/resolve — body: { userId, channelId, channelName }
 // Returns the personId for a channel, creating the person row on demand. Used
 // by the search tap-through, where the user may navigate to a person view for
-// a channel they don't yet follow.
+// a channel they don't yet follow. Requires userId — same gate as every other
+// write endpoint in this module, even though no follow row is created.
 peopleRouter.post('/resolve', (req: Request, res: Response) => {
-  const { channelId, channelName } = req.body as { channelId?: string; channelName?: string };
+  const { userId, channelId, channelName } = req.body as {
+    userId?: string; channelId?: string; channelName?: string;
+  };
   if (!channelId?.trim()) throw new ValidationError('channelId required');
   if (!channelName?.trim()) throw new ValidationError('channelName required');
+  resolveUserById(userId);
 
   const { personId } = ensurePersonForChannel(channelId.trim(), channelName.trim());
 
