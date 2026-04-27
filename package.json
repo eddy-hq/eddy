@@ -23,7 +23,8 @@
     "label-guard": "tsx src/scripts/label-guard.ts",
     "thumbs:backfill": "tsx src/scripts/thumbs-backfill.ts",
     "thumbs:quality": "tsx src/scripts/thumb-quality-test.ts",
-    "thumbs:frame-test": "tsx src/scripts/frame-quality-test.ts"
+    "thumbs:frame-test": "tsx src/scripts/frame-quality-test.ts",
+    "people:backfill-bio": "tsx src/scripts/backfill-people-bio.ts"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.99.0",

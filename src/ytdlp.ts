@@ -54,6 +54,11 @@ export interface PlaylistEntry {
   liveStatus: string | null;
 }
 
+export interface ChannelInfo {
+  description: string | null;
+  avatarUrl: string | null;
+}
+
 interface RunOptions {
   timeoutMs: number;
   maxBufferMb: number;
@@ -200,6 +205,44 @@ export async function searchChannelsFlat(
     });
   }
   return out;
+}
+
+// Channel-level metadata (description + avatar). Uses --playlist-items 0 so
+// yt-dlp emits the playlist root JSON without enumerating any videos. Picks
+// the largest available avatar by height.
+export async function channelInfo(channelId: string): Promise<ChannelInfo> {
+  const records = await runYtdlpLines(
+    [
+      `https://www.youtube.com/channel/${channelId}`,
+      '--dump-single-json',
+      '--playlist-items', '0',
+      '--no-download',
+      '--quiet',
+      '--no-warnings',
+    ],
+    { timeoutMs: 30_000, maxBufferMb: 5 },
+  );
+
+  const item = records[0];
+  if (!item) {
+    throw new YtdlpError(`channelInfo: no metadata for ${channelId}`);
+  }
+
+  const rawDescription = item['description'];
+  const description = typeof rawDescription === 'string' && rawDescription.trim()
+    ? rawDescription
+    : null;
+
+  const thumbs = (item['thumbnails'] as Array<{ url?: string; height?: number }> | undefined) ?? [];
+  let best: { url: string; height: number } | null = null;
+  for (const t of thumbs) {
+    if (typeof t.url !== 'string') continue;
+    const h = typeof t.height === 'number' ? t.height : 0;
+    if (!best || h > best.height) best = { url: t.url, height: h };
+  }
+  const avatarUrl = best?.url ?? null;
+
+  return { description, avatarUrl };
 }
 
 export async function flatPlaylistChannel(channelId: string): Promise<PlaylistEntry[]> {

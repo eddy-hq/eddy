@@ -22,7 +22,7 @@ vi.mock('child_process', () => ({
   },
 }));
 
-import { parseYtdlpLines, searchVideosFlat, YtdlpError, videoDuration } from './ytdlp';
+import { parseYtdlpLines, searchVideosFlat, YtdlpError, videoDuration, channelInfo } from './ytdlp';
 
 describe('parseYtdlpLines', () => {
   it('skips empty lines', () => {
@@ -104,6 +104,57 @@ describe('searchVideosFlat', () => {
       throw new Error('spawn ENOENT');
     });
     await expect(searchVideosFlat('cats')).rejects.toBeInstanceOf(YtdlpError);
+  });
+});
+
+describe('channelInfo', () => {
+  beforeEach(() => {
+    execFileMock.mockReset();
+  });
+
+  it('returns description and the largest avatar from the playlist root JSON', async () => {
+    execFileMock.mockReturnValue({
+      stdout: JSON.stringify({
+        description: 'A channel about science.',
+        thumbnails: [
+          { url: 'http://small', height: 60 },
+          { url: 'http://big', height: 800 },
+          { url: 'http://medium', height: 240 },
+        ],
+      }),
+    });
+    const info = await channelInfo('UC123');
+    expect(info.description).toBe('A channel about science.');
+    expect(info.avatarUrl).toBe('http://big');
+  });
+
+  it('treats an empty/whitespace description as null', async () => {
+    execFileMock.mockReturnValue({
+      stdout: JSON.stringify({ description: '   ', thumbnails: [{ url: 'http://avatar', height: 200 }] }),
+    });
+    const info = await channelInfo('UC123');
+    expect(info.description).toBeNull();
+    expect(info.avatarUrl).toBe('http://avatar');
+  });
+
+  it('returns null avatarUrl when no thumbnails are present', async () => {
+    execFileMock.mockReturnValue({
+      stdout: JSON.stringify({ description: 'No avatar here.' }),
+    });
+    const info = await channelInfo('UC123');
+    expect(info.avatarUrl).toBeNull();
+  });
+
+  it('throws YtdlpError when the playlist root JSON is missing', async () => {
+    execFileMock.mockReturnValue({ stdout: '\n\n' });
+    await expect(channelInfo('UC123')).rejects.toBeInstanceOf(YtdlpError);
+  });
+
+  it('throws YtdlpError when execFile fails', async () => {
+    execFileMock.mockImplementation(() => {
+      throw new Error('spawn ENOENT');
+    });
+    await expect(channelInfo('UC123')).rejects.toBeInstanceOf(YtdlpError);
   });
 });
 
