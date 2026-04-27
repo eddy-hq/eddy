@@ -8,6 +8,10 @@ import { inferChannelInterests } from '../interests';
 import { createFromChannelPoll } from '../requests';
 import { resolveUserById } from '../users';
 import { searchChannelsFlat, videoDuration, type SearchChannel } from '../../ytdlp';
+import { applyChannelInfoToPerson } from './applyChannelInfo';
+
+export { applyChannelInfoToPerson } from './applyChannelInfo';
+export { extractBio } from './util';
 
 const RSS_POLL_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
@@ -80,6 +84,13 @@ interface OutputRow {
 }
 
 async function pollChannel(output: OutputRow): Promise<void> {
+  // Silent refresh of person bio + photo. Fire-and-forget — keeps poll latency
+  // bounded by RSS+yt-dlp(video) work, not by the channel-metadata call.
+  void applyChannelInfoToPerson(output.person_id, output.channel_id)
+    .catch((err: unknown) =>
+      logger.debug({ err, channelId: output.channel_id }, 'Channel info refresh failed'),
+    );
+
   const rssUrl = `https://www.youtube.com/feeds/videos.xml?channel_id=${output.channel_id}`;
 
   let xml: string;
@@ -313,6 +324,12 @@ peopleRouter.post('/follow', (req: Request, res: Response) => {
       VALUES (?, ?, 1.0, ?, 'manual')
     `).run(uid, personId, new Date().toISOString());
   }
+
+  // Fire-and-forget: capture the person's bio + photo from the channel's
+  // about page. Runs alongside the poll so bio/photo land on the row shortly
+  // after follow, without blocking the response.
+  void applyChannelInfoToPerson(personId, channelId)
+    .catch((err: unknown) => logger.warn({ err, channelId }, 'Capture channel info on follow failed'));
 
   // Fire-and-forget: poll the channel immediately so videos appear without waiting for the poller
   void pollChannel({ output_id: outputId, channel_id: channelId, person_id: personId, channel_name: channelName.trim() })
