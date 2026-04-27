@@ -190,7 +190,7 @@ Classify it as either "editorial" or "slop" by overall composition style.
 
 Editorial: clean photography or illustration, journalistic or magazine-cover composition, considered typography. Prominent title text is fine when it's in an editorial style — serif headlines, clean sans-serif, publisher wordmarks, album/podcast-cover typography.
 
-Slop: manufactured shock expressions (open mouth, wide/bulging eyes, fake reactions), arrows or circles pointing at things, garish clashing colours, stroked/outlined "YouTuber" text styling, or composition clearly designed to bait clicks.
+Slop: manufactured shock expressions (open mouth, wide/bulging eyes, fake reactions), arrows or circles pointing at things, garish clashing colours, stroked/outlined "YouTuber" text styling, deliberately concealed content (taped-over or blacked-out list items, redacted faces, partial reveals designed to make the viewer click), or composition clearly designed to bait clicks.
 
 Text presence alone does not decide it — a calm magazine-cover thumbnail with a large title is editorial; a shocked face with clickbait arrows is slop even with little text.
 
