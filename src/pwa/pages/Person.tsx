@@ -3,7 +3,8 @@ import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { AnimatePresence, motion } from 'framer-motion';
 import { ChevronLeft } from 'lucide-react';
-import { Card, type CardData } from '../components/Card';
+import { type CardData } from '../components/Card';
+import { CompactCard } from '../components/CompactCard';
 import { VideoDetailSheet } from '../components/VideoDetailSheet';
 import { useVideoSheet } from '../hooks/useVideoSheet';
 
@@ -191,15 +192,15 @@ export function Person() {
 
         {data.items.length > 0 && (
           <section style={{ padding: '0 16px' }}>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
               <AnimatePresence mode="popLayout">
                 {data.items.map((row) => (
-                  <Card
+                  <CompactCard
                     key={row.request_id}
                     data={toCardData(row)}
                     userId={userId}
+                    sourceKind={null}
                     onSelect={(c) => onSelect(c, 'person')}
-                    isSelected={selectedCard?.requestId === row.request_id}
                   />
                 ))}
               </AnimatePresence>
