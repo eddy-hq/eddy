@@ -59,6 +59,10 @@ No Python in Eddy — yt-dlp is a binary shell-out.
 
 Always use `npm run deploy` — never raw `launchctl` or `systemctl`. Migrations run on server startup; applying a new migration requires `npm run deploy -- --server` (or `npm run deploy:full`) to restart the M4 server.
 
+## Issue tree views
+
+Issues here use native GitHub sub-issues (created via the `tracer` skill). When asked for "feature issues", "parent issues", or "what to work on next", run `scripts/list-issues.sh` (optional `--label feature|bug|refactor`). `gh issue list` and `gh` search syntax don't expose parent/sub relationships, so the script uses GraphQL.
+
 ## Verify before declaring done
 
 ```
