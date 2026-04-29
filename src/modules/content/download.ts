@@ -269,6 +269,9 @@ export async function downloadVideo(
     });
 
     proc.on('close', (code) => {
+      // Flush any final line that arrived without a trailing newline so its
+      // progress signal isn't lost (e.g. a "Deleting original file" tick).
+      if (stdoutTail) parser.feed(stdoutTail);
       const stderr = Buffer.concat(stderrChunks).toString();
       if (code !== 0) {
         const reason = mapYtdlpError(stderr);

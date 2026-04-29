@@ -38,10 +38,15 @@ interface PollResult { pct: number | null; done: boolean; }
 function useDownloadProgress(requestId: string, active: boolean): PollResult {
   const [result, setResult] = useState<PollResult>({ pct: null, done: false });
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Sticks the last server-supplied number across transient nulls — the M4
+  // endpoint returns progress=null if Redis is unavailable, which would
+  // otherwise flick the bar back to the spinner mid-download.
+  const lastPctRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (!active) {
       setResult({ pct: null, done: false });
+      lastPctRef.current = null;
       return;
     }
 
@@ -51,10 +56,9 @@ function useDownloadProgress(requestId: string, active: boolean): PollResult {
         if (!resp.ok) return;
         const data = await resp.json() as { status?: string; progress?: number | null };
         const done = data.status === 'ready' || data.status === 'watched';
-        // Worker emits a single monotonically non-decreasing 0–100 on the
-        // unified scale, so we trust the server value as-is.
-        const pct = typeof data.progress === 'number' ? data.progress : null;
-        setResult({ pct, done });
+        // Worker owns monotonicity; we just hold the last non-null value.
+        if (typeof data.progress === 'number') lastPctRef.current = data.progress;
+        setResult({ pct: lastPctRef.current, done });
         if (done && timerRef.current) clearInterval(timerRef.current);
       } catch { /* best-effort */ }
     }
