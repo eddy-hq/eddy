@@ -154,3 +154,34 @@ What the page deliberately does *not* do:
 The page exists so the user can confirm *"yes, this is the creator I follow, here's what's recent, here's how to support them, here's how to stop."* That's the whole brief.
 
 ---
+
+## Why agents are infrastructure, not interface
+
+A vision question came up: if everything is heading toward AI-native software, what does Eddy look like in a paradigm with no traditional apps? The plausible-sounding answer is per-person agents, conversation as the primary surface, the PWA dissolves. The plausible-sounding answer is wrong.
+
+Eddy's second principle (Section 1) is to *replace the dopamine loop with something that earns its time*. A chat interface is dopamine-shaped by default — open-ended, lean-forward, infinite. A daily curated set of cards isn't. Putting an agent in front of the kid surface, however capable, would be turning Eddy into the thing it's designed to displace. Eddy is meant to be slower and more considered; a conversational primary surface would push the other way.
+
+What changes as local models keep getting better is **what the existing modules can do**, not what surfaces exist:
+
+- Discovery's `why_text` becomes more honest and more specific.
+- The guard's reasoning gets richer — better borderline judgements, better appeal handling.
+- Drift's weekly observations get more incisive.
+- Balance prompts can detect more subtle patterns and phrase the offer better.
+- Recommendation extraction reads followed people's text outputs more reliably.
+
+None of that needs new architecture. Modules are TypeScript files (Section 4); a smarter Gemma changes the contents of a function call, not the shape of the system. There is no "Phase 12: go AI-native." The current build plan is already the AI-native plan; it just runs against better models over time.
+
+People-as-subscription-unit and local-first get **more** load-bearing in this world, not less. As AI-generated content volume goes vertical, trusted human judgement becomes the only real differentiation — the people graph is where that trust lives. And kids'-data-never-leaves forces capable local inference, which is a constraint that ages well: a household-scale system whose intelligence improves on consumer hardware is the right shape for a privacy-first product.
+
+The one conversational surface in Eddy stays where Section 13 already puts it — adult MCP via Claude.ai, gated by the privacy filter. That's lean-forward control-plane work where conversation is the right register. It's not a kid surface and won't become one.
+
+### What "calm interjections" means
+
+The agentic surface that *is* welcome is the existing interjection vocabulary, executed well: in-feed balance prompts, Drift weekly summaries, ntfy notifications for guard escalations and overrides, kid-readable rejection reasons with appeal. These are slow, specific, infrequent, and they don't expect a conversation back. New interjection types may earn a place over time, but each one has to be *quieter* than what came before, not chattier.
+
+### Deferred
+
+- **Reasoning loops vs. one-shot inference.** Current discovery and guard score per-item in batches. A future module might benefit from multi-step loops (search → evaluate → search differently → re-score; or borderline guard verdict → fetch channel context → re-score). If/when a specific module hits a wall that one-shot inference can't clear, revisit. Until then, no agent runtime is needed and the current batch-Gemma shape is correct.
+- **Local-model capability ceiling on the M4.** The position above assumes Gemma-class-or-better keeps improving on consumer hardware. If that bet sours, Phase 11 frontier escalation (Section 9) is the existing fallback for the guard; broader frontier use would have to be reconciled with the kids'-data-never-leaves rule case by case. Not relitigated here.
+
+---
