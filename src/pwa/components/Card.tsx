@@ -38,12 +38,15 @@ interface PollResult { pct: number | null; done: boolean; }
 function useDownloadProgress(requestId: string, active: boolean): PollResult {
   const [result, setResult] = useState<PollResult>({ pct: null, done: false });
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const maxPctRef = useRef<number>(0);
+  // Sticks the last server-supplied number across transient nulls — the M4
+  // endpoint returns progress=null if Redis is unavailable, which would
+  // otherwise flick the bar back to the spinner mid-download.
+  const lastPctRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (!active) {
       setResult({ pct: null, done: false });
-      maxPctRef.current = 0;
+      lastPctRef.current = null;
       return;
     }
 
@@ -53,13 +56,9 @@ function useDownloadProgress(requestId: string, active: boolean): PollResult {
         if (!resp.ok) return;
         const data = await resp.json() as { status?: string; progress?: number | null };
         const done = data.status === 'ready' || data.status === 'watched';
-        const raw = typeof data.progress === 'number' ? data.progress : null;
-        // yt-dlp reports 0→100 per stream; hold max seen so bar never goes backwards
-        const pct = raw !== null
-          ? Math.max(raw, maxPctRef.current)
-          : maxPctRef.current > 0 ? maxPctRef.current : null;
-        if (pct !== null) maxPctRef.current = pct;
-        setResult({ pct, done });
+        // Worker owns monotonicity; we just hold the last non-null value.
+        if (typeof data.progress === 'number') lastPctRef.current = data.progress;
+        setResult({ pct: lastPctRef.current, done });
         if (done && timerRef.current) clearInterval(timerRef.current);
       } catch { /* best-effort */ }
     }

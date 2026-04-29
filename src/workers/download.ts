@@ -55,11 +55,16 @@ async function processJob(job: Job<DownloadJobData>): Promise<void> {
 
   log.info('Picked up download job');
 
+  // Surface 0% as soon as the job is picked up so the PWA card replaces its
+  // metadata-phase spinner with a moving bar instead of going spinner→jump.
+  await redis.set(PROGRESS_KEY(requestId), 0, 'EX', 3600);
+
   // Fetch metadata
   let metadata;
   try {
     metadata = await fetchMetadata(url);
   } catch (err: unknown) {
+    await redis.del(PROGRESS_KEY(requestId));
     const isTerminal = (err as { terminal?: boolean }).terminal === true;
     log.warn({ err, isTerminal }, 'Metadata fetch failed');
     if (isTerminal) {
@@ -74,7 +79,8 @@ async function processJob(job: Job<DownloadJobData>): Promise<void> {
 
   // Start guard score and download concurrently — guard runs while video downloads
   log.info('Starting guard score and download in parallel');
-  await redis.set(PROGRESS_KEY(requestId), 0, 'EX', 3600);
+  // Metadata done — bump to the unified scale's 5% floor before yt-dlp opens its first stream.
+  await redis.set(PROGRESS_KEY(requestId), 5, 'EX', 3600);
 
   const guardPromise = postGuardScore({
     requestId,
@@ -110,12 +116,11 @@ async function processJob(job: Job<DownloadJobData>): Promise<void> {
     throw err;
   }
 
-  await redis.del(PROGRESS_KEY(requestId));
-
   // Await guard result — usually already resolved by the time download finishes
   const guardResult = await guardPromise;
 
   if (!guardResult.proceed) {
+    await redis.del(PROGRESS_KEY(requestId));
     log.warn({ verdict: guardResult.verdict, reason: guardResult.reason }, 'Guard blocked — deleting downloaded file');
     try {
       fs.unlinkSync(filePath);
@@ -142,6 +147,12 @@ async function processJob(job: Job<DownloadJobData>): Promise<void> {
   // Immediate fallback thumbnail — the editorial-first upgrade runs in a separate
   // queue so the video is available without waiting on Gemma.
   const thumbnailUrl = `https://i.ytimg.com/vi/${youtubeId}/maxresdefault.jpg`;
+
+  // Final 100-tick is written immediately before the callback flips status to
+  // ready, so any PWA poll catching the small window sees a full bar instead
+  // of a freeze-then-flip. Long TTL — request endpoint stops returning progress
+  // once status leaves 'downloading', so the key just decays harmlessly.
+  await redis.set(PROGRESS_KEY(requestId), 100, 'EX', 3600);
 
   // Callback to M4 — M4 writes SQLite and sends ntfy
   await postSigned(`/internal/videos/${youtubeId}/downloaded`, {
