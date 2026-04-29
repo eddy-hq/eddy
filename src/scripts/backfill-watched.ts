@@ -13,6 +13,7 @@ function run(): void {
 
 try {
   run();
+  process.exit(0);
 } catch (err) {
   logger.error({ err }, 'Watched backfill failed');
   process.exit(1);
