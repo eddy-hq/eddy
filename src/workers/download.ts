@@ -64,16 +64,19 @@ async function processJob(job: Job<DownloadJobData>): Promise<void> {
   try {
     metadata = await fetchMetadata(url);
   } catch (err: unknown) {
-    await redis.del(PROGRESS_KEY(requestId));
     const isTerminal = (err as { terminal?: boolean }).terminal === true;
     log.warn({ err, isTerminal }, 'Metadata fetch failed');
     if (isTerminal) {
+      // Terminal: status flips to 'rejected' on the M4, so progress is hidden anyway.
+      await redis.del(PROGRESS_KEY(requestId));
       const reason = (err as Error).message;
       await postSigned(`/internal/requests/${requestId}/rejected`, { requestId, reason }).catch((cbErr: unknown) =>
         log.error({ cbErr }, 'Failed to post rejection callback')
       );
       return;
     }
+    // Non-terminal: BullMQ retries with backoff. Leave the 0% in place so the
+    // PWA's bar holds steady instead of flickering back to a spinner.
     throw err;
   }
 
