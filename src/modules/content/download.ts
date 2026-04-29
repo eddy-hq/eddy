@@ -23,8 +23,87 @@ function baseArgs(): string[] {
   ];
 }
 
-// Matches: [download]  45.2% of ~  2.34GiB at  5.67MiB/s ETA 03:12
-const PROGRESS_RE = /\[download\]\s+([\d.]+)%/;
+// Matches a single yt-dlp progress line: "[download]  45.2% of ~  2.34GiB ..."
+const DOWNLOAD_PCT_RE = /^\[download\]\s+([\d.]+)%/;
+// "[download] Destination: <path>" — emitted once per stream.
+const DESTINATION_RE = /^\[download\]\s+Destination:/;
+// Post-processing phases. yt-dlp prefixes vary by handler.
+const POSTPROCESS_RE = /^\[(?:Merger|ExtractAudio|FixupM4a|ffmpeg|VideoConvertor|EmbedSubtitle|Metadata)\]/;
+
+// Unified 0–99 progress scale. The worker bookends with 0 (job pickup) and
+// 100 (file ready). Segments are heuristic — single-stream sources skip a
+// band, accepting one jump rather than reweighting dynamically.
+//
+//   metadata fetch   0 →  5   (worker sets 5 once fetchMetadata returns)
+//   video stream     5 → 60   (yt-dlp [download] % during stream 1)
+//   audio stream    60 → 85   (yt-dlp [download] % during stream 2)
+//   ffmpeg merge    85 → 99   (post-processor lines)
+//   file on disk    100       (worker writes 100 after callback)
+const SEG_DOWNLOAD_FLOOR = 5;
+const SEG_VIDEO_CEIL = 60;
+const SEG_AUDIO_CEIL = 85;
+const SEG_MERGE_CEIL = 99;
+
+export interface ProgressParser {
+  feed(line: string): void;
+}
+
+/**
+ * Build a stateful parser that translates yt-dlp's per-stream stdout into a
+ * single monotonically non-decreasing percent on the unified scale above.
+ * Caller drives it line-by-line; emissions are capped at 99 so the worker
+ * owns the 100 transition.
+ */
+export function makeUnifiedProgressParser(onProgress?: (pct: number) => void): ProgressParser {
+  let stream = 0; // 0 = none yet, 1 = video, 2 = audio
+  let inMerge = false;
+  let lastEmitted = 0;
+
+  function emit(raw: number): void {
+    const clamped = Math.min(SEG_MERGE_CEIL, Math.max(lastEmitted, Math.floor(raw)));
+    if (clamped !== lastEmitted) {
+      lastEmitted = clamped;
+      onProgress?.(clamped);
+    }
+  }
+
+  return {
+    feed(rawLine: string): void {
+      const line = rawLine.replace(/\r$/, '');
+
+      if (DESTINATION_RE.test(line)) {
+        stream = stream === 0 ? 1 : 2;
+        emit(stream === 1 ? SEG_DOWNLOAD_FLOOR : SEG_VIDEO_CEIL);
+        return;
+      }
+
+      if (POSTPROCESS_RE.test(line)) {
+        if (!inMerge) {
+          inMerge = true;
+          emit(SEG_AUDIO_CEIL);
+        }
+        return;
+      }
+
+      // yt-dlp prints unprefixed "Deleting original file ..." lines after the
+      // merger consumes the per-stream files — a reliable late-merge tick.
+      if (inMerge && /Deleting original file/i.test(line)) {
+        emit(SEG_MERGE_CEIL);
+        return;
+      }
+
+      const m = line.match(DOWNLOAD_PCT_RE);
+      if (m) {
+        const pct = parseFloat(m[1]);
+        if (stream <= 1) {
+          emit(SEG_DOWNLOAD_FLOOR + (pct / 100) * (SEG_VIDEO_CEIL - SEG_DOWNLOAD_FLOOR));
+        } else {
+          emit(SEG_VIDEO_CEIL + (pct / 100) * (SEG_AUDIO_CEIL - SEG_VIDEO_CEIL));
+        }
+      }
+    },
+  };
+}
 
 export interface VideoMetadata {
   youtubeId: string;
@@ -175,15 +254,14 @@ export async function downloadVideo(
 
     const proc = spawn(config.YTDLP_BIN, args);
     const stderrChunks: Buffer[] = [];
+    const parser = makeUnifiedProgressParser(onProgress);
+    let stdoutTail = '';
 
     proc.stdout.on('data', (chunk: Buffer) => {
-      const lines = chunk.toString().split('\n');
-      for (const line of lines) {
-        const m = line.match(PROGRESS_RE);
-        if (m && onProgress) {
-          onProgress(Math.floor(parseFloat(m[1])));
-        }
-      }
+      stdoutTail += chunk.toString();
+      const lines = stdoutTail.split('\n');
+      stdoutTail = lines.pop() ?? '';
+      for (const line of lines) parser.feed(line);
     });
 
     proc.stderr.on('data', (chunk: Buffer) => {

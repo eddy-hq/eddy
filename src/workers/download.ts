@@ -55,11 +55,16 @@ async function processJob(job: Job<DownloadJobData>): Promise<void> {
 
   log.info('Picked up download job');
 
+  // Surface 0% as soon as the job is picked up so the PWA card replaces its
+  // metadata-phase spinner with a moving bar instead of going spinner→jump.
+  await redis.set(PROGRESS_KEY(requestId), 0, 'EX', 3600);
+
   // Fetch metadata
   let metadata;
   try {
     metadata = await fetchMetadata(url);
   } catch (err: unknown) {
+    await redis.del(PROGRESS_KEY(requestId));
     const isTerminal = (err as { terminal?: boolean }).terminal === true;
     log.warn({ err, isTerminal }, 'Metadata fetch failed');
     if (isTerminal) {
@@ -74,7 +79,8 @@ async function processJob(job: Job<DownloadJobData>): Promise<void> {
 
   // Start guard score and download concurrently — guard runs while video downloads
   log.info('Starting guard score and download in parallel');
-  await redis.set(PROGRESS_KEY(requestId), 0, 'EX', 3600);
+  // Metadata done — bump to the unified scale's 5% floor before yt-dlp opens its first stream.
+  await redis.set(PROGRESS_KEY(requestId), 5, 'EX', 3600);
 
   const guardPromise = postGuardScore({
     requestId,
@@ -110,7 +116,9 @@ async function processJob(job: Job<DownloadJobData>): Promise<void> {
     throw err;
   }
 
-  await redis.del(PROGRESS_KEY(requestId));
+  // Final tick of the unified scale. Short TTL — the PWA stops polling progress
+  // once status flips to ready, so this only needs to outlast the callback round-trip.
+  await redis.set(PROGRESS_KEY(requestId), 100, 'EX', 60);
 
   // Await guard result — usually already resolved by the time download finishes
   const guardResult = await guardPromise;
