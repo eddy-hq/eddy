@@ -79,12 +79,13 @@ const INSERT_SQL = `
 `;
 
 // Records each event and, in the same transaction, derives `requests.watched_at`
-// when an event crosses the threshold. markWatched() is idempotent — a no-op on
-// rows already in `watched` and on rows in non-legal source statuses — so
-// re-firing across multiple qualifying events for the same request is safe.
+// when an event crosses the threshold. markWatched() is itself idempotent, but
+// we de-dup within the batch so a single POST with multiple qualifying events
+// for the same requestId only issues one UPDATE+SELECT pair, not N.
 export function recordEvents(events: WatchEventInput[]): void {
   const insert = db.prepare(INSERT_SQL);
   const tx = db.transaction((batch: WatchEventInput[]) => {
+    const marked = new Set<string>();
     for (const e of batch) {
       insert.run({
         event_id: uuidv7(),
@@ -98,8 +99,9 @@ export function recordEvents(events: WatchEventInput[]): void {
         duration_s: e.durationS,
         reason: e.reason,
       });
-      if (meetsWatchedThreshold(e)) {
+      if (meetsWatchedThreshold(e) && !marked.has(e.requestId)) {
         markWatched(e.requestId);
+        marked.add(e.requestId);
       }
     }
   });
@@ -115,10 +117,15 @@ export function recordEvents(events: WatchEventInput[]): void {
 // Threshold mirrors meetsWatchedThreshold() — if the predicate above changes,
 // update this query too. Kept as raw SQL so the backfill is a single scan
 // instead of streaming every row into JS.
+// `missingRequest` is real, not a counter for diagnostic colour: watch_events
+// has no FK on request_id (021_watch_events.sql) so signal can outlive a
+// hard-deleted request. We split it from `alreadyTerminal` so the backfill
+// log distinguishes "already counted" from "row gone".
 export interface BackfillResult {
   candidateRequests: number;
   transitioned: number;
   alreadyTerminal: number;
+  missingRequest: number;
 }
 
 export function findRequestsWithQualifyingEvents(): string[] {
@@ -135,12 +142,14 @@ export function backfillWatchedFromEvents(): BackfillResult {
   const ids = findRequestsWithQualifyingEvents();
   let transitioned = 0;
   let alreadyTerminal = 0;
+  let missingRequest = 0;
   for (const id of ids) {
     const result = markWatched(id);
     if (result.transitioned) transitioned += 1;
+    else if (result.currentStatus === null) missingRequest += 1;
     else alreadyTerminal += 1;
   }
-  return { candidateRequests: ids.length, transitioned, alreadyTerminal };
+  return { candidateRequests: ids.length, transitioned, alreadyTerminal, missingRequest };
 }
 
 // POST /watch-events — batched, append-only. Body: { events: [...] }

@@ -30,10 +30,14 @@ vi.mock('../notifications', () => ({
 }));
 
 // Bypass requests/index.ts (which loads config) — re-export the real markWatched
-// from state.ts so transitions still hit the in-memory DB end-to-end.
+// from state.ts so transitions still hit the in-memory DB end-to-end. Wrapped
+// in a vi.fn so tests can assert call counts (e.g. dedup within a batch).
+const { markWatchedSpy } = vi.hoisted(() => ({ markWatchedSpy: vi.fn() }));
+
 vi.mock('../requests', async () => {
   const state = await vi.importActual<typeof import('../requests/state')>('../requests/state');
-  return { markWatched: state.markWatched };
+  markWatchedSpy.mockImplementation(state.markWatched);
+  return { markWatched: markWatchedSpy };
 });
 
 import { db } from '../../db/client';
@@ -125,6 +129,7 @@ beforeAll(() => {
 beforeEach(() => {
   db.exec('DELETE FROM requests');
   db.exec('DELETE FROM watch_events');
+  markWatchedSpy.mockClear();
 });
 
 describe('meetsWatchedThreshold', () => {
@@ -213,23 +218,69 @@ describe('recordEvents', () => {
     expect(row.watched_at).toBeNull();
   });
 
-  it('is idempotent across multiple qualifying events — first watched_at wins', async () => {
+  it('is idempotent across multiple qualifying events — first watched_at wins', () => {
+    // Fake timers so the assertion can't false-pass on ms-granularity coalescing:
+    // any erroneous re-write would land at a clearly different ISO timestamp.
+    vi.useFakeTimers();
+    try {
+      insertReadyRequest('req-we-1');
+
+      vi.setSystemTime(new Date('2026-04-29T12:00:00.000Z'));
+      recordEvents([makeEvent({ reason: 'ended', positionS: 600, durationS: 600 })]);
+      const firstAt = (db
+        .prepare('SELECT watched_at FROM requests WHERE request_id = ?')
+        .get('req-we-1') as { watched_at: string }).watched_at;
+
+      vi.setSystemTime(new Date('2026-04-29T12:00:01.000Z'));
+      recordEvents([makeEvent({ reason: 'ended', positionS: 600, durationS: 600 })]);
+      const secondAt = (db
+        .prepare('SELECT watched_at FROM requests WHERE request_id = ?')
+        .get('req-we-1') as { watched_at: string }).watched_at;
+
+      expect(firstAt).toBe('2026-04-29T12:00:00.000Z');
+      expect(secondAt).toBe(firstAt);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('de-dups within a batch — multiple qualifying events for one request fire markWatched once', () => {
     insertReadyRequest('req-we-1');
 
-    recordEvents([makeEvent({ reason: 'ended', positionS: 600, durationS: 600 })]);
-    const firstAt = (db
-      .prepare('SELECT watched_at FROM requests WHERE request_id = ?')
-      .get('req-we-1') as { watched_at: string }).watched_at;
+    // Three qualifying events for the same requestId in a single POST.
+    // Without dedup: markWatched fires three times (extra UPDATE+SELECT each).
+    // With dedup: it fires once, then the Set short-circuits the rest.
+    recordEvents([
+      makeEvent({ reason: 'ended', positionS: 600, durationS: 600 }),
+      makeEvent({ reason: 'ended', positionS: 600, durationS: 600 }),
+      makeEvent({ reason: 'ended', positionS: 600, durationS: 600 }),
+    ]);
 
-    // Tick the clock so a second markWatched would write a different timestamp
-    // if it ran. It must not — the row is already watched.
-    await new Promise((resolve) => setTimeout(resolve, 5));
-    recordEvents([makeEvent({ reason: 'ended', positionS: 600, durationS: 600 })]);
-    const secondAt = (db
-      .prepare('SELECT watched_at FROM requests WHERE request_id = ?')
-      .get('req-we-1') as { watched_at: string }).watched_at;
+    expect(markWatchedSpy).toHaveBeenCalledTimes(1);
+    expect(markWatchedSpy).toHaveBeenCalledWith('req-we-1');
 
-    expect(secondAt).toBe(firstAt);
+    // All three events still recorded — dedup applies only to markWatched calls.
+    const count = db.prepare('SELECT COUNT(*) AS n FROM watch_events').get() as { n: number };
+    expect(count.n).toBe(3);
+
+    const row = db
+      .prepare('SELECT status FROM requests WHERE request_id = ?')
+      .get('req-we-1') as { status: string };
+    expect(row.status).toBe('watched');
+  });
+
+  it('does not de-dup across distinct requestIds in the same batch', () => {
+    insertReadyRequest('req-we-1');
+    insertReadyRequest('req-we-2');
+
+    recordEvents([
+      makeEvent({ requestId: 'req-we-1', reason: 'ended', positionS: 600, durationS: 600 }),
+      makeEvent({ requestId: 'req-we-2', reason: 'ended', positionS: 600, durationS: 600 }),
+    ]);
+
+    expect(markWatchedSpy).toHaveBeenCalledTimes(2);
+    expect(markWatchedSpy).toHaveBeenNthCalledWith(1, 'req-we-1');
+    expect(markWatchedSpy).toHaveBeenNthCalledWith(2, 'req-we-2');
   });
 });
 
@@ -240,7 +291,7 @@ describe('backfillWatchedFromEvents', () => {
 
     const result = backfillWatchedFromEvents();
 
-    expect(result).toEqual({ candidateRequests: 1, transitioned: 1, alreadyTerminal: 0 });
+    expect(result).toEqual({ candidateRequests: 1, transitioned: 1, alreadyTerminal: 0, missingRequest: 0 });
     const row = db
       .prepare('SELECT status, watched_at FROM requests WHERE request_id = ?')
       .get('req-bf-1') as { status: string; watched_at: string | null };
@@ -279,12 +330,23 @@ describe('backfillWatchedFromEvents', () => {
 
     const result = backfillWatchedFromEvents();
 
-    expect(result).toEqual({ candidateRequests: 0, transitioned: 0, alreadyTerminal: 0 });
+    expect(result).toEqual({ candidateRequests: 0, transitioned: 0, alreadyTerminal: 0, missingRequest: 0 });
     const row = db
       .prepare('SELECT status, watched_at FROM requests WHERE request_id = ?')
       .get('req-bf-4') as { status: string; watched_at: string | null };
     expect(row.status).toBe('ready');
     expect(row.watched_at).toBeNull();
+  });
+
+  it('counts qualifying events for hard-deleted requests as missingRequest, not alreadyTerminal', () => {
+    // watch_events has no FK on request_id (021_watch_events.sql) so signal can
+    // outlive a hard-deleted request. The backfill must not silently lump that
+    // into alreadyTerminal.
+    insertEventRaw({ requestId: 'req-bf-missing', positionS: 600, durationS: 600, reason: 'ended' });
+
+    const result = backfillWatchedFromEvents();
+
+    expect(result).toEqual({ candidateRequests: 1, transitioned: 0, alreadyTerminal: 0, missingRequest: 1 });
   });
 
   it('counts already-watched rows as alreadyTerminal and does not overwrite watched_at', () => {
@@ -294,7 +356,7 @@ describe('backfillWatchedFromEvents', () => {
 
     const result = backfillWatchedFromEvents();
 
-    expect(result).toEqual({ candidateRequests: 1, transitioned: 0, alreadyTerminal: 1 });
+    expect(result).toEqual({ candidateRequests: 1, transitioned: 0, alreadyTerminal: 1, missingRequest: 0 });
     const row = db
       .prepare('SELECT watched_at FROM requests WHERE request_id = ?')
       .get('req-bf-5') as { watched_at: string };
@@ -309,7 +371,7 @@ describe('backfillWatchedFromEvents', () => {
 
     const result = backfillWatchedFromEvents();
 
-    expect(result).toEqual({ candidateRequests: 1, transitioned: 1, alreadyTerminal: 0 });
+    expect(result).toEqual({ candidateRequests: 1, transitioned: 1, alreadyTerminal: 0, missingRequest: 0 });
     const a = db.prepare('SELECT status FROM requests WHERE request_id = ?').get('req-bf-6a') as { status: string };
     const b = db.prepare('SELECT status FROM requests WHERE request_id = ?').get('req-bf-6b') as { status: string };
     expect(a.status).toBe('watched');
