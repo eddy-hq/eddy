@@ -185,10 +185,10 @@ export function Card({
           )}
         </motion.div>
 
-        {/* Duration badge — top right */}
+        {/* Duration badge — bottom right (top-right reserved for watched tick / future media-type badge) */}
         {!isDownloading && !isGone && data.durationSecs != null && (
           <span style={{
-            position: 'absolute', top: 10, right: 10, zIndex: 2,
+            position: 'absolute', bottom: 10, right: 10, zIndex: 2,
             fontSize: 10, fontWeight: 600, letterSpacing: '0.02em',
             color: '#F4F1EA', background: 'rgba(0,0,0,0.55)',
             backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)',
@@ -229,21 +229,17 @@ export function Card({
           </span>
         )}
 
-        {/* Watched checkmark — centred over image */}
+        {/* Watched checkmark — top right corner */}
         {isWatched && !isDownloading && (
           <div style={{
-            position: 'absolute', inset: 0, zIndex: 2, pointerEvents: 'none',
+            position: 'absolute', top: 10, right: 10, zIndex: 2, pointerEvents: 'none',
+            width: 24, height: 24, borderRadius: '50%',
+            background: 'rgba(61,107,107,0.85)', backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
           }}>
-            <div style={{
-              width: 34, height: 34, borderRadius: '50%',
-              background: 'rgba(61,107,107,0.75)', backdropFilter: 'blur(4px)',
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-            }}>
-              <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                <polyline points="3.5,8 6.5,11.5 12.5,4.5" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-              </svg>
-            </div>
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
+              <polyline points="3.5,8 6.5,11.5 12.5,4.5" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+            </svg>
           </div>
         )}
 
