@@ -6,6 +6,7 @@ import { X, Bookmark, BookmarkCheck, ChevronRight, Trash2 } from 'lucide-react';
 import { readProgress, writeProgress, clearProgress } from '../lib/videoProgress';
 import { useWatchEventTracker, type WatchSource } from '../lib/watchEvents';
 import { useFollowedByChannelName } from '../hooks/useFollowedByChannelName';
+import { useResolvePersonId } from '../hooks/useResolvePersonId';
 import type { CardData } from './Card';
 
 const EASE: [number, number, number, number] = [0.33, 1, 0.68, 1];
@@ -31,13 +32,20 @@ export function VideoDetailSheet({ card, userId, source, onClose }: Props) {
   const queryClient = useQueryClient();
 
   const followedByName = useFollowedByChannelName(userId);
-  const personId = card.channel ? followedByName.get(card.channel.toLowerCase()) ?? null : null;
+  const resolvePersonId = useResolvePersonId(userId);
+  const followedPersonId = card.channel ? followedByName.get(card.channel.toLowerCase()) ?? null : null;
+  const canTapToPerson = !!followedPersonId || !!card.youtubeChannelId;
 
-  function goToPerson() {
-    if (!personId) return;
+  async function goToPerson() {
+    if (!card.channel) return;
+    let pid = followedPersonId;
+    if (!pid && card.youtubeChannelId) {
+      pid = await resolvePersonId(card.youtubeChannelId, card.channel);
+    }
+    if (!pid) return;
     onClose();
     const qs = userId ? `?userId=${encodeURIComponent(userId)}` : '';
-    navigate(`/person/${personId}${qs}`);
+    navigate(`/person/${pid}${qs}`);
   }
 
   const [isSaved, setIsSaved] = useState(!!card.savedAt);
@@ -272,9 +280,9 @@ export function VideoDetailSheet({ card, userId, source, onClose }: Props) {
           style={{ flex: 1, overflowY: 'auto', padding: '20px 20px 100px' }}
         >
           {card.channel && (
-            personId ? (
+            canTapToPerson ? (
               <button
-                onClick={goToPerson}
+                onClick={() => void goToPerson()}
                 style={{
                   display: 'flex', alignItems: 'center', gap: 6,
                   padding: '6px 0',

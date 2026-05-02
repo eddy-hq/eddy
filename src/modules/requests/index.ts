@@ -157,7 +157,7 @@ requestsRouter.get('/feed', (req: Request, res: Response) => {
 
   const rows = db.prepare(`
     SELECT
-      request_id, url, youtube_id, title, channel, status, file_state,
+      request_id, url, youtube_id, youtube_channel_id, title, channel, status, file_state,
       rejection_reason, nginx_url, thumbnail_url, duration_secs,
       requested_at, added_at, watched_at, saved_at, source
     FROM requests
@@ -168,6 +168,7 @@ requestsRouter.get('/feed', (req: Request, res: Response) => {
     LIMIT 200
   `).all(found.user_id) as Array<{
     request_id: string; url: string; youtube_id: string | null;
+    youtube_channel_id: string | null;
     title: string | null; channel: string | null; status: string; file_state: string;
     rejection_reason: string | null; nginx_url: string | null;
     thumbnail_url: string | null; duration_secs: number | null;
@@ -293,10 +294,11 @@ requestsRouter.delete('/:id', async (req: Request, res: Response) => {
 // GET /requests/:id — polled by PWA to check status
 requestsRouter.get('/:id', async (req: Request, res: Response) => {
   const row = db.prepare(
-    'SELECT request_id, user_id, youtube_id, status, title, channel, rejection_reason, nginx_url FROM requests WHERE request_id = ?'
+    'SELECT request_id, user_id, youtube_id, youtube_channel_id, status, title, channel, rejection_reason, nginx_url FROM requests WHERE request_id = ?'
   ).get(req.params['id']) as
     | {
         request_id: string; user_id: string; youtube_id: string | null;
+        youtube_channel_id: string | null;
         status: string; title: string | null; channel: string | null;
         rejection_reason: string | null; nginx_url: string | null;
       }
@@ -318,6 +320,7 @@ requestsRouter.get('/:id', async (req: Request, res: Response) => {
     requestId: row.request_id,
     userId: row.user_id,
     videoId: row.youtube_id,
+    youtubeChannelId: row.youtube_channel_id,
     status: row.status,
     progress,
     title: row.title,

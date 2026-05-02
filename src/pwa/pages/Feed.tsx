@@ -66,6 +66,7 @@ interface FeedCard {
   title: string | null;
   channel: string | null;
   youtube_id: string | null;
+  youtube_channel_id: string | null;
   url: string;
   status: string;
   file_state: string;
@@ -106,6 +107,7 @@ function toCardData(row: FeedCard): CardData {
     title: row.title ?? row.url,
     channel: row.channel,
     youtubeId: row.youtube_id,
+    youtubeChannelId: row.youtube_channel_id,
     status: row.status,
     fileState: row.file_state,
     nginxUrl: row.nginx_url,

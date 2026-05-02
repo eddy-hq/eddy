@@ -166,6 +166,7 @@ async function processJob(job: Job<DownloadJobData>): Promise<void> {
     thumbnailUrl,
     title: metadata.title,
     channel: metadata.channel,
+    youtubeChannelId: metadata.youtubeChannelId,
     description: metadata.description,
     durationSecs: metadata.durationSecs,
     transcript: metadata.transcript,

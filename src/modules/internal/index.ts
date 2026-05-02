@@ -22,6 +22,7 @@ interface DownloadedPayload {
   thumbnailUrl: string | null;
   title: string;
   channel: string;
+  youtubeChannelId?: string | null;
   description: string;
   durationSecs: number;
   transcript: string | null;
@@ -29,11 +30,12 @@ interface DownloadedPayload {
 
 // POST /internal/videos/:youtube_id/downloaded — called by Ubuntu worker on success
 internalRouter.post('/videos/:youtube_id/downloaded', verifySignedJson<DownloadedPayload>((req, res, payload) => {
-  const { requestId, filePath, nginxUrl, thumbnailUrl, title, channel, description, durationSecs, transcript } = payload;
+  const { requestId, filePath, nginxUrl, thumbnailUrl, title, channel, youtubeChannelId, description, durationSecs, transcript } = payload;
 
   const result = requests.markDownloaded(requestId, {
     title,
     channel,
+    youtubeChannelId: youtubeChannelId ?? null,
     description,
     durationSecs,
     transcript,

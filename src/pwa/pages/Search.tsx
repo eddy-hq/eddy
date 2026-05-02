@@ -11,6 +11,7 @@ interface LibraryResult {
   request_id: string;
   url: string;
   youtube_id: string | null;
+  youtube_channel_id: string | null;
   title: string | null;
   channel: string | null;
   status: string;
@@ -145,6 +146,7 @@ function toCardData(r: LibraryResult): CardData {
     requestId: r.request_id,
     url: r.url,
     youtubeId: r.youtube_id,
+    youtubeChannelId: r.youtube_channel_id,
     title: r.title,
     channel: r.channel,
     status: r.status,
