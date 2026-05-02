@@ -59,6 +59,18 @@ export const thumbsQueue = new Queue('thumbs', {
   },
 });
 
+// Interests queue — generate-search-terms (and the kid-interest guard chain
+// from this same flow). Runs on the M4 alongside the discovery worker.
+export const interestsQueue = new Queue('interests', {
+  connection: redis,
+  defaultJobOptions: {
+    attempts: 3,
+    backoff: { type: 'exponential', delay: 5_000 },
+    removeOnComplete: { count: 100 },
+    removeOnFail: { count: 200 },
+  },
+});
+
 // Delete queue — best-effort. The M4 enqueues; the Ubuntu worker owns the
 // unlink because the video files only exist on the worker's disk.
 // `attempts: 1` matches the worker semantics: it never throws (it collects
@@ -80,6 +92,7 @@ export async function closeQueues(): Promise<void> {
     guardQueue.close(),
     discoveryQueue.close(),
     thumbsQueue.close(),
+    interestsQueue.close(),
     deleteQueue.close(),
   ]);
   await redis.quit();

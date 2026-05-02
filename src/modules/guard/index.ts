@@ -1,10 +1,14 @@
 import { v7 as uuidv7 } from 'uuid';
+import { Worker } from 'bullmq';
 import { db } from '../../db/client';
 import { logger } from '../../logger';
 import { ollamaGenerate, parseOllamaJson } from '../../ollama';
 import { config } from '../../config';
+import { redis } from '../../queue';
 
 const PROMPT_VERSION = 'v1';
+const KID_INTEREST_PROMPT_VERSION = 'kid-interest-v1';
+export const KID_INTEREST_EVAL_JOB = 'kid-interest-eval';
 
 export interface ScoreParams {
   requestId: string;
@@ -208,6 +212,104 @@ export async function evaluateCandidate(params: CandidateEvalParams): Promise<Gu
     url: params.url,
     requestType: 'candidate',
   });
+}
+
+// ── Kid-authored interest guard (shadow mode) ────────────────────────────────
+// Phase 5 chain: kid types a freeform interest → search-terms job populates
+// `interests.search_terms` → this evaluator runs against raw label + terms and
+// writes a `guard_eval` row. Verdict has no user-facing effect yet — the row
+// is the deliverable for tuning Phase 6 enforcement.
+
+function buildKidInterestPrompt(rawLabel: string, searchTerms: string[]): string {
+  const termsLine = searchTerms.length > 0
+    ? `\nGenerated YouTube search queries for this interest: ${searchTerms.map((t) => `"${t}"`).join(', ')}.`
+    : '\nNo search queries have been generated for this interest yet.';
+
+  return `You are a content safety guard for a family media system. A child (aged 10-12) has typed a freeform interest they would like to be recommended videos about.
+
+Raw input from the child: "${rawLabel}"${termsLine}
+
+Decide whether this interest is appropriate to recommend videos for to a child aged 10-12. Consider both the literal meaning of the input and what the generated search queries imply about the actual videos this interest will surface.
+
+Return ONLY valid JSON with no other text:
+{
+  "verdict": "clear_yes" or "clear_no" or "uncertain",
+  "reason": "one sentence, plain English, suitable to show a parent",
+  "confidence": 0.0 to 1.0
+}
+
+Guidelines:
+- clear_yes: clearly appropriate — hobbies, learning topics, age-appropriate entertainment, sports, games suitable for this age band
+- clear_no: clearly inappropriate — sexual content, graphic violence, drugs, self-harm, hate, age-restricted material, or topics whose recommendations would predictably be inappropriate
+- uncertain: ambiguous — escalate to parent; when in doubt, use this
+- confidence reflects certainty in the verdict (not how appropriate the topic is)
+- Never auto-approve when uncertain`;
+}
+
+export interface KidInterestEvalParams {
+  userId: string;
+  interestId: string;
+  rawLabel: string;
+}
+
+export async function evaluateKidInterest(params: KidInterestEvalParams): Promise<GuardVerdict> {
+  const row = db.prepare('SELECT search_terms FROM interests WHERE id = ?')
+    .get(params.interestId) as { search_terms: string } | undefined;
+
+  let searchTerms: string[] = [];
+  if (row?.search_terms) {
+    try {
+      const parsed = JSON.parse(row.search_terms) as unknown;
+      if (Array.isArray(parsed)) {
+        searchTerms = parsed.filter((v): v is string => typeof v === 'string');
+      }
+    } catch {
+      // fall through with empty terms — eval still runs against the raw label
+    }
+  }
+
+  const prompt = buildKidInterestPrompt(params.rawLabel, searchTerms);
+  return runGuardEvaluation(prompt, {
+    requestId: null,
+    url: `interest:${params.interestId}`,
+    requestType: 'kid_interest',
+    subjectText: params.rawLabel,
+    interestId: params.interestId,
+    promptVersion: KID_INTEREST_PROMPT_VERSION,
+  });
+}
+
+// guardQueue worker — currently handles the kid-interest chain only. Other
+// guard flows (scoreForRequest / evaluateCandidate) still run synchronously
+// inside their HTTP / discovery code paths.
+
+let guardWorker: Worker | null = null;
+
+interface KidInterestJob {
+  userId: string;
+  interestId: string;
+  rawLabel: string;
+}
+
+export function startGuardWorker(): void {
+  guardWorker = new Worker<KidInterestJob>('guard', async (job) => {
+    if (job.name === KID_INTEREST_EVAL_JOB) {
+      await evaluateKidInterest(job.data);
+    }
+  }, { connection: redis, concurrency: 1 });
+
+  guardWorker.on('failed', (job, err) => {
+    logger.warn({ err, jobId: job?.id, jobName: job?.name }, 'Guard worker: job failed');
+  });
+
+  logger.info('Guard worker started');
+}
+
+export async function stopGuardWorker(): Promise<void> {
+  if (guardWorker) {
+    await guardWorker.close();
+    guardWorker = null;
+  }
 }
 
 const THUMB_CLASSIFY_PROMPT = `Look at this YouTube thumbnail image.

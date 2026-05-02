@@ -1,13 +1,16 @@
 import { v7 as uuidv7 } from 'uuid';
 import { db } from '../../db/client';
 import { logger } from '../../logger';
-import { ollamaGenerate, parseOllamaJson } from '../../ollama';
+import { interestsQueue } from '../../queue';
+import { GENERATE_SEARCH_TERMS_JOB, type GenerateSearchTermsJob } from './searchTermsWorker';
 
 // Free-text interest normalization: takes a user-typed label, slugs it,
 // resolves to an existing interest if one matches by id or label, otherwise
 // creates a new interest row. Always links the resolved interest to the user
-// at the next available rank, then kicks off async search-term generation
-// for newly-created interests so they're searchable on the next discovery run.
+// at the next available rank, then enqueues a search-terms generation job
+// for newly-created interests so they're searchable on the next discovery
+// run. The job is the point at which the kid-interest guard chain (#52)
+// hooks on after success.
 
 export interface NormalizedUserInterest {
   interestId: string;
@@ -49,25 +52,15 @@ export function normalizeUserAddedInterest(userId: string, label: string): Norma
     ON CONFLICT(user_id, interest_id) DO NOTHING
   `).run(userId, interestId, nextRank, now);
 
-  void generateSearchTermsAsync(interestId, trimmed);
+  const payload: GenerateSearchTermsJob = {
+    interestId,
+    label: trimmed,
+    userId,
+    isUserAdded: true,
+  };
+  void interestsQueue.add(GENERATE_SEARCH_TERMS_JOB, payload).catch((err: unknown) => {
+    logger.warn({ err, interestId }, 'User-added interest: failed to enqueue search-terms job');
+  });
 
   return { interestId, label: trimmed, isNew: true };
-}
-
-async function generateSearchTermsAsync(interestId: string, label: string): Promise<void> {
-  const prompt = `Generate 4 YouTube search queries that would find good videos about "${label}". Return a JSON array of strings only, for example ["query one","query two","query three","query four"]. No explanation.`;
-  let raw: string;
-  try {
-    raw = await ollamaGenerate(prompt);
-  } catch (err) {
-    logger.warn({ err, interestId }, 'User-added interest: search term generation failed');
-    return;
-  }
-  const terms = parseOllamaJson<string[]>(raw, 'array', (parsed) => {
-    if (!Array.isArray(parsed)) return null;
-    return (parsed as unknown[]).filter((v): v is string => typeof v === 'string').slice(0, 4);
-  });
-  if (!terms) return;
-  db.prepare('UPDATE interests SET search_terms = ? WHERE id = ?').run(JSON.stringify(terms), interestId);
-  logger.info({ interestId, terms }, 'User-added interest search terms generated');
 }

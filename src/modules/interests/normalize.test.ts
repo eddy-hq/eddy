@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { normalizeUserAddedInterest } from './normalize';
 
 vi.mock('../../config', () => ({
@@ -9,9 +9,9 @@ vi.mock('../../logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 
-vi.mock('../../ollama', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../../ollama')>()),
-  ollamaGenerate: vi.fn(),
+const { queueAdd } = vi.hoisted(() => ({ queueAdd: vi.fn().mockResolvedValue(undefined) }));
+vi.mock('../../queue', () => ({
+  interestsQueue: { add: queueAdd },
 }));
 
 let nextRank = 1;
@@ -36,30 +36,16 @@ vi.mock('../../db/client', () => ({
   },
 }));
 
-import { ollamaGenerate } from '../../ollama';
-
 beforeEach(() => {
   nextRank = 1;
   existingMatch = undefined;
   mockRun.mockReset();
   prepareCalls.length = 0;
-  vi.mocked(ollamaGenerate).mockReset();
-  vi.mocked(ollamaGenerate).mockResolvedValue('["a","b","c","d"]');
-});
-
-function flushMicrotasks(): Promise<void> {
-  return new Promise((resolve) => setImmediate(resolve));
-}
-
-// `normalizeUserAddedInterest` fires `void generateSearchTermsAsync(...)`
-// for new interests. Flush after every test so background ollama/db work
-// can't bleed into the next test's mock state.
-afterEach(async () => {
-  await flushMicrotasks();
+  queueAdd.mockClear();
 });
 
 describe('normalizeUserAddedInterest', () => {
-  it('derives a slug, inserts into interests + user_interests at next rank', async () => {
+  it('derives a slug, inserts into interests + user_interests at next rank', () => {
     nextRank = 4;
     const result = normalizeUserAddedInterest('user-1', 'Bird Watching');
 
@@ -82,16 +68,11 @@ describe('normalizeUserAddedInterest', () => {
 
     expect(result).toEqual({ interestId: 'cycling', label: 'Cycling', isNew: false });
 
-    // No INSERT into interests should have happened — find any prepare whose SQL
-    // is the interests INSERT and confirm its run() was never called with cycling args
     const sawInterestsInsert = prepareCalls.some((sql) =>
       sql.includes('INSERT OR IGNORE INTO interests'),
     );
-    // The prepare itself may have been compiled, but with existingMatch set
-    // the code path skips it entirely.
     expect(sawInterestsInsert).toBe(false);
 
-    // user_interests insert still happens, against the existing id
     const userInterestsInsert = mockRun.mock.calls.find(
       (c) => c[0] === 'user-1' && c[1] === 'cycling',
     );
@@ -100,20 +81,23 @@ describe('normalizeUserAddedInterest', () => {
 
   it('falls back to a UUID when the label has no alphanumerics', () => {
     const result = normalizeUserAddedInterest('user-1', '!!!');
-    // UUIDs contain hyphens; the slug-only path would produce an empty string.
     expect(result.interestId).toMatch(/[0-9a-f-]{20,}/);
     expect(result.isNew).toBe(true);
   });
 
-  it('fires generateSearchTermsAsync for new interests only', async () => {
+  it('enqueues a generate-search-terms job for new interests only', () => {
     normalizeUserAddedInterest('user-1', 'Bird Watching');
-    await flushMicrotasks();
-    expect(vi.mocked(ollamaGenerate)).toHaveBeenCalledTimes(1);
+    expect(queueAdd).toHaveBeenCalledTimes(1);
+    expect(queueAdd).toHaveBeenCalledWith('generate-search-terms', {
+      interestId: 'bird_watching',
+      label: 'Bird Watching',
+      userId: 'user-1',
+      isUserAdded: true,
+    });
 
-    vi.mocked(ollamaGenerate).mockClear();
+    queueAdd.mockClear();
     existingMatch = { id: 'cycling' };
     normalizeUserAddedInterest('user-1', 'Cycling');
-    await flushMicrotasks();
-    expect(vi.mocked(ollamaGenerate)).not.toHaveBeenCalled();
+    expect(queueAdd).not.toHaveBeenCalled();
   });
 });

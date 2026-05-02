@@ -1,0 +1,71 @@
+import { Worker } from 'bullmq';
+import { db } from '../../db/client';
+import { logger } from '../../logger';
+import { ollamaGenerate, parseOllamaJson } from '../../ollama';
+import { redis, guardQueue } from '../../queue';
+import { KID_INTEREST_EVAL_JOB } from '../guard/index';
+
+// Generate 4 YouTube search queries for a freeform interest label and persist
+// them on the row. Used by the kid-interest guard chain (#52) as the point at
+// which `search_terms` is populated before the guard eval reads it.
+export const GENERATE_SEARCH_TERMS_JOB = 'generate-search-terms';
+
+export interface GenerateSearchTermsJob {
+  interestId: string;
+  label: string;
+  userId: string;
+  isUserAdded: boolean;
+}
+
+export async function processGenerateSearchTerms(job: GenerateSearchTermsJob): Promise<void> {
+  const { interestId, label, userId, isUserAdded } = job;
+  const prompt = `Generate 4 YouTube search queries that would find good videos about "${label}". Return a JSON array of strings only, for example ["query one","query two","query three","query four"]. No explanation.`;
+
+  const raw = await ollamaGenerate(prompt);
+  const terms = parseOllamaJson<string[]>(raw, 'array', (parsed) => {
+    if (!Array.isArray(parsed)) return null;
+    return (parsed as unknown[]).filter((v): v is string => typeof v === 'string').slice(0, 4);
+  });
+  if (!terms) {
+    logger.warn({ interestId, raw }, 'Search-terms job: could not parse Gemma response');
+    return;
+  }
+
+  db.prepare('UPDATE interests SET search_terms = ? WHERE id = ?')
+    .run(JSON.stringify(terms), interestId);
+
+  logger.info({ interestId, terms }, 'Search-terms job: interest search terms generated');
+
+  // Chain: only kid-authored freeform interests get a guard eval. Adult-typed
+  // interests are trusted, and the curated /select flow doesn't enqueue at all.
+  if (isUserAdded) {
+    const role = (db.prepare('SELECT role FROM users WHERE user_id = ?')
+      .get(userId) as { role: string } | undefined)?.role;
+    if (role === 'kid') {
+      await guardQueue.add(KID_INTEREST_EVAL_JOB, { userId, interestId, rawLabel: label });
+    }
+  }
+}
+
+let worker: Worker | null = null;
+
+export function startInterestsWorker(): void {
+  worker = new Worker<GenerateSearchTermsJob>('interests', async (job) => {
+    if (job.name === GENERATE_SEARCH_TERMS_JOB) {
+      await processGenerateSearchTerms(job.data);
+    }
+  }, { connection: redis, concurrency: 1 });
+
+  worker.on('failed', (job, err) => {
+    logger.warn({ err, jobId: job?.id, interestId: job?.data?.interestId }, 'Interests worker: job failed');
+  });
+
+  logger.info('Interests worker started');
+}
+
+export async function stopInterestsWorker(): Promise<void> {
+  if (worker) {
+    await worker.close();
+    worker = null;
+  }
+}
