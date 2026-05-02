@@ -343,6 +343,7 @@ describe('markDownloaded', () => {
   const FIELDS: DownloadedFields = {
     title: 'A grand title',
     channel: 'Channel One',
+    youtubeChannelId: 'UCabc123channel',
     description: 'A description',
     durationSecs: 123,
     transcript: 'transcript text',
@@ -360,18 +361,20 @@ describe('markDownloaded', () => {
     expect(result).toEqual({ transitioned: true, userId: USER_ID });
     const row = db
       .prepare(
-        `SELECT status, title, channel, description, duration_secs, transcript,
+        `SELECT status, title, channel, youtube_channel_id, description, duration_secs, transcript,
                 file_path, nginx_url, thumbnail_url, downloaded_at
          FROM requests WHERE request_id = ?`,
       )
       .get('req-dl1') as {
-        status: string; title: string; channel: string; description: string;
+        status: string; title: string; channel: string; youtube_channel_id: string;
+        description: string;
         duration_secs: number; transcript: string; file_path: string;
         nginx_url: string; thumbnail_url: string; downloaded_at: string;
       };
     expect(row.status).toBe('ready');
     expect(row.title).toBe(FIELDS.title);
     expect(row.channel).toBe(FIELDS.channel);
+    expect(row.youtube_channel_id).toBe(FIELDS.youtubeChannelId);
     expect(row.description).toBe(FIELDS.description);
     expect(row.duration_secs).toBe(FIELDS.durationSecs);
     expect(row.transcript).toBe(FIELDS.transcript);

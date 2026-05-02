@@ -109,6 +109,7 @@ export interface VideoMetadata {
   youtubeId: string;
   title: string;
   channel: string;
+  youtubeChannelId: string | null;
   description: string;
   durationSecs: number;
   transcript: string | null;
@@ -203,10 +204,16 @@ export async function fetchMetadata(url: string): Promise<VideoMetadata> {
     }
   }
 
+  const rawChannelId = json['channel_id'];
+  const youtubeChannelId = typeof rawChannelId === 'string' && rawChannelId.trim()
+    ? rawChannelId
+    : null;
+
   return {
     youtubeId: String(json['id'] ?? ''),
     title: String(json['title'] ?? ''),
     channel: String(json['uploader'] ?? json['channel'] ?? ''),
+    youtubeChannelId,
     description: String(json['description'] ?? '').slice(0, 2000),
     durationSecs: Number(json['duration'] ?? 0),
     transcript,

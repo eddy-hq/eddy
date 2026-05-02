@@ -2,6 +2,8 @@ import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { readProgress, onProgressChange } from '../lib/videoProgress';
+import { useFollowedByChannelName } from '../hooks/useFollowedByChannelName';
+import { useResolvePersonId } from '../hooks/useResolvePersonId';
 import type { CardData } from './Card';
 
 export type SourceKind = 'req' | 'follow' | 'pick';
@@ -31,6 +33,22 @@ export function CompactCard({
   onSelect?: (data: CardData) => void;
 }) {
   const navigate = useNavigate();
+  const followedByName = useFollowedByChannelName(userId ?? null);
+  const resolvePersonId = useResolvePersonId(userId ?? null);
+  const followedPersonId = data.channel ? followedByName.get(data.channel.toLowerCase()) ?? null : null;
+  const canTapToPerson = !!followedPersonId || !!data.youtubeChannelId;
+
+  async function goToPerson(e: React.MouseEvent | React.KeyboardEvent) {
+    if (!data.channel) return;
+    e.stopPropagation();
+    let pid = followedPersonId;
+    if (!pid && data.youtubeChannelId) {
+      pid = await resolvePersonId(data.youtubeChannelId, data.channel);
+    }
+    if (!pid) return;
+    const qs = userId ? `?userId=${encodeURIComponent(userId)}` : '';
+    navigate(`/person/${pid}${qs}`);
+  }
 
   const isLive     = ['ready', 'watched'].includes(data.status) && data.fileState === 'live' && !!data.nginxUrl;
   const isRecycled = ['ready', 'watched'].includes(data.status) && data.fileState === 'recycled';
@@ -192,7 +210,23 @@ export function CompactCard({
                 width: 4, height: 4, borderRadius: '50%',
                 background: DOT[sourceKind],
               }} />
-              {sourceLabel}
+              {sourceKind === 'follow' && canTapToPerson ? (
+                <span
+                  role="link"
+                  tabIndex={0}
+                  onClick={(e) => void goToPerson(e)}
+                  onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); void goToPerson(e); } }}
+                  style={{
+                    cursor: 'pointer',
+                    textDecoration: 'underline',
+                    textDecorationColor: 'var(--border-subtle)',
+                    textUnderlineOffset: 2,
+                    WebkitTapHighlightColor: 'transparent',
+                  }}
+                >
+                  {sourceLabel}
+                </span>
+              ) : sourceLabel}
             </span>
           )}
           {sourceKind && sourceLabel && (

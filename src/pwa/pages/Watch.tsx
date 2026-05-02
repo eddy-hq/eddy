@@ -5,6 +5,7 @@ import { ArrowLeft, ChevronRight, Trash2 } from 'lucide-react';
 import { VideoPlayer } from '../components/VideoPlayer';
 import { useWatchEventTracker, type WatchSource } from '../lib/watchEvents';
 import { useFollowedByChannelName } from '../hooks/useFollowedByChannelName';
+import { useResolvePersonId } from '../hooks/useResolvePersonId';
 
 interface RequestData {
   requestId: string;
@@ -12,6 +13,7 @@ interface RequestData {
   progress: number | null;
   title: string | null;
   channel: string | null;
+  youtubeChannelId: string | null;
   rejectionReason: string | null;
   videoUrl: string | null;
   videoId: string | null;
@@ -70,12 +72,19 @@ export function Watch() {
   });
 
   const followedByName = useFollowedByChannelName(data?.userId ?? null);
-  const personId = data?.channel ? followedByName.get(data.channel.toLowerCase()) ?? null : null;
+  const resolvePersonId = useResolvePersonId(data?.userId ?? null);
+  const followedPersonId = data?.channel ? followedByName.get(data.channel.toLowerCase()) ?? null : null;
+  const canTapToPerson = !!followedPersonId || !!data?.youtubeChannelId;
 
-  function goToPerson() {
-    if (!personId) return;
-    const qs = data?.userId ? `?userId=${encodeURIComponent(data.userId)}` : '';
-    navigate(`/person/${personId}${qs}`);
+  async function goToPerson() {
+    if (!data?.channel) return;
+    let pid = followedPersonId;
+    if (!pid && data.youtubeChannelId) {
+      pid = await resolvePersonId(data.youtubeChannelId, data.channel);
+    }
+    if (!pid) return;
+    const qs = data.userId ? `?userId=${encodeURIComponent(data.userId)}` : '';
+    navigate(`/person/${pid}${qs}`);
   }
 
 
@@ -159,9 +168,9 @@ export function Watch() {
         )}
 
         {data.channel && (
-          personId ? (
+          canTapToPerson ? (
             <button
-              onClick={goToPerson}
+              onClick={() => void goToPerson()}
               style={{
                 display: 'flex', alignItems: 'center', gap: 6,
                 width: '100%',

@@ -175,6 +175,7 @@ export function markSoftDeleted(id: string): TransitionResult {
 export interface DownloadedFields {
   title: string;
   channel: string;
+  youtubeChannelId: string | null;
   description: string;
   durationSecs: number;
   transcript: string | null;
@@ -191,22 +192,24 @@ export function markDownloaded(id: string, fields: DownloadedFields): Transition
   const updated = db
     .prepare(
       `UPDATE requests
-         SET status        = 'ready',
-             title         = ?,
-             channel       = ?,
-             description   = ?,
-             duration_secs = ?,
-             transcript    = ?,
-             file_path     = ?,
-             nginx_url     = ?,
-             thumbnail_url = ?,
-             downloaded_at = ?
+         SET status             = 'ready',
+             title              = ?,
+             channel            = ?,
+             youtube_channel_id = ?,
+             description        = ?,
+             duration_secs      = ?,
+             transcript         = ?,
+             file_path          = ?,
+             nginx_url          = ?,
+             thumbnail_url      = ?,
+             downloaded_at      = ?
        WHERE request_id = ? AND status IN (${placeholders})
        RETURNING user_id`,
     )
     .get(
       fields.title,
       fields.channel,
+      fields.youtubeChannelId,
       fields.description,
       fields.durationSecs,
       fields.transcript,

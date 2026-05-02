@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { readProgress, onProgressChange } from '../lib/videoProgress';
 import { useFollowedByChannelName } from '../hooks/useFollowedByChannelName';
+import { useResolvePersonId } from '../hooks/useResolvePersonId';
 import { EddySpinner } from './EddySpinner';
 
 export interface CardData {
@@ -10,6 +11,7 @@ export interface CardData {
   title: string;
   channel: string | null;
   youtubeId: string | null;
+  youtubeChannelId: string | null;
   status: string;
   fileState: string;
   nginxUrl: string | null;
@@ -86,13 +88,23 @@ export function Card({
 }) {
   const navigate = useNavigate();
   const followedByName = useFollowedByChannelName(userId ?? null);
-  const personId = data.channel ? followedByName.get(data.channel.toLowerCase()) ?? null : null;
+  const resolvePersonId = useResolvePersonId(userId ?? null);
+  const followedPersonId = data.channel ? followedByName.get(data.channel.toLowerCase()) ?? null : null;
+  // Tap-through is enabled when we have any path to a personId: a sync hit on
+  // the followed-by-name map, or a channelId we can resolve via /people/resolve
+  // on click. Pre-migration cards (no channelId, not followed) stay non-tappable.
+  const canTapToPerson = !!followedPersonId || !!data.youtubeChannelId;
 
-  function goToPerson(e: React.MouseEvent | React.KeyboardEvent) {
-    if (!personId) return;
+  async function goToPerson(e: React.MouseEvent | React.KeyboardEvent) {
+    if (!data.channel) return;
     e.stopPropagation();
+    let pid = followedPersonId;
+    if (!pid && data.youtubeChannelId) {
+      pid = await resolvePersonId(data.youtubeChannelId, data.channel);
+    }
+    if (!pid) return;
     const qs = userId ? `?userId=${encodeURIComponent(userId)}` : '';
-    navigate(`/person/${personId}${qs}`);
+    navigate(`/person/${pid}${qs}`);
   }
 
   const isLive        = ['ready', 'watched'].includes(data.status) && data.fileState === 'live' && !!data.nginxUrl;
@@ -315,7 +327,7 @@ export function Card({
                   : 'var(--accent)',
               }} />
               {sourceKind === 'follow'
-                ? <ChannelTap label={data.channel ?? 'Follow'} personId={personId} onTap={goToPerson} />
+                ? <ChannelTap label={data.channel ?? 'Follow'} enabled={canTapToPerson} onTap={goToPerson} />
                 : sourceKind === 'req' ? 'You asked'
                 : 'Picked'}
             </span>
@@ -323,13 +335,13 @@ export function Card({
           {sourceKind && sourceKind !== 'follow' && data.channel && (
             <>
               <span style={{ color: 'var(--text-tertiary)' }}>·</span>
-              <ChannelTap label={data.channel} personId={personId} onTap={goToPerson} />
+              <ChannelTap label={data.channel} enabled={canTapToPerson} onTap={goToPerson} />
             </>
           )}
           {!sourceKind && data.channel && (
             <ChannelTap
               label={data.channel}
-              personId={personId}
+              enabled={canTapToPerson}
               onTap={goToPerson}
               style={{ fontWeight: 600, color: 'var(--text-primary)' }}
             />
@@ -345,14 +357,14 @@ export function Card({
 }
 
 function ChannelTap({
-  label, personId, onTap, style,
+  label, enabled, onTap, style,
 }: {
   label: string;
-  personId: string | null;
+  enabled: boolean;
   onTap: (e: React.MouseEvent | React.KeyboardEvent) => void;
   style?: React.CSSProperties;
 }) {
-  if (!personId) return <span style={style}>{label}</span>;
+  if (!enabled) return <span style={style}>{label}</span>;
   return (
     <span
       role="link"
