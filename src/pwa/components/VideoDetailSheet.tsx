@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion, useDragControls, AnimatePresence } from 'framer-motion';
-import { useQueryClient, useMutation } from '@tanstack/react-query';
+import { useQueryClient, useMutation, useQuery } from '@tanstack/react-query';
 import { X, Bookmark, BookmarkCheck, ChevronRight, Trash2 } from 'lucide-react';
 import { readProgress, writeProgress, clearProgress } from '../lib/videoProgress';
 import { useWatchEventTracker, type WatchSource } from '../lib/watchEvents';
@@ -15,14 +15,147 @@ const DISMISS_VELOCITY = 500;
 const SWIPE_THRESHOLD_PX = 14;
 const SAVE_INTERVAL_MS = 4000;
 
-interface Props {
-  card: CardData;
-  userId: string;
-  source: WatchSource;
-  onClose: () => void;
+// Either {card} (when opened from a list with full row data) or {requestId}
+// (when opened from a notification deep link / direct URL with only an id).
+type Props =
+  & { source: WatchSource; onClose: () => void; userId?: string }
+  & ({ card: CardData; requestId?: never } | { card?: never; requestId: string });
+
+interface RequestDetail {
+  requestId: string;
+  userId: string | null;
+  videoId: string | null;
+  youtubeChannelId: string | null;
+  status: string;
+  progress: number | null;
+  title: string | null;
+  channel: string | null;
+  rejectionReason: string | null;
+  videoUrl: string | null;
+  requestedAt: string;
+  watchedAt: string | null;
+  savedAt: string | null;
 }
 
-export function VideoDetailSheet({ card, userId, source, onClose }: Props) {
+async function fetchRequest(id: string): Promise<RequestDetail> {
+  const res = await fetch(`/requests/${id}`);
+  if (!res.ok) throw new Error('Not found');
+  return res.json() as Promise<RequestDetail>;
+}
+
+export function VideoDetailSheet(props: Props) {
+  if ('card' in props && props.card) {
+    return <SheetWithCard {...props} card={props.card} />;
+  }
+  return <SheetById {...props} requestId={props.requestId!} />;
+}
+
+// ── Card-mode (Feed/Person/Saved tap a row that already has full data) ──────
+
+function SheetWithCard({
+  card,
+  userId: userIdProp,
+  source,
+  onClose,
+}: { card: CardData; userId?: string; source: WatchSource; onClose: () => void }) {
+  const userId = userIdProp ?? '';
+  return (
+    <SheetBody
+      requestId={card.requestId}
+      userId={userId}
+      title={card.title}
+      channel={card.channel}
+      youtubeId={card.youtubeId}
+      youtubeChannelId={card.youtubeChannelId}
+      status={card.status}
+      videoUrl={card.nginxUrl}
+      progress={null}
+      rejectionReason={card.rejectionReason}
+      requestedAt={card.requestedAt}
+      watchedAt={card.watchedAt}
+      savedAt={card.savedAt}
+      source={source}
+      onClose={onClose}
+      enableLayoutId
+    />
+  );
+}
+
+// ── Id-mode (notification deep link / direct URL — fetch the row first) ────
+
+function SheetById({
+  requestId,
+  userId: userIdProp,
+  source,
+  onClose,
+}: { requestId: string; userId?: string; source: WatchSource; onClose: () => void }) {
+  const { data, isError } = useQuery({
+    queryKey: ['request', requestId],
+    queryFn: () => fetchRequest(requestId),
+    refetchInterval: (query) => {
+      const status = query.state.data?.status;
+      return status === 'ready' || status === 'watched' || status === 'rejected' || status === 'deleted'
+        ? false
+        : 3000;
+    },
+  });
+
+  if (isError) {
+    return <ErrorSheet message="Request not found." onClose={onClose} />;
+  }
+
+  // While we don't have a row yet, render the chrome with a loading state in
+  // the player area. The drag/scrim still work so the user can dismiss.
+  return (
+    <SheetBody
+      requestId={requestId}
+      userId={userIdProp ?? data?.userId ?? ''}
+      title={data?.title ?? null}
+      channel={data?.channel ?? null}
+      youtubeId={data?.videoId ?? null}
+      youtubeChannelId={data?.youtubeChannelId ?? null}
+      status={data?.status ?? 'pending'}
+      videoUrl={data?.videoUrl ?? null}
+      progress={data?.progress ?? null}
+      rejectionReason={data?.rejectionReason ?? null}
+      requestedAt={data?.requestedAt ?? null}
+      watchedAt={data?.watchedAt ?? null}
+      savedAt={data?.savedAt ?? null}
+      source={source}
+      onClose={onClose}
+      enableLayoutId={false}
+    />
+  );
+}
+
+// ── Shared body ────────────────────────────────────────────────────────────
+
+interface BodyProps {
+  requestId: string;
+  userId: string;
+  title: string | null;
+  channel: string | null;
+  youtubeId: string | null;
+  youtubeChannelId: string | null;
+  status: string;
+  videoUrl: string | null;
+  progress: number | null;
+  rejectionReason: string | null;
+  requestedAt: string | null;
+  watchedAt: string | null;
+  savedAt: string | null;
+  source: WatchSource;
+  onClose: () => void;
+  enableLayoutId: boolean;
+}
+
+function SheetBody({
+  requestId, userId,
+  title, channel, youtubeId, youtubeChannelId,
+  status, videoUrl, progress, rejectionReason,
+  requestedAt, watchedAt, savedAt,
+  source, onClose, enableLayoutId,
+}: BodyProps) {
   const dragControls = useDragControls();
   const navigate = useNavigate();
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -31,33 +164,43 @@ export function VideoDetailSheet({ card, userId, source, onClose }: Props) {
   const queryClient = useQueryClient();
 
   const resolvePersonId = useResolvePersonId(userId);
-  const canTapToPerson = !!card.youtubeChannelId && !!card.channel;
+  const canTapToPerson = !!youtubeChannelId && !!channel;
 
   async function goToPerson() {
-    if (!card.channel || !card.youtubeChannelId) return;
-    const pid = await resolvePersonId(card.youtubeChannelId, card.channel);
+    if (!channel || !youtubeChannelId) return;
+    const pid = await resolvePersonId(youtubeChannelId, channel);
     if (!pid) return;
     onClose();
     const qs = userId ? `?userId=${encodeURIComponent(userId)}` : '';
     navigate(`/person/${pid}${qs}`);
   }
 
-  const [isSaved, setIsSaved] = useState(!!card.savedAt);
+  const [isSaved, setIsSaved] = useState(!!savedAt);
   const [saving, setSaving] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleteError, setDeleteError] = useState(false);
 
+  // savedAt arrives async in id-mode; sync once it lands so the button shows the right state.
+  useEffect(() => {
+    setIsSaved(!!savedAt);
+  }, [savedAt]);
+
+  const isReady = (status === 'ready' || status === 'watched') && !!videoUrl;
+  const isRejected = status === 'rejected';
+  const isDeleted = status === 'deleted';
+  const showActions = !isRejected && !isDeleted;
+
   const watchEvent = useWatchEventTracker({
     videoRef,
     userId,
-    requestId: card.requestId,
-    videoId: card.youtubeId,
+    requestId,
+    videoId: youtubeId,
     source,
   });
 
   const deleteMutation = useMutation({
     mutationFn: async () => {
-      const res = await fetch(`/requests/${card.requestId}/delete`, { method: 'POST' });
+      const res = await fetch(`/requests/${requestId}/delete`, { method: 'POST' });
       if (!res.ok) throw new Error('Delete failed');
     },
     onSuccess: () => {
@@ -75,7 +218,7 @@ export function VideoDetailSheet({ card, userId, source, onClose }: Props) {
     const next = !isSaved;
     setIsSaved(next);
     try {
-      const res = await fetch(`/requests/${card.requestId}/save`, {
+      const res = await fetch(`/requests/${requestId}/save`, {
         method: next ? 'POST' : 'DELETE',
       });
       if (!res.ok) throw new Error('save failed');
@@ -90,8 +233,8 @@ export function VideoDetailSheet({ card, userId, source, onClose }: Props) {
   // Gesture state shared across all swipe zones
   const gestureRef = useRef<{ startY: number; event: PointerEvent } | null>(null);
 
-  const thumbnail = card.youtubeId
-    ? `https://i.ytimg.com/vi/${card.youtubeId}/hqdefault.jpg`
+  const thumbnail = youtubeId
+    ? `https://i.ytimg.com/vi/${youtubeId}/hqdefault.jpg`
     : null;
 
   // Lock body scroll
@@ -113,10 +256,10 @@ export function VideoDetailSheet({ card, userId, source, onClose }: Props) {
     return () => {
       const v = videoRef.current;
       if (v && !v.ended && v.duration > 0) {
-        writeProgress(userId, card.requestId, v.currentTime, v.duration);
+        writeProgress(userId, requestId, v.currentTime, v.duration);
       }
     };
-  }, [userId, card.requestId]);
+  }, [userId, requestId]);
 
   // ── Gesture handlers ────────────────────────────────────────────────────────
   // All swipe zones use these three handlers. The scroll zone additionally
@@ -152,7 +295,7 @@ export function VideoDetailSheet({ card, userId, source, onClose }: Props) {
   function handleLoadedMetadata() {
     const v = videoRef.current;
     if (!v) return;
-    const saved = readProgress(userId, card.requestId);
+    const saved = readProgress(userId, requestId);
     if (saved && saved.position > 2 && saved.position < saved.duration * 0.95) {
       v.currentTime = saved.position;
     }
@@ -165,17 +308,17 @@ export function VideoDetailSheet({ card, userId, source, onClose }: Props) {
     const now = Date.now();
     if (now - lastSaveRef.current < SAVE_INTERVAL_MS) return;
     lastSaveRef.current = now;
-    writeProgress(userId, card.requestId, v.currentTime, v.duration);
+    writeProgress(userId, requestId, v.currentTime, v.duration);
   }
 
   function handlePause() {
     const v = videoRef.current;
-    if (v && !v.ended && v.duration > 0) writeProgress(userId, card.requestId, v.currentTime, v.duration);
+    if (v && !v.ended && v.duration > 0) writeProgress(userId, requestId, v.currentTime, v.duration);
   }
 
   function handleEnded() {
     watchEvent.onEnded();
-    clearProgress(userId, card.requestId);
+    clearProgress(userId, requestId);
   }
 
   return (
@@ -205,7 +348,7 @@ export function VideoDetailSheet({ card, userId, source, onClose }: Props) {
         onDragEnd={handleDragEnd}
         role="dialog"
         aria-modal="true"
-        aria-label={card.title}
+        aria-label={title ?? 'Video'}
         style={{
           position: 'fixed', inset: 0, zIndex: 50,
           background: 'var(--bg-primary)',
@@ -215,7 +358,7 @@ export function VideoDetailSheet({ card, userId, source, onClose }: Props) {
       >
         {/* Video surface — full-area swipe zone + shared-element FLIP */}
         <motion.div
-          layoutId={card.youtubeId ? `thumb-${card.requestId}` : undefined}
+          layoutId={enableLayoutId && youtubeId ? `thumb-${requestId}` : undefined}
           transition={{ duration: DUR, ease: EASE }}
           onPointerDown={gestureDown}
           onPointerMove={gestureMove}
@@ -229,10 +372,10 @@ export function VideoDetailSheet({ card, userId, source, onClose }: Props) {
             cursor: 'grab',
           }}
         >
-          {card.nginxUrl ? (
+          {isReady && videoUrl ? (
             <video
               ref={videoRef}
-              src={card.nginxUrl}
+              src={videoUrl}
               controls
               autoPlay
               playsInline
@@ -243,10 +386,13 @@ export function VideoDetailSheet({ card, userId, source, onClose }: Props) {
               onEnded={handleEnded}
               style={{ width: '100%', height: '100%', display: 'block', objectFit: 'contain' }}
             />
-          ) : thumbnail ? (
-            <img src={thumbnail} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
           ) : (
-            <div style={{ width: '100%', height: '100%', background: 'var(--bg-elevated)' }} />
+            <UnreadyOverlay
+              status={status}
+              progress={progress}
+              rejectionReason={rejectionReason}
+              thumbnail={thumbnail}
+            />
           )}
 
           {/* Close */}
@@ -273,7 +419,7 @@ export function VideoDetailSheet({ card, userId, source, onClose }: Props) {
           onPointerUp={gestureEnd}
           style={{ flex: 1, overflowY: 'auto', padding: '20px 20px 100px' }}
         >
-          {card.channel && (
+          {channel && (
             canTapToPerson ? (
               <button
                 onClick={() => void goToPerson()}
@@ -289,7 +435,7 @@ export function VideoDetailSheet({ card, userId, source, onClose }: Props) {
                   WebkitTapHighlightColor: 'transparent',
                 }}
               >
-                <span>{card.channel}</span>
+                <span>{channel}</span>
                 <ChevronRight size={13} strokeWidth={2.2} aria-hidden style={{ color: 'var(--text-tertiary)' }} />
               </button>
             ) : (
@@ -297,26 +443,30 @@ export function VideoDetailSheet({ card, userId, source, onClose }: Props) {
                 fontSize: 11, fontWeight: 600, letterSpacing: '0.07em',
                 textTransform: 'uppercase', color: 'var(--text-tertiary)', marginBottom: 6,
               }}>
-                {card.channel}
+                {channel}
               </p>
             )
           )}
 
-          <h1 style={{
-            fontFamily: 'var(--font-serif)',
-            fontSize: 22, fontWeight: 600, lineHeight: 1.3, letterSpacing: '-0.01em',
-            color: 'var(--text-primary)', marginBottom: 20,
-          }}>
-            {card.title}
-          </h1>
+          {title && (
+            <h1 style={{
+              fontFamily: 'var(--font-serif)',
+              fontSize: 22, fontWeight: 600, lineHeight: 1.3, letterSpacing: '-0.01em',
+              color: 'var(--text-primary)', marginBottom: 20,
+            }}>
+              {title}
+            </h1>
+          )}
 
-          <div style={{ display: 'flex', gap: 28, marginBottom: 24, flexWrap: 'wrap' }}>
-            <Stat label="Requested" value={timeAgo(card.requestedAt)} />
-            {card.watchedAt && <Stat label="Watched" value={relativeTime(card.watchedAt)} />}
-            {card.savedAt && <Stat label="Saved" value={relativeTime(card.savedAt)} />}
-          </div>
+          {(requestedAt || watchedAt || savedAt) && (
+            <div style={{ display: 'flex', gap: 28, marginBottom: 24, flexWrap: 'wrap' }}>
+              {requestedAt && <Stat label="Requested" value={timeAgo(requestedAt)} />}
+              {watchedAt && <Stat label="Watched" value={relativeTime(watchedAt)} />}
+              {savedAt && <Stat label="Saved" value={relativeTime(savedAt)} />}
+            </div>
+          )}
 
-          {card.youtubeId && (
+          {youtubeId && (
             <div style={{
               padding: '12px 14px', marginBottom: 24,
               background: 'var(--bg-surface)', borderRadius: 12,
@@ -331,52 +481,176 @@ export function VideoDetailSheet({ card, userId, source, onClose }: Props) {
             </div>
           )}
 
-          <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-            <SaveButton isSaved={isSaved} saving={saving} onToggle={() => void toggleSave()} />
-            {confirmDelete ? (
-              <>
-                <span style={{ fontSize: 13, color: deleteError ? 'var(--destructive, #e53e3e)' : 'var(--text-secondary)', marginLeft: 4 }}>
-                  {deleteError ? 'Failed — try again' : 'Delete?'}
-                </span>
+          {showActions && (
+            <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+              <SaveButton isSaved={isSaved} saving={saving} onToggle={() => void toggleSave()} />
+              {confirmDelete ? (
+                <>
+                  <span style={{ fontSize: 13, color: deleteError ? 'var(--destructive, #e53e3e)' : 'var(--text-secondary)', marginLeft: 4 }}>
+                    {deleteError ? 'Failed — try again' : 'Delete?'}
+                  </span>
+                  <button
+                    onClick={() => { setDeleteError(false); deleteMutation.mutate(); }}
+                    disabled={deleteMutation.isPending}
+                    style={{
+                      fontSize: 13, fontWeight: 600,
+                      color: 'var(--destructive, #e53e3e)',
+                      minHeight: 44, padding: '0 8px',
+                    }}
+                  >
+                    {deleteMutation.isPending ? 'Deleting…' : 'Yes, delete'}
+                  </button>
+                  <button
+                    onClick={() => { setConfirmDelete(false); setDeleteError(false); }}
+                    style={{ fontSize: 13, color: 'var(--text-secondary)', minHeight: 44, padding: '0 8px' }}
+                  >
+                    Cancel
+                  </button>
+                </>
+              ) : (
                 <button
-                  onClick={() => { setDeleteError(false); deleteMutation.mutate(); }}
-                  disabled={deleteMutation.isPending}
+                  onClick={() => setConfirmDelete(true)}
                   style={{
-                    fontSize: 13, fontWeight: 600,
-                    color: 'var(--destructive, #e53e3e)',
-                    minHeight: 44, padding: '0 8px',
+                    display: 'flex', alignItems: 'center', gap: 8,
+                    padding: '11px 16px', borderRadius: 12,
+                    background: 'var(--bg-surface)',
+                    color: 'var(--text-secondary)',
+                    border: '1.5px solid var(--border-subtle)',
+                    fontSize: 14, fontWeight: 600, cursor: 'pointer',
+                    fontFamily: 'inherit',
+                    WebkitTapHighlightColor: 'transparent',
+                    outline: 'none',
                   }}
                 >
-                  {deleteMutation.isPending ? 'Deleting…' : 'Yes, delete'}
+                  <Trash2 size={16} strokeWidth={2.2} />
+                  Delete
                 </button>
-                <button
-                  onClick={() => { setConfirmDelete(false); setDeleteError(false); }}
-                  style={{ fontSize: 13, color: 'var(--text-secondary)', minHeight: 44, padding: '0 8px' }}
-                >
-                  Cancel
-                </button>
-              </>
-            ) : (
-              <button
-                onClick={() => setConfirmDelete(true)}
-                style={{
-                  display: 'flex', alignItems: 'center', gap: 8,
-                  padding: '11px 16px', borderRadius: 12,
-                  background: 'var(--bg-surface)',
-                  color: 'var(--text-secondary)',
-                  border: '1.5px solid var(--border-subtle)',
-                  fontSize: 14, fontWeight: 600, cursor: 'pointer',
-                  fontFamily: 'inherit',
-                  WebkitTapHighlightColor: 'transparent',
-                  outline: 'none',
-                }}
-              >
-                <Trash2 size={16} strokeWidth={2.2} />
-                Delete
-              </button>
-            )}
-          </div>
+              )}
+            </div>
+          )}
         </div>
+      </motion.div>
+    </>
+  );
+}
+
+// ── Non-ready overlay (rendered inside the 16:9 player area) ─────────────────
+
+function UnreadyOverlay({
+  status, progress, rejectionReason, thumbnail,
+}: {
+  status: string;
+  progress: number | null;
+  rejectionReason: string | null;
+  thumbnail: string | null;
+}) {
+  const isRejected = status === 'rejected';
+  const isDeleted = status === 'deleted';
+  const isDownloading = status === 'downloading';
+
+  const message =
+    isRejected ? (rejectionReason ?? "Eddy can't get this one.") :
+    isDeleted ? 'This video has been deleted.' :
+    statusLabel(status);
+
+  return (
+    <div style={{
+      position: 'absolute', inset: 0,
+      display: 'flex', flexDirection: 'column',
+      alignItems: 'center', justifyContent: 'center',
+      gap: 12, padding: 24,
+      color: 'rgba(255,255,255,0.85)',
+    }}>
+      {thumbnail && !isRejected && !isDeleted && (
+        <img
+          src={thumbnail}
+          alt=""
+          style={{
+            position: 'absolute', inset: 0, width: '100%', height: '100%',
+            objectFit: 'cover',
+            filter: 'grayscale(1) opacity(0.25)',
+          }}
+        />
+      )}
+      <p style={{
+        position: 'relative',
+        fontSize: 13, fontWeight: 600, letterSpacing: '0.04em',
+        textTransform: 'uppercase',
+        textAlign: 'center', maxWidth: 280, margin: 0,
+      }}>
+        {message}
+      </p>
+      {isDownloading && progress !== null && (
+        <div style={{
+          position: 'relative',
+          width: 160, height: 3, borderRadius: 2,
+          background: 'rgba(255,255,255,0.18)', overflow: 'hidden',
+        }}>
+          <div style={{
+            height: '100%', width: `${progress}%`,
+            background: 'var(--accent)', transition: 'width 0.5s ease',
+          }} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function statusLabel(status: string): string {
+  const labels: Record<string, string> = {
+    pending: 'Waiting to start…',
+    guard_review: 'Reviewing…',
+    parent_review: 'Waiting for a grown-up…',
+    approved: 'Approved, starting soon…',
+    downloading: 'Downloading…',
+  };
+  return labels[status] ?? 'Working on it…';
+}
+
+// ── Error variant for the id-mode "request not found" case ──────────────────
+
+function ErrorSheet({ message, onClose }: { message: string; onClose: () => void }) {
+  useEffect(() => {
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => { document.body.style.overflow = prev; };
+  }, []);
+
+  return (
+    <>
+      <motion.div
+        initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+        transition={{ duration: DUR, ease: 'easeOut' }}
+        onClick={onClose}
+        aria-hidden
+        style={{ position: 'fixed', inset: 0, zIndex: 49, background: 'rgba(0,0,0,0.55)' }}
+      />
+      <motion.div
+        initial={{ y: '100%' }} animate={{ y: 0 }} exit={{ y: '100%' }}
+        transition={{ duration: DUR, ease: EASE }}
+        role="dialog"
+        aria-modal="true"
+        style={{
+          position: 'fixed', inset: 0, zIndex: 50,
+          background: 'var(--bg-primary)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          padding: 24,
+        }}
+      >
+        <p style={{ color: 'var(--text-secondary)', fontSize: 14 }}>{message}</p>
+        <button
+          onClick={onClose}
+          aria-label="Close"
+          style={{
+            position: 'absolute', top: 10, right: 10,
+            width: 32, height: 32, borderRadius: '50%',
+            background: 'rgba(0,0,0,0.52)', backdropFilter: 'blur(6px)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            color: '#fff', border: 'none', cursor: 'pointer',
+          }}
+        >
+          <X size={15} strokeWidth={2.4} />
+        </button>
       </motion.div>
     </>
   );
