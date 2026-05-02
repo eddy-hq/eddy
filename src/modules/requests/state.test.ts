@@ -714,28 +714,32 @@ describe('createFromShareSheet', () => {
 describe('createFromChannelPoll', () => {
   const URL = 'https://www.youtube.com/watch?v=poll1';
   const YT_ID = 'poll1xxxxxx';
+  const CHANNEL_ID = 'UCpoll1xxxxxxxxxxxxxxxxx';
   const TITLE = 'Episode 42';
   const CHANNEL = 'A Followed Creator';
 
-  it('inserts a downloading channel_subscription row with title/channel/file_state=live and no decided_by', async () => {
+  it('inserts a downloading channel_subscription row with title/channel/youtube_channel_id/file_state=live and no decided_by', async () => {
     const before = Date.now();
 
     const { requestId } = await createFromChannelPoll({
       url: URL,
       userId: USER_ID,
       youtubeId: YT_ID,
+      youtubeChannelId: CHANNEL_ID,
       title: TITLE,
       channel: CHANNEL,
     });
 
     const row = db
       .prepare(
-        `SELECT source, url, youtube_id, title, channel, status, file_state,
+        `SELECT source, url, youtube_id, youtube_channel_id, title, channel, status, file_state,
                 decided_by, decided_at, requested_at, added_at
            FROM requests WHERE request_id = ?`,
       )
       .get(requestId) as {
-        source: string; url: string; youtube_id: string; title: string;
+        source: string; url: string; youtube_id: string;
+        youtube_channel_id: string;
+        title: string;
         channel: string; status: string; file_state: string;
         decided_by: string | null; decided_at: string | null;
         requested_at: string; added_at: string;
@@ -743,6 +747,7 @@ describe('createFromChannelPoll', () => {
     expect(row.source).toBe('channel_subscription');
     expect(row.url).toBe(URL);
     expect(row.youtube_id).toBe(YT_ID);
+    expect(row.youtube_channel_id).toBe(CHANNEL_ID);
     expect(row.title).toBe(TITLE);
     expect(row.channel).toBe(CHANNEL);
     expect(row.status).toBe('downloading');
@@ -766,6 +771,7 @@ describe('createFromChannelPoll', () => {
       url: URL,
       userId: USER_ID,
       youtubeId: YT_ID,
+      youtubeChannelId: CHANNEL_ID,
       title: TITLE,
       channel: CHANNEL,
     });

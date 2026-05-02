@@ -165,6 +165,7 @@ async function pollChannel(output: OutputRow): Promise<void> {
         url,
         userId: follower.user_id,
         youtubeId: video.videoId,
+        youtubeChannelId: output.channel_id,
         title: video.title,
         channel: output.channel_name,
       });
