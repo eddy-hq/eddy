@@ -4,7 +4,6 @@ import { useQuery, useMutation } from '@tanstack/react-query';
 import { ArrowLeft, ChevronRight, Trash2 } from 'lucide-react';
 import { VideoPlayer } from '../components/VideoPlayer';
 import { useWatchEventTracker, type WatchSource } from '../lib/watchEvents';
-import { useFollowedByChannelName } from '../hooks/useFollowedByChannelName';
 import { useResolvePersonId } from '../hooks/useResolvePersonId';
 
 interface RequestData {
@@ -71,17 +70,12 @@ export function Watch() {
     source,
   });
 
-  const followedByName = useFollowedByChannelName(data?.userId ?? null);
   const resolvePersonId = useResolvePersonId(data?.userId ?? null);
-  const followedPersonId = data?.channel ? followedByName.get(data.channel.toLowerCase()) ?? null : null;
-  const canTapToPerson = !!followedPersonId || !!data?.youtubeChannelId;
+  const canTapToPerson = !!data?.youtubeChannelId && !!data.channel;
 
   async function goToPerson() {
-    if (!data?.channel) return;
-    let pid = followedPersonId;
-    if (!pid && data.youtubeChannelId) {
-      pid = await resolvePersonId(data.youtubeChannelId, data.channel);
-    }
+    if (!data?.channel || !data.youtubeChannelId) return;
+    const pid = await resolvePersonId(data.youtubeChannelId, data.channel);
     if (!pid) return;
     const qs = data.userId ? `?userId=${encodeURIComponent(data.userId)}` : '';
     navigate(`/person/${pid}${qs}`);

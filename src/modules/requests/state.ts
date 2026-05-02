@@ -404,6 +404,7 @@ export interface CreateFromChannelPollInput {
   url: string;
   userId: string;
   youtubeId: string;
+  youtubeChannelId: string;
   title: string;
   channel: string;
 }
@@ -414,16 +415,21 @@ export async function createFromChannelPoll(
   const requestId = uuidv7();
   const now = new Date().toISOString();
 
+  // youtube_channel_id populated at insert because the poller already knows it,
+  // closing the transient gap where the row would otherwise have NULL channel_id
+  // until markDownloaded fires. Keeps the channel-name tap-through working for
+  // in-flight follow-poll cards.
   db.prepare(
     `INSERT INTO requests
-       (request_id, user_id, source, url, youtube_id, title, channel, status, requested_at, added_at, file_state)
+       (request_id, user_id, source, url, youtube_id, youtube_channel_id, title, channel, status, requested_at, added_at, file_state)
      VALUES
-       (?, ?, 'channel_subscription', ?, ?, ?, ?, 'downloading', ?, ?, 'live')`,
+       (?, ?, 'channel_subscription', ?, ?, ?, ?, ?, 'downloading', ?, ?, 'live')`,
   ).run(
     requestId,
     input.userId,
     input.url,
     input.youtubeId,
+    input.youtubeChannelId,
     input.title,
     input.channel,
     now,

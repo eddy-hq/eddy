@@ -2,7 +2,6 @@ import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { readProgress, onProgressChange } from '../lib/videoProgress';
-import { useFollowedByChannelName } from '../hooks/useFollowedByChannelName';
 import { useResolvePersonId } from '../hooks/useResolvePersonId';
 import type { CardData } from './Card';
 
@@ -33,18 +32,13 @@ export function CompactCard({
   onSelect?: (data: CardData) => void;
 }) {
   const navigate = useNavigate();
-  const followedByName = useFollowedByChannelName(userId ?? null);
   const resolvePersonId = useResolvePersonId(userId ?? null);
-  const followedPersonId = data.channel ? followedByName.get(data.channel.toLowerCase()) ?? null : null;
-  const canTapToPerson = !!followedPersonId || !!data.youtubeChannelId;
+  const canTapToPerson = !!data.youtubeChannelId && !!data.channel;
 
   async function goToPerson(e: React.MouseEvent | React.KeyboardEvent) {
-    if (!data.channel) return;
+    if (!data.channel || !data.youtubeChannelId) return;
     e.stopPropagation();
-    let pid = followedPersonId;
-    if (!pid && data.youtubeChannelId) {
-      pid = await resolvePersonId(data.youtubeChannelId, data.channel);
-    }
+    const pid = await resolvePersonId(data.youtubeChannelId, data.channel);
     if (!pid) return;
     const qs = userId ? `?userId=${encodeURIComponent(userId)}` : '';
     navigate(`/person/${pid}${qs}`);
