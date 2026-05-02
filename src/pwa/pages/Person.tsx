@@ -67,6 +67,19 @@ async function unfollowPerson(channelId: string, userId: string): Promise<void> 
   if (!res.ok) throw new Error('Unfollow failed');
 }
 
+async function followPerson(
+  channelId: string,
+  channelName: string,
+  userId: string,
+): Promise<void> {
+  const res = await fetch('/people/follow', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ userId, channelId, channelName }),
+  });
+  if (!res.ok) throw new Error('Follow failed');
+}
+
 function toCardData(row: PersonViewItem): CardData {
   return {
     requestId: row.request_id,
@@ -124,6 +137,38 @@ export function Person() {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['person-following', userId] });
       navigate(profileHref);
+    },
+  });
+
+  const followMutation = useMutation({
+    mutationFn: () => {
+      if (!data?.person.channelId) return Promise.reject(new Error('no channel'));
+      return followPerson(data.person.channelId, data.person.displayName, userId);
+    },
+    // Optimistic flip of followedAt on the cached person-view so the button
+    // re-renders as Unfollow before the network round-trip finishes. Without
+    // this the user can tap Follow a second time while the refetch is in
+    // flight, firing a redundant POST that re-runs the server's
+    // applyChannelInfo + pollChannel + inferInterests fan-out.
+    onMutate: () => {
+      const key = ['person-view', personId, userId] as const;
+      const prev = queryClient.getQueryData<PersonViewResponse>(key);
+      if (prev && !prev.followedAt) {
+        queryClient.setQueryData<PersonViewResponse>(key, {
+          ...prev,
+          followedAt: new Date().toISOString(),
+        });
+      }
+      return { prev };
+    },
+    onError: (_err, _vars, ctx) => {
+      if (ctx?.prev) {
+        queryClient.setQueryData(['person-view', personId, userId], ctx.prev);
+      }
+    },
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: ['person-view', personId, userId] });
+      void queryClient.invalidateQueries({ queryKey: ['person-following', userId] });
     },
   });
 
@@ -235,23 +280,43 @@ export function Person() {
         )}
 
         <section style={{ padding: '32px 22px 0' }}>
-          <button
-            onClick={() => setShowConfirm(true)}
-            disabled={!data.person.channelId || unfollowMutation.isPending}
-            style={{
-              width: '100%', padding: '14px',
-              background: 'var(--bg-surface)',
-              border: '1.5px solid var(--border-subtle)',
-              borderRadius: 12,
-              color: 'var(--text-secondary)',
-              fontFamily: 'inherit',
-              fontSize: 14, fontWeight: 600,
-              cursor: (data.person.channelId && !unfollowMutation.isPending) ? 'pointer' : 'default',
-              opacity: data.person.channelId ? 1 : 0.5,
-            }}
-          >
-            Unfollow
-          </button>
+          {data.followedAt ? (
+            <button
+              onClick={() => setShowConfirm(true)}
+              disabled={!data.person.channelId || unfollowMutation.isPending}
+              style={{
+                width: '100%', padding: '14px',
+                background: 'var(--bg-surface)',
+                border: '1.5px solid var(--border-subtle)',
+                borderRadius: 12,
+                color: 'var(--text-secondary)',
+                fontFamily: 'inherit',
+                fontSize: 14, fontWeight: 600,
+                cursor: (data.person.channelId && !unfollowMutation.isPending) ? 'pointer' : 'default',
+                opacity: data.person.channelId ? 1 : 0.5,
+              }}
+            >
+              Unfollow
+            </button>
+          ) : (
+            <button
+              onClick={() => followMutation.mutate()}
+              disabled={!data.person.channelId || followMutation.isPending}
+              style={{
+                width: '100%', padding: '14px',
+                background: 'var(--accent)',
+                border: 'none',
+                borderRadius: 12,
+                color: '#fff',
+                fontFamily: 'inherit',
+                fontSize: 14, fontWeight: 600,
+                cursor: (data.person.channelId && !followMutation.isPending) ? 'pointer' : 'default',
+                opacity: data.person.channelId ? 1 : 0.5,
+              }}
+            >
+              {followMutation.isPending ? 'Following…' : 'Follow'}
+            </button>
+          )}
         </section>
       </main>
 
