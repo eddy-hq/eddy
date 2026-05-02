@@ -145,7 +145,28 @@ export function Person() {
       if (!data?.person.channelId) return Promise.reject(new Error('no channel'));
       return followPerson(data.person.channelId, data.person.displayName, userId);
     },
-    onSuccess: () => {
+    // Optimistic flip of followedAt on the cached person-view so the button
+    // re-renders as Unfollow before the network round-trip finishes. Without
+    // this the user can tap Follow a second time while the refetch is in
+    // flight, firing a redundant POST that re-runs the server's
+    // applyChannelInfo + pollChannel + inferInterests fan-out.
+    onMutate: () => {
+      const key = ['person-view', personId, userId] as const;
+      const prev = queryClient.getQueryData<PersonViewResponse>(key);
+      if (prev && !prev.followedAt) {
+        queryClient.setQueryData<PersonViewResponse>(key, {
+          ...prev,
+          followedAt: new Date().toISOString(),
+        });
+      }
+      return { prev };
+    },
+    onError: (_err, _vars, ctx) => {
+      if (ctx?.prev) {
+        queryClient.setQueryData(['person-view', personId, userId], ctx.prev);
+      }
+    },
+    onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: ['person-view', personId, userId] });
       void queryClient.invalidateQueries({ queryKey: ['person-following', userId] });
     },
