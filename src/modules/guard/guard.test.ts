@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { scoreForRequest, evaluateCandidate } from './index';
+import { scoreForRequest, evaluateCandidate, evaluateKidInterest } from './index';
 
 vi.mock('../../config', () => ({
   config: {
@@ -17,6 +17,14 @@ vi.mock('../../ollama', async (importOriginal) => ({
   ollamaGenerate: vi.fn(),
 }));
 
+// Stub the queue module — guard.ts imports `redis` at module load so the
+// guardWorker constructor can use it. Tests never start the worker; this
+// just keeps the import graph satisfied.
+vi.mock('../../queue', () => ({
+  redis: {},
+  guardQueue: { add: vi.fn() },
+}));
+
 // Routed by SQL substring so the prior-eval lookup returns undefined (fresh
 // scoring path) while the channel-history lookup still returns a row. The
 // `.run()` calls for every prepare are captured on `mockRun` so tests can
@@ -24,6 +32,7 @@ vi.mock('../../ollama', async (importOriginal) => ({
 // cached path or `channelHistory` to drive prompt-content assertions.
 let priorEval: { gemma_verdict: string; gemma_reason: string; gemma_confidence: number } | undefined;
 let channelHistory: { approved: number; rejected: number } = { approved: 0, rejected: 0 };
+let interestRow: { search_terms: string } | undefined;
 const mockRun = vi.fn();
 
 vi.mock('../../db/client', () => ({
@@ -32,6 +41,7 @@ vi.mock('../../db/client', () => ({
       get: vi.fn(() => {
         if (sql.includes('FROM guard_eval')) return priorEval;
         if (sql.includes('FROM requests')) return channelHistory;
+        if (sql.includes('FROM interests')) return interestRow;
         return undefined;
       }),
       run: mockRun,
@@ -44,6 +54,7 @@ import { ollamaGenerate } from '../../ollama';
 beforeEach(() => {
   priorEval = undefined;
   channelHistory = { approved: 0, rejected: 0 };
+  interestRow = undefined;
   mockRun.mockReset();
   vi.mocked(ollamaGenerate).mockReset();
 });
@@ -226,6 +237,62 @@ describe('evaluateCandidate', () => {
       candidateId: 'cand-2', userId: 'user-1',
       url: 'https://youtube.com/watch?v=xyz', title: 'Some video',
     });
+    expect(result.verdict).toBe('uncertain');
+    expect(result.confidence).toBe(0);
+  });
+});
+
+describe('evaluateKidInterest', () => {
+  it('builds the prompt from raw label + populated search_terms', async () => {
+    interestRow = { search_terms: '["bird identification","backyard birds","bird feeders","spotting scopes"]' };
+    vi.mocked(ollamaGenerate).mockResolvedValue('{"verdict":"clear_yes","reason":"Hobby topic.","confidence":0.9}');
+
+    await evaluateKidInterest({ userId: 'user-1', interestId: 'bird_watching', rawLabel: 'Bird Watching' });
+
+    const prompt = vi.mocked(ollamaGenerate).mock.calls[0]?.[0] ?? '';
+    expect(prompt).toContain('Bird Watching');
+    expect(prompt).toContain('bird identification');
+    expect(prompt).toContain('backyard birds');
+    expect(prompt).toContain('aged 10-12');
+  });
+
+  it('writes a guard_eval row tagged kid_interest with subject_text and interest_id', async () => {
+    interestRow = { search_terms: '["a","b","c","d"]' };
+    vi.mocked(ollamaGenerate).mockResolvedValue('{"verdict":"clear_yes","reason":"OK.","confidence":0.8}');
+
+    const result = await evaluateKidInterest({
+      userId: 'user-1', interestId: 'bird_watching', rawLabel: 'Bird Watching',
+    });
+    expect(result.verdict).toBe('clear_yes');
+
+    const insertCall = mockRun.mock.calls.find(
+      (c) => typeof c[0] === 'object' && c[0] !== null && 'eval_id' in (c[0] as Record<string, unknown>)
+    );
+    expect(insertCall).toBeDefined();
+    const row = insertCall?.[0] as Record<string, unknown>;
+    expect(row['request_type']).toBe('kid_interest');
+    expect(row['subject_text']).toBe('Bird Watching');
+    expect(row['interest_id']).toBe('bird_watching');
+    expect(row['prompt_version']).toBe('kid-interest-v1');
+    expect(row['request_id']).toBeNull();
+    expect(row['url']).toBe('interest:bird_watching');
+  });
+
+  it('falls back to a no-terms-yet phrasing when search_terms is missing or invalid', async () => {
+    interestRow = { search_terms: 'not-json' };
+    vi.mocked(ollamaGenerate).mockResolvedValue('{"verdict":"uncertain","reason":"x","confidence":0.5}');
+
+    await evaluateKidInterest({ userId: 'user-1', interestId: 'x', rawLabel: 'Whatever' });
+
+    const prompt = vi.mocked(ollamaGenerate).mock.calls[0]?.[0] ?? '';
+    expect(prompt).toContain('No search queries have been generated');
+  });
+
+  it('defaults to uncertain when Ollama fails', async () => {
+    interestRow = { search_terms: '[]' };
+    vi.mocked(ollamaGenerate).mockRejectedValue(new Error('Ollama unreachable'));
+
+    const result = await evaluateKidInterest({ userId: 'user-1', interestId: 'x', rawLabel: 'Whatever' });
     expect(result.verdict).toBe('uncertain');
     expect(result.confidence).toBe(0);
   });

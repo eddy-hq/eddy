@@ -8,6 +8,8 @@ import { closeQueues } from './queue';
 import { startWatchdog, stopWatchdog } from './modules/watchdog';
 import { startRssPoller, stopRssPoller } from './modules/people/index';
 import { startDiscoveryScheduler, stopDiscoveryScheduler } from './modules/discovery/index';
+import { startInterestsWorker, stopInterestsWorker } from './modules/interests/searchTermsWorker';
+import { startGuardWorker, stopGuardWorker } from './modules/guard/index';
 
 async function start(): Promise<void> {
   logger.info({ env: config.NODE_ENV }, 'Starting Eddy');
@@ -19,6 +21,8 @@ async function start(): Promise<void> {
   startWatchdog();
   startRssPoller();
   startDiscoveryScheduler();
+  startInterestsWorker();
+  startGuardWorker();
 
   const server = app.listen(config.PORT, () => {
     logger.info(
@@ -32,6 +36,8 @@ async function start(): Promise<void> {
     stopWatchdog();
     stopRssPoller();
     await stopDiscoveryScheduler();
+    await stopInterestsWorker();
+    await stopGuardWorker();
     server.close(() => logger.info('HTTP server closed'));
     await closeQueues();
     logger.info('Shutdown complete');

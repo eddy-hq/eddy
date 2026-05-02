@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { normalizeUserAddedInterest } from './normalize';
 
 vi.mock('../../config', () => ({
@@ -9,13 +9,18 @@ vi.mock('../../logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 
-vi.mock('../../ollama', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../../ollama')>()),
-  ollamaGenerate: vi.fn(),
+const { interestsAdd, guardAdd } = vi.hoisted(() => ({
+  interestsAdd: vi.fn().mockResolvedValue(undefined),
+  guardAdd: vi.fn().mockResolvedValue(undefined),
+}));
+vi.mock('../../queue', () => ({
+  interestsQueue: { add: interestsAdd },
+  guardQueue: { add: guardAdd },
 }));
 
 let nextRank = 1;
 let existingMatch: { id: string } | undefined;
+let userRole: 'kid' | 'parent' | undefined = 'kid';
 const mockRun = vi.fn();
 const prepareCalls: string[] = [];
 
@@ -26,6 +31,7 @@ vi.mock('../../db/client', () => ({
       return {
         get: vi.fn(() => {
           if (sql.includes('MAX(rank)')) return { r: nextRank };
+          if (sql.includes('FROM users')) return userRole ? { role: userRole } : undefined;
           if (sql.includes('FROM interests WHERE id')) return existingMatch;
           return undefined;
         }),
@@ -36,30 +42,18 @@ vi.mock('../../db/client', () => ({
   },
 }));
 
-import { ollamaGenerate } from '../../ollama';
-
 beforeEach(() => {
   nextRank = 1;
   existingMatch = undefined;
+  userRole = 'kid';
   mockRun.mockReset();
   prepareCalls.length = 0;
-  vi.mocked(ollamaGenerate).mockReset();
-  vi.mocked(ollamaGenerate).mockResolvedValue('["a","b","c","d"]');
-});
-
-function flushMicrotasks(): Promise<void> {
-  return new Promise((resolve) => setImmediate(resolve));
-}
-
-// `normalizeUserAddedInterest` fires `void generateSearchTermsAsync(...)`
-// for new interests. Flush after every test so background ollama/db work
-// can't bleed into the next test's mock state.
-afterEach(async () => {
-  await flushMicrotasks();
+  interestsAdd.mockClear();
+  guardAdd.mockClear();
 });
 
 describe('normalizeUserAddedInterest', () => {
-  it('derives a slug, inserts into interests + user_interests at next rank', async () => {
+  it('derives a slug, inserts into interests + user_interests at next rank', () => {
     nextRank = 4;
     const result = normalizeUserAddedInterest('user-1', 'Bird Watching');
 
@@ -82,16 +76,11 @@ describe('normalizeUserAddedInterest', () => {
 
     expect(result).toEqual({ interestId: 'cycling', label: 'Cycling', isNew: false });
 
-    // No INSERT into interests should have happened — find any prepare whose SQL
-    // is the interests INSERT and confirm its run() was never called with cycling args
     const sawInterestsInsert = prepareCalls.some((sql) =>
       sql.includes('INSERT OR IGNORE INTO interests'),
     );
-    // The prepare itself may have been compiled, but with existingMatch set
-    // the code path skips it entirely.
     expect(sawInterestsInsert).toBe(false);
 
-    // user_interests insert still happens, against the existing id
     const userInterestsInsert = mockRun.mock.calls.find(
       (c) => c[0] === 'user-1' && c[1] === 'cycling',
     );
@@ -100,20 +89,55 @@ describe('normalizeUserAddedInterest', () => {
 
   it('falls back to a UUID when the label has no alphanumerics', () => {
     const result = normalizeUserAddedInterest('user-1', '!!!');
-    // UUIDs contain hyphens; the slug-only path would produce an empty string.
     expect(result.interestId).toMatch(/[0-9a-f-]{20,}/);
     expect(result.isNew).toBe(true);
   });
 
-  it('fires generateSearchTermsAsync for new interests only', async () => {
+  it('enqueues generate-search-terms with isKid for a kid-authored new interest', () => {
+    userRole = 'kid';
     normalizeUserAddedInterest('user-1', 'Bird Watching');
-    await flushMicrotasks();
-    expect(vi.mocked(ollamaGenerate)).toHaveBeenCalledTimes(1);
 
-    vi.mocked(ollamaGenerate).mockClear();
+    expect(interestsAdd).toHaveBeenCalledTimes(1);
+    expect(interestsAdd).toHaveBeenCalledWith('generate-search-terms', {
+      interestId: 'bird_watching',
+      label: 'Bird Watching',
+      userId: 'user-1',
+      isUserAdded: true,
+      isKid: true,
+    });
+    // New-interest path: search-terms job carries the chain; no direct guard enqueue here.
+    expect(guardAdd).not.toHaveBeenCalled();
+  });
+
+  it('enqueues kid-interest-eval directly when a kid links to an existing interest', () => {
+    userRole = 'kid';
     existingMatch = { id: 'cycling' };
     normalizeUserAddedInterest('user-1', 'Cycling');
-    await flushMicrotasks();
-    expect(vi.mocked(ollamaGenerate)).not.toHaveBeenCalled();
+
+    // Existing path: search_terms already populated, so the search-terms job is skipped.
+    expect(interestsAdd).not.toHaveBeenCalled();
+    expect(guardAdd).toHaveBeenCalledTimes(1);
+    expect(guardAdd).toHaveBeenCalledWith('kid-interest-eval', {
+      userId: 'user-1',
+      interestId: 'cycling',
+      rawLabel: 'Cycling',
+    });
+  });
+
+  it('does not enqueue any guard eval when a parent adds an interest', () => {
+    userRole = 'parent';
+    normalizeUserAddedInterest('user-parent', 'Investing');
+    expect(guardAdd).not.toHaveBeenCalled();
+    // search-terms job still runs (so search_terms get populated), but with isKid=false.
+    expect(interestsAdd).toHaveBeenCalledWith(
+      'generate-search-terms',
+      expect.objectContaining({ isKid: false }),
+    );
+
+    interestsAdd.mockClear();
+    existingMatch = { id: 'investing' };
+    normalizeUserAddedInterest('user-parent', 'Investing');
+    expect(interestsAdd).not.toHaveBeenCalled();
+    expect(guardAdd).not.toHaveBeenCalled();
   });
 });
