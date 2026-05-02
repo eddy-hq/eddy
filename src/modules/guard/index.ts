@@ -295,7 +295,9 @@ export function startGuardWorker(): void {
   guardWorker = new Worker<KidInterestJob>('guard', async (job) => {
     if (job.name === KID_INTEREST_EVAL_JOB) {
       await evaluateKidInterest(job.data);
+      return;
     }
+    throw new Error(`Guard worker: unknown job name '${job.name}'`);
   }, { connection: redis, concurrency: 1 });
 
   guardWorker.on('failed', (job, err) => {

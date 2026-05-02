@@ -20,16 +20,12 @@ vi.mock('../../queue', () => ({
   interestsQueue: { add: vi.fn() },
 }));
 
-let userRole: 'kid' | 'parent' | undefined = 'kid';
 const mockRun = vi.fn();
 
 vi.mock('../../db/client', () => ({
   db: {
-    prepare: vi.fn((sql: string) => ({
-      get: vi.fn(() => {
-        if (sql.includes('FROM users')) return userRole ? { role: userRole } : undefined;
-        return undefined;
-      }),
+    prepare: vi.fn(() => ({
+      get: vi.fn(() => undefined),
       run: mockRun,
     })),
   },
@@ -43,15 +39,13 @@ beforeEach(() => {
   mockRun.mockReset();
   vi.mocked(ollamaGenerate).mockReset();
   vi.mocked(ollamaGenerate).mockResolvedValue('["a","b","c","d"]');
-  userRole = 'kid';
 });
 
 describe('processGenerateSearchTerms — kid-interest chain', () => {
   it('enqueues kid-interest-eval after a kid-authored interest', async () => {
-    userRole = 'kid';
     await processGenerateSearchTerms({
       interestId: 'bird_watching', label: 'Bird Watching',
-      userId: 'user-kid', isUserAdded: true,
+      userId: 'user-kid', isUserAdded: true, isKid: true,
     });
 
     expect(guardAdd).toHaveBeenCalledTimes(1);
@@ -62,21 +56,19 @@ describe('processGenerateSearchTerms — kid-interest chain', () => {
     });
   });
 
-  it('does not enqueue when the author is a parent', async () => {
-    userRole = 'parent';
+  it('does not enqueue when isKid is false', async () => {
     await processGenerateSearchTerms({
       interestId: 'investing', label: 'Investing',
-      userId: 'user-parent', isUserAdded: true,
+      userId: 'user-parent', isUserAdded: true, isKid: false,
     });
 
     expect(guardAdd).not.toHaveBeenCalled();
   });
 
   it('does not enqueue when isUserAdded is false', async () => {
-    userRole = 'kid';
     await processGenerateSearchTerms({
       interestId: 'seeded', label: 'Seeded Interest',
-      userId: 'user-kid', isUserAdded: false,
+      userId: 'user-kid', isUserAdded: false, isKid: true,
     });
 
     expect(guardAdd).not.toHaveBeenCalled();
@@ -84,11 +76,24 @@ describe('processGenerateSearchTerms — kid-interest chain', () => {
 
   it('persists search terms to interests.search_terms', async () => {
     await processGenerateSearchTerms({
-      interestId: 'x', label: 'X', userId: 'user-kid', isUserAdded: true,
+      interestId: 'x', label: 'X',
+      userId: 'user-kid', isUserAdded: true, isKid: true,
     });
 
     const updateCall = mockRun.mock.calls.find((c) => c[0] === JSON.stringify(['a', 'b', 'c', 'd']));
     expect(updateCall).toBeDefined();
     expect(updateCall?.[1]).toBe('x');
+  });
+
+  it('throws on unparseable Gemma response so BullMQ retries', async () => {
+    vi.mocked(ollamaGenerate).mockResolvedValue('not json');
+    await expect(processGenerateSearchTerms({
+      interestId: 'x', label: 'X',
+      userId: 'user-kid', isUserAdded: true, isKid: true,
+    })).rejects.toThrow(/parse failed/i);
+
+    // No update, no chain enqueue
+    expect(mockRun).not.toHaveBeenCalled();
+    expect(guardAdd).not.toHaveBeenCalled();
   });
 });
