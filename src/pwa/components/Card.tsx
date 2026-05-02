@@ -2,7 +2,6 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { readProgress, onProgressChange } from '../lib/videoProgress';
-import { useFollowedByChannelName } from '../hooks/useFollowedByChannelName';
 import { useResolvePersonId } from '../hooks/useResolvePersonId';
 import { EddySpinner } from './EddySpinner';
 
@@ -87,21 +86,13 @@ export function Card({
   sourceKind?: 'req' | 'follow' | 'pick' | null;
 }) {
   const navigate = useNavigate();
-  const followedByName = useFollowedByChannelName(userId ?? null);
   const resolvePersonId = useResolvePersonId(userId ?? null);
-  const followedPersonId = data.channel ? followedByName.get(data.channel.toLowerCase()) ?? null : null;
-  // Tap-through is enabled when we have any path to a personId: a sync hit on
-  // the followed-by-name map, or a channelId we can resolve via /people/resolve
-  // on click. Pre-migration cards (no channelId, not followed) stay non-tappable.
-  const canTapToPerson = !!followedPersonId || !!data.youtubeChannelId;
+  const canTapToPerson = !!data.youtubeChannelId && !!data.channel;
 
   async function goToPerson(e: React.MouseEvent | React.KeyboardEvent) {
-    if (!data.channel) return;
+    if (!data.channel || !data.youtubeChannelId) return;
     e.stopPropagation();
-    let pid = followedPersonId;
-    if (!pid && data.youtubeChannelId) {
-      pid = await resolvePersonId(data.youtubeChannelId, data.channel);
-    }
+    const pid = await resolvePersonId(data.youtubeChannelId, data.channel);
     if (!pid) return;
     const qs = userId ? `?userId=${encodeURIComponent(userId)}` : '';
     navigate(`/person/${pid}${qs}`);

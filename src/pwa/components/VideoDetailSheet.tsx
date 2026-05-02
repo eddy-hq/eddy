@@ -5,7 +5,6 @@ import { useQueryClient, useMutation } from '@tanstack/react-query';
 import { X, Bookmark, BookmarkCheck, ChevronRight, Trash2 } from 'lucide-react';
 import { readProgress, writeProgress, clearProgress } from '../lib/videoProgress';
 import { useWatchEventTracker, type WatchSource } from '../lib/watchEvents';
-import { useFollowedByChannelName } from '../hooks/useFollowedByChannelName';
 import { useResolvePersonId } from '../hooks/useResolvePersonId';
 import type { CardData } from './Card';
 
@@ -31,17 +30,12 @@ export function VideoDetailSheet({ card, userId, source, onClose }: Props) {
   const lastSaveRef = useRef(0);
   const queryClient = useQueryClient();
 
-  const followedByName = useFollowedByChannelName(userId);
   const resolvePersonId = useResolvePersonId(userId);
-  const followedPersonId = card.channel ? followedByName.get(card.channel.toLowerCase()) ?? null : null;
-  const canTapToPerson = !!followedPersonId || !!card.youtubeChannelId;
+  const canTapToPerson = !!card.youtubeChannelId && !!card.channel;
 
   async function goToPerson() {
-    if (!card.channel) return;
-    let pid = followedPersonId;
-    if (!pid && card.youtubeChannelId) {
-      pid = await resolvePersonId(card.youtubeChannelId, card.channel);
-    }
+    if (!card.channel || !card.youtubeChannelId) return;
+    const pid = await resolvePersonId(card.youtubeChannelId, card.channel);
     if (!pid) return;
     onClose();
     const qs = userId ? `?userId=${encodeURIComponent(userId)}` : '';
