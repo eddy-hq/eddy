@@ -167,6 +167,9 @@ describe('scoreForRequest', () => {
     expect(row['gemma_verdict']).toBe('clear_yes');
     expect(row['request_id']).toBe('req-1');
     expect(row['url']).toBe('https://youtube.com/watch?v=abc');
+    expect(row['request_type']).toBe('video');
+    expect(row['subject_text']).toBeNull();
+    expect(row['interest_id']).toBeNull();
   });
 
   it('defaults to uncertain when Ollama fails', async () => {
@@ -212,6 +215,9 @@ describe('evaluateCandidate', () => {
     expect(row['url']).toBe('https://youtube.com/watch?v=abc');
     expect(row['gemma_verdict']).toBe('clear_yes');
     expect(row['prompt_version']).toBe('v1');
+    expect(row['request_type']).toBe('candidate');
+    expect(row['subject_text']).toBeNull();
+    expect(row['interest_id']).toBeNull();
   });
 
   it('defaults to uncertain when Ollama fails', async () => {

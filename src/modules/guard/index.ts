@@ -93,12 +93,23 @@ function parseVerdict(response: string): GuardVerdict {
   return verdict;
 }
 
-// Shared Gemma round-trip + parse + guard_eval insert. Used by both the
-// request flow (scoreForRequest) and the candidate flow (evaluateCandidate)
-// so the eval logic exists in one place.
+export type GuardRequestType = 'video' | 'candidate' | 'kid_interest';
+
+interface RunGuardCtx {
+  requestId: string | null;
+  url: string;
+  requestType: GuardRequestType;
+  subjectText?: string | null;
+  interestId?: string | null;
+  promptVersion?: string;
+}
+
+// Shared Gemma round-trip + parse + guard_eval insert. Used by every guard
+// flow (scoreForRequest / evaluateCandidate / evaluateKidInterest) so the
+// eval logic exists in one place.
 async function runGuardEvaluation(
   prompt: string,
-  ctx: { requestId: string | null; url: string },
+  ctx: RunGuardCtx,
 ): Promise<GuardVerdict> {
   let verdict: GuardVerdict;
   try {
@@ -112,9 +123,13 @@ async function runGuardEvaluation(
   const now = new Date().toISOString();
   db.prepare(`
     INSERT INTO guard_eval
-      (eval_id, request_id, url, gemma_verdict, gemma_reason, gemma_confidence, prompt_version, scored_at, created_at)
+      (eval_id, request_id, url, gemma_verdict, gemma_reason, gemma_confidence,
+       prompt_version, request_type, subject_text, interest_id,
+       scored_at, created_at)
     VALUES
-      (@eval_id, @request_id, @url, @gemma_verdict, @gemma_reason, @gemma_confidence, @prompt_version, @scored_at, @scored_at)
+      (@eval_id, @request_id, @url, @gemma_verdict, @gemma_reason, @gemma_confidence,
+       @prompt_version, @request_type, @subject_text, @interest_id,
+       @scored_at, @scored_at)
   `).run({
     eval_id: uuidv7(),
     request_id: ctx.requestId,
@@ -122,7 +137,10 @@ async function runGuardEvaluation(
     gemma_verdict: verdict.verdict,
     gemma_reason: verdict.reason,
     gemma_confidence: verdict.confidence,
-    prompt_version: PROMPT_VERSION,
+    prompt_version: ctx.promptVersion ?? PROMPT_VERSION,
+    request_type: ctx.requestType,
+    subject_text: ctx.subjectText ?? null,
+    interest_id: ctx.interestId ?? null,
     scored_at: now,
   });
 
@@ -145,7 +163,11 @@ export async function scoreForRequest(params: ScoreParams): Promise<GuardVerdict
 
   const channelHistory = getChannelHistory(params.userId, params.channel);
   const prompt = buildPrompt({ ...params, channelHistory });
-  const verdict = await runGuardEvaluation(prompt, { requestId: params.requestId, url: params.url });
+  const verdict = await runGuardEvaluation(prompt, {
+    requestId: params.requestId,
+    url: params.url,
+    requestType: 'video',
+  });
 
   db.prepare(`
     UPDATE requests SET guard_verdict = @verdict, guard_reason = @reason
@@ -181,7 +203,11 @@ export async function evaluateCandidate(params: CandidateEvalParams): Promise<Gu
     transcript: null,
     channelHistory: { approved: 0, rejected: 0 },
   });
-  return runGuardEvaluation(prompt, { requestId: null, url: params.url });
+  return runGuardEvaluation(prompt, {
+    requestId: null,
+    url: params.url,
+    requestType: 'candidate',
+  });
 }
 
 const THUMB_CLASSIFY_PROMPT = `Look at this YouTube thumbnail image.
