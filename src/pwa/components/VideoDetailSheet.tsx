@@ -188,7 +188,10 @@ function SheetBody({
   const isReady = (status === 'ready' || status === 'watched') && !!videoUrl;
   const isRejected = status === 'rejected';
   const isDeleted = status === 'deleted';
-  const showActions = !isRejected && !isDeleted;
+  // Hide actions until userId resolves in id-mode — Save/Delete still hit the
+  // server fine, but the post-mutation invalidateQueries needs a real userId
+  // or the local feed cache stays stale.
+  const showActions = !isRejected && !isDeleted && !!userId;
 
   const watchEvent = useWatchEventTracker({
     videoRef,
