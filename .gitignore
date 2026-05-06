@@ -9,4 +9,6 @@ dist/
 !.env.example
 dump.rdb
 logs/
-.claude/
+.claude/settings.local.json
+.claude/scheduled_tasks.lock
+.claude/worktrees/
