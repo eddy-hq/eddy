@@ -8,7 +8,7 @@
     <key>ProgramArguments</key>
     <array>
         <string>/Users/steveu/.nvm/versions/node/v24.14.1/bin/node</string>
-        <string>/Users/steveu/eddy/node_modules/.bin/tsx</string>
+        <string>/Users/steveu/code/eddy/node_modules/.bin/tsx</string>
         <string>watch</string>
         <string>--include</string>
         <string>src/**/*.ts</string>
@@ -16,7 +16,7 @@
     </array>
 
     <key>WorkingDirectory</key>
-    <string>/Users/steveu/eddy</string>
+    <string>/Users/steveu/code/eddy</string>
 
     <key>EnvironmentVariables</key>
     <dict>
@@ -37,9 +37,9 @@
     <integer>10</integer>
 
     <key>StandardOutPath</key>
-    <string>/Users/steveu/eddy/logs/server.stdout.log</string>
+    <string>/Users/steveu/code/eddy/logs/server.stdout.log</string>
 
     <key>StandardErrorPath</key>
-    <string>/Users/steveu/eddy/logs/server.stderr.log</string>
+    <string>/Users/steveu/code/eddy/logs/server.stderr.log</string>
 </dict>
 </plist>

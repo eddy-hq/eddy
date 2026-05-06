@@ -8,7 +8,7 @@
     <key>ProgramArguments</key>
     <array>
         <string>/bin/bash</string>
-        <string>/Users/steveu/eddy/scripts/watchdog.sh</string>
+        <string>/Users/steveu/code/eddy/scripts/watchdog.sh</string>
     </array>
 
     <!-- Watchdog is a long-running daemon: it loops internally and sleeps
@@ -25,10 +25,10 @@
     <integer>10</integer>
 
     <key>StandardOutPath</key>
-    <string>/Users/steveu/eddy/logs/watchdog.log</string>
+    <string>/Users/steveu/code/eddy/logs/watchdog.log</string>
 
     <key>StandardErrorPath</key>
-    <string>/Users/steveu/eddy/logs/watchdog.log</string>
+    <string>/Users/steveu/code/eddy/logs/watchdog.log</string>
 
     <key>EnvironmentVariables</key>
     <dict>

@@ -4,6 +4,10 @@ Self-hosted family media system. Full spec: **`docs/brief.md`** — read it.
 
 **Operations** (service map, watchdog, deploy script, manual restart commands): **`docs/ops.md`** — read before touching infrastructure or asking how to restart things.
 
+## Data location
+
+`eddy.db`, `eddy.db-shm`, `eddy.db-wal` live at `~/data/eddy/` — outside the repo. `.env`'s `DATABASE_PATH` is the absolute path; `src/db/client.ts` reads it via `config.DATABASE_PATH`. Don't reintroduce `./eddy.db` defaults.
+
 ## Workflow
 
 - Confirm current phase with Steve before coding. Phases are sequential (Section 17 of brief).
