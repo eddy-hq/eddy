@@ -107,6 +107,10 @@ export async function searchVideosWithDates(
   query: string,
   limit = 20,
 ): Promise<SearchVideoWithDate[]> {
+  // --ignore-errors: a single unavailable video in the search result was
+  // killing the whole batch (yt-dlp exits non-zero, execFile throws,
+  // runYtdlpLines discards the 19 valid records). Tolerate per-video
+  // failures and harvest whatever metadata yt-dlp could fetch.
   const records = await runYtdlpLines(
     [
       `ytsearch${limit}:${query}`,
@@ -115,6 +119,7 @@ export async function searchVideosWithDates(
       '--no-download',
       '--quiet',
       '--no-warnings',
+      '--ignore-errors',
     ],
     { timeoutMs: 90_000, maxBufferMb: 10 },
   );

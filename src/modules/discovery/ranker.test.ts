@@ -48,9 +48,10 @@ describe('rank — first-refusal precedence', () => {
   // pass reason.
   it('cut_interest_cap wins over cut_stretch_rank when both apply', () => {
     const candidates: RankerCandidate[] = [
-      // Two i1 items consume the adult cap of 2 first.
+      // Three i1 items consume the adult cap of 3 first.
       candidate({ candidateId: 'a', interestId: 'i1', rank: 1, title: 'alpha solo run' }),
       candidate({ candidateId: 'b', interestId: 'i1', rank: 1, title: 'bravo cycle pace' }),
+      candidate({ candidateId: 'c', interestId: 'i1', rank: 1, title: 'charlie hill repeats' }),
       // Item X: same i1 interest (cap full) AND rank 1 (would fail stretch).
       // Lower scores so it sorts last and is reached after the cap fills.
       candidate({
@@ -62,6 +63,7 @@ describe('rank — first-refusal precedence', () => {
     const verdicts = rank(candidates, ctx(), { cap: 5 });
     expect(findVerdict(verdicts, 'a').disposition).toBe('regular');
     expect(findVerdict(verdicts, 'b').disposition).toBe('regular');
+    expect(findVerdict(verdicts, 'c').disposition).toBe('regular');
     expect(findVerdict(verdicts, 'x').disposition).toBe('cut_interest_cap');
   });
 });
@@ -122,10 +124,10 @@ describe('rank — mid-day prefill round-trip', () => {
       );
     }
 
-    // Second-call pool: one item shares i1 (cap=1 prefilled but adult max=2,
-    // so still has room for one more), one item shares i2 (also room for
-    // one more), one item is title-similar to the first call's pasta pick,
-    // one item is fresh and distinct.
+    // Second-call pool: one item shares i1 (1 prefilled, adult max=3, so
+    // room for two more), one item shares i2 (also room), one item is
+    // title-similar to the first call's pasta pick, one item is fresh and
+    // distinct.
     const secondPool: RankerCandidate[] = [
       candidate({
         candidateId: 'c', interestId: 'i1', rank: 1,
@@ -150,7 +152,7 @@ describe('rank — mid-day prefill round-trip', () => {
       { cap: 5 },
     );
 
-    // 'c' has same interest as a prefilled pick — but adult cap=2, so the
+    // 'c' has same interest as a prefilled pick — but adult cap=3, so the
     // interest cap doesn't bite yet. Title-dedup against "morning routine
     // essentials" might bite though. Let's check: c shares 'morning' which
     // is one of the few non-stopwords in 'morning routine essentials'.

@@ -18,9 +18,9 @@ export const MIN_QUALITY_SCORE = 5;
 export const MIN_WEIGHTED_SCORE = 5;
 
 // Diversity rules: a daily feed of 15 picks should span many interests.
-// 2-per-interest with 12 interests yields ≥7 distinct interests in a full
-// slate; the kid feed is tighter at 1-per-interest.
-const MAX_PER_INTEREST_ADULT = 2;
+// 3-per-interest with ~13 interests still leaves room for ≥5 distinct
+// interests in a full slate; the kid feed stays tighter at 1-per-interest.
+const MAX_PER_INTEREST_ADULT = 3;
 const MAX_PER_INTEREST_KID = 1;
 const TITLE_SIMILARITY_THRESHOLD = 0.4;
 
