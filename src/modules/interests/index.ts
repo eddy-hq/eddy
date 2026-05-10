@@ -2,7 +2,7 @@ import { db } from '../../db/client';
 import { logger } from '../../logger';
 import { ollamaGenerate, parseOllamaJson } from '../../ollama';
 
-export { interestsRouter } from './router';
+export { interestsRouter, removeUserInterest } from './router';
 export { normalizeUserAddedInterest, type NormalizedUserInterest } from './normalize';
 
 interface InterestRow {

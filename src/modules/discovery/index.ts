@@ -116,10 +116,15 @@ export async function runDiscoveryForUser(user: UserRow, options: { force?: bool
   };
 }
 
-function pruneStalePool(): void {
+// `scored` rows live forever otherwise: they passed scoring but lost the
+// daily ranker race, and there's no other path that touches them. Without
+// this they accumulate monotonically — see issue #70 for the AI-channel
+// backlog that motivated extending the original 'pending'-only prune.
+export function pruneStalePool(): void {
   const result = db.prepare(`
     DELETE FROM candidate_pool
-    WHERE status = 'pending' AND created_at < datetime('now', '-30 days')
+    WHERE status IN ('pending', 'scored')
+      AND created_at < datetime('now', '-30 days')
   `).run();
   if (result.changes > 0) {
     logger.info({ deleted: result.changes }, 'Discovery: pruned stale candidates');

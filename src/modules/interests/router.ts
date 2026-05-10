@@ -67,13 +67,31 @@ interestsRouter.post('/select', (req: Request, res: Response) => {
   res.json({ interestId, selected: true });
 });
 
+// Drop the interest from the user's profile and cascade to in-flight
+// candidates carrying that interest_id. Without the cascade those rows
+// linger as orphaned dead-weight in scoring (rank-999 against MIN_WEIGHTED)
+// — see issue #70. Surfaced/dismissed/requested rows are history and stay.
+export function removeUserInterest(userId: string, interestId: string): void {
+  const removeInterest = db.prepare(
+    'DELETE FROM user_interests WHERE user_id = ? AND interest_id = ?'
+  );
+  const removeCandidates = db.prepare(`
+    DELETE FROM candidate_pool
+    WHERE user_id = ? AND interest_id = ?
+      AND status IN ('pending', 'scored', 'guard_pending', 'guard_rejected')
+  `);
+  db.transaction(() => {
+    removeInterest.run(userId, interestId);
+    removeCandidates.run(userId, interestId);
+  })();
+}
+
 interestsRouter.delete('/select', (req: Request, res: Response) => {
   const { userId, interestId } = req.body as { userId?: string; interestId?: string };
   const user = resolveUserById(userId);
   if (!interestId?.trim()) throw new ValidationError('interestId required');
 
-  db.prepare('DELETE FROM user_interests WHERE user_id = ? AND interest_id = ?')
-    .run(user.user_id, interestId);
+  removeUserInterest(user.user_id, interestId);
 
   res.json({ interestId, selected: false });
 });
