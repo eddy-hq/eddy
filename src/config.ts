@@ -21,6 +21,8 @@ const schema = z.object({
   USER_ID_STEVE: z.string().uuid(),
   USER_ID_BOY1: z.string().uuid(),
   USER_ID_BOY2: z.string().uuid(),
+  USER_BIRTH_YEAR_BOY1: z.coerce.number().int().optional(),
+  USER_BIRTH_YEAR_BOY2: z.coerce.number().int().optional(),
   // ntfy — optional until Phase 1 setup
   NTFY_BASE_URL: z.string().optional(),
   NTFY_TOPIC_STEVE: z.string().optional(),

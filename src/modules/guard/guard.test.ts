@@ -33,6 +33,7 @@ vi.mock('../../queue', () => ({
 let priorEval: { gemma_verdict: string; gemma_reason: string; gemma_confidence: number } | undefined;
 let channelHistory: { approved: number; rejected: number } = { approved: 0, rejected: 0 };
 let interestRow: { search_terms: string } | undefined;
+let userRow: { birth_year: number | null } | undefined;
 const mockRun = vi.fn();
 
 vi.mock('../../db/client', () => ({
@@ -42,6 +43,7 @@ vi.mock('../../db/client', () => ({
         if (sql.includes('FROM guard_eval')) return priorEval;
         if (sql.includes('FROM requests')) return channelHistory;
         if (sql.includes('FROM interests')) return interestRow;
+        if (sql.includes('FROM users')) return userRow;
         return undefined;
       }),
       run: mockRun,
@@ -50,13 +52,16 @@ vi.mock('../../db/client', () => ({
 }));
 
 import { ollamaGenerate } from '../../ollama';
+import { logger } from '../../logger';
 
 beforeEach(() => {
   priorEval = undefined;
   channelHistory = { approved: 0, rejected: 0 };
   interestRow = undefined;
+  userRow = undefined;
   mockRun.mockReset();
   vi.mocked(ollamaGenerate).mockReset();
+  vi.mocked(logger.warn).mockClear();
 });
 
 describe('scoreForRequest verdict parsing', () => {
@@ -129,6 +134,34 @@ describe('scoreForRequest prompt content', () => {
     expect(prompt).toContain('CS Dojo');
     expect(prompt).toContain('3 previously approved');
     expect(prompt).toContain('1 previously rejected');
+  });
+
+  it('uses the requesting user birth year to render the age band', async () => {
+    userRow = { birth_year: new Date().getUTCFullYear() - 14 };
+    vi.mocked(ollamaGenerate).mockResolvedValue('{"verdict":"clear_yes","reason":"ok","confidence":0.9}');
+    await scoreForRequest({
+      requestId: 'r1', userId: 'u1', url: 'https://x',
+      title: 'Test', channel: 'Test', description: 'desc', transcript: null,
+    });
+
+    const prompt = vi.mocked(ollamaGenerate).mock.calls[0]?.[0] ?? '';
+    expect(prompt).toContain('aged 13-15');
+    expect(prompt).not.toContain('aged 10-12');
+  });
+
+  it('falls back to the most restrictive age band and logs when birth year is missing', async () => {
+    vi.mocked(ollamaGenerate).mockResolvedValue('{"verdict":"clear_yes","reason":"ok","confidence":0.9}');
+    await scoreForRequest({
+      requestId: 'r1', userId: 'missing-age-user', url: 'https://x',
+      title: 'Test', channel: 'Test', description: 'desc', transcript: null,
+    });
+
+    const prompt = vi.mocked(ollamaGenerate).mock.calls[0]?.[0] ?? '';
+    expect(prompt).toContain('aged under 10');
+    expect(logger.warn).toHaveBeenCalledWith(
+      { userId: 'missing-age-user' },
+      'User birth year missing; using most restrictive guard age band',
+    );
   });
 
   it('truncates long descriptions', async () => {
@@ -244,6 +277,7 @@ describe('evaluateCandidate', () => {
 
 describe('evaluateKidInterest', () => {
   it('builds the prompt from raw label + populated search_terms', async () => {
+    userRow = { birth_year: new Date().getUTCFullYear() - 12 };
     interestRow = { search_terms: '["bird identification","backyard birds","bird feeders","spotting scopes"]' };
     vi.mocked(ollamaGenerate).mockResolvedValue('{"verdict":"clear_yes","reason":"Hobby topic.","confidence":0.9}');
 
@@ -254,6 +288,18 @@ describe('evaluateKidInterest', () => {
     expect(prompt).toContain('bird identification');
     expect(prompt).toContain('backyard birds');
     expect(prompt).toContain('aged 10-12');
+  });
+
+  it('uses the requesting user birth year to render the kid-interest age band', async () => {
+    userRow = { birth_year: new Date().getUTCFullYear() - 14 };
+    interestRow = { search_terms: '["robotics"]' };
+    vi.mocked(ollamaGenerate).mockResolvedValue('{"verdict":"clear_yes","reason":"Hobby topic.","confidence":0.9}');
+
+    await evaluateKidInterest({ userId: 'user-1', interestId: 'robotics', rawLabel: 'Robotics' });
+
+    const prompt = vi.mocked(ollamaGenerate).mock.calls[0]?.[0] ?? '';
+    expect(prompt).toContain('aged 13-15');
+    expect(prompt).not.toContain('aged 10-12');
   });
 
   it('writes a guard_eval row tagged kid_interest with subject_text and interest_id', async () => {

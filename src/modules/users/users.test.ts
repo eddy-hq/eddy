@@ -1,6 +1,10 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { ValidationError, NotFoundError } from '../../errors';
 
+vi.mock('../../logger', () => ({
+  logger: { warn: vi.fn() },
+}));
+
 vi.mock('../../db/client', async () => {
   const { default: Database } = await import('better-sqlite3');
   const memoryDb = new Database(':memory:');
@@ -9,25 +13,29 @@ vi.mock('../../db/client', async () => {
       user_id      TEXT PRIMARY KEY,
       display_name TEXT NOT NULL,
       role         TEXT NOT NULL,
-      age_gate     INTEGER NOT NULL DEFAULT 0
+      age_gate     INTEGER NOT NULL DEFAULT 0,
+      birth_year   INTEGER
     );
   `);
   return { db: memoryDb };
 });
 
 import { db } from '../../db/client';
-import { resolveUserById, resolveUserByIdOrName } from './index';
+import { getAgeBand, resolveUserById, resolveUserByIdOrName } from './index';
+import { logger } from '../../logger';
 
 const BOY1_ID = '11111111-1111-7111-8111-111111111111';
 const PARENT_ID = '22222222-2222-7222-8222-222222222222';
+const BOY1_BIRTH_YEAR = new Date().getUTCFullYear() - 14;
 
 beforeEach(() => {
   db.exec('DELETE FROM users');
   const insert = db.prepare(
-    'INSERT INTO users (user_id, display_name, role, age_gate) VALUES (?, ?, ?, ?)'
+    'INSERT INTO users (user_id, display_name, role, age_gate, birth_year) VALUES (?, ?, ?, ?, ?)'
   );
-  insert.run(BOY1_ID, 'Boy1', 'kid', 12);
-  insert.run(PARENT_ID, 'Steve', 'parent', 0);
+  insert.run(BOY1_ID, 'Boy1', 'kid', 12, BOY1_BIRTH_YEAR);
+  insert.run(PARENT_ID, 'Steve', 'parent', 0, null);
+  vi.mocked(logger.warn).mockClear();
 });
 
 describe('resolveUserById', () => {
@@ -37,6 +45,7 @@ describe('resolveUserById', () => {
       display_name: 'Boy1',
       role: 'kid',
       age_gate: 12,
+      birth_year: BOY1_BIRTH_YEAR,
     });
   });
 
@@ -93,11 +102,54 @@ describe('resolveUserByIdOrName', () => {
   it('falls through to display-name match for a UUID-shaped string that is not a real user_id', () => {
     const fakeUuid = '12345678-1234-1234-1234-123456789012';
     db.prepare(
-      'INSERT INTO users (user_id, display_name, role, age_gate) VALUES (?, ?, ?, ?)'
-    ).run('33333333-3333-7333-8333-333333333333', fakeUuid, 'kid', 10);
+      'INSERT INTO users (user_id, display_name, role, age_gate, birth_year) VALUES (?, ?, ?, ?, ?)'
+    ).run('33333333-3333-7333-8333-333333333333', fakeUuid, 'kid', 10, 2016);
 
     const row = resolveUserByIdOrName(fakeUuid);
     expect(row.user_id).toBe('33333333-3333-7333-8333-333333333333');
     expect(row.display_name).toBe(fakeUuid);
+  });
+});
+
+describe('getAgeBand', () => {
+  it('computes a prompt age band from birth_year', () => {
+    expect(getAgeBand(BOY1_ID)).toBe('13-15');
+  });
+
+  it.each([
+    [8, 'under 10'],
+    [10, '10-12'],
+    [12, '10-12'],
+    [13, '13-15'],
+    [15, '13-15'],
+    [16, '16-17'],
+    [17, '16-17'],
+    [18, '18+'],
+  ])('maps coarse age %i to %s', (age, expected) => {
+    const userId = `age-${age}`;
+    db.prepare(
+      'INSERT INTO users (user_id, display_name, role, age_gate, birth_year) VALUES (?, ?, ?, ?, ?)'
+    ).run(userId, `Age ${age}`, 'kid', 0, new Date().getUTCFullYear() - age);
+
+    expect(getAgeBand(userId)).toBe(expected);
+  });
+
+  it('falls back to the most restrictive age band and logs once when birth_year is missing', () => {
+    expect(getAgeBand(PARENT_ID)).toBe('under 10');
+    expect(getAgeBand(PARENT_ID)).toBe('under 10');
+    expect(logger.warn).toHaveBeenCalledWith(
+      { userId: PARENT_ID },
+      'User birth year missing; using most restrictive guard age band',
+    );
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls back to the most restrictive age band when birth_year is in the future', () => {
+    const userId = 'future-birth-year';
+    db.prepare(
+      'INSERT INTO users (user_id, display_name, role, age_gate, birth_year) VALUES (?, ?, ?, ?, ?)'
+    ).run(userId, 'Future', 'kid', 0, new Date().getUTCFullYear() + 1);
+
+    expect(getAgeBand(userId)).toBe('under 10');
   });
 });

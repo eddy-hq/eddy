@@ -5,6 +5,7 @@ import { logger } from '../../logger';
 import { ollamaGenerate, parseOllamaJson } from '../../ollama';
 import { config } from '../../config';
 import { redis } from '../../queue';
+import { getAgeBand } from '../users';
 
 const PROMPT_VERSION = 'v1';
 const KID_INTEREST_PROMPT_VERSION = 'kid-interest-v1';
@@ -42,8 +43,8 @@ function getChannelHistory(userId: string, channel: string): ChannelHistory {
   return { approved: row?.approved ?? 0, rejected: row?.rejected ?? 0 };
 }
 
-function buildPrompt(params: ScoreParams & { channelHistory: ChannelHistory }): string {
-  const { title, channel, description, transcript, channelHistory } = params;
+function buildPrompt(params: ScoreParams & { ageBand: string; channelHistory: ChannelHistory }): string {
+  const { title, channel, description, transcript, ageBand, channelHistory } = params;
 
   const desc = description.length > 500 ? description.slice(0, 500) + '...' : description;
   const txScript = transcript
@@ -54,14 +55,14 @@ function buildPrompt(params: ScoreParams & { channelHistory: ChannelHistory }): 
       ? `\nChannel history for this child: ${channelHistory.approved} previously approved, ${channelHistory.rejected} previously rejected.`
       : '\nChannel history: no prior requests from this channel.';
 
-  return `You are a content safety guard for a family media system. A child (aged 10-12) wants to watch a YouTube video.
+  return `You are a content safety guard for a family media system. A child (aged ${ageBand}) wants to watch a YouTube video.
 
 Video details:
 Title: ${title}
 Channel: ${channel}
 Description: ${desc}${txScript}${history}
 
-Decide if this video is appropriate for a child aged 10-12.
+Decide if this video is appropriate for a child aged ${ageBand}.
 
 Return ONLY valid JSON with no other text:
 {
@@ -166,7 +167,8 @@ export async function scoreForRequest(params: ScoreParams): Promise<GuardVerdict
   }
 
   const channelHistory = getChannelHistory(params.userId, params.channel);
-  const prompt = buildPrompt({ ...params, channelHistory });
+  const ageBand = getAgeBand(params.userId);
+  const prompt = buildPrompt({ ...params, ageBand, channelHistory });
   const verdict = await runGuardEvaluation(prompt, {
     requestId: params.requestId,
     url: params.url,
@@ -191,6 +193,7 @@ export interface CandidateEvalParams {
   userId: string;
   url: string;
   title: string;
+  ageBand?: string;
 }
 
 // Evaluate a discovery candidate. The candidate flow has no request row,
@@ -205,6 +208,7 @@ export async function evaluateCandidate(params: CandidateEvalParams): Promise<Gu
     channel: '',
     description: '',
     transcript: null,
+    ageBand: params.ageBand ?? getAgeBand(params.userId),
     channelHistory: { approved: 0, rejected: 0 },
   });
   return runGuardEvaluation(prompt, {
@@ -220,16 +224,16 @@ export async function evaluateCandidate(params: CandidateEvalParams): Promise<Gu
 // writes a `guard_eval` row. Verdict has no user-facing effect yet — the row
 // is the deliverable for tuning Phase 6 enforcement.
 
-function buildKidInterestPrompt(rawLabel: string, searchTerms: string[]): string {
+function buildKidInterestPrompt(rawLabel: string, searchTerms: string[], ageBand: string): string {
   const termsLine = searchTerms.length > 0
     ? `\nGenerated YouTube search queries for this interest: ${searchTerms.map((t) => `"${t}"`).join(', ')}.`
     : '\nNo search queries have been generated for this interest yet.';
 
-  return `You are a content safety guard for a family media system. A child (aged 10-12) has typed a freeform interest they would like to be recommended videos about.
+  return `You are a content safety guard for a family media system. A child (aged ${ageBand}) has typed a freeform interest they would like to be recommended videos about.
 
 Raw input from the child: "${rawLabel}"${termsLine}
 
-Decide whether this interest is appropriate to recommend videos for to a child aged 10-12. Consider both the literal meaning of the input and what the generated search queries imply about the actual videos this interest will surface.
+Decide whether this interest is appropriate to recommend videos for to a child aged ${ageBand}. Consider both the literal meaning of the input and what the generated search queries imply about the actual videos this interest will surface.
 
 Return ONLY valid JSON with no other text:
 {
@@ -268,7 +272,7 @@ export async function evaluateKidInterest(params: KidInterestEvalParams): Promis
     }
   }
 
-  const prompt = buildKidInterestPrompt(params.rawLabel, searchTerms);
+  const prompt = buildKidInterestPrompt(params.rawLabel, searchTerms, getAgeBand(params.userId));
   return runGuardEvaluation(prompt, {
     requestId: null,
     url: `interest:${params.interestId}`,
