@@ -3,6 +3,7 @@ import { db } from '../../db/client';
 import { logger } from '../../logger';
 import { redis, discoveryQueue } from '../../queue';
 import { evaluateCandidate } from '../guard/index';
+import { getAgeBand } from '../users';
 import { refreshCandidatePool, seedBackCatalogCandidates, type UserInterestRow } from './intake';
 import { scoreCandidates } from './scoring';
 import {
@@ -69,6 +70,7 @@ export async function runDiscoveryForUser(user: UserRow, options: { force?: bool
   await scoreCandidates(user.user_id, userInterests);
 
   if (isKid) {
+    const ageBand = getAgeBand(user.user_id);
     const scored = readScoredCandidates(user.user_id, KID_GUARD_RECHECK_LIMIT);
     for (const c of scored) {
       const verdict = await evaluateCandidate({
@@ -76,6 +78,7 @@ export async function runDiscoveryForUser(user: UserRow, options: { force?: bool
         userId: user.user_id,
         url: c.url,
         title: c.title ?? '',
+        ageBand,
       });
 
       const nextStatus = verdict.verdict === 'clear_yes' ? 'scored'

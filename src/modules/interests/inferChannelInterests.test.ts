@@ -10,6 +10,11 @@ vi.mock('../../logger', () => ({
   logger: { info: vi.fn(), warn: mockedWarn, error: vi.fn(), debug: vi.fn() },
 }));
 
+vi.mock('../../queue', () => ({
+  interestsQueue: { add: vi.fn() },
+  guardQueue: { add: vi.fn() },
+}));
+
 vi.mock('../../ollama', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../ollama')>()),
   ollamaGenerate: vi.fn(),
