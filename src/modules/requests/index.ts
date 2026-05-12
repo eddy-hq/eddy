@@ -36,6 +36,17 @@ export type {
 
 export const requestsRouter = Router();
 
+interface AdminRequestRow {
+  request_id: string;
+  url: string;
+  youtube_id: string | null;
+  title: string | null;
+  status: string;
+  rejection_reason: string | null;
+  requested_at: string;
+  user_name: string;
+}
+
 function pwaFeedUrl(userId: string): string {
   return `http://${config.TAILSCALE_IP}:${config.PORT}/feed?userId=${userId}`;
 }
@@ -84,6 +95,19 @@ function extractYoutubeId(url: string): string | null {
     if (m) return m[1];
   }
   return null;
+}
+
+export function readRecentRejectedRequestsForAdmin(): AdminRequestRow[] {
+  return db.prepare(`
+    SELECT r.request_id, r.url, r.youtube_id, r.title, r.status,
+           r.rejection_reason, r.requested_at, u.display_name AS user_name
+    FROM requests r
+    JOIN users u ON r.user_id = u.user_id
+    WHERE r.status = 'rejected'
+      AND r.requested_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-24 hours')
+    ORDER BY r.requested_at DESC
+    LIMIT 20
+  `).all() as AdminRequestRow[];
 }
 
 // POST /requests — called by iOS Shortcut
@@ -222,26 +246,9 @@ requestsRouter.get('/admin/pipeline', async (_req: Request, res: Response) => {
     JOIN users u ON r.user_id = u.user_id
     WHERE r.status IN ('downloading', 'guard_review', 'parent_review', 'pending', 'approved')
     ORDER BY r.requested_at ASC
-  `).all() as Array<{
-    request_id: string; url: string; youtube_id: string | null;
-    title: string | null; status: string; rejection_reason: string | null;
-    requested_at: string; user_name: string;
-  }>;
+  `).all() as AdminRequestRow[];
 
-  const recentRejected = db.prepare(`
-    SELECT r.request_id, r.url, r.youtube_id, r.title, r.status,
-           r.rejection_reason, r.requested_at, u.display_name AS user_name
-    FROM requests r
-    JOIN users u ON r.user_id = u.user_id
-    WHERE r.status = 'rejected'
-      AND r.requested_at > datetime('now', '-24 hours')
-    ORDER BY r.requested_at DESC
-    LIMIT 20
-  `).all() as Array<{
-    request_id: string; url: string; youtube_id: string | null;
-    title: string | null; status: string; rejection_reason: string | null;
-    requested_at: string; user_name: string;
-  }>;
+  const recentRejected = readRecentRejectedRequestsForAdmin();
 
   const activeWithJobState = await Promise.all(
     active.map(async (r) => {

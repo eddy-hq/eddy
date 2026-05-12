@@ -43,8 +43,9 @@ function insertCandidate(opts: {
   candidate_id: string;
   status: string;
   ageDays: number;
+  createdAt?: string;
 }): void {
-  const created = new Date(Date.now() - opts.ageDays * 24 * 60 * 60 * 1000).toISOString();
+  const created = opts.createdAt ?? new Date(Date.now() - opts.ageDays * 24 * 60 * 60 * 1000).toISOString();
   db.prepare(`
     INSERT INTO candidate_pool
       (candidate_id, user_id, content_type, source_type,
@@ -90,6 +91,21 @@ describe('pruneStalePool', () => {
 
     const rows = db.prepare('SELECT candidate_id FROM candidate_pool ORDER BY candidate_id').all() as Array<{ candidate_id: string }>;
     expect(rows.map((r) => r.candidate_id)).toEqual(['fresh-pending', 'fresh-scored']);
+  });
+
+  it('drops a stale same-cutoff-day ISO row earlier than the cutoff time', () => {
+    const cutoff = db.prepare(
+      "SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-30 days') AS cutoff",
+    ).get() as { cutoff: string };
+    const createdAt = new Date(new Date(cutoff.cutoff).getTime() - 60_000).toISOString();
+    expect(createdAt.slice(0, 10)).toBe(cutoff.cutoff.slice(0, 10));
+    insertCandidate({ candidate_id: 'same-day-stale', status: 'pending', ageDays: 0, createdAt });
+
+    pruneStalePool();
+
+    const row = db.prepare('SELECT candidate_id FROM candidate_pool WHERE candidate_id = ?')
+      .get('same-day-stale');
+    expect(row).toBeUndefined();
   });
 
   it('leaves old terminal rows alone (they are history, not dead weight)', () => {

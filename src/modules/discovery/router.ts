@@ -38,6 +38,15 @@ interface SurfacedCandidateRow {
   rank: number;
 }
 
+export function hasRecentBalancePrompt(userId: string, interestId: string): boolean {
+  const recentPrompt = db.prepare(`
+    SELECT 1 FROM balance_prompts
+    WHERE user_id = ? AND interest_id = ? AND shown_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-10 days')
+    LIMIT 1
+  `).get(userId, interestId);
+  return Boolean(recentPrompt);
+}
+
 // GET /discovery/feed?userId=
 discoveryRouter.get('/feed', (req: Request, res: Response) => {
   const user = resolveUserById(req.query['userId']);
@@ -89,11 +98,7 @@ discoveryRouter.get('/feed', (req: Request, res: Response) => {
 
     if (topInterestId && topCount / candidates.length > 0.7) {
       const concentration = topCount / candidates.length;
-      const recentPrompt = db.prepare(`
-        SELECT 1 FROM balance_prompts
-        WHERE user_id = ? AND interest_id = ? AND shown_at > datetime('now', '-10 days')
-        LIMIT 1
-      `).get(user.user_id, topInterestId);
+      const recentPrompt = hasRecentBalancePrompt(user.user_id, topInterestId);
 
       if (!recentPrompt) {
         const interestRow = db.prepare('SELECT label FROM interests WHERE id = ?')

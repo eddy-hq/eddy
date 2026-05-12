@@ -127,7 +127,7 @@ export function pruneStalePool(): void {
   const result = db.prepare(`
     DELETE FROM candidate_pool
     WHERE status IN ('pending', 'scored')
-      AND created_at < datetime('now', '-30 days')
+      AND created_at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-30 days')
   `).run();
   if (result.changes > 0) {
     logger.info({ deleted: result.changes }, 'Discovery: pruned stale candidates');
