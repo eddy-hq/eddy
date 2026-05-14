@@ -706,17 +706,23 @@ export function createRequestsState({ ports }: { ports: Ports }): RequestsState 
   }
 
   // ── apply: the single seam every status mutation flows through. The SQL
-  // write is synchronous, so `result` is available on return; effects fire
-  // immediately and any promise they return is collected into `settled` for
-  // async callers (retry, creators) that need the pre-refactor sequencing.
+  // write is synchronous, so `result` is available on return. Effects fire
+  // in declared order: each runEffect runs synchronously to kick off its
+  // work, and if it returns a promise the loop awaits it before invoking
+  // the next runEffect. That sequencing is load-bearing for `retry`, whose
+  // descriptor must finish `cancel_download_job_awaited` before
+  // `enqueue_download` runs (otherwise BullMQ sees the old jobId still
+  // present and rejects the new enqueue). `settled` resolves once the
+  // chain has drained.
   function apply(event: Event): ApplyOutcome {
     const { descriptor, result } = runSql(event);
-    const pending: Promise<void>[] = [];
-    for (const effect of descriptor.effects(event, result)) {
-      const ret = runEffect(effect);
-      if (ret) pending.push(ret);
-    }
-    const settled = pending.length === 0 ? Promise.resolve() : Promise.all(pending).then(() => undefined);
+    const effects = descriptor.effects(event, result);
+    const settled = (async () => {
+      for (const effect of effects) {
+        const ret = runEffect(effect);
+        if (ret) await ret;
+      }
+    })();
     return { result: stripCarrier(result), settled };
   }
 
