@@ -8,6 +8,10 @@ import { closeQueues } from './queue';
 import { startWatchdog, stopWatchdog } from './modules/watchdog';
 import { startRssPoller, stopRssPoller } from './modules/people/index';
 import { startDiscoveryScheduler, stopDiscoveryScheduler } from './modules/discovery/index';
+import {
+  startProfileEnrichmentScheduler,
+  stopProfileEnrichmentScheduler,
+} from './modules/profile-enrichment/index';
 import { startInterestsWorker, stopInterestsWorker } from './modules/interests/searchTermsWorker';
 import { startGuardWorker, stopGuardWorker } from './modules/guard/index';
 
@@ -21,6 +25,7 @@ async function start(): Promise<void> {
   startWatchdog();
   startRssPoller();
   startDiscoveryScheduler();
+  startProfileEnrichmentScheduler();
   startInterestsWorker();
   startGuardWorker();
 
@@ -36,6 +41,7 @@ async function start(): Promise<void> {
     stopWatchdog();
     stopRssPoller();
     await stopDiscoveryScheduler();
+    await stopProfileEnrichmentScheduler();
     await stopInterestsWorker();
     await stopGuardWorker();
     server.close(() => logger.info('HTTP server closed'));

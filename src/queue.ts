@@ -45,6 +45,17 @@ export const discoveryQueue = new Queue('discovery', {
   },
 });
 
+// Profile enrichment queue (issue #58) — nightly behavioural snapshot + trust
+// recompute. Scheduled at 05:00 so trust is fresh by the 06:00 discovery run.
+export const profileEnrichmentQueue = new Queue('profile-enrichment', {
+  connection: redis,
+  defaultJobOptions: {
+    attempts: 1,
+    removeOnComplete: { count: 10 },
+    removeOnFail: { count: 20 },
+  },
+});
+
 // Thumbnail upgrade queue — runs after a download completes so the video is usable
 // with a fallback (maxresdefault) thumbnail immediately, while the editorial-first
 // selection happens in the background without holding up availability or blocking
@@ -91,6 +102,7 @@ export async function closeQueues(): Promise<void> {
     downloadQueue.close(),
     guardQueue.close(),
     discoveryQueue.close(),
+    profileEnrichmentQueue.close(),
     thumbsQueue.close(),
     interestsQueue.close(),
     deleteQueue.close(),

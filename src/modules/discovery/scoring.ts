@@ -7,6 +7,13 @@ import type { UserInterestRow } from './intake';
 
 export type { TimeSensitivity };
 
+// Trust-weight default when no followed_people row exists for a candidate's
+// person (e.g. a back-catalog candidate whose follow was removed before
+// scoring). Mirrors TRUST_DEFAULT in profile-enrichment/util.ts; kept inline
+// here so scoring stays a leaf of the import graph and isn't dragged through
+// the profile-enrichment scheduler module just to read a single fallback.
+const TRUST_DEFAULT = 1.0;
+
 interface CandidateRow {
   candidate_id: string;
   external_id: string | null;
@@ -34,7 +41,21 @@ interface ScoringItem {
   interestLabel: string | null;
   expertise: string | null;
   sourceType: string;
+  personId: string | null;
   personName: string | null;
+}
+
+// Per-user trust weight for a followed person (issue #58). Returns
+// TRUST_DEFAULT (1.0) when the user doesn't follow this person (e.g. a
+// back-catalog candidate whose follow was removed before scoring ran).
+// Lookup is per-candidate but the value is small and frequently repeated,
+// so the cost is dominated by Gemma round-trips, not these point selects.
+function lookupTrustWeight(userId: string, personId: string): number {
+  const row = db.prepare(
+    'SELECT trust_weight FROM followed_people WHERE user_id = ? AND person_id = ?'
+  ).get(userId, personId) as { trust_weight: number | null } | undefined;
+  if (!row || row.trust_weight === null) return TRUST_DEFAULT;
+  return row.trust_weight;
 }
 
 // Deterministic time-sensitivity override for patterns Gemma keeps flip-
@@ -168,6 +189,7 @@ export async function scoreCandidates(userId: string, userInterests: UserInteres
       interestLabel: c.interest_label,
       expertise: c.interest_expertise,
       sourceType: c.source_type,
+      personId: c.person_id,
       personName: c.person_name,
     }));
 
@@ -199,9 +221,9 @@ export async function scoreCandidates(userId: string, userInterests: UserInteres
       const item = items[entry.index - 1];
       if (!item) continue;
 
-      const connection = clampScore(entry.connection);
+      const rawConnection = clampScore(entry.connection);
       const quality = clampScore(entry.quality);
-      if (connection === null || quality === null) continue;
+      if (rawConnection === null || quality === null) continue;
 
       const sensitivity: TimeSensitivity = item.sourceType === 'person_backcatalog'
         // Back-catalog: the upload date is years old by definition, but the
@@ -211,6 +233,17 @@ export async function scoreCandidates(userId: string, userInterests: UserInteres
         // candidates compete at face value on connection × quality.
         ? 'evergreen'
         : overrideTimeSensitivity(item.title, normalizeSensitivity(entry.time_sensitivity));
+
+      // Trust weight (issue #58, brief §9a Layer 3): for person-sourced
+      // candidates only, multiply Gemma's connection score by the user's
+      // per-person trust weight (0.5–1.5, default 1.0). Interest-search
+      // candidates have person_id IS NULL and stay unchanged. Gating on
+      // person_id rather than source_type makes this forward-compatible
+      // with any future person-sourced source_type.
+      const trustWeight = item.personId !== null
+        ? lookupTrustWeight(userId, item.personId)
+        : 1.0;
+      const connection = rawConnection * trustWeight;
 
       // gemma_score retained as connection × quality / 10 (0–10 range) so
       // older code paths (e.g. guardCandidates' top-N) still work.
