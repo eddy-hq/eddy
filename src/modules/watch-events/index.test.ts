@@ -29,12 +29,11 @@ vi.mock('../notifications', () => ({
   validateActionToken: vi.fn(),
 }));
 
-// requests/state.ts imports from the people barrel so markDownloaded can
-// populate person rows for discovery/share-sheet downloads (#50). The barrel
-// pulls yt-dlp, the RSS poller, and ollama-backed interest inference at
-// module top, none of which vi.importActual on state.ts needs — stub the
-// whole module out here.
-vi.mock('../people', () => ({
+// requests/state.ts imports from people/registry (#87) so markDownloaded can
+// populate person rows for discovery/share-sheet downloads (#50). The registry
+// pulls applyChannelInfo, which loads yt-dlp at module top — none of which
+// vi.importActual on state.ts needs — stub the leaf module out here.
+vi.mock('../people/registry', () => ({
   applyChannelInfoToPerson: vi.fn().mockResolvedValue(undefined),
   ensurePersonForChannel: vi.fn().mockReturnValue({ personId: 'p', outputId: 'o', created: false }),
 }));
