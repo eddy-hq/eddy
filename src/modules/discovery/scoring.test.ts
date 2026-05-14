@@ -119,4 +119,36 @@ describe('buildScoringPrompt', () => {
     expect(prompt).toContain('[back-catalog from a person you follow: Simon Peyton Jones]');
     expect(prompt).toContain('User interests (priority order, expertise): "functional programming" (deep)');
   });
+
+  it('omits the affinity section entirely when no statements are passed', () => {
+    const prompt = buildScoringPrompt(
+      [{
+        index: 1, candidateId: 'c1', title: 'X', channel: 'Y',
+        durationSecs: null, publishedAt: null,
+        interestLabel: null, expertise: null,
+        sourceType: 'interest_search', personId: null, personName: null,
+      }],
+      '"x" (deep)',
+    );
+    expect(prompt).not.toContain('Known preference patterns');
+  });
+
+  it('includes the affinity section and numbers each statement', () => {
+    const prompt = buildScoringPrompt(
+      [{
+        index: 1, candidateId: 'c1', title: 'X', channel: 'Y',
+        durationSecs: null, publishedAt: null,
+        interestLabel: null, expertise: null,
+        sourceType: 'interest_search', personId: null, personName: null,
+      }],
+      '"x" (deep)',
+      [
+        'Likes long-form technical explainers',
+        'Skips reaction-style videos',
+      ],
+    );
+    expect(prompt).toContain('Known preference patterns');
+    expect(prompt).toContain('1. Likes long-form technical explainers');
+    expect(prompt).toContain('2. Skips reaction-style videos');
+  });
 });
