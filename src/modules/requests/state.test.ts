@@ -42,8 +42,11 @@ const { ensurePersonForChannelMock, applyChannelInfoToPersonMock } = vi.hoisted(
   applyChannelInfoToPersonMock: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock('../people', () => ({
+vi.mock('../people/ensurePersonForChannel', () => ({
   ensurePersonForChannel: ensurePersonForChannelMock,
+}));
+
+vi.mock('../people/applyChannelInfo', () => ({
   applyChannelInfoToPerson: applyChannelInfoToPersonMock,
 }));
 

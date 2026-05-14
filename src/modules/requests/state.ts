@@ -2,7 +2,14 @@ import { v7 as uuidv7 } from 'uuid';
 import { db } from '../../db/client';
 import { logger } from '../../logger';
 import { sendVideoReady } from '../notifications';
-import { applyChannelInfoToPerson, ensurePersonForChannel } from '../people';
+// Leaf imports rather than `../people`: people/index.ts already depends on
+// `../requests` for createFromChannelPoll, so importing the people barrel
+// from here would close a requests ↔ people module cycle. The two helpers
+// below are the module's public capture API — re-exported from people/index
+// — and live in dedicated files specifically so callers can pull them in
+// without dragging the router, RSS poller, or ytdlp surface along the path.
+import { applyChannelInfoToPerson } from '../people/applyChannelInfo';
+import { ensurePersonForChannel } from '../people/ensurePersonForChannel';
 import { downloadQueue, deleteQueue, redis } from '../../queue';
 import type { DownloadJobData } from '../content';
 

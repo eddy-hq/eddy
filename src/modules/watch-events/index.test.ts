@@ -29,12 +29,15 @@ vi.mock('../notifications', () => ({
   validateActionToken: vi.fn(),
 }));
 
-// state.markDownloaded now imports the people module's ensurePersonForChannel
-// + applyChannelInfoToPerson via importActual below. The real people index pulls
-// in config (via ytdlp), which calls process.exit when env isn't loaded in
-// tests. Stub it here so the actual-import of requests/state stays cheap.
-vi.mock('../people', () => ({
+// state.markDownloaded now imports the leaf helpers from the people module.
+// The applyChannelInfo file transitively pulls config in via ytdlp, which
+// calls process.exit when env isn't loaded in tests. Stub both leaf paths so
+// the actual-import of requests/state stays cheap and side-effect-free.
+vi.mock('../people/ensurePersonForChannel', () => ({
   ensurePersonForChannel: vi.fn().mockReturnValue({ personId: 'person-stub', outputId: 'output-stub' }),
+}));
+
+vi.mock('../people/applyChannelInfo', () => ({
   applyChannelInfoToPerson: vi.fn().mockResolvedValue(undefined),
 }));
 
