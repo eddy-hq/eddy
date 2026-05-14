@@ -1,13 +1,14 @@
 // RSS poller for followed channels. Owns the 6-hour poll loop, per-channel
 // dedup, first-poll confirmation flow, and short filtering. Deep-imports
-// `createFromChannelPoll` from `../requests/state` (a one-way edge now that
-// `./registry` was extracted to break the requests↔people cycle) to keep the
-// poller's module graph free of the requests HTTP router and its transitive
-// queue/notifications dependencies.
+// `createFromChannelPoll` from `../requests/state-default` (a one-way edge
+// now that `./registry` was extracted to break the requests↔people cycle)
+// to keep the poller's module graph free of the requests HTTP router. The
+// shim still pulls in BullMQ/ntfy transitively — `state-default.ts` is the
+// production-wiring surface; the pure state machine lives in `./state.ts`.
 import { db } from '../../db/client';
 import { logger } from '../../logger';
 import { SHORTS_MAX_SECS } from '../content';
-import { createFromChannelPoll } from '../requests/state';
+import { createFromChannelPoll } from '../requests/state-default';
 import { videoDuration } from '../../ytdlp';
 import { applyChannelInfoToPerson } from './registry';
 

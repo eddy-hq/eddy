@@ -6,8 +6,19 @@ import { config } from '../../config';
 import { downloadQueue, redis } from '../../queue';
 import { sendVideoReady } from '../notifications';
 import { resolveUserByIdOrName } from '../users';
-import * as state from './state';
+// The state machine itself is in `./state`; the production-default port
+// wiring and the per-verb shim exports (`markWatched`, `createFromShareSheet`,
+// …) live in `./state-default`. Combining both into a single `state` namespace
+// here keeps the existing router call sites unchanged.
+import * as stateMachine from './state';
+import * as stateShim from './state-default';
+const state = { ...stateMachine, ...stateShim };
 
+export {
+  createRequestsState,
+  CANCELLED_REASON,
+  displayRejectionReason,
+} from './state';
 export {
   markWatched,
   markDismissed,
@@ -21,11 +32,8 @@ export {
   createFromShareSheet,
   createFromChannelPoll,
   createFromCandidate,
-  createRequestsState,
   registerDefaultRequestsState,
-  CANCELLED_REASON,
-  displayRejectionReason,
-} from './state';
+} from './state-default';
 export type {
   Status,
   TransitionResult,
