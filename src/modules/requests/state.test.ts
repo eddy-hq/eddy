@@ -1,5 +1,10 @@
 import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest';
 
+// The `:memory:` DB is a fast test fixture, not a port — it stays mocked so
+// the suite never touches the on-disk file. Every other side-effect dependency
+// (queue, notifications, people/registry) goes through the `Ports` seam and is
+// passed in as a fake at test time. The logger mock stays because the
+// transition effects log on failure paths and we assert against those log calls.
 vi.mock('../../db/client', async () => {
   const { default: Database } = await import('better-sqlite3');
   const memoryDb = new Database(':memory:');
@@ -11,66 +16,68 @@ vi.mock('../../logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 
-const { removeJobMock, getJobMock, addJobMock, deleteAddJobMock, redisDelMock } = vi.hoisted(() => ({
-  removeJobMock: vi.fn().mockResolvedValue(undefined),
-  getJobMock: vi.fn(),
-  addJobMock: vi.fn().mockResolvedValue(undefined),
-  deleteAddJobMock: vi.fn().mockResolvedValue(undefined),
-  redisDelMock: vi.fn().mockResolvedValue(1),
-}));
-
-vi.mock('../../queue', () => ({
-  redis: { del: redisDelMock },
-  downloadQueue: { getJob: getJobMock, add: addJobMock },
-  deleteQueue: { add: deleteAddJobMock },
-  guardQueue: {},
-  discoveryQueue: {},
-  thumbsQueue: {},
-  closeQueues: vi.fn(),
-}));
-
-vi.mock('../notifications', () => ({
-  sendVideoReady: vi.fn().mockResolvedValue(undefined),
-  sendDownloadAlert: vi.fn(),
-  sendParentReview: vi.fn(),
-  generateActionToken: vi.fn(),
-  validateActionToken: vi.fn(),
-}));
-
-const { ensurePersonForChannelMock, applyChannelInfoToPersonMock } = vi.hoisted(() => ({
-  ensurePersonForChannelMock: vi.fn(),
-  applyChannelInfoToPersonMock: vi.fn().mockResolvedValue(undefined),
-}));
-
-vi.mock('../people/registry', () => ({
-  ensurePersonForChannel: ensurePersonForChannelMock,
-  applyChannelInfoToPerson: applyChannelInfoToPersonMock,
-}));
-
 import { db } from '../../db/client';
 import { logger } from '../../logger';
 import { runMigrations } from '../../db/migrate';
-import { sendVideoReady } from '../notifications';
 import {
-  markWatched,
-  markDismissed,
-  markCancelled,
-  markSoftDeleted,
-  markDownloaded,
-  markRejected,
-  markGuardBlocked,
-  markFailed,
-  retry,
-  createFromShareSheet,
-  createFromChannelPoll,
-  createFromCandidate,
+  createRequestsState,
   findActiveDuplicateRequest,
   CANCELLED_REASON,
+  TRANSITIONS,
   type DownloadedFields,
   type Status,
+  type Ports,
+  type Event,
+  type Effect,
+  type RequestsState,
+  type TransitionResult,
 } from './state';
 
 const USER_ID = '11111111-1111-7111-8111-111111111111';
+
+// All known DB statuses. Used by the property test to walk illegal sources
+// (every status that isn't in a descriptor's `sources` list).
+const ALL_STATUSES: Status[] = [
+  'pending',
+  'downloading',
+  'guard_review',
+  'parent_review',
+  'approved',
+  'ready',
+  'rejected',
+  'failed',
+  'watched',
+  'dismissed',
+  'deleted',
+];
+
+// Map an Effect kind to the Ports method that runEffect dispatches it to.
+// Used by the property test to assert that the fake ports were called
+// exactly the set of times that the descriptor declared.
+const EFFECT_KIND_TO_PORT: Record<Effect['kind'], keyof Ports> = {
+  notify_video_ready: 'notifyVideoReady',
+  enqueue_download: 'enqueueDownload',
+  enqueue_delete: 'enqueueDelete',
+  cancel_download_job_fire: 'cancelDownloadJob',
+  cancel_download_job_awaited: 'cancelDownloadJob',
+  redis_del: 'redisDel',
+  ensure_person_capture: 'ensurePerson',
+};
+
+function makeFakePorts(): Ports {
+  return {
+    notifyVideoReady: vi.fn().mockResolvedValue(undefined),
+    enqueueDownload: vi.fn().mockResolvedValue(undefined),
+    enqueueDelete: vi.fn().mockResolvedValue(undefined),
+    cancelDownloadJob: vi.fn().mockResolvedValue(undefined),
+    redisDel: vi.fn().mockResolvedValue(1),
+    ensurePerson: vi.fn().mockReturnValue({ personId: 'person-1', created: true }),
+    applyChannelInfo: vi.fn().mockResolvedValue(undefined),
+  };
+}
+
+let state: RequestsState;
+let fakePorts: Ports;
 
 function insertRequest(opts: {
   request_id: string;
@@ -107,29 +114,18 @@ beforeAll(() => {
 
 beforeEach(() => {
   db.exec('DELETE FROM requests');
-  getJobMock.mockReset();
-  removeJobMock.mockClear();
-  addJobMock.mockReset();
-  addJobMock.mockResolvedValue(undefined);
-  deleteAddJobMock.mockReset();
-  deleteAddJobMock.mockResolvedValue(undefined);
-  redisDelMock.mockClear();
+  fakePorts = makeFakePorts();
+  state = createRequestsState({ ports: fakePorts });
   vi.mocked(logger.info).mockClear();
   vi.mocked(logger.warn).mockClear();
   vi.mocked(logger.debug).mockClear();
-  vi.mocked(sendVideoReady).mockReset();
-  vi.mocked(sendVideoReady).mockResolvedValue(undefined);
-  ensurePersonForChannelMock.mockReset();
-  ensurePersonForChannelMock.mockReturnValue({ personId: 'person-1', outputId: 'output-1', created: true });
-  applyChannelInfoToPersonMock.mockReset();
-  applyChannelInfoToPersonMock.mockResolvedValue(undefined);
 });
 
 describe('markWatched', () => {
   it('transitions ready → watched and returns the user_id', () => {
     insertRequest({ request_id: 'req-1', status: 'ready' });
 
-    const result = markWatched('req-1');
+    const result = state.markWatched('req-1');
 
     expect(result).toEqual({ transitioned: true, userId: USER_ID });
   });
@@ -138,7 +134,7 @@ describe('markWatched', () => {
     insertRequest({ request_id: 'req-2', status: 'ready' });
     const before = Date.now();
 
-    markWatched('req-2');
+    state.markWatched('req-2');
 
     const row = db
       .prepare('SELECT status, watched_at FROM requests WHERE request_id = ?')
@@ -152,7 +148,7 @@ describe('markWatched', () => {
     const originalWatchedAt = '2026-01-01T00:00:00.000Z';
     insertRequest({ request_id: 'req-3', status: 'watched', watched_at: originalWatchedAt });
 
-    const result = markWatched('req-3');
+    const result = state.markWatched('req-3');
 
     expect(result).toEqual({ transitioned: false, currentStatus: 'watched' });
     const row = db
@@ -164,7 +160,7 @@ describe('markWatched', () => {
   it('is a no-op on a rejected row', () => {
     insertRequest({ request_id: 'req-4', status: 'rejected' });
 
-    const result = markWatched('req-4');
+    const result = state.markWatched('req-4');
 
     expect(result).toEqual({ transitioned: false, currentStatus: 'rejected' });
     const row = db
@@ -179,7 +175,7 @@ describe('markDismissed', () => {
   it('transitions ready → dismissed and returns the user_id', () => {
     insertRequest({ request_id: 'req-d1', status: 'ready' });
 
-    const result = markDismissed('req-d1');
+    const result = state.markDismissed('req-d1');
 
     expect(result).toEqual({ transitioned: true, userId: USER_ID });
     const row = db
@@ -191,7 +187,7 @@ describe('markDismissed', () => {
   it('is a no-op on a downloading row and does not change status', () => {
     insertRequest({ request_id: 'req-d2', status: 'downloading' });
 
-    const result = markDismissed('req-d2');
+    const result = state.markDismissed('req-d2');
 
     expect(result).toEqual({ transitioned: false, currentStatus: 'downloading' });
     const row = db
@@ -201,18 +197,17 @@ describe('markDismissed', () => {
   });
 
   it('returns currentStatus: null for an unknown id', () => {
-    const result = markDismissed('does-not-exist');
+    const result = state.markDismissed('does-not-exist');
 
     expect(result).toEqual({ transitioned: false, currentStatus: null });
   });
 });
 
 describe('markCancelled', () => {
-  it('transitions downloading → rejected with sentinel reason and removes job', async () => {
+  it('transitions downloading → rejected with sentinel reason and cancels the download job + progress key', async () => {
     insertRequest({ request_id: 'req-c1', status: 'downloading' });
-    getJobMock.mockResolvedValueOnce({ remove: removeJobMock });
 
-    const result = markCancelled('req-c1');
+    const result = state.markCancelled('req-c1');
 
     expect(result).toEqual({ transitioned: true, userId: USER_ID });
     const row = db
@@ -221,41 +216,39 @@ describe('markCancelled', () => {
     expect(row.status).toBe('rejected');
     expect(row.rejection_reason).toBe(CANCELLED_REASON);
 
-    expect(getJobMock).toHaveBeenCalledWith('req-c1');
-    expect(redisDelMock).toHaveBeenCalledWith('eddy:progress:req-c1');
-
-    // Let the fire-and-forget chain settle so we can assert remove() ran.
+    // Cancel is fire-and-forget — let the dispatched effects settle.
     await new Promise((resolve) => setImmediate(resolve));
-    expect(removeJobMock).toHaveBeenCalled();
+    expect(fakePorts.cancelDownloadJob).toHaveBeenCalledWith('req-c1');
+    expect(fakePorts.redisDel).toHaveBeenCalledWith('eddy:progress:req-c1');
   });
 
-  it('is a no-op on an already-rejected row and does not call queue or redis', () => {
+  it('is a no-op on an already-rejected row and does not touch the cancel ports', () => {
     insertRequest({ request_id: 'req-c2', status: 'rejected' });
 
-    const result = markCancelled('req-c2');
+    const result = state.markCancelled('req-c2');
 
     expect(result).toEqual({ transitioned: false, currentStatus: 'rejected' });
-    expect(getJobMock).not.toHaveBeenCalled();
-    expect(redisDelMock).not.toHaveBeenCalled();
+    expect(fakePorts.cancelDownloadJob).not.toHaveBeenCalled();
+    expect(fakePorts.redisDel).not.toHaveBeenCalled();
   });
 
-  it('returns currentStatus: null for an unknown id and does not call queue', () => {
-    const result = markCancelled('does-not-exist');
+  it('returns currentStatus: null for an unknown id and does not touch the cancel ports', () => {
+    const result = state.markCancelled('does-not-exist');
 
     expect(result).toEqual({ transitioned: false, currentStatus: null });
-    expect(getJobMock).not.toHaveBeenCalled();
-    expect(redisDelMock).not.toHaveBeenCalled();
+    expect(fakePorts.cancelDownloadJob).not.toHaveBeenCalled();
+    expect(fakePorts.redisDel).not.toHaveBeenCalled();
   });
 });
 
 describe('markSoftDeleted', () => {
   const FILE_PATH = '/mnt/ssd/eddy/videos/abc123.mp4';
 
-  it('transitions ready → deleted, sets columns, and enqueues a delete job', async () => {
+  it('transitions ready → deleted, sets columns, and enqueues a delete job', () => {
     insertRequest({ request_id: 'req-s1', status: 'ready', file_path: FILE_PATH });
     const before = Date.now();
 
-    const result = markSoftDeleted('req-s1');
+    const result = state.markSoftDeleted('req-s1');
 
     expect(result).toEqual({ transitioned: true, userId: USER_ID });
     const row = db
@@ -267,8 +260,7 @@ describe('markSoftDeleted', () => {
     expect(new Date(row.deleted_at!).getTime()).toBeGreaterThanOrEqual(before);
 
     // The unlink itself runs on the Ubuntu worker — the M4 just enqueues the job.
-    expect(deleteAddJobMock).toHaveBeenCalledWith(
-      'delete',
+    expect(fakePorts.enqueueDelete).toHaveBeenCalledWith(
       { requestId: 'req-s1', filePath: FILE_PATH },
       { jobId: 'delete:req-s1' },
     );
@@ -277,7 +269,7 @@ describe('markSoftDeleted', () => {
   it('transitions watched → deleted and enqueues a delete job', () => {
     insertRequest({ request_id: 'req-s2', status: 'watched', file_path: FILE_PATH });
 
-    const result = markSoftDeleted('req-s2');
+    const result = state.markSoftDeleted('req-s2');
 
     expect(result).toEqual({ transitioned: true, userId: USER_ID });
     const row = db
@@ -286,8 +278,7 @@ describe('markSoftDeleted', () => {
     expect(row.status).toBe('deleted');
     expect(row.file_state).toBe('gone');
 
-    expect(deleteAddJobMock).toHaveBeenCalledWith(
-      'delete',
+    expect(fakePorts.enqueueDelete).toHaveBeenCalledWith(
       { requestId: 'req-s2', filePath: FILE_PATH },
       { jobId: 'delete:req-s2' },
     );
@@ -296,7 +287,7 @@ describe('markSoftDeleted', () => {
   it('is a no-op on a downloading row and does not enqueue', () => {
     insertRequest({ request_id: 'req-s3', status: 'downloading', file_path: FILE_PATH });
 
-    const result = markSoftDeleted('req-s3');
+    const result = state.markSoftDeleted('req-s3');
 
     expect(result).toEqual({ transitioned: false, currentStatus: 'downloading' });
     const row = db
@@ -304,39 +295,39 @@ describe('markSoftDeleted', () => {
       .get('req-s3') as { status: string; file_state: string };
     expect(row.status).toBe('downloading');
     expect(row.file_state).toBe('live');
-    expect(deleteAddJobMock).not.toHaveBeenCalled();
+    expect(fakePorts.enqueueDelete).not.toHaveBeenCalled();
   });
 
   it('is a no-op on a rejected row and does not enqueue', () => {
     insertRequest({ request_id: 'req-s4', status: 'rejected', file_path: FILE_PATH });
 
-    const result = markSoftDeleted('req-s4');
+    const result = state.markSoftDeleted('req-s4');
 
     expect(result).toEqual({ transitioned: false, currentStatus: 'rejected' });
-    expect(deleteAddJobMock).not.toHaveBeenCalled();
+    expect(fakePorts.enqueueDelete).not.toHaveBeenCalled();
   });
 
   it('returns currentStatus: null for an unknown id and does not enqueue', () => {
-    const result = markSoftDeleted('does-not-exist');
+    const result = state.markSoftDeleted('does-not-exist');
 
     expect(result).toEqual({ transitioned: false, currentStatus: null });
-    expect(deleteAddJobMock).not.toHaveBeenCalled();
+    expect(fakePorts.enqueueDelete).not.toHaveBeenCalled();
   });
 
   it('does not enqueue when the row has no file_path', () => {
     insertRequest({ request_id: 'req-s5', status: 'ready', file_path: null });
 
-    const result = markSoftDeleted('req-s5');
+    const result = state.markSoftDeleted('req-s5');
 
     expect(result).toEqual({ transitioned: true, userId: USER_ID });
-    expect(deleteAddJobMock).not.toHaveBeenCalled();
+    expect(fakePorts.enqueueDelete).not.toHaveBeenCalled();
   });
 
   it('warn-logs but still marks deleted when the queue enqueue throws', async () => {
     insertRequest({ request_id: 'req-s6', status: 'ready', file_path: FILE_PATH });
-    deleteAddJobMock.mockRejectedValueOnce(new Error('redis down'));
+    vi.mocked(fakePorts.enqueueDelete).mockRejectedValueOnce(new Error('redis down'));
 
-    const result = markSoftDeleted('req-s6');
+    const result = state.markSoftDeleted('req-s6');
     expect(result).toEqual({ transitioned: true, userId: USER_ID });
 
     // Let the rejected fire-and-forget settle.
@@ -367,11 +358,11 @@ describe('markDownloaded', () => {
     thumbnailUrl: 'https://m4.local/videos/abc123.jpg',
   };
 
-  it('transitions downloading → ready, writes all fields, and fires sendVideoReady', () => {
+  it('transitions downloading → ready, writes all fields, and fires notifyVideoReady', () => {
     insertRequest({ request_id: 'req-dl1', status: 'downloading' });
     const before = Date.now();
 
-    const result = markDownloaded('req-dl1', FIELDS);
+    const result = state.markDownloaded('req-dl1', FIELDS);
 
     expect(result).toEqual({ transitioned: true, userId: USER_ID });
     const row = db
@@ -398,13 +389,13 @@ describe('markDownloaded', () => {
     expect(row.thumbnail_url).toBe(FIELDS.thumbnailUrl);
     expect(new Date(row.downloaded_at).getTime()).toBeGreaterThanOrEqual(before);
 
-    expect(vi.mocked(sendVideoReady)).toHaveBeenCalledWith(USER_ID, 'req-dl1', FIELDS.title);
+    expect(fakePorts.notifyVideoReady).toHaveBeenCalledWith(USER_ID, 'req-dl1', FIELDS.title);
   });
 
   it('is a no-op on an already-rejected row and does not fire the notification', () => {
     insertRequest({ request_id: 'req-dl2', status: 'rejected' });
 
-    const result = markDownloaded('req-dl2', FIELDS);
+    const result = state.markDownloaded('req-dl2', FIELDS);
 
     expect(result).toEqual({ transitioned: false, currentStatus: 'rejected' });
     const row = db
@@ -412,30 +403,30 @@ describe('markDownloaded', () => {
       .get('req-dl2') as { status: string; title: string | null };
     expect(row.status).toBe('rejected');
     expect(row.title).toBeNull();
-    expect(vi.mocked(sendVideoReady)).not.toHaveBeenCalled();
+    expect(fakePorts.notifyVideoReady).not.toHaveBeenCalled();
   });
 
   it('is a no-op on an already-ready row and does not re-fire the notification', () => {
     insertRequest({ request_id: 'req-dl3', status: 'ready' });
 
-    const result = markDownloaded('req-dl3', FIELDS);
+    const result = state.markDownloaded('req-dl3', FIELDS);
 
     expect(result).toEqual({ transitioned: false, currentStatus: 'ready' });
-    expect(vi.mocked(sendVideoReady)).not.toHaveBeenCalled();
+    expect(fakePorts.notifyVideoReady).not.toHaveBeenCalled();
   });
 
   it('returns currentStatus: null for an unknown id and does not fire the notification', () => {
-    const result = markDownloaded('does-not-exist', FIELDS);
+    const result = state.markDownloaded('does-not-exist', FIELDS);
 
     expect(result).toEqual({ transitioned: false, currentStatus: null });
-    expect(vi.mocked(sendVideoReady)).not.toHaveBeenCalled();
+    expect(fakePorts.notifyVideoReady).not.toHaveBeenCalled();
   });
 
-  it('warn-logs when sendVideoReady rejects and does not surface as unhandled rejection', async () => {
+  it('warn-logs when notifyVideoReady rejects and does not surface as unhandled rejection', async () => {
     insertRequest({ request_id: 'req-dl4', status: 'downloading' });
-    vi.mocked(sendVideoReady).mockRejectedValueOnce(new Error('ntfy down'));
+    vi.mocked(fakePorts.notifyVideoReady).mockRejectedValueOnce(new Error('ntfy down'));
 
-    const result = markDownloaded('req-dl4', FIELDS);
+    const result = state.markDownloaded('req-dl4', FIELDS);
     expect(result).toEqual({ transitioned: true, userId: USER_ID });
 
     // Let the rejected fire-and-forget settle.
@@ -449,50 +440,50 @@ describe('markDownloaded', () => {
   it('ensures a person row and fires channel-info capture on first sighting of a channel', () => {
     insertRequest({ request_id: 'req-dl5', status: 'downloading' });
 
-    const result = markDownloaded('req-dl5', FIELDS);
+    const result = state.markDownloaded('req-dl5', FIELDS);
 
     expect(result).toEqual({ transitioned: true, userId: USER_ID });
-    expect(ensurePersonForChannelMock).toHaveBeenCalledWith(FIELDS.youtubeChannelId, FIELDS.channel);
-    expect(applyChannelInfoToPersonMock).toHaveBeenCalledWith('person-1', FIELDS.youtubeChannelId);
+    expect(fakePorts.ensurePerson).toHaveBeenCalledWith(FIELDS.youtubeChannelId, FIELDS.channel);
+    expect(fakePorts.applyChannelInfo).toHaveBeenCalledWith('person-1', FIELDS.youtubeChannelId);
   });
 
   it('does not re-fire channel-info capture for a channel we already have a person row for', () => {
     insertRequest({ request_id: 'req-dl5b', status: 'downloading' });
-    ensurePersonForChannelMock.mockReturnValueOnce({ personId: 'person-1', outputId: 'output-1', created: false });
+    vi.mocked(fakePorts.ensurePerson).mockReturnValueOnce({ personId: 'person-1', created: false });
 
-    const result = markDownloaded('req-dl5b', FIELDS);
+    const result = state.markDownloaded('req-dl5b', FIELDS);
 
     expect(result).toEqual({ transitioned: true, userId: USER_ID });
-    expect(ensurePersonForChannelMock).toHaveBeenCalledWith(FIELDS.youtubeChannelId, FIELDS.channel);
-    expect(applyChannelInfoToPersonMock).not.toHaveBeenCalled();
+    expect(fakePorts.ensurePerson).toHaveBeenCalledWith(FIELDS.youtubeChannelId, FIELDS.channel);
+    expect(fakePorts.applyChannelInfo).not.toHaveBeenCalled();
   });
 
   it('does not ensure a person row when youtubeChannelId is null', () => {
     insertRequest({ request_id: 'req-dl6', status: 'downloading' });
     const fieldsNoChannel: DownloadedFields = { ...FIELDS, youtubeChannelId: null };
 
-    const result = markDownloaded('req-dl6', fieldsNoChannel);
+    const result = state.markDownloaded('req-dl6', fieldsNoChannel);
 
     expect(result).toEqual({ transitioned: true, userId: USER_ID });
-    expect(ensurePersonForChannelMock).not.toHaveBeenCalled();
-    expect(applyChannelInfoToPersonMock).not.toHaveBeenCalled();
+    expect(fakePorts.ensurePerson).not.toHaveBeenCalled();
+    expect(fakePorts.applyChannelInfo).not.toHaveBeenCalled();
   });
 
   it('does not ensure a person row when the transition is a no-op', () => {
     insertRequest({ request_id: 'req-dl7', status: 'rejected' });
 
-    const result = markDownloaded('req-dl7', FIELDS);
+    const result = state.markDownloaded('req-dl7', FIELDS);
 
     expect(result).toEqual({ transitioned: false, currentStatus: 'rejected' });
-    expect(ensurePersonForChannelMock).not.toHaveBeenCalled();
-    expect(applyChannelInfoToPersonMock).not.toHaveBeenCalled();
+    expect(fakePorts.ensurePerson).not.toHaveBeenCalled();
+    expect(fakePorts.applyChannelInfo).not.toHaveBeenCalled();
   });
 
-  it('debug-logs when applyChannelInfoToPerson rejects and does not surface as unhandled rejection', async () => {
+  it('debug-logs when applyChannelInfo rejects and does not surface as unhandled rejection', async () => {
     insertRequest({ request_id: 'req-dl8', status: 'downloading' });
-    applyChannelInfoToPersonMock.mockRejectedValueOnce(new Error('yt-dlp flaked'));
+    vi.mocked(fakePorts.applyChannelInfo).mockRejectedValueOnce(new Error('yt-dlp flaked'));
 
-    const result = markDownloaded('req-dl8', FIELDS);
+    const result = state.markDownloaded('req-dl8', FIELDS);
     expect(result).toEqual({ transitioned: true, userId: USER_ID });
 
     // Let the rejected fire-and-forget settle.
@@ -508,7 +499,7 @@ describe('markRejected', () => {
   it('transitions downloading → rejected and writes the reason', () => {
     insertRequest({ request_id: 'req-rj1', status: 'downloading' });
 
-    const result = markRejected('req-rj1', 'yt-dlp 403');
+    const result = state.markRejected('req-rj1', 'yt-dlp 403');
 
     expect(result).toEqual({ transitioned: true, userId: USER_ID });
     const row = db
@@ -523,7 +514,7 @@ describe('markRejected', () => {
     db.prepare('UPDATE requests SET rejection_reason = ? WHERE request_id = ?')
       .run('original reason', 'req-rj2');
 
-    const result = markRejected('req-rj2', 'new reason');
+    const result = state.markRejected('req-rj2', 'new reason');
 
     expect(result).toEqual({ transitioned: false, currentStatus: 'rejected' });
     const row = db
@@ -535,13 +526,13 @@ describe('markRejected', () => {
   it('is a no-op on a non-downloading source (e.g. ready)', () => {
     insertRequest({ request_id: 'req-rj3', status: 'ready' });
 
-    const result = markRejected('req-rj3', 'too late');
+    const result = state.markRejected('req-rj3', 'too late');
 
     expect(result).toEqual({ transitioned: false, currentStatus: 'ready' });
   });
 
   it('returns currentStatus: null for an unknown id', () => {
-    const result = markRejected('does-not-exist', 'reason');
+    const result = state.markRejected('does-not-exist', 'reason');
 
     expect(result).toEqual({ transitioned: false, currentStatus: null });
   });
@@ -551,7 +542,7 @@ describe('markGuardBlocked', () => {
   it('transitions downloading → rejected with reason — same SQL as markRejected', () => {
     insertRequest({ request_id: 'req-gb1', status: 'downloading' });
 
-    const result = markGuardBlocked('req-gb1', 'unsafe content');
+    const result = state.markGuardBlocked('req-gb1', 'unsafe content');
 
     expect(result).toEqual({ transitioned: true, userId: USER_ID });
     const row = db
@@ -564,13 +555,13 @@ describe('markGuardBlocked', () => {
   it('is a no-op on a non-downloading source', () => {
     insertRequest({ request_id: 'req-gb2', status: 'rejected' });
 
-    const result = markGuardBlocked('req-gb2', 'unsafe content');
+    const result = state.markGuardBlocked('req-gb2', 'unsafe content');
 
     expect(result).toEqual({ transitioned: false, currentStatus: 'rejected' });
   });
 
   it('returns currentStatus: null for an unknown id', () => {
-    const result = markGuardBlocked('does-not-exist', 'unsafe');
+    const result = state.markGuardBlocked('does-not-exist', 'unsafe');
 
     expect(result).toEqual({ transitioned: false, currentStatus: null });
   });
@@ -580,7 +571,7 @@ describe('markFailed', () => {
   it('transitions downloading → failed', () => {
     insertRequest({ request_id: 'req-f1', status: 'downloading' });
 
-    const result = markFailed('req-f1');
+    const result = state.markFailed('req-f1');
 
     expect(result).toEqual({ transitioned: true, userId: USER_ID });
     const row = db
@@ -592,7 +583,7 @@ describe('markFailed', () => {
   it('is a no-op on a ready row and does not change status', () => {
     insertRequest({ request_id: 'req-f2', status: 'ready' });
 
-    const result = markFailed('req-f2');
+    const result = state.markFailed('req-f2');
 
     expect(result).toEqual({ transitioned: false, currentStatus: 'ready' });
     const row = db
@@ -602,7 +593,7 @@ describe('markFailed', () => {
   });
 
   it('returns currentStatus: null for an unknown id', () => {
-    const result = markFailed('does-not-exist');
+    const result = state.markFailed('does-not-exist');
 
     expect(result).toEqual({ transitioned: false, currentStatus: null });
   });
@@ -612,11 +603,10 @@ describe('retry', () => {
   const URL = 'https://www.youtube.com/watch?v=zzz';
   const YT_ID = 'zzz12345xyz';
 
-  it('transitions failed → downloading, removes existing job, and re-adds with stored youtube_id and url', async () => {
+  it('transitions failed → downloading, cancels the existing job, and re-adds with stored youtube_id and url', async () => {
     insertRequest({ request_id: 'req-r1', status: 'failed', youtube_id: YT_ID, url: URL });
-    getJobMock.mockResolvedValueOnce({ remove: removeJobMock });
 
-    const result = await retry('req-r1');
+    const result = await state.retry('req-r1');
 
     expect(result).toEqual({ transitioned: true, userId: USER_ID });
     const row = db
@@ -624,20 +614,17 @@ describe('retry', () => {
       .get('req-r1') as { status: string };
     expect(row.status).toBe('downloading');
 
-    expect(getJobMock).toHaveBeenCalledWith('req-r1');
-    expect(removeJobMock).toHaveBeenCalledTimes(1);
-    expect(addJobMock).toHaveBeenCalledWith(
-      'download',
+    expect(fakePorts.cancelDownloadJob).toHaveBeenCalledWith('req-r1');
+    expect(fakePorts.enqueueDownload).toHaveBeenCalledWith(
       { requestId: 'req-r1', youtubeId: YT_ID, url: URL },
       { jobId: 'req-r1' },
     );
   });
 
-  it('transitions downloading → downloading (idempotent re-enqueue) — same removeJob + add', async () => {
+  it('transitions downloading → downloading (idempotent re-enqueue) — same cancel + enqueue', async () => {
     insertRequest({ request_id: 'req-r2', status: 'downloading', youtube_id: YT_ID, url: URL });
-    getJobMock.mockResolvedValueOnce({ remove: removeJobMock });
 
-    const result = await retry('req-r2');
+    const result = await state.retry('req-r2');
 
     expect(result).toEqual({ transitioned: true, userId: USER_ID });
     const row = db
@@ -645,49 +632,47 @@ describe('retry', () => {
       .get('req-r2') as { status: string };
     expect(row.status).toBe('downloading');
 
-    expect(removeJobMock).toHaveBeenCalledTimes(1);
-    expect(addJobMock).toHaveBeenCalledWith(
-      'download',
+    expect(fakePorts.cancelDownloadJob).toHaveBeenCalledTimes(1);
+    expect(fakePorts.enqueueDownload).toHaveBeenCalledWith(
       { requestId: 'req-r2', youtubeId: YT_ID, url: URL },
       { jobId: 'req-r2' },
     );
   });
 
-  it('is a no-op on a rejected row and does not touch the queue', async () => {
+  it('is a no-op on a rejected row and does not touch the queue ports', async () => {
     insertRequest({ request_id: 'req-r3', status: 'rejected' });
 
-    const result = await retry('req-r3');
+    const result = await state.retry('req-r3');
 
     expect(result).toEqual({ transitioned: false, currentStatus: 'rejected' });
-    expect(getJobMock).not.toHaveBeenCalled();
-    expect(addJobMock).not.toHaveBeenCalled();
+    expect(fakePorts.cancelDownloadJob).not.toHaveBeenCalled();
+    expect(fakePorts.enqueueDownload).not.toHaveBeenCalled();
   });
 
-  it('returns currentStatus: null for an unknown id and does not touch the queue', async () => {
-    const result = await retry('does-not-exist');
+  it('returns currentStatus: null for an unknown id and does not touch the queue ports', async () => {
+    const result = await state.retry('does-not-exist');
 
     expect(result).toEqual({ transitioned: false, currentStatus: null });
-    expect(getJobMock).not.toHaveBeenCalled();
-    expect(addJobMock).not.toHaveBeenCalled();
+    expect(fakePorts.cancelDownloadJob).not.toHaveBeenCalled();
+    expect(fakePorts.enqueueDownload).not.toHaveBeenCalled();
   });
 
-  it('logs-warned but still re-adds when removing the existing job throws', async () => {
+  it('logs-warned but still re-adds when cancelling the existing job throws', async () => {
     insertRequest({ request_id: 'req-r4', status: 'failed', youtube_id: YT_ID, url: URL });
-    getJobMock.mockRejectedValueOnce(new Error('redis down'));
+    vi.mocked(fakePorts.cancelDownloadJob).mockRejectedValueOnce(new Error('redis down'));
 
-    const result = await retry('req-r4');
+    const result = await state.retry('req-r4');
 
     expect(result).toEqual({ transitioned: true, userId: USER_ID });
     expect(vi.mocked(logger.warn)).toHaveBeenCalledTimes(1);
-    expect(addJobMock).toHaveBeenCalledTimes(1);
+    expect(fakePorts.enqueueDownload).toHaveBeenCalledTimes(1);
   });
 
-  it('logs-warned and does not throw when adding the new job fails', async () => {
+  it('logs-warned and does not throw when enqueuing the new job fails', async () => {
     insertRequest({ request_id: 'req-r5', status: 'failed', youtube_id: YT_ID, url: URL });
-    getJobMock.mockResolvedValueOnce(null);
-    addJobMock.mockRejectedValueOnce(new Error('redis down'));
+    vi.mocked(fakePorts.enqueueDownload).mockRejectedValueOnce(new Error('redis down'));
 
-    const result = await retry('req-r5');
+    const result = await state.retry('req-r5');
 
     expect(result).toEqual({ transitioned: true, userId: USER_ID });
     expect(vi.mocked(logger.warn)).toHaveBeenCalledTimes(1);
@@ -695,12 +680,10 @@ describe('retry', () => {
 
   it('passes empty string when youtube_id is null on the row', async () => {
     insertRequest({ request_id: 'req-r6', status: 'failed', youtube_id: null, url: URL });
-    getJobMock.mockResolvedValueOnce(null);
 
-    await retry('req-r6');
+    await state.retry('req-r6');
 
-    expect(addJobMock).toHaveBeenCalledWith(
-      'download',
+    expect(fakePorts.enqueueDownload).toHaveBeenCalledWith(
       { requestId: 'req-r6', youtubeId: '', url: URL },
       { jobId: 'req-r6' },
     );
@@ -714,7 +697,7 @@ describe('createFromShareSheet', () => {
   it('inserts a downloading share_sheet row with auto decision and enqueues with the new id', async () => {
     const before = Date.now();
 
-    const { requestId } = await createFromShareSheet({
+    const { requestId } = await state.createFromShareSheet({
       url: URL,
       userId: USER_ID,
       youtubeId: YT_ID,
@@ -742,32 +725,30 @@ describe('createFromShareSheet', () => {
     expect(new Date(row.requested_at).getTime()).toBeGreaterThanOrEqual(before);
     expect(new Date(row.added_at).getTime()).toBeGreaterThanOrEqual(before);
 
-    expect(addJobMock).toHaveBeenCalledWith(
-      'download',
+    expect(fakePorts.enqueueDownload).toHaveBeenCalledWith(
       { requestId, youtubeId: YT_ID, url: URL },
       { jobId: requestId },
     );
   });
 
-  it('passes empty string youtubeId to queue when caller omits it', async () => {
-    const { requestId } = await createFromShareSheet({ url: URL, userId: USER_ID });
+  it('passes empty string youtubeId to enqueueDownload when caller omits it', async () => {
+    const { requestId } = await state.createFromShareSheet({ url: URL, userId: USER_ID });
 
     const row = db
       .prepare('SELECT youtube_id FROM requests WHERE request_id = ?')
       .get(requestId) as { youtube_id: string | null };
     expect(row.youtube_id).toBeNull();
 
-    expect(addJobMock).toHaveBeenCalledWith(
-      'download',
+    expect(fakePorts.enqueueDownload).toHaveBeenCalledWith(
       { requestId, youtubeId: '', url: URL },
       { jobId: requestId },
     );
   });
 
-  it('leaves the row in place and warn-logs when queue add throws', async () => {
-    addJobMock.mockRejectedValueOnce(new Error('redis down'));
+  it('leaves the row in place and warn-logs when enqueueDownload throws', async () => {
+    vi.mocked(fakePorts.enqueueDownload).mockRejectedValueOnce(new Error('redis down'));
 
-    const { requestId } = await createFromShareSheet({
+    const { requestId } = await state.createFromShareSheet({
       url: URL,
       userId: USER_ID,
       youtubeId: YT_ID,
@@ -793,7 +774,7 @@ describe('createFromChannelPoll', () => {
   it('inserts a downloading channel_subscription row with title/channel/youtube_channel_id/file_state=live and no decided_by', async () => {
     const before = Date.now();
 
-    const { requestId } = await createFromChannelPoll({
+    const { requestId } = await state.createFromChannelPoll({
       url: URL,
       userId: USER_ID,
       youtubeId: YT_ID,
@@ -829,17 +810,16 @@ describe('createFromChannelPoll', () => {
     expect(new Date(row.requested_at).getTime()).toBeGreaterThanOrEqual(before);
     expect(new Date(row.added_at).getTime()).toBeGreaterThanOrEqual(before);
 
-    expect(addJobMock).toHaveBeenCalledWith(
-      'download',
+    expect(fakePorts.enqueueDownload).toHaveBeenCalledWith(
       { requestId, youtubeId: YT_ID, url: URL },
       { jobId: requestId },
     );
   });
 
-  it('leaves the row in place and warn-logs when queue add throws', async () => {
-    addJobMock.mockRejectedValueOnce(new Error('redis down'));
+  it('leaves the row in place and warn-logs when enqueueDownload throws', async () => {
+    vi.mocked(fakePorts.enqueueDownload).mockRejectedValueOnce(new Error('redis down'));
 
-    const { requestId } = await createFromChannelPoll({
+    const { requestId } = await state.createFromChannelPoll({
       url: URL,
       userId: USER_ID,
       youtubeId: YT_ID,
@@ -864,7 +844,7 @@ describe('createFromCandidate', () => {
   it('inserts a downloading recommended row with title and auto decision', async () => {
     const before = Date.now();
 
-    const { requestId } = await createFromCandidate({
+    const { requestId } = await state.createFromCandidate({
       url: URL,
       userId: USER_ID,
       youtubeId: YT_ID,
@@ -889,32 +869,30 @@ describe('createFromCandidate', () => {
     expect(new Date(row.decided_at).getTime()).toBeGreaterThanOrEqual(before);
     expect(new Date(row.requested_at).getTime()).toBeGreaterThanOrEqual(before);
 
-    expect(addJobMock).toHaveBeenCalledWith(
-      'download',
+    expect(fakePorts.enqueueDownload).toHaveBeenCalledWith(
       { requestId, youtubeId: YT_ID, url: URL },
       { jobId: requestId },
     );
   });
 
-  it('passes empty string youtubeId to queue when external_id is null', async () => {
-    const { requestId } = await createFromCandidate({
+  it('passes empty string youtubeId to enqueueDownload when external_id is null', async () => {
+    const { requestId } = await state.createFromCandidate({
       url: URL,
       userId: USER_ID,
       youtubeId: null,
       title: TITLE,
     });
 
-    expect(addJobMock).toHaveBeenCalledWith(
-      'download',
+    expect(fakePorts.enqueueDownload).toHaveBeenCalledWith(
       { requestId, youtubeId: '', url: URL },
       { jobId: requestId },
     );
   });
 
-  it('leaves the row in place and warn-logs when queue add throws', async () => {
-    addJobMock.mockRejectedValueOnce(new Error('redis down'));
+  it('leaves the row in place and warn-logs when enqueueDownload throws', async () => {
+    vi.mocked(fakePorts.enqueueDownload).mockRejectedValueOnce(new Error('redis down'));
 
-    const { requestId } = await createFromCandidate({
+    const { requestId } = await state.createFromCandidate({
       url: URL,
       userId: USER_ID,
       youtubeId: YT_ID,
@@ -1008,4 +986,268 @@ describe('findActiveDuplicateRequest', () => {
 
     expect(result).toBeNull();
   });
+});
+
+// ─── TRANSITIONS property test ───────────────────────────────────────────────
+//
+// Walks every `(Event type × source status)` pair off the `TRANSITIONS`
+// descriptor table at runtime. For each pair we assert:
+//
+//   - A row in a legal `source` transitions to `target` and apply returns
+//     `{ transitioned: true, userId }`.
+//   - A row in any other `source` (and an unknown id) returns
+//     `{ transitioned: false, currentStatus }` and emits no effects.
+//   - For each declared effect, the matching fake port is called.
+//
+// `it.each` pulls pairs straight off `TRANSITIONS` so adding or changing a
+// descriptor entry is picked up automatically without test maintenance.
+
+// Build a representative Event for a given event kind. Each event carries the
+// minimum data the descriptor's buildSql / effects need; the property test
+// pre-populates the matching row columns (youtube_id, url, file_path) so the
+// effects fire as declared.
+const PROP_URL = 'https://www.youtube.com/watch?v=prop1';
+const PROP_YT_ID = 'prop1xxxxxx';
+const PROP_CHANNEL_ID = 'UCprop1xxxxxxxxxxxxxxxx';
+const PROP_FILE_PATH = '/mnt/ssd/eddy/videos/prop1.mp4';
+const PROP_DOWNLOADED_FIELDS: DownloadedFields = {
+  title: 'Property title',
+  channel: 'Property channel',
+  youtubeChannelId: PROP_CHANNEL_ID,
+  description: 'd',
+  durationSecs: 10,
+  transcript: null,
+  filePath: PROP_FILE_PATH,
+  nginxUrl: null,
+  thumbnailUrl: null,
+};
+
+function buildEvent(kind: Event['kind'], requestId: string): Event {
+  switch (kind) {
+    case 'mark_watched':
+      return { kind, requestId };
+    case 'mark_dismissed':
+      return { kind, requestId };
+    case 'mark_soft_deleted':
+      return { kind, requestId };
+    case 'mark_downloaded':
+      return { kind, requestId, fields: PROP_DOWNLOADED_FIELDS };
+    case 'mark_rejected':
+      return { kind, requestId, reason: 'prop reject reason' };
+    case 'mark_guard_blocked':
+      return { kind, requestId, reason: 'prop guard reason' };
+    case 'mark_cancelled':
+      return { kind, requestId };
+    case 'mark_failed':
+      return { kind, requestId };
+    case 'retry':
+      return { kind, requestId };
+    case 'create_share_sheet':
+      return {
+        kind,
+        requestId,
+        input: { url: PROP_URL, userId: USER_ID, youtubeId: PROP_YT_ID },
+      };
+    case 'create_channel_poll':
+      return {
+        kind,
+        requestId,
+        input: {
+          url: PROP_URL,
+          userId: USER_ID,
+          youtubeId: PROP_YT_ID,
+          youtubeChannelId: PROP_CHANNEL_ID,
+          title: PROP_DOWNLOADED_FIELDS.title,
+          channel: PROP_DOWNLOADED_FIELDS.channel,
+        },
+      };
+    case 'create_candidate':
+      return {
+        kind,
+        requestId,
+        input: {
+          url: PROP_URL,
+          userId: USER_ID,
+          youtubeId: PROP_YT_ID,
+          title: PROP_DOWNLOADED_FIELDS.title,
+        },
+      };
+  }
+}
+
+// Type-narrowing helper: TRANSITIONS values are typed as Descriptor<E> where
+// E is the matching extract of Event, but we walk it by string key at runtime.
+// Cast to a generic shape that matches what the property test reads.
+interface GenericDescriptor {
+  sources: Status[] | 'creation';
+  target: Status;
+  effects: (event: Event, result: TransitionResult) => Effect[];
+}
+
+// Build the (eventKind, source) pairs to feed into it.each. Mutation events
+// produce one row per legal source; creation events produce a single row
+// flagged with source='creation' so the test exercises the INSERT path.
+type LegalPairRow = {
+  kind: Event['kind'];
+  source: Status | 'creation';
+  target: Status;
+};
+
+const LEGAL_PAIRS: LegalPairRow[] = (Object.entries(TRANSITIONS) as [Event['kind'], GenericDescriptor][])
+  .flatMap(([kind, descriptor]): LegalPairRow[] => {
+    if (descriptor.sources === 'creation') {
+      return [{ kind, source: 'creation', target: descriptor.target }];
+    }
+    return descriptor.sources.map((source) => ({ kind, source, target: descriptor.target }));
+  });
+
+type IllegalPairRow = { kind: Event['kind']; source: Status };
+
+const ILLEGAL_PAIRS: IllegalPairRow[] = (Object.entries(TRANSITIONS) as [Event['kind'], GenericDescriptor][])
+  .flatMap(([kind, descriptor]) => {
+    // Creation events have no source-status gate, so there are no illegal
+    // sources to walk for them — the INSERT path is exercised in LEGAL_PAIRS.
+    if (descriptor.sources === 'creation') return [];
+    const legal = new Set(descriptor.sources);
+    return ALL_STATUSES.filter((s) => !legal.has(s)).map((source) => ({ kind, source }));
+  });
+
+describe('TRANSITIONS property test', () => {
+  // For the property test we want `ensurePerson` to report "we already had
+  // this person", so `runEffect` doesn't fire the follow-up applyChannelInfo
+  // call. That keeps the declared-vs-observed effect counts strictly equal
+  // for `mark_downloaded`. The downloaded-then-new-channel path is asserted
+  // separately in the dedicated `markDownloaded` describe.
+  beforeEach(() => {
+    vi.mocked(fakePorts.ensurePerson).mockReturnValue({ personId: 'person-1', created: false });
+  });
+
+  it.each(LEGAL_PAIRS)(
+    '$kind from $source transitions to $target and fires declared effects',
+    async ({ kind, source, target }) => {
+      const requestId = `prop-${kind}-${source}`;
+      const descriptor = TRANSITIONS[kind] as GenericDescriptor;
+
+      if (source === 'creation') {
+        // INSERT path: build the event with the row id pre-chosen, apply,
+        // assert the row landed at `target` and that the declared effects fired.
+        const event = buildEvent(kind, requestId);
+        const { result, settled } = state.apply(event);
+        await settled;
+
+        expect(result).toEqual({ transitioned: true, userId: '' });
+        const row = db
+          .prepare('SELECT status FROM requests WHERE request_id = ?')
+          .get(requestId) as { status: string } | undefined;
+        expect(row?.status).toBe(target);
+      } else {
+        // Mutation path: seed a row at `source` with all the columns any
+        // descriptor might read in `effects(...)` (file_path for soft-delete,
+        // youtube_id/url for retry).
+        insertRequest({
+          request_id: requestId,
+          status: source,
+          file_path: PROP_FILE_PATH,
+          youtube_id: PROP_YT_ID,
+          url: PROP_URL,
+        });
+
+        const event = buildEvent(kind, requestId);
+        const { result, settled } = state.apply(event);
+        await settled;
+
+        expect(result).toEqual({ transitioned: true, userId: USER_ID });
+        const row = db
+          .prepare('SELECT status FROM requests WHERE request_id = ?')
+          .get(requestId) as { status: string };
+        expect(row.status).toBe(target);
+      }
+
+      // Assert that the fake ports were called the exact number of times the
+      // descriptor's `effects` function declared. We feed `effects` a hand-rolled
+      // SqlResultCarrier-shaped result to compute the expected effect list:
+      // descriptors that read RETURNING columns (file_path / youtube_id / url)
+      // see them via __sqlResult, which mirrors what runSql stashed at runtime.
+      const fakeResult: TransitionResult & { __sqlResult?: Record<string, unknown> } = {
+        transitioned: true,
+        userId: source === 'creation' ? '' : USER_ID,
+        __sqlResult: {
+          user_id: USER_ID,
+          file_path: PROP_FILE_PATH,
+          youtube_id: PROP_YT_ID,
+          url: PROP_URL,
+        },
+      };
+      const expectedEffects = descriptor.effects(buildEvent(kind, requestId), fakeResult);
+      const expectedCounts: Partial<Record<keyof Ports, number>> = {};
+      for (const effect of expectedEffects) {
+        const portName = EFFECT_KIND_TO_PORT[effect.kind];
+        expectedCounts[portName] = (expectedCounts[portName] ?? 0) + 1;
+      }
+      for (const portName of Object.keys(fakePorts) as (keyof Ports)[]) {
+        const expected = expectedCounts[portName] ?? 0;
+        const fn = fakePorts[portName] as unknown as ReturnType<typeof vi.fn>;
+        expect(
+          fn.mock.calls.length,
+          `expected ${expected} call(s) to ${portName} for ${kind} from ${source}, got ${fn.mock.calls.length}`,
+        ).toBe(expected);
+      }
+    },
+  );
+
+  it.each(ILLEGAL_PAIRS)(
+    '$kind from $source is a no-op and emits no effects',
+    async ({ kind, source }) => {
+      const requestId = `prop-illegal-${kind}-${source}`;
+      insertRequest({
+        request_id: requestId,
+        status: source,
+        file_path: PROP_FILE_PATH,
+        youtube_id: PROP_YT_ID,
+        url: PROP_URL,
+      });
+
+      const event = buildEvent(kind, requestId);
+      const { result, settled } = state.apply(event);
+      await settled;
+
+      expect(result).toEqual({ transitioned: false, currentStatus: source });
+      // The row's status is unchanged on an illegal source.
+      const row = db
+        .prepare('SELECT status FROM requests WHERE request_id = ?')
+        .get(requestId) as { status: string };
+      expect(row.status).toBe(source);
+
+      // No fake port should have been touched on a no-op.
+      for (const portName of Object.keys(fakePorts) as (keyof Ports)[]) {
+        const fn = fakePorts[portName] as unknown as ReturnType<typeof vi.fn>;
+        expect(
+          fn.mock.calls.length,
+          `expected 0 calls to ${portName} for no-op ${kind} from ${source}, got ${fn.mock.calls.length}`,
+        ).toBe(0);
+      }
+    },
+  );
+
+  // Mutation events on an unknown id: result is currentStatus: null, no
+  // effects fire. Creation events are excluded — they INSERT a fresh row,
+  // which is a successful transition, not a no-op.
+  const mutationKinds = (Object.entries(TRANSITIONS) as [Event['kind'], GenericDescriptor][])
+    .filter(([, descriptor]) => descriptor.sources !== 'creation')
+    .map(([kind]) => kind);
+
+  it.each(mutationKinds)(
+    '%s on an unknown id returns currentStatus: null and emits no effects',
+    async (kind) => {
+      const event = buildEvent(kind, `does-not-exist-${kind}`);
+      const { result, settled } = state.apply(event);
+      await settled;
+
+      expect(result).toEqual({ transitioned: false, currentStatus: null });
+      for (const portName of Object.keys(fakePorts) as (keyof Ports)[]) {
+        const fn = fakePorts[portName] as unknown as ReturnType<typeof vi.fn>;
+        expect(fn.mock.calls.length).toBe(0);
+      }
+    },
+  );
 });

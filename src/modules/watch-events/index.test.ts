@@ -44,7 +44,9 @@ vi.mock('../people/registry', () => ({
 const { markWatchedSpy } = vi.hoisted(() => ({ markWatchedSpy: vi.fn() }));
 
 vi.mock('../requests', async () => {
-  const state = await vi.importActual<typeof import('../requests/state')>('../requests/state');
+  const state = await vi.importActual<typeof import('../requests/state-default')>(
+    '../requests/state-default',
+  );
   markWatchedSpy.mockImplementation(state.markWatched);
   return { markWatched: markWatchedSpy };
 });
