@@ -286,30 +286,46 @@ peopleRouter.get('/following', (req: Request, res: Response) => {
 // stays consistent and a search-tap can land on a person view before any
 // follow has happened. Wrapped in a transaction so a failure on the second
 // insert doesn't orphan the people row.
-const ensurePersonForChannel = db.transaction((channelId: string, channelName: string): { personId: string; outputId: string } => {
-  const existing = db.prepare(
-    'SELECT person_id, output_id FROM person_outputs WHERE output_type = ? AND external_id = ?'
-  ).get('youtube', channelId) as { person_id: string; output_id: string } | undefined;
+//
+// Exported so callers outside this module (e.g. the download-callback handler)
+// can guarantee a person row exists for every channel that produces a request,
+// not just for follow / search-tap. Module boundary stays clean — this is the
+// single entry point for "make sure a people row exists for this channel".
+// The named function wrapper keeps better-sqlite3's `Transaction` type from
+// leaking into the public module surface.
+const ensurePersonForChannelTxn = db.transaction(
+  (channelId: string, channelName: string): { personId: string; outputId: string } => {
+    const existing = db.prepare(
+      'SELECT person_id, output_id FROM person_outputs WHERE output_type = ? AND external_id = ?'
+    ).get('youtube', channelId) as { person_id: string; output_id: string } | undefined;
 
-  if (existing) return { personId: existing.person_id, outputId: existing.output_id };
+    if (existing) return { personId: existing.person_id, outputId: existing.output_id };
 
-  const personId = uuidv7();
-  const outputId = uuidv7();
-  const feedUrl = `https://www.youtube.com/feeds/videos.xml?channel_id=${channelId}`;
-  const now = new Date().toISOString();
+    const personId = uuidv7();
+    const outputId = uuidv7();
+    const feedUrl = `https://www.youtube.com/feeds/videos.xml?channel_id=${channelId}`;
+    const now = new Date().toISOString();
 
-  db.prepare(`
-    INSERT INTO people (person_id, display_name, person_type, created_at)
-    VALUES (?, ?, 'individual', ?)
-  `).run(personId, channelName, now);
+    db.prepare(`
+      INSERT INTO people (person_id, display_name, person_type, created_at)
+      VALUES (?, ?, 'individual', ?)
+    `).run(personId, channelName, now);
 
-  db.prepare(`
-    INSERT INTO person_outputs (output_id, person_id, output_type, fetcher_type, feed_url, external_id, active)
-    VALUES (?, ?, 'youtube', 'youtube-rss', ?, ?, 1)
-  `).run(outputId, personId, feedUrl, channelId);
+    db.prepare(`
+      INSERT INTO person_outputs (output_id, person_id, output_type, fetcher_type, feed_url, external_id, active)
+      VALUES (?, ?, 'youtube', 'youtube-rss', ?, ?, 1)
+    `).run(outputId, personId, feedUrl, channelId);
 
-  return { personId, outputId };
-});
+    return { personId, outputId };
+  },
+);
+
+export function ensurePersonForChannel(
+  channelId: string,
+  channelName: string,
+): { personId: string; outputId: string } {
+  return ensurePersonForChannelTxn(channelId, channelName);
+}
 
 // POST /people/resolve — body: { userId, channelId, channelName }
 // Returns the personId for a channel, creating the person row on demand. Used

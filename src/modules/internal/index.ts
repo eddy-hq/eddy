@@ -4,6 +4,7 @@ import { logger } from '../../logger';
 import { downloadQueue } from '../../queue';
 import { verifySignedJson } from '../../signed-channel';
 import * as requests from '../requests';
+import { applyChannelInfoToPerson, ensurePersonForChannel } from '../people';
 import { checkStuckDownloads } from '../watchdog';
 import { scoreForRequest, classifyThumbnail, classifyYtImage } from '../guard';
 import { ollamaGenerate } from '../../ollama';
@@ -46,6 +47,25 @@ internalRouter.post('/videos/:youtube_id/downloaded', verifySignedJson<Downloade
 
   if (result.transitioned) {
     logger.info({ requestId, youtubeId: req.params['youtube_id'] }, 'Request marked ready');
+
+    // Person row capture for every imported video — not just on follow / person-view
+    // open. Previously only the follow, resolve and channel-poll paths produced a
+    // people row, so discovery and share-sheet requests landed with no avatar / bio.
+    // Trigger here because this is where `youtubeChannelId` first lands for those
+    // two paths. Guarded on the transition so a no-op callback (e.g. user cancelled
+    // mid-download) doesn't create an orphan row, and on a non-null channel id —
+    // yt-dlp very occasionally returns metadata without it. Fire-and-forget so a
+    // yt-dlp flake on the channel-info call doesn't fail the worker callback.
+    if (youtubeChannelId) {
+      try {
+        const { personId } = ensurePersonForChannel(youtubeChannelId, channel);
+        void applyChannelInfoToPerson(personId, youtubeChannelId).catch((err: unknown) =>
+          logger.debug({ err, channelId: youtubeChannelId, personId }, 'Capture channel info on downloaded failed'),
+        );
+      } catch (err) {
+        logger.warn({ err, requestId, channelId: youtubeChannelId }, 'Failed to ensure person row on downloaded');
+      }
+    }
   } else {
     // No-op: row was no longer `downloading` (e.g. user cancelled mid-download).
     // The worker callback raced with a state change; downstream is unaffected.

@@ -25,6 +25,7 @@
     "thumbs:quality": "tsx src/scripts/thumb-quality-test.ts",
     "thumbs:frame-test": "tsx src/scripts/frame-quality-test.ts",
     "people:backfill-bio": "tsx src/scripts/backfill-people-bio.ts",
+    "people:backfill-requests": "tsx src/scripts/backfill-request-people.ts",
     "watched:backfill": "tsx src/scripts/backfill-watched.ts",
     "channel-id:backfill": "tsx src/scripts/backfill-channel-id.ts"
   },
