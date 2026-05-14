@@ -4,14 +4,12 @@ import { logger } from '../../logger';
 import { sendVideoReady } from '../notifications';
 import { downloadQueue, deleteQueue, redis } from '../../queue';
 import type { DownloadJobData } from '../content';
-// Imported from leaf files rather than the `../people` barrel. The barrel
-// pulls the RSS poller, search router, yt-dlp, and ollama-backed interest
-// inference at module top, which would force every consumer of request state
-// (incl. the watch-events tests via vi.importActual) to mock all of those.
-// The leaf files are still part of the people module — same boundary, just
-// without the side-effect surface.
-import { ensurePersonForChannel } from '../people/ensurePerson';
-import { applyChannelInfoToPerson } from '../people/applyChannelInfo';
+// Module-boundary rule (CLAUDE.md): cross-module imports go through `index.ts`,
+// never deep paths. This creates a runtime cycle with `../people` (people's
+// barrel imports `createFromChannelPoll` from this module), which is fine —
+// every cross-module call on both sides happens inside function bodies, so
+// Node ESM resolves the bindings lazily.
+import { ensurePersonForChannel, applyChannelInfoToPerson } from '../people';
 
 // Shared job data for the delete queue. The worker uses filePath to unlink the
 // .mp4 + sidecars; requestId is carried so the callback can report which row

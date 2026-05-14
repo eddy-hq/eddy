@@ -29,12 +29,14 @@ vi.mock('../notifications', () => ({
   validateActionToken: vi.fn(),
 }));
 
-// requests/state.ts imports the channel-info capture leaf so markDownloaded
-// can populate person rows for discovery/share-sheet downloads (#50). That
-// leaf transitively pulls yt-dlp (which loads config). vi.importActual on
-// state.ts doesn't need any of that — stub it out here.
-vi.mock('../people/applyChannelInfo', () => ({
+// requests/state.ts imports from the people barrel so markDownloaded can
+// populate person rows for discovery/share-sheet downloads (#50). The barrel
+// pulls yt-dlp, the RSS poller, and ollama-backed interest inference at
+// module top, none of which vi.importActual on state.ts needs — stub the
+// whole module out here.
+vi.mock('../people', () => ({
   applyChannelInfoToPerson: vi.fn().mockResolvedValue(undefined),
+  ensurePersonForChannel: vi.fn().mockReturnValue({ personId: 'p', outputId: 'o', created: false }),
 }));
 
 // Bypass requests/index.ts (which loads config) — re-export the real markWatched
