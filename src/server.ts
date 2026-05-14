@@ -1,6 +1,7 @@
 import path from 'path';
 import 'express-async-errors';
 import express, { NextFunction, Request, Response } from 'express';
+import { config } from './config';
 import { logger } from './logger';
 import { ollamaHealthCheck } from './ollama';
 import { downloadQueue, deleteQueue, redis } from './queue';
@@ -18,9 +19,22 @@ import { searchRouter } from './modules/search/index';
 import { discoveryRouter } from './modules/discovery/router';
 import { interestsRouter } from './modules/interests/index';
 import { watchEventsRouter } from './modules/watch-events/index';
-import { sendVideoReady } from './modules/notifications';
+import {
+  createNotifications,
+  registerDefaultNotifications,
+} from './modules/notifications';
 import { ensurePersonForChannel, applyChannelInfoToPerson } from './modules/people/registry';
 import { API_PREFIXES } from './api-prefixes';
+
+// Wire the notifications module at the production boot site. Built once from
+// startup config; everything downstream reaches `notify` via
+// `getNotifications()`. ntfy stays the only transport — this is event-type
+// fan-in, not transport pluggability.
+const notifications = createNotifications({
+  ntfyConfig: config.ntfyUserConfig,
+  pwaBaseUrl: `http://${config.TAILSCALE_IP}:${config.PORT}`,
+});
+registerDefaultNotifications(notifications);
 
 // Wire the requests state seam at the production boot site. Call sites reach
 // `apply` via `getRequestsState()`, which routes through whatever was
@@ -28,7 +42,8 @@ import { API_PREFIXES } from './api-prefixes';
 // at the top of the M4 server module instead of being hidden behind
 // top-of-module imports inside state.ts.
 const requestsPorts: Ports = {
-  notifyVideoReady: (userId, requestId, title) => sendVideoReady(userId, requestId, title),
+  notifyVideoReady: (userId, requestId, title) =>
+    notifications.notify({ kind: 'video_ready', requestId, title }, userId),
   enqueueDownload: (jobData, opts) => downloadQueue.add('download', jobData, opts),
   enqueueDelete: (jobData, opts) => deleteQueue.add('delete', jobData, opts),
   cancelDownloadJob: async (requestId) => {

@@ -1,0 +1,131 @@
+import { logger } from '../../logger';
+import { sendNtfy, type NtfyAction, type NtfyPriority } from './ntfy';
+import type { NotificationEvent } from './events';
+
+// One ntfy topic + credentials pair per user. The notifications module never
+// reaches into `config` for this — production wiring builds the array in
+// `config.ts` from the per-user env vars and injects it at construction.
+export interface NtfyUserConfig {
+  userId: string;
+  topic: string;
+  credentials: string;
+}
+
+export interface NotificationsModule {
+  notify(event: NotificationEvent, recipient: string): Promise<void>;
+}
+
+export interface CreateNotificationsOptions {
+  ntfyConfig: ReadonlyArray<NtfyUserConfig>;
+  // Base URL for click-through and action links. e.g. `http://100.x.x.x:3737`.
+  pwaBaseUrl: string;
+}
+
+interface NtfyPayload {
+  title: string;
+  message: string;
+  priority?: NtfyPriority;
+  tags?: string[];
+  clickUrl?: string;
+  actions?: NtfyAction[];
+}
+
+// createNotifications — factory that owns the user→topic lookup and event→payload
+// mapping. Returns the public `notify(event, recipient)` adapter. ntfy stays the
+// only transport; this is event-type fan-in.
+export function createNotifications(opts: CreateNotificationsOptions): NotificationsModule {
+  const { ntfyConfig, pwaBaseUrl } = opts;
+
+  function ntfyConfigForUser(userId: string): NtfyUserConfig | null {
+    return ntfyConfig.find((c) => c.userId === userId) ?? null;
+  }
+
+  function pwaUrl(path: string): string {
+    return `${pwaBaseUrl}${path}`;
+  }
+
+  function buildPayload(event: NotificationEvent): NtfyPayload {
+    switch (event.kind) {
+      case 'video_ready':
+        return {
+          title: 'Ready to watch',
+          message: event.title,
+          priority: 'default',
+          tags: ['tada'],
+          clickUrl: pwaUrl(`/watch/${event.requestId}`),
+        };
+
+      case 'download_alert': {
+        const actionLabel =
+          event.action === 're-enqueued' ? 'Re-enqueued automatically' :
+          event.action === 'failed'      ? 'Marked failed — needs manual retry' :
+                                           'Still active — check Ubuntu worker';
+        return {
+          title: `Stuck download (${event.stuckMins}m)`,
+          message: `${event.title}\n${actionLabel}`,
+          priority: event.action === 'failed' ? 'high' : 'default',
+          tags: event.action === 'failed' ? ['warning'] : ['arrows_counterclockwise'],
+          clickUrl: pwaUrl(`/admin/requests/${event.requestId}`),
+        };
+      }
+
+      case 'parent_review':
+        return {
+          title: `${event.requesterName} wants to watch something`,
+          message: `${event.title} — ${event.channel}\n${event.reason}`,
+          priority: 'max',
+          tags: ['eyes'],
+          clickUrl: pwaUrl(`/admin/requests/${event.requestId}`),
+          actions: [
+            {
+              action: 'http',
+              label: 'Approve',
+              url: `${pwaBaseUrl}/action/approve?token=${event.approveToken}`,
+              method: 'POST',
+              clear: true,
+            },
+            {
+              action: 'http',
+              label: 'Deny',
+              url: `${pwaBaseUrl}/action/deny?token=${event.denyToken}`,
+              method: 'POST',
+              clear: true,
+            },
+          ],
+        };
+
+      default: {
+        // Exhaustiveness: adding a new kind to NotificationEvent without a
+        // case here is a compile error via the `never` assignment.
+        const _exhaustive: never = event;
+        throw new Error(`Unhandled notification event: ${JSON.stringify(_exhaustive)}`);
+      }
+    }
+  }
+
+  async function notify(event: NotificationEvent, recipient: string): Promise<void> {
+    const ntfy = ntfyConfigForUser(recipient);
+    if (!ntfy) {
+      logger.warn(
+        { recipient, kind: event.kind },
+        'ntfy not configured for recipient — skipping notification',
+      );
+      return;
+    }
+
+    const payload = buildPayload(event);
+
+    await sendNtfy({
+      topic: ntfy.topic,
+      credentials: ntfy.credentials,
+      ...payload,
+    });
+
+    logger.info(
+      { recipient, kind: event.kind, requestId: event.requestId },
+      'Notification sent',
+    );
+  }
+
+  return { notify };
+}

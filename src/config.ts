@@ -63,4 +63,19 @@ if (!result.success) {
   process.exit(1);
 }
 
-export const config = result.data;
+// Derived ntfy user config — flattens the per-user NTFY_TOPIC_* / NTFY_CREDS_*
+// env vars into a single array consumed by the notifications module. A user is
+// only included if both their topic and credentials are set; missing entries
+// fall through to the "ntfy not configured for recipient" warning at send time.
+const env = result.data;
+const ntfyUserConfig: ReadonlyArray<{ userId: string; topic: string; credentials: string }> = [
+  { userId: env.USER_ID_STEVE, topic: env.NTFY_TOPIC_STEVE, credentials: env.NTFY_CREDS_STEVE },
+  { userId: env.USER_ID_BOY1,  topic: env.NTFY_TOPIC_BOY1,  credentials: env.NTFY_CREDS_BOY1  },
+  { userId: env.USER_ID_BOY2,  topic: env.NTFY_TOPIC_BOY2,  credentials: env.NTFY_CREDS_BOY2  },
+].flatMap((entry) =>
+  entry.topic && entry.credentials
+    ? [{ userId: entry.userId, topic: entry.topic, credentials: entry.credentials }]
+    : [],
+);
+
+export const config = { ...env, ntfyUserConfig };

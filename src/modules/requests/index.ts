@@ -5,7 +5,7 @@ import { logger } from '../../logger';
 import { ValidationError, NotFoundError } from '../../errors';
 import { config } from '../../config';
 import { downloadQueue, redis } from '../../queue';
-import { sendVideoReady } from '../notifications';
+import { getNotifications } from '../notifications';
 import { resolveUserByIdOrName } from '../users';
 // State machine lives in `./state` (pure dispatcher) with production wiring in
 // `./state-default` (default ports + `getRequestsState` accessor). The router
@@ -151,7 +151,14 @@ requestsRouter.post('/', async (req: Request, res: Response) => {
       if (existing.status === 'ready') {
         const row = db.prepare('SELECT title FROM requests WHERE request_id = ?')
           .get(existing.requestId) as { title: string | null } | undefined;
-        void sendVideoReady(user.user_id, existing.requestId, row?.title ?? youtubeId ?? '');
+        void getNotifications().notify(
+          {
+            kind: 'video_ready',
+            requestId: existing.requestId,
+            title: row?.title ?? youtubeId ?? '',
+          },
+          user.user_id,
+        );
       }
       return res.status(202).json({
         requestId: existing.requestId,

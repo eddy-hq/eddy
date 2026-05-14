@@ -1,7 +1,9 @@
 import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest';
 
 vi.mock('../../config', () => ({
-  config: {},
+  config: {
+    USER_ID_STEVE: '00000000-0000-7000-8000-000000000001',
+  },
 }));
 
 vi.mock('../../db/client', async () => {
@@ -26,11 +28,11 @@ vi.mock('../../logger', () => ({
   },
 }));
 
-const { getJobMock, addJobMock, removeJobMock, sendAlertMock } = vi.hoisted(() => ({
+const { getJobMock, addJobMock, removeJobMock, notifyMock } = vi.hoisted(() => ({
   getJobMock: vi.fn(),
   addJobMock: vi.fn().mockResolvedValue(undefined),
   removeJobMock: vi.fn().mockResolvedValue(undefined),
-  sendAlertMock: vi.fn(),
+  notifyMock: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock('../../queue', () => ({
@@ -38,7 +40,7 @@ vi.mock('../../queue', () => ({
 }));
 
 vi.mock('../notifications', () => ({
-  sendDownloadAlert: sendAlertMock,
+  getNotifications: () => ({ notify: notifyMock }),
 }));
 
 import { db } from '../../db/client';
@@ -75,7 +77,7 @@ describe('watchdog checkStuckDownloads', () => {
     getJobMock.mockReset();
     addJobMock.mockClear();
     removeJobMock.mockClear();
-    sendAlertMock.mockClear();
+    notifyMock.mockClear();
   });
 
   it('leaves jobs in `delayed` state alone — no re-enqueue, no alert', async () => {
@@ -85,7 +87,7 @@ describe('watchdog checkStuckDownloads', () => {
     await checkStuckDownloads();
 
     expect(addJobMock).not.toHaveBeenCalled();
-    expect(sendAlertMock).not.toHaveBeenCalled();
+    expect(notifyMock).not.toHaveBeenCalled();
   });
 
   it('leaves jobs in `active` state alone — regression cover for the original behaviour', async () => {
@@ -95,7 +97,7 @@ describe('watchdog checkStuckDownloads', () => {
     await checkStuckDownloads();
 
     expect(addJobMock).not.toHaveBeenCalled();
-    expect(sendAlertMock).not.toHaveBeenCalled();
+    expect(notifyMock).not.toHaveBeenCalled();
   });
 
   it('re-enqueues a `failed` job and alerts', async () => {
@@ -110,9 +112,14 @@ describe('watchdog checkStuckDownloads', () => {
       expect.objectContaining({ requestId: 'req_failed' }),
       expect.objectContaining({ jobId: 'req_failed' }),
     );
-    expect(sendAlertMock).toHaveBeenCalledTimes(1);
-    expect(sendAlertMock).toHaveBeenCalledWith(
-      expect.objectContaining({ requestId: 'req_failed', action: 're-enqueued' }),
+    expect(notifyMock).toHaveBeenCalledTimes(1);
+    expect(notifyMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'download_alert',
+        requestId: 'req_failed',
+        action: 're-enqueued',
+      }),
+      '00000000-0000-7000-8000-000000000001',
     );
   });
 });

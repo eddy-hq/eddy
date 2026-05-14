@@ -1,128 +1,49 @@
+// Public barrel for the notifications module.
+//
+// The only way to send a notification is `notify(event, recipient)` — call it
+// via `getNotifications().notify(...)`. Production wiring constructs the
+// module once in `server.ts` via `createNotifications({ ntfyConfig, pwaBaseUrl })`
+// and registers it through `registerDefaultNotifications`. Tests can register
+// a fake the same way (or rely on the lazy default, which is built from `config`
+// on first access).
+
 import { config } from '../../config';
-import { logger } from '../../logger';
-import { sendNtfy } from './ntfy';
+import { createNotifications, type NotificationsModule } from './notify';
+
+export { createNotifications } from './notify';
+export type { NotificationsModule, NtfyUserConfig, CreateNotificationsOptions } from './notify';
+export type {
+  NotificationEvent,
+  VideoReadyEvent,
+  DownloadAlertEvent,
+  ParentReviewEvent,
+} from './events';
 export { generateActionToken, validateActionToken } from './tokens';
 
-interface UserNtfyConfig {
-  topic: string;
-  credentials: string;
-}
+// ─── Default module accessor ────────────────────────────────────────────────
+//
+// Mirrors the requests/state-default seam: a lazy default constructed from the
+// real config on first access, plus a `register*` hook so server.ts can swap
+// in the production-wired module at boot. Callers reach `notify` via
+// `getNotifications()` so the registered module is read at call time, not
+// captured at import.
 
-// Maps a user_id to their ntfy topic + credentials.
-// Returns null if ntfy is not configured for that user.
-function ntfyConfigForUser(userId: string): UserNtfyConfig | null {
-  const pairs: Array<{ id: string; topic?: string; creds?: string }> = [
-    { id: config.USER_ID_STEVE, topic: config.NTFY_TOPIC_STEVE, creds: config.NTFY_CREDS_STEVE },
-    { id: config.USER_ID_BOY1,  topic: config.NTFY_TOPIC_BOY1,  creds: config.NTFY_CREDS_BOY1 },
-    { id: config.USER_ID_BOY2,  topic: config.NTFY_TOPIC_BOY2,  creds: config.NTFY_CREDS_BOY2 },
-  ];
+let _defaultModule: NotificationsModule | null = null;
 
-  const match = pairs.find((p) => p.id === userId);
-  if (!match?.topic || !match.creds) return null;
-  return { topic: match.topic, credentials: match.creds };
-}
-
-function pwaUrl(path: string): string {
-  return `http://${config.TAILSCALE_IP}:${config.PORT}${path}`;
-}
-
-// Sent to a kid when their video is downloaded and ready to watch.
-export async function sendVideoReady(
-  userId: string,
-  requestId: string,
-  title: string,
-): Promise<void> {
-  const ntfy = ntfyConfigForUser(userId);
-  if (!ntfy) {
-    logger.warn({ userId }, 'ntfy not configured for user — skipping video-ready notification');
-    return;
+function defaultModule(): NotificationsModule {
+  if (_defaultModule === null) {
+    _defaultModule = createNotifications({
+      ntfyConfig: config.ntfyUserConfig,
+      pwaBaseUrl: `http://${config.TAILSCALE_IP}:${config.PORT}`,
+    });
   }
-
-  await sendNtfy({
-    topic: ntfy.topic,
-    credentials: ntfy.credentials,
-    title: 'Ready to watch',
-    message: title,
-    priority: 'default',
-    tags: ['tada'],
-    clickUrl: pwaUrl(`/watch/${requestId}`),
-  });
-
-  logger.info({ userId, requestId }, 'Video-ready notification sent');
+  return _defaultModule;
 }
 
-// Sent to Steve when the watchdog detects a stuck or re-enqueued download.
-export async function sendDownloadAlert(opts: {
-  requestId: string;
-  title: string;
-  stuckMins: number;
-  action: 'alert' | 're-enqueued' | 'failed';
-}): Promise<void> {
-  const ntfy = ntfyConfigForUser(config.USER_ID_STEVE);
-  if (!ntfy) return;
-
-  const actionLabel =
-    opts.action === 're-enqueued' ? 'Re-enqueued automatically' :
-    opts.action === 'failed'      ? 'Marked failed — needs manual retry' :
-                                    'Still active — check Ubuntu worker';
-
-  await sendNtfy({
-    topic: ntfy.topic,
-    credentials: ntfy.credentials,
-    title: `Stuck download (${opts.stuckMins}m)`,
-    message: `${opts.title}\n${actionLabel}`,
-    priority: opts.action === 'failed' ? 'high' : 'default',
-    tags: opts.action === 'failed' ? ['warning'] : ['arrows_counterclockwise'],
-    clickUrl: pwaUrl(`/admin/requests/${opts.requestId}`),
-  });
-
-  logger.info({ requestId: opts.requestId, action: opts.action }, 'Download alert sent');
+export function getNotifications(): NotificationsModule {
+  return defaultModule();
 }
 
-// Sent to parents when a kid's request needs a decision.
-export async function sendParentReview(opts: {
-  parentUserId: string;
-  requestId: string;
-  requesterName: string;
-  title: string;
-  channel: string;
-  reason: string;
-  approveToken: string;
-  denyToken: string;
-}): Promise<void> {
-  const ntfy = ntfyConfigForUser(opts.parentUserId);
-  if (!ntfy) {
-    logger.warn({ userId: opts.parentUserId }, 'ntfy not configured for parent — skipping review notification');
-    return;
-  }
-
-  const base = `http://${config.TAILSCALE_IP}:${config.PORT}`;
-
-  await sendNtfy({
-    topic: ntfy.topic,
-    credentials: ntfy.credentials,
-    title: `${opts.requesterName} wants to watch something`,
-    message: `${opts.title} — ${opts.channel}\n${opts.reason}`,
-    priority: 'max',
-    tags: ['eyes'],
-    clickUrl: pwaUrl(`/admin/requests/${opts.requestId}`),
-    actions: [
-      {
-        action: 'http',
-        label: 'Approve',
-        url: `${base}/action/approve?token=${opts.approveToken}`,
-        method: 'POST',
-        clear: true,
-      },
-      {
-        action: 'http',
-        label: 'Deny',
-        url: `${base}/action/deny?token=${opts.denyToken}`,
-        method: 'POST',
-        clear: true,
-      },
-    ],
-  });
-
-  logger.info({ requestId: opts.requestId, parentUserId: opts.parentUserId }, 'Parent-review notification sent');
+export function registerDefaultNotifications(mod: NotificationsModule): void {
+  _defaultModule = mod;
 }

@@ -28,9 +28,7 @@ vi.mock('../../queue', () => ({
 }));
 
 vi.mock('../notifications', () => ({
-  sendVideoReady: vi.fn(),
-  sendDownloadAlert: vi.fn(),
-  sendParentReview: vi.fn(),
+  getNotifications: () => ({ notify: vi.fn().mockResolvedValue(undefined) }),
   generateActionToken: vi.fn(),
   validateActionToken: vi.fn(),
 }));
