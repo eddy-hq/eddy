@@ -489,6 +489,19 @@ describe('markDownloaded', () => {
     const [meta] = channelWarn!;
     expect(meta).toMatchObject({ requestId: 'req-dl8', channelId: FIELDS.youtubeChannelId });
   });
+
+  it('warn-logs when ensurePersonForChannel throws and still returns transitioned:true', () => {
+    insertRequest({ request_id: 'req-dl9', status: 'downloading' });
+    ensurePersonForChannelMock.mockImplementationOnce(() => { throw new Error('db locked'); });
+
+    const result = markDownloaded('req-dl9', FIELDS);
+    expect(result).toEqual({ transitioned: true, userId: USER_ID });
+
+    expect(vi.mocked(logger.warn)).toHaveBeenCalledTimes(1);
+    const [meta] = vi.mocked(logger.warn).mock.calls[0]!;
+    expect(meta).toMatchObject({ requestId: 'req-dl9', channelId: FIELDS.youtubeChannelId });
+    expect(vi.mocked(sendVideoReady)).toHaveBeenCalledWith(USER_ID, 'req-dl9', FIELDS.title);
+  });
 });
 
 describe('markRejected', () => {

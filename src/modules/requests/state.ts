@@ -226,10 +226,14 @@ export function markDownloaded(id: string, fields: DownloadedFields): Transition
 
   const channelId = fields.youtubeChannelId?.trim() ?? '';
   if (channelId) {
-    const { personId } = ensurePersonForChannel(channelId, fields.channel);
-    void applyChannelInfoToPerson(personId, channelId).catch((err: unknown) =>
-      logger.warn({ err, requestId: id, channelId }, 'markDownloaded: failed to capture channel info'),
-    );
+    try {
+      const { personId } = ensurePersonForChannel(channelId, fields.channel);
+      void applyChannelInfoToPerson(personId, channelId).catch((err: unknown) =>
+        logger.warn({ err, requestId: id, channelId }, 'markDownloaded: failed to capture channel info'),
+      );
+    } catch (err) {
+      logger.warn({ err, requestId: id, channelId }, 'markDownloaded: failed to ensure person for channel');
+    }
   }
 
   // Side-effect fires only after a real transition — a no-op (e.g. user
