@@ -7,12 +7,10 @@ import { inferChannelInterests } from '../interests';
 import { createFromChannelPoll } from '../requests';
 import { resolveUserById } from '../users';
 import { searchChannelsFlat, videoDuration, type SearchChannel } from '../../ytdlp';
-import { applyChannelInfoToPerson } from './applyChannelInfo';
-import { ensurePersonForChannel } from './ensurePerson';
+import { applyChannelInfoToPerson, ensurePersonForChannel } from './registry';
 import { getPersonView } from './personView';
 
-export { applyChannelInfoToPerson } from './applyChannelInfo';
-export { ensurePersonForChannel } from './ensurePerson';
+export { applyChannelInfoToPerson, ensurePersonForChannel } from './registry';
 export { extractBio } from './util';
 export { getPersonView, parseSupportUrls, isKidVisibleSupport } from './personView';
 export type { PersonView, PersonViewItem, PersonViewPerson, PersonViewSupport, SupportKind } from './personView';

@@ -4,12 +4,12 @@ import { logger } from '../../logger';
 import { sendVideoReady } from '../notifications';
 import { downloadQueue, deleteQueue, redis } from '../../queue';
 import type { DownloadJobData } from '../content';
-// Module-boundary rule (CLAUDE.md): cross-module imports go through `index.ts`,
-// never deep paths. This creates a runtime cycle with `../people` (people's
-// barrel imports `createFromChannelPoll` from this module), which is fine —
-// every cross-module call on both sides happens inside function bodies, so
-// Node ESM resolves the bindings lazily.
-import { ensurePersonForChannel, applyChannelInfoToPerson } from '../people';
+// Deep-imports `../people/registry` rather than the `../people` barrel — the
+// barrel imports `createFromChannelPoll` from this module, so going through it
+// would create a runtime cycle. Pulling just the synchronous person helpers
+// from the leaf `registry` module keeps the graph acyclic. This is a planned
+// exception to the module-boundary rule (see issue #87).
+import { ensurePersonForChannel, applyChannelInfoToPerson } from '../people/registry';
 
 // Shared job data for the delete queue. The worker uses filePath to unlink the
 // .mp4 + sidecars; requestId is carried so the callback can report which row
