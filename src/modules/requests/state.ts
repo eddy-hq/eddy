@@ -4,7 +4,14 @@ import { logger } from '../../logger';
 import { sendVideoReady } from '../notifications';
 import { downloadQueue, deleteQueue, redis } from '../../queue';
 import type { DownloadJobData } from '../content';
-import { ensurePersonForChannel, applyChannelInfoToPerson } from '../people';
+// Imported from leaf files rather than the `../people` barrel. The barrel
+// pulls the RSS poller, search router, yt-dlp, and ollama-backed interest
+// inference at module top, which would force every consumer of request state
+// (incl. the watch-events tests via vi.importActual) to mock all of those.
+// The leaf files are still part of the people module — same boundary, just
+// without the side-effect surface.
+import { ensurePersonForChannel } from '../people/ensurePerson';
+import { applyChannelInfoToPerson } from '../people/applyChannelInfo';
 
 // Shared job data for the delete queue. The worker uses filePath to unlink the
 // .mp4 + sidecars; requestId is carried so the callback can report which row
@@ -234,16 +241,19 @@ export function markDownloaded(id: string, fields: DownloadedFields): Transition
 
   // Discovery and share-sheet requests don't know the channel at INSERT time —
   // it lands here when the worker callback fires. Ensure a person row exists
-  // and kick off a best-effort bio/photo capture so feed-card tap-through to a
-  // person view always has something to render. Channel-poll requests already
-  // route through ensurePersonForChannel on follow, so this is a no-op for
-  // them. Both calls are gated on a real transition above, mirroring the
-  // sendVideoReady contract.
+  // so feed-card tap-through to a person view always works. Channel-poll
+  // requests already route through ensurePersonForChannel on follow, so the
+  // ensure is a no-op for them; the channel-info capture is gated on `created`
+  // so a repeat download from a known channel doesn't fire a fresh yt-dlp call
+  // every time. Both side-effects are gated on a real transition above,
+  // mirroring the sendVideoReady contract.
   if (fields.youtubeChannelId) {
-    const { personId } = ensurePersonForChannel(fields.youtubeChannelId, fields.channel);
-    void applyChannelInfoToPerson(personId, fields.youtubeChannelId).catch((err) =>
-      logger.debug({ err, channelId: fields.youtubeChannelId }, 'Capture channel info on download failed'),
-    );
+    const { personId, created } = ensurePersonForChannel(fields.youtubeChannelId, fields.channel);
+    if (created) {
+      void applyChannelInfoToPerson(personId, fields.youtubeChannelId).catch((err) =>
+        logger.debug({ err, channelId: fields.youtubeChannelId }, 'Capture channel info on download failed'),
+      );
+    }
   }
 
   return { transitioned: true, userId: updated.user_id };

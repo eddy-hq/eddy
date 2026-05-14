@@ -42,8 +42,11 @@ const { ensurePersonForChannelMock, applyChannelInfoToPersonMock } = vi.hoisted(
   applyChannelInfoToPersonMock: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock('../people', () => ({
+vi.mock('../people/ensurePerson', () => ({
   ensurePersonForChannel: ensurePersonForChannelMock,
+}));
+
+vi.mock('../people/applyChannelInfo', () => ({
   applyChannelInfoToPerson: applyChannelInfoToPersonMock,
 }));
 
@@ -120,7 +123,7 @@ beforeEach(() => {
   vi.mocked(sendVideoReady).mockReset();
   vi.mocked(sendVideoReady).mockResolvedValue(undefined);
   ensurePersonForChannelMock.mockReset();
-  ensurePersonForChannelMock.mockReturnValue({ personId: 'person-1', outputId: 'output-1' });
+  ensurePersonForChannelMock.mockReturnValue({ personId: 'person-1', outputId: 'output-1', created: true });
   applyChannelInfoToPersonMock.mockReset();
   applyChannelInfoToPersonMock.mockResolvedValue(undefined);
 });
@@ -446,7 +449,7 @@ describe('markDownloaded', () => {
     expect(meta).toMatchObject({ requestId: 'req-dl4', userId: USER_ID });
   });
 
-  it('ensures a person row and fires channel-info capture on transition when youtubeChannelId is set', () => {
+  it('ensures a person row and fires channel-info capture on first sighting of a channel', () => {
     insertRequest({ request_id: 'req-dl5', status: 'downloading' });
 
     const result = markDownloaded('req-dl5', FIELDS);
@@ -454,6 +457,17 @@ describe('markDownloaded', () => {
     expect(result).toEqual({ transitioned: true, userId: USER_ID });
     expect(ensurePersonForChannelMock).toHaveBeenCalledWith(FIELDS.youtubeChannelId, FIELDS.channel);
     expect(applyChannelInfoToPersonMock).toHaveBeenCalledWith('person-1', FIELDS.youtubeChannelId);
+  });
+
+  it('does not re-fire channel-info capture for a channel we already have a person row for', () => {
+    insertRequest({ request_id: 'req-dl5b', status: 'downloading' });
+    ensurePersonForChannelMock.mockReturnValueOnce({ personId: 'person-1', outputId: 'output-1', created: false });
+
+    const result = markDownloaded('req-dl5b', FIELDS);
+
+    expect(result).toEqual({ transitioned: true, userId: USER_ID });
+    expect(ensurePersonForChannelMock).toHaveBeenCalledWith(FIELDS.youtubeChannelId, FIELDS.channel);
+    expect(applyChannelInfoToPersonMock).not.toHaveBeenCalled();
   });
 
   it('does not ensure a person row when youtubeChannelId is null', () => {

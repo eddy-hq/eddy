@@ -1,5 +1,4 @@
 import { Router, Request, Response, NextFunction } from 'express';
-import { v7 as uuidv7 } from 'uuid';
 import { db } from '../../db/client';
 import { logger } from '../../logger';
 import { ValidationError, NotFoundError } from '../../errors';
@@ -9,9 +8,11 @@ import { createFromChannelPoll } from '../requests';
 import { resolveUserById } from '../users';
 import { searchChannelsFlat, videoDuration, type SearchChannel } from '../../ytdlp';
 import { applyChannelInfoToPerson } from './applyChannelInfo';
+import { ensurePersonForChannel } from './ensurePerson';
 import { getPersonView } from './personView';
 
 export { applyChannelInfoToPerson } from './applyChannelInfo';
+export { ensurePersonForChannel } from './ensurePerson';
 export { extractBio } from './util';
 export { getPersonView, parseSupportUrls, isKidVisibleSupport } from './personView';
 export type { PersonView, PersonViewItem, PersonViewPerson, PersonViewSupport, SupportKind } from './personView';
@@ -280,43 +281,6 @@ peopleRouter.get('/following', (req: Request, res: Response) => {
 
   res.json({ following: rows });
 });
-
-// Find or create the person + youtube output for a channel. No follow side
-// effect — both /follow and /resolve route through this so the row layout
-// stays consistent and a search-tap can land on a person view before any
-// follow has happened. Wrapped in a transaction so a failure on the second
-// insert doesn't orphan the people row. The exported wrapper below gives this
-// a nameable signature — the raw `db.transaction(...)` result surfaces
-// BetterSqlite3.Transaction, which the type-checker can't name across the
-// module boundary.
-const ensurePersonForChannelTxn = db.transaction((channelId: string, channelName: string): { personId: string; outputId: string } => {
-  const existing = db.prepare(
-    'SELECT person_id, output_id FROM person_outputs WHERE output_type = ? AND external_id = ?'
-  ).get('youtube', channelId) as { person_id: string; output_id: string } | undefined;
-
-  if (existing) return { personId: existing.person_id, outputId: existing.output_id };
-
-  const personId = uuidv7();
-  const outputId = uuidv7();
-  const feedUrl = `https://www.youtube.com/feeds/videos.xml?channel_id=${channelId}`;
-  const now = new Date().toISOString();
-
-  db.prepare(`
-    INSERT INTO people (person_id, display_name, person_type, created_at)
-    VALUES (?, ?, 'individual', ?)
-  `).run(personId, channelName, now);
-
-  db.prepare(`
-    INSERT INTO person_outputs (output_id, person_id, output_type, fetcher_type, feed_url, external_id, active)
-    VALUES (?, ?, 'youtube', 'youtube-rss', ?, ?, 1)
-  `).run(outputId, personId, feedUrl, channelId);
-
-  return { personId, outputId };
-});
-
-export function ensurePersonForChannel(channelId: string, channelName: string): { personId: string; outputId: string } {
-  return ensurePersonForChannelTxn(channelId, channelName);
-}
 
 // POST /people/resolve — body: { userId, channelId, channelName }
 // Returns the personId for a channel, creating the person row on demand. Used

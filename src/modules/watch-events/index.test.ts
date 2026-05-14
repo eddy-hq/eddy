@@ -29,11 +29,11 @@ vi.mock('../notifications', () => ({
   validateActionToken: vi.fn(),
 }));
 
-// requests/state.ts imports `../people` at module top for the channel-info
-// capture side-effect on markDownloaded (#50). Bypass it so vi.importActual
-// on state.ts doesn't pull yt-dlp / ollama through the people barrel.
-vi.mock('../people', () => ({
-  ensurePersonForChannel: vi.fn(),
+// requests/state.ts imports the channel-info capture leaf so markDownloaded
+// can populate person rows for discovery/share-sheet downloads (#50). That
+// leaf transitively pulls yt-dlp (which loads config). vi.importActual on
+// state.ts doesn't need any of that — stub it out here.
+vi.mock('../people/applyChannelInfo', () => ({
   applyChannelInfoToPerson: vi.fn().mockResolvedValue(undefined),
 }));
 
