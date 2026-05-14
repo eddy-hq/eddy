@@ -9,7 +9,7 @@
 import 'dotenv/config';
 import fs from 'fs';
 import path from 'path';
-import { Worker, Job } from 'bullmq';
+import { Worker, Job, DelayedError } from 'bullmq';
 import { redis, closeQueues, thumbsQueue } from '../queue';
 import { config } from '../config';
 import { logger } from '../logger';
@@ -49,7 +49,9 @@ async function postGuardScore(payload: GuardScorePayload): Promise<GuardScoreRes
   return (await resp.json()) as GuardScoreResponse;
 }
 
-async function processJob(job: Job<DownloadJobData>): Promise<void> {
+const LIVE_BROADCAST_RETRY_MS = 30 * 60 * 1000;
+
+async function processJob(job: Job<DownloadJobData>, token?: string): Promise<void> {
   const { requestId, youtubeId, url } = job.data;
   const log = logger.child({ requestId, youtubeId });
 
@@ -65,7 +67,8 @@ async function processJob(job: Job<DownloadJobData>): Promise<void> {
     metadata = await fetchMetadata(url);
   } catch (err: unknown) {
     const isTerminal = (err as { terminal?: boolean }).terminal === true;
-    log.warn({ err, isTerminal }, 'Metadata fetch failed');
+    const isLive = (err as { isLive?: boolean }).isLive === true;
+    log.warn({ err, isTerminal, isLive }, 'Metadata fetch failed');
     if (isTerminal) {
       // Terminal: status flips to 'rejected' on the M4, so progress is hidden anyway.
       await redis.del(PROGRESS_KEY(requestId));
@@ -74,6 +77,16 @@ async function processJob(job: Job<DownloadJobData>): Promise<void> {
         log.error({ cbErr }, 'Failed to post rejection callback')
       );
       return;
+    }
+    if (isLive) {
+      // Park the job in BullMQ's `delayed` state rather than letting the retry
+      // budget burn down to `failed` and trigger the watchdog re-enqueue path
+      // (which alerts every cycle). The request stays in `downloading` on the
+      // PWA, the 0% bar stays put, and the next attempt fires automatically
+      // once the delay elapses — by which point the VOD has usually landed.
+      log.info({ retryInMins: LIVE_BROADCAST_RETRY_MS / 60_000 }, 'Live broadcast — parking job in delayed state');
+      await job.moveToDelayed(Date.now() + LIVE_BROADCAST_RETRY_MS, token);
+      throw new DelayedError();
     }
     // Non-terminal: BullMQ retries with backoff. Leave the 0% in place so the
     // PWA's bar holds steady instead of flickering back to a spinner.
