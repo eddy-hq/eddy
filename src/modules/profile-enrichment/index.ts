@@ -16,6 +16,7 @@ export {
   buildAffinityPrompt,
   parseAffinityResponse,
   persistAffinities,
+  filterValidEvidence,
 } from './affinities';
 export type {
   AffinityDigest,

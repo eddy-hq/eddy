@@ -448,16 +448,21 @@ describe('regenerateAffinities', () => {
           confidence: 0.7,
           evidence: [{ ref_type: 'interest', ref_id: INTEREST_ID }],
         },
+        {
+          statement: 'Avoids reaction-style videos',
+          confidence: 0.55,
+          evidence: [],
+        },
       ],
     }));
 
     const result = await regenerateAffinities(USER_KID);
     expect(result.skipped).toBe(false);
-    expect(result.statementCount).toBe(2);
+    expect(result.statementCount).toBe(3);
     expect(result.evidenceCount).toBe(2);
 
     const active = readActiveAffinities(USER_KID, 10);
-    expect(active).toHaveLength(2);
+    expect(active).toHaveLength(3);
     expect(active[0]?.confidence).toBeGreaterThanOrEqual(active[1]?.confidence ?? 0);
   });
 
@@ -475,35 +480,95 @@ describe('regenerateAffinities', () => {
     expect(result.skipReason).toBe('parse_failed');
   });
 
+  it('skips with reason "too_few_statements" when Gemma returns fewer than the minimum', async () => {
+    seedEligibleUser();
+    // Seed a prior run so we can also confirm we don't supersede it on skip.
+    persistAffinities(USER_KID, [
+      { statement: 'Prior run A', confidence: 0.8, evidence: [] },
+      { statement: 'Prior run B', confidence: 0.7, evidence: [] },
+      { statement: 'Prior run C', confidence: 0.6, evidence: [] },
+    ]);
+    vi.mocked(ollamaGenerate).mockResolvedValueOnce(JSON.stringify({
+      statements: [
+        { statement: 'Just one short statement', confidence: 0.4, evidence: [] },
+      ],
+    }));
+
+    const result = await regenerateAffinities(USER_KID);
+    expect(result.skipped).toBe(true);
+    expect(result.skipReason).toBe('too_few_statements');
+
+    const active = readActiveAffinities(USER_KID, 10);
+    expect(active.map((a) => a.statement)).toEqual(
+      expect.arrayContaining(['Prior run A', 'Prior run B', 'Prior run C']),
+    );
+    expect(active).toHaveLength(3);
+  });
+
+  it('drops evidence refs that do not resolve against the underlying tables', async () => {
+    seedEligibleUser();
+    vi.mocked(ollamaGenerate).mockResolvedValueOnce(JSON.stringify({
+      statements: [
+        {
+          statement: 'Valid statement with mixed evidence',
+          confidence: 0.8,
+          evidence: [
+            { ref_type: 'person', ref_id: PERSON_A },                          // resolves
+            { ref_type: 'person', ref_id: '99999999-9999-7999-8999-999999999999' }, // orphan
+            { ref_type: 'interest', ref_id: INTEREST_ID },                     // resolves
+            { ref_type: 'interest', ref_id: 'not-a-real-interest-id' },        // orphan
+          ],
+        },
+        { statement: 'Filler B', confidence: 0.6, evidence: [] },
+        { statement: 'Filler C', confidence: 0.55, evidence: [] },
+      ],
+    }));
+
+    const result = await regenerateAffinities(USER_KID);
+    expect(result.skipped).toBe(false);
+    // 2 evidence rows resolve (the two orphans are dropped).
+    expect(result.evidenceCount).toBe(2);
+
+    const affinity = db.prepare(
+      "SELECT affinity_id FROM inferred_affinities WHERE statement = 'Valid statement with mixed evidence'"
+    ).get() as { affinity_id: string };
+    const rows = db.prepare(
+      'SELECT ref_type, ref_id FROM affinity_evidence WHERE affinity_id = ?'
+    ).all(affinity.affinity_id) as Array<{ ref_type: string; ref_id: string }>;
+    expect(rows).toHaveLength(2);
+    expect(rows.map((r) => r.ref_id).sort()).toEqual([INTEREST_ID, PERSON_A].sort());
+  });
+
   it('on re-run, supersedes the prior set and inserts the new one (full replace)', async () => {
     seedEligibleUser();
     vi.mocked(ollamaGenerate)
       .mockResolvedValueOnce(JSON.stringify({
         statements: [
-          { statement: 'First-run statement', confidence: 0.5, evidence: [] },
+          { statement: 'First-run A', confidence: 0.5, evidence: [] },
+          { statement: 'First-run B', confidence: 0.45, evidence: [] },
+          { statement: 'First-run C', confidence: 0.4, evidence: [] },
         ],
       }))
       .mockResolvedValueOnce(JSON.stringify({
         statements: [
-          { statement: 'Second-run statement A', confidence: 0.9, evidence: [] },
-          { statement: 'Second-run statement B', confidence: 0.6, evidence: [] },
+          { statement: 'Second-run A', confidence: 0.9, evidence: [] },
+          { statement: 'Second-run B', confidence: 0.7, evidence: [] },
+          { statement: 'Second-run C', confidence: 0.6, evidence: [] },
         ],
       }));
 
     const r1 = await regenerateAffinities(USER_KID);
-    expect(r1.statementCount).toBe(1);
+    expect(r1.statementCount).toBe(3);
 
     const r2 = await regenerateAffinities(USER_KID);
-    expect(r2.statementCount).toBe(2);
-    expect(r2.supersededCount).toBe(1);
+    expect(r2.statementCount).toBe(3);
+    expect(r2.supersededCount).toBe(3);
 
     const all = db.prepare(
-      'SELECT statement, superseded_at FROM inferred_affinities WHERE user_id = ? ORDER BY generated_at ASC'
+      'SELECT statement, superseded_at FROM inferred_affinities WHERE user_id = ? ORDER BY generated_at ASC, statement ASC'
     ).all(USER_KID) as Array<{ statement: string; superseded_at: string | null }>;
-    expect(all).toHaveLength(3);
-    expect(all[0]?.statement).toBe('First-run statement');
-    expect(all[0]?.superseded_at).not.toBeNull();
-    expect(all[1]?.superseded_at).toBeNull();
-    expect(all[2]?.superseded_at).toBeNull();
+    expect(all).toHaveLength(6);
+    expect(all.slice(0, 3).every((r) => r.superseded_at !== null)).toBe(true);
+    expect(all.slice(3).every((r) => r.superseded_at === null)).toBe(true);
   });
 });

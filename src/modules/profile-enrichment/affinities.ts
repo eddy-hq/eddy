@@ -251,7 +251,10 @@ ${dismissedSamples}
 
 Each statement must:
 - Be a single short sentence describing a pattern, not a list.
-- Cite evidence using the ids from above ("person" for a [id=…] under people, "interest" for an [id=…] under interests). If a statement is grounded in a specific title, use ref_type "content_item" with the title as the ref_id.
+- Cite evidence ONLY using the ids shown above:
+  - ref_type "person" with the [id=…] from the people sections
+  - ref_type "interest" with the [id=…] from the per-interest section
+  Do not invent ids. Do not cite titles as ref_ids. Evidence rows with unrecognised ref_ids will be dropped.
 - Carry a confidence between 0.0 and 1.0 — strong patterns close to 1.0, hedged guesses near 0.3.
 
 Return ONLY this JSON, no other text:
@@ -301,6 +304,44 @@ export function parseAffinityResponse(raw: string): AffinityStatement[] | null {
     if (out.length === 0) return null;
     return out;
   });
+}
+
+// ── Evidence validation ───────────────────────────────────────────────────────
+//
+// The DB's CHECK constraint guarantees ref_type is one of three known values,
+// but ref_id is a free TEXT column. Without a referential check we can persist
+// orphan rows pointing at a person/interest/content_item that doesn't exist —
+// Gemma occasionally hallucinates ids despite the prompt telling it not to.
+// We resolve ref_ids against the relevant table here and drop the ones that
+// don't match. The lookups are point-selects on PKs, so the cost is trivial
+// even when Gemma returns the maximum evidence count.
+
+const PEOPLE_EXISTS = 'SELECT 1 FROM people WHERE person_id = ?';
+const INTEREST_EXISTS = 'SELECT 1 FROM interests WHERE id = ?';
+const CONTENT_EXISTS = 'SELECT 1 FROM content_items WHERE item_id = ?';
+
+function refResolves(refType: EvidenceRefType, refId: string): boolean {
+  const sql =
+    refType === 'person' ? PEOPLE_EXISTS
+    : refType === 'interest' ? INTEREST_EXISTS
+    : CONTENT_EXISTS;
+  return db.prepare(sql).get(refId) !== undefined;
+}
+
+export function filterValidEvidence(statements: AffinityStatement[]): AffinityStatement[] {
+  return statements.map((s) => ({
+    ...s,
+    evidence: s.evidence.filter((e) => {
+      const ok = refResolves(e.refType, e.refId);
+      if (!ok) {
+        logger.warn(
+          { refType: e.refType, statementPrefix: s.statement.slice(0, 40) },
+          'Affinities: dropping orphan evidence ref'
+        );
+      }
+      return ok;
+    }),
+  }));
 }
 
 // ── Persistence ────────────────────────────────────────────────────────────────
@@ -360,7 +401,12 @@ export function persistAffinities(
 export interface RegenerateAffinitiesResult {
   userId: string;
   skipped: boolean;
-  skipReason?: AffinityEligibility['reason'] | 'gemma_failed' | 'parse_failed' | 'empty_digest';
+  skipReason?:
+    | AffinityEligibility['reason']
+    | 'gemma_failed'
+    | 'parse_failed'
+    | 'empty_digest'
+    | 'too_few_statements';
   statementCount: number;
   evidenceCount: number;
   supersededCount: number;
@@ -432,8 +478,30 @@ export async function regenerateAffinities(userId: string): Promise<RegenerateAf
     };
   }
 
-  // Cap at STATEMENT_MAX even if Gemma returned more, and drop empties.
-  const accepted = parsed.slice(0, STATEMENT_MAX);
+  // Cap at STATEMENT_MAX even if Gemma returned more. Then drop evidence
+  // refs that don't resolve against the underlying tables — Gemma sometimes
+  // synthesises uuids that look plausible but aren't in the digest.
+  const accepted = filterValidEvidence(parsed.slice(0, STATEMENT_MAX));
+
+  // Floor on statement count: fewer than STATEMENT_MIN means the response
+  // is too thin to justify replacing the user's whole active set. We skip
+  // rather than persist a one-statement summary that would supersede a
+  // richer prior run.
+  if (accepted.length < STATEMENT_MIN) {
+    logger.warn(
+      { userId, returned: accepted.length, min: STATEMENT_MIN },
+      'Affinities: too few statements returned, skipping replace'
+    );
+    return {
+      userId,
+      skipped: true,
+      skipReason: 'too_few_statements',
+      statementCount: 0,
+      evidenceCount: 0,
+      supersededCount: 0,
+    };
+  }
+
   const persisted = persistAffinities(userId, accepted);
 
   logger.info(
