@@ -450,9 +450,9 @@ export async function regenerateAffinities(userId: string): Promise<RegenerateAf
   let raw: string;
   try {
     raw = await ollamaGenerate(prompt, undefined, undefined, {
-      num_predict: 1200,
+      num_predict: 2000,
       temperature: 0.2,
-    });
+    }, 'json');
   } catch (err) {
     logger.warn({ err, userId }, 'Affinities: Gemma call failed');
     return {

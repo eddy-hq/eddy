@@ -13,6 +13,7 @@ interface OllamaGenerateRequest {
   stream: boolean;
   images?: string[];
   options?: OllamaOptions;
+  format?: 'json';
 }
 
 interface OllamaGenerateResponse {
@@ -29,12 +30,14 @@ export async function ollamaGenerate(
   model = config.OLLAMA_GUARD_MODEL,
   images?: string[],
   options?: OllamaOptions,
+  format?: 'json',
 ): Promise<string> {
   let response: Response;
   try {
     const body: OllamaGenerateRequest = { model, prompt, stream: false };
     if (images?.length) body.images = images;
     if (options) body.options = options;
+    if (format) body.format = format;
     response = await fetch(`${config.OLLAMA_URL}/api/generate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
