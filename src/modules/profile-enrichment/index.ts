@@ -4,8 +4,27 @@ import { logger } from '../../logger';
 import { redis, profileEnrichmentQueue } from '../../queue';
 import { WATCHED_RATIO, WATCHED_TIME_FLOOR_S } from '../watch-events';
 import { computeTrustWeight, TRUST_DEFAULT } from './util';
+import { regenerateAffinities } from './affinities';
 
 export { computeTrustWeight, TRUST_COLD_START_FLOOR, TRUST_DEFAULT, TRUST_BASELINE } from './util';
+export {
+  regenerateAffinities,
+  readActiveAffinities,
+  checkAffinityEligibility,
+  AFFINITY_MIN_LIFETIME_EVENTS,
+  buildAffinityDigest,
+  buildAffinityPrompt,
+  parseAffinityResponse,
+  persistAffinities,
+  filterValidEvidence,
+} from './affinities';
+export type {
+  AffinityDigest,
+  AffinityEligibility,
+  RegenerateAffinitiesResult,
+  ActiveAffinity,
+  EvidenceRefType,
+} from './affinities';
 
 // ── Snapshot recompute ────────────────────────────────────────────────────────
 //
@@ -176,11 +195,50 @@ async function runProfileEnrichment(): Promise<void> {
   logger.info('Profile enrichment job complete');
 }
 
+// Weekly affinities run. Daily cadence is too aggressive for a Gemma round
+// trip per user; Sunday evening keeps the model load off the family's prime
+// viewing window and gives the week's behavioural_signals time to settle.
+async function runAffinityRegeneration(): Promise<void> {
+  logger.info('Affinity regeneration job started');
+
+  const users = db.prepare(
+    "SELECT user_id FROM users WHERE role IN ('kid', 'parent')"
+  ).all() as UserRow[];
+
+  for (const user of users) {
+    try {
+      const result = await regenerateAffinities(user.user_id);
+      if (result.skipped) {
+        logger.info(
+          { userId: user.user_id, reason: result.skipReason },
+          'Affinity regeneration: user skipped'
+        );
+      } else {
+        logger.info(
+          {
+            userId: user.user_id,
+            statementCount: result.statementCount,
+            evidenceCount: result.evidenceCount,
+            supersededCount: result.supersededCount,
+          },
+          'Affinity regeneration: user complete'
+        );
+      }
+    } catch (err) {
+      logger.error({ err, userId: user.user_id }, 'Affinity regeneration: user run failed');
+    }
+  }
+
+  logger.info('Affinity regeneration job complete');
+}
+
 let profileEnrichmentWorker: Worker | null = null;
 
-// Cron scheduled at 05:00 — strictly before discovery (06:00) so the nightly
-// trust recompute is reflected in the same morning's scoring. Same registration
-// pattern as discovery (src/modules/discovery/index.ts).
+// Daily run at 05:00 — strictly before discovery (06:00) so the nightly
+// trust recompute is reflected in the same morning's scoring. Weekly
+// affinity run kicks off Sunday 21:00 local; cron uses server time which
+// matches family time on the M4. Same registration pattern as discovery
+// (src/modules/discovery/index.ts).
 export function startProfileEnrichmentScheduler(): void {
   void profileEnrichmentQueue.add('run', {}, {
     repeat: { pattern: '0 5 * * *' },
@@ -189,8 +247,16 @@ export function startProfileEnrichmentScheduler(): void {
     logger.warn({ err }, 'Profile enrichment: failed to schedule repeatable job')
   );
 
+  void profileEnrichmentQueue.add('affinities', {}, {
+    repeat: { pattern: '0 21 * * 0' },
+    jobId: 'profile-enrichment-affinities-weekly',
+  }).catch((err: unknown) =>
+    logger.warn({ err }, 'Affinity regeneration: failed to schedule repeatable job')
+  );
+
   profileEnrichmentWorker = new Worker('profile-enrichment', async (job) => {
     if (job.name === 'run') await runProfileEnrichment();
+    else if (job.name === 'affinities') await runAffinityRegeneration();
   }, { connection: redis, concurrency: 1 });
 
   profileEnrichmentWorker.on('completed', (job) => {
@@ -200,7 +266,7 @@ export function startProfileEnrichmentScheduler(): void {
     logger.error({ err, jobId: job?.id }, 'Profile enrichment job failed');
   });
 
-  logger.info('Profile enrichment scheduler started (daily at 05:00)');
+  logger.info('Profile enrichment scheduler started (daily 05:00, affinities Sunday 21:00)');
 }
 
 export async function stopProfileEnrichmentScheduler(): Promise<void> {

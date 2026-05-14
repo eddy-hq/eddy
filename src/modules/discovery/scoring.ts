@@ -58,6 +58,24 @@ function lookupTrustWeight(userId: string, personId: string): number {
   return row.trust_weight;
 }
 
+// Active affinity statements for the user (issue #59, brief §9a Layer 4),
+// ordered by confidence DESC. Capped at 5 so the prompt stays bounded. We
+// inline the SELECT here (rather than importing from profile-enrichment) to
+// keep scoring a leaf of the import graph — same pattern as the trust-weight
+// fallback above. Profile-enrichment is the producer; this module is a pure
+// consumer.
+const AFFINITY_TOP_N = 5;
+function lookupActiveAffinityStatements(userId: string): string[] {
+  const rows = db.prepare(`
+    SELECT statement
+    FROM inferred_affinities
+    WHERE user_id = ? AND superseded_at IS NULL
+    ORDER BY confidence DESC, generated_at DESC
+    LIMIT ?
+  `).all(userId, AFFINITY_TOP_N) as Array<{ statement: string }>;
+  return rows.map((r) => r.statement);
+}
+
 // Deterministic time-sensitivity override for patterns Gemma keeps flip-
 // flopping on. Match highlights and dated sports content are unambiguously
 // news; relying on the model gave inconsistent verdicts even at temp 0.2.
@@ -82,7 +100,11 @@ export function overrideTimeSensitivity(title: string | null, modelSays: TimeSen
   return modelSays;
 }
 
-export function buildScoringPrompt(items: ScoringItem[], interestSummary: string): string {
+export function buildScoringPrompt(
+  items: ScoringItem[],
+  interestSummary: string,
+  affinityStatements: string[] = [],
+): string {
   const videoList = items.map((item) => {
     const channel = item.channel ? item.channel : 'unknown channel';
     const seedTag = item.interestLabel
@@ -94,10 +116,20 @@ export function buildScoringPrompt(items: ScoringItem[], interestSummary: string
     return `${item.index}. "${item.title}" — ${channel} | ${formatDuration(item.durationSecs)} | ${formatAge(item.publishedAt)}${seedTag}${followTag}`;
   }).join('\n');
 
+  // Layer 4 (brief §9a, issue #59): Gemma-inferred statements describing the
+  // shape of the user's preference. The scoring prompt uses them as soft
+  // priors — they don't override the interests list, but they let Gemma
+  // explain a pick by name ("Likes long-form technical explainers") when
+  // the title fits one. Empty array means a fresh user with no affinities
+  // generated yet; section is omitted entirely so we don't waste tokens.
+  const affinitySection = affinityStatements.length > 0
+    ? `\nKnown preference patterns (you may cite one of these by name in "why"):\n${affinityStatements.map((s, i) => `${i + 1}. ${s}`).join('\n')}\n`
+    : '';
+
   return `Score YouTube videos for a personal discovery feed. For each video give a connection score, a quality score, a time-sensitivity tag, and a one-sentence reason.
 
 User interests (priority order, expertise): ${interestSummary}
-
+${affinitySection}
 Videos (title — channel | length | age [seeded by interest] [back-catalog from a person you follow]):
 ${videoList}
 
@@ -175,6 +207,11 @@ export async function scoreCandidates(userId: string, userInterests: UserInteres
     .map((t) => `"${t.label}" (${t.expertise})`)
     .join(', ');
 
+  // Read once per discovery run — the active set doesn't change inside a
+  // scoring pass, and Gemma sees the same statements on every batch so a
+  // user's pattern shows up consistently across the day's surfaced items.
+  const affinityStatements = lookupActiveAffinityStatements(userId);
+
   const BATCH = 10;
   for (let i = 0; i < pending.length; i += BATCH) {
     const batch = pending.slice(i, i + BATCH);
@@ -193,7 +230,7 @@ export async function scoreCandidates(userId: string, userInterests: UserInteres
       personName: c.person_name,
     }));
 
-    const prompt = buildScoringPrompt(items, interestSummary);
+    const prompt = buildScoringPrompt(items, interestSummary, affinityStatements);
 
     let raw: string;
     try {
