@@ -15,8 +15,10 @@ const VALID_REASONS = new Set(['ended', 'dismissed', 'navigated', 'backgrounded'
 
 // Absolute-time floor for "watched": long-form videos where 90% is unrealistic
 // but 25 minutes of continuous engagement is clearly a watch.
-const WATCHED_TIME_FLOOR_S = 1500;
-const WATCHED_RATIO = 0.9;
+// Exported so other modules (profile-enrichment) reuse the same threshold
+// rather than redefining it — see issue #58.
+export const WATCHED_TIME_FLOOR_S = 1500;
+export const WATCHED_RATIO = 0.9;
 
 export interface WatchEventInput {
   userId: string;

@@ -93,6 +93,7 @@ describe('buildScoringPrompt', () => {
           interestLabel: 'functional programming',
           expertise: 'deep',
           sourceType: 'interest_search',
+          personId: null,
           personName: null,
         },
         {
@@ -105,6 +106,7 @@ describe('buildScoringPrompt', () => {
           interestLabel: null,
           expertise: null,
           sourceType: 'person_backcatalog',
+          personId: 'p1',
           personName: 'Simon Peyton Jones',
         },
       ],
