@@ -4,9 +4,15 @@ import { ollamaGenerate, parseOllamaJson } from '../../ollama';
 import { formatAge, formatDuration } from './util';
 import { clampScore, normalizeSensitivity, type TimeSensitivity } from './ranker';
 import type { UserInterestRow } from './intake';
-import { TRUST_DEFAULT } from '../profile-enrichment';
 
 export type { TimeSensitivity };
+
+// Trust-weight default when no followed_people row exists for a candidate's
+// person (e.g. a back-catalog candidate whose follow was removed before
+// scoring). Mirrors TRUST_DEFAULT in profile-enrichment/util.ts; kept inline
+// here so scoring stays a leaf of the import graph and isn't dragged through
+// the profile-enrichment scheduler module just to read a single fallback.
+const TRUST_DEFAULT = 1.0;
 
 interface CandidateRow {
   candidate_id: string;
