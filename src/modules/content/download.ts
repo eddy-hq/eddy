@@ -174,12 +174,15 @@ export async function fetchMetadata(url: string): Promise<VideoMetadata> {
   }
 
   // Gate currently-live broadcasts before downloadVideo can attach to the HLS
-  // feed and pin a worker slot for the length of the stream. Non-terminal so
-  // BullMQ retries + the 5-min watchdog re-enqueue auto-pick up the VOD once
-  // YouTube publishes it. is_upcoming is handled by mapYtdlpError's premiere
-  // match (terminal — could be days away, no point polling).
+  // feed and pin a worker slot for the length of the stream. The worker reads
+  // the `isLive` flag and parks the job in BullMQ's `delayed` state instead of
+  // burning through retries, so the request stays quiet until the VOD lands.
+  // is_upcoming is handled by mapYtdlpError's premiere match (terminal — could
+  // be days away, no point polling).
   if (json['live_status'] === 'is_live') {
-    throw new Error('Live broadcast in progress — will retry once the stream ends');
+    const liveErr = new Error('Live broadcast in progress — will retry once the stream ends') as Error & { isLive: boolean };
+    liveErr.isLive = true;
+    throw liveErr;
   }
 
   // Extract auto-subtitle text if present (best-effort; null is fine)

@@ -41,8 +41,11 @@ export async function checkStuckDownloads(): Promise<void> {
       continue; // Redis unavailable — skip rather than false-positive
     }
 
-    // Job is active — legitimately downloading (possibly a long video). Leave it alone.
-    if (jobState === 'active') continue;
+    // Job is active or delayed — legitimately in-flight. `active` is a real
+    // download in progress (possibly a long video); `delayed` is the worker
+    // having parked a job for a future retry (e.g. live broadcast waiting on
+    // its VOD). Either way: leave it alone.
+    if (jobState === 'active' || jobState === 'delayed') continue;
 
     // Job is failed, unknown, missing, or in an unexpected state — re-enqueue.
     const jobData: DownloadJobData = {
