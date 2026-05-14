@@ -29,6 +29,15 @@ vi.mock('../notifications', () => ({
   validateActionToken: vi.fn(),
 }));
 
+// state.markDownloaded now imports the people module's ensurePersonForChannel
+// + applyChannelInfoToPerson via importActual below. The real people index pulls
+// in config (via ytdlp), which calls process.exit when env isn't loaded in
+// tests. Stub it here so the actual-import of requests/state stays cheap.
+vi.mock('../people', () => ({
+  ensurePersonForChannel: vi.fn().mockReturnValue({ personId: 'person-stub', outputId: 'output-stub' }),
+  applyChannelInfoToPerson: vi.fn().mockResolvedValue(undefined),
+}));
+
 // Bypass requests/index.ts (which loads config) — re-export the real markWatched
 // from state.ts so transitions still hit the in-memory DB end-to-end. Wrapped
 // in a vi.fn so tests can assert call counts (e.g. dedup within a batch).

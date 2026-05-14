@@ -37,6 +37,16 @@ vi.mock('../notifications', () => ({
   validateActionToken: vi.fn(),
 }));
 
+const { ensurePersonForChannelMock, applyChannelInfoToPersonMock } = vi.hoisted(() => ({
+  ensurePersonForChannelMock: vi.fn(),
+  applyChannelInfoToPersonMock: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock('../people', () => ({
+  ensurePersonForChannel: ensurePersonForChannelMock,
+  applyChannelInfoToPerson: applyChannelInfoToPersonMock,
+}));
+
 import { db } from '../../db/client';
 import { logger } from '../../logger';
 import { runMigrations } from '../../db/migrate';
@@ -108,6 +118,10 @@ beforeEach(() => {
   vi.mocked(logger.warn).mockClear();
   vi.mocked(sendVideoReady).mockReset();
   vi.mocked(sendVideoReady).mockResolvedValue(undefined);
+  ensurePersonForChannelMock.mockReset();
+  ensurePersonForChannelMock.mockReturnValue({ personId: 'person-stub', outputId: 'output-stub' });
+  applyChannelInfoToPersonMock.mockReset();
+  applyChannelInfoToPersonMock.mockResolvedValue(undefined);
 });
 
 describe('markWatched', () => {
@@ -429,6 +443,68 @@ describe('markDownloaded', () => {
     expect(vi.mocked(logger.warn)).toHaveBeenCalledTimes(1);
     const [meta] = vi.mocked(logger.warn).mock.calls[0]!;
     expect(meta).toMatchObject({ requestId: 'req-dl4', userId: USER_ID });
+  });
+
+  it('triggers person capture when channelId is present', () => {
+    insertRequest({ request_id: 'req-dl-pc1', status: 'downloading' });
+
+    const result = markDownloaded('req-dl-pc1', FIELDS);
+
+    expect(result).toEqual({ transitioned: true, userId: USER_ID });
+    expect(ensurePersonForChannelMock).toHaveBeenCalledWith(FIELDS.youtubeChannelId, FIELDS.channel);
+    expect(applyChannelInfoToPersonMock).toHaveBeenCalledWith('person-stub', FIELDS.youtubeChannelId);
+  });
+
+  it('skips person capture when channelId is null', () => {
+    insertRequest({ request_id: 'req-dl-pc2', status: 'downloading' });
+
+    const result = markDownloaded('req-dl-pc2', { ...FIELDS, youtubeChannelId: null });
+
+    expect(result).toEqual({ transitioned: true, userId: USER_ID });
+    expect(ensurePersonForChannelMock).not.toHaveBeenCalled();
+    expect(applyChannelInfoToPersonMock).not.toHaveBeenCalled();
+  });
+
+  it('does not trigger person capture when transition is a no-op', () => {
+    insertRequest({ request_id: 'req-dl-pc3', status: 'ready' });
+
+    const result = markDownloaded('req-dl-pc3', FIELDS);
+
+    expect(result).toEqual({ transitioned: false, currentStatus: 'ready' });
+    expect(ensurePersonForChannelMock).not.toHaveBeenCalled();
+    expect(applyChannelInfoToPersonMock).not.toHaveBeenCalled();
+  });
+
+  it('warn-logs when ensurePersonForChannel throws and still returns transitioned: true', () => {
+    insertRequest({ request_id: 'req-dl-pc4', status: 'downloading' });
+    ensurePersonForChannelMock.mockImplementationOnce(() => {
+      throw new Error('db locked');
+    });
+
+    const result = markDownloaded('req-dl-pc4', FIELDS);
+
+    expect(result).toEqual({ transitioned: true, userId: USER_ID });
+    expect(applyChannelInfoToPersonMock).not.toHaveBeenCalled();
+    // sendVideoReady fires first, then the channel-capture warn — assert that
+    // at least one warn carries the channelId metadata so we know the catch
+    // branch ran.
+    const warns = vi.mocked(logger.warn).mock.calls;
+    const captureWarn = warns.find(([meta]) => (meta as { channelId?: string }).channelId === FIELDS.youtubeChannelId);
+    expect(captureWarn).toBeDefined();
+  });
+
+  it('swallows applyChannelInfoToPerson rejection (fire-and-forget) and does not surface as unhandled', async () => {
+    insertRequest({ request_id: 'req-dl-pc5', status: 'downloading' });
+    applyChannelInfoToPersonMock.mockRejectedValueOnce(new Error('yt-dlp flake'));
+
+    const result = markDownloaded('req-dl-pc5', FIELDS);
+    expect(result).toEqual({ transitioned: true, userId: USER_ID });
+
+    // Let the rejected fire-and-forget settle.
+    await new Promise((resolve) => setImmediate(resolve));
+
+    // Debug-logged, not warned — matches the channel-poll path's noise level.
+    expect(vi.mocked(logger.debug)).toHaveBeenCalled();
   });
 });
 

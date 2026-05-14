@@ -2,6 +2,7 @@ import { v7 as uuidv7 } from 'uuid';
 import { db } from '../../db/client';
 import { logger } from '../../logger';
 import { sendVideoReady } from '../notifications';
+import { applyChannelInfoToPerson, ensurePersonForChannel } from '../people';
 import { downloadQueue, deleteQueue, redis } from '../../queue';
 import type { DownloadJobData } from '../content';
 
@@ -230,6 +231,26 @@ export function markDownloaded(id: string, fields: DownloadedFields): Transition
   void sendVideoReady(updated.user_id, id, fields.title).catch((err) =>
     logger.warn({ err, requestId: id, userId: updated.user_id }, 'markDownloaded: failed to send video-ready notification'),
   );
+
+  // Capture the channel's person row + bio/photo on every imported video.
+  // Closes the discovery + share-sheet gap where requests existed for
+  // channels with no matching person. Mirrors the channel-poll pattern in
+  // people/pollChannel — synchronous row upsert, fire-and-forget yt-dlp
+  // metadata fetch so a flake doesn't fail the worker callback. Only fires
+  // when a channelId actually landed (worker may pass null).
+  const channelId = fields.youtubeChannelId;
+  if (channelId) {
+    try {
+      const { personId } = ensurePersonForChannel(channelId, fields.channel);
+      void applyChannelInfoToPerson(personId, channelId).catch((err: unknown) =>
+        logger.debug({ err, channelId, requestId: id }, 'markDownloaded: channel info capture failed'),
+      );
+    } catch (err) {
+      // ensurePersonForChannel runs a DB transaction — a unique-constraint
+      // race or DB error must not roll back the markDownloaded transition.
+      logger.warn({ err, channelId, requestId: id }, 'markDownloaded: ensurePersonForChannel failed');
+    }
+  }
 
   return { transitioned: true, userId: updated.user_id };
 }
