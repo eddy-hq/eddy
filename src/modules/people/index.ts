@@ -286,7 +286,7 @@ peopleRouter.get('/following', (req: Request, res: Response) => {
 // stays consistent and a search-tap can land on a person view before any
 // follow has happened. Wrapped in a transaction so a failure on the second
 // insert doesn't orphan the people row.
-const ensurePersonForChannel = db.transaction((channelId: string, channelName: string): { personId: string; outputId: string } => {
+export const ensurePersonForChannel: (channelId: string, channelName: string) => { personId: string; outputId: string } = db.transaction((channelId: string, channelName: string): { personId: string; outputId: string } => {
   const existing = db.prepare(
     'SELECT person_id, output_id FROM person_outputs WHERE output_type = ? AND external_id = ?'
   ).get('youtube', channelId) as { person_id: string; output_id: string } | undefined;

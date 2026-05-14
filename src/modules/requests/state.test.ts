@@ -37,6 +37,16 @@ vi.mock('../notifications', () => ({
   validateActionToken: vi.fn(),
 }));
 
+const { ensurePersonForChannelMock, applyChannelInfoToPersonMock } = vi.hoisted(() => ({
+  ensurePersonForChannelMock: vi.fn().mockReturnValue({ personId: 'person-mock-1', outputId: 'output-mock-1' }),
+  applyChannelInfoToPersonMock: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock('../people', () => ({
+  ensurePersonForChannel: ensurePersonForChannelMock,
+  applyChannelInfoToPerson: applyChannelInfoToPersonMock,
+}));
+
 import { db } from '../../db/client';
 import { logger } from '../../logger';
 import { runMigrations } from '../../db/migrate';
@@ -108,6 +118,10 @@ beforeEach(() => {
   vi.mocked(logger.warn).mockClear();
   vi.mocked(sendVideoReady).mockReset();
   vi.mocked(sendVideoReady).mockResolvedValue(undefined);
+  ensurePersonForChannelMock.mockReset();
+  ensurePersonForChannelMock.mockReturnValue({ personId: 'person-mock-1', outputId: 'output-mock-1' });
+  applyChannelInfoToPersonMock.mockReset();
+  applyChannelInfoToPersonMock.mockResolvedValue(undefined);
 });
 
 describe('markWatched', () => {
@@ -429,6 +443,51 @@ describe('markDownloaded', () => {
     expect(vi.mocked(logger.warn)).toHaveBeenCalledTimes(1);
     const [meta] = vi.mocked(logger.warn).mock.calls[0]!;
     expect(meta).toMatchObject({ requestId: 'req-dl4', userId: USER_ID });
+  });
+
+  it('calls ensurePersonForChannel and fires applyChannelInfoToPerson when youtubeChannelId is set', async () => {
+    insertRequest({ request_id: 'req-dl5', status: 'downloading' });
+
+    markDownloaded('req-dl5', FIELDS);
+
+    expect(ensurePersonForChannelMock).toHaveBeenCalledWith(FIELDS.youtubeChannelId, FIELDS.channel);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(applyChannelInfoToPersonMock).toHaveBeenCalledWith('person-mock-1', FIELDS.youtubeChannelId);
+  });
+
+  it('does not call ensurePersonForChannel when youtubeChannelId is null', () => {
+    insertRequest({ request_id: 'req-dl6', status: 'downloading' });
+
+    markDownloaded('req-dl6', { ...FIELDS, youtubeChannelId: null });
+
+    expect(ensurePersonForChannelMock).not.toHaveBeenCalled();
+    expect(applyChannelInfoToPersonMock).not.toHaveBeenCalled();
+  });
+
+  it('does not call ensurePersonForChannel when youtubeChannelId is an empty string', () => {
+    insertRequest({ request_id: 'req-dl7', status: 'downloading' });
+
+    markDownloaded('req-dl7', { ...FIELDS, youtubeChannelId: '' });
+
+    expect(ensurePersonForChannelMock).not.toHaveBeenCalled();
+    expect(applyChannelInfoToPersonMock).not.toHaveBeenCalled();
+  });
+
+  it('warn-logs when applyChannelInfoToPerson rejects and does not surface as unhandled rejection', async () => {
+    insertRequest({ request_id: 'req-dl8', status: 'downloading' });
+    applyChannelInfoToPersonMock.mockRejectedValueOnce(new Error('yt-dlp timeout'));
+
+    const result = markDownloaded('req-dl8', FIELDS);
+    expect(result).toEqual({ transitioned: true, userId: USER_ID });
+
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const warnCalls = vi.mocked(logger.warn).mock.calls;
+    expect(warnCalls.length).toBeGreaterThanOrEqual(1);
+    const channelWarn = warnCalls.find(([meta]) => typeof meta === 'object' && meta !== null && 'channelId' in meta);
+    expect(channelWarn).toBeDefined();
+    const [meta] = channelWarn!;
+    expect(meta).toMatchObject({ requestId: 'req-dl8', channelId: FIELDS.youtubeChannelId });
   });
 });
 
