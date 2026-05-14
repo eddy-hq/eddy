@@ -4,6 +4,7 @@ import { logger } from '../../logger';
 import { sendVideoReady } from '../notifications';
 import { downloadQueue, deleteQueue, redis } from '../../queue';
 import type { DownloadJobData } from '../content';
+import { ensurePersonForChannel, applyChannelInfoToPerson } from '../people';
 
 // Shared job data for the delete queue. The worker uses filePath to unlink the
 // .mp4 + sidecars; requestId is carried so the callback can report which row
@@ -230,6 +231,20 @@ export function markDownloaded(id: string, fields: DownloadedFields): Transition
   void sendVideoReady(updated.user_id, id, fields.title).catch((err) =>
     logger.warn({ err, requestId: id, userId: updated.user_id }, 'markDownloaded: failed to send video-ready notification'),
   );
+
+  // Discovery and share-sheet requests don't know the channel at INSERT time —
+  // it lands here when the worker callback fires. Ensure a person row exists
+  // and kick off a best-effort bio/photo capture so feed-card tap-through to a
+  // person view always has something to render. Channel-poll requests already
+  // route through ensurePersonForChannel on follow, so this is a no-op for
+  // them. Both calls are gated on a real transition above, mirroring the
+  // sendVideoReady contract.
+  if (fields.youtubeChannelId) {
+    const { personId } = ensurePersonForChannel(fields.youtubeChannelId, fields.channel);
+    void applyChannelInfoToPerson(personId, fields.youtubeChannelId).catch((err) =>
+      logger.debug({ err, channelId: fields.youtubeChannelId }, 'Capture channel info on download failed'),
+    );
+  }
 
   return { transitioned: true, userId: updated.user_id };
 }

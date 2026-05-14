@@ -37,6 +37,16 @@ vi.mock('../notifications', () => ({
   validateActionToken: vi.fn(),
 }));
 
+const { ensurePersonForChannelMock, applyChannelInfoToPersonMock } = vi.hoisted(() => ({
+  ensurePersonForChannelMock: vi.fn(),
+  applyChannelInfoToPersonMock: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock('../people', () => ({
+  ensurePersonForChannel: ensurePersonForChannelMock,
+  applyChannelInfoToPerson: applyChannelInfoToPersonMock,
+}));
+
 import { db } from '../../db/client';
 import { logger } from '../../logger';
 import { runMigrations } from '../../db/migrate';
@@ -106,8 +116,13 @@ beforeEach(() => {
   redisDelMock.mockClear();
   vi.mocked(logger.info).mockClear();
   vi.mocked(logger.warn).mockClear();
+  vi.mocked(logger.debug).mockClear();
   vi.mocked(sendVideoReady).mockReset();
   vi.mocked(sendVideoReady).mockResolvedValue(undefined);
+  ensurePersonForChannelMock.mockReset();
+  ensurePersonForChannelMock.mockReturnValue({ personId: 'person-1', outputId: 'output-1' });
+  applyChannelInfoToPersonMock.mockReset();
+  applyChannelInfoToPersonMock.mockResolvedValue(undefined);
 });
 
 describe('markWatched', () => {
@@ -429,6 +444,52 @@ describe('markDownloaded', () => {
     expect(vi.mocked(logger.warn)).toHaveBeenCalledTimes(1);
     const [meta] = vi.mocked(logger.warn).mock.calls[0]!;
     expect(meta).toMatchObject({ requestId: 'req-dl4', userId: USER_ID });
+  });
+
+  it('ensures a person row and fires channel-info capture on transition when youtubeChannelId is set', () => {
+    insertRequest({ request_id: 'req-dl5', status: 'downloading' });
+
+    const result = markDownloaded('req-dl5', FIELDS);
+
+    expect(result).toEqual({ transitioned: true, userId: USER_ID });
+    expect(ensurePersonForChannelMock).toHaveBeenCalledWith(FIELDS.youtubeChannelId, FIELDS.channel);
+    expect(applyChannelInfoToPersonMock).toHaveBeenCalledWith('person-1', FIELDS.youtubeChannelId);
+  });
+
+  it('does not ensure a person row when youtubeChannelId is null', () => {
+    insertRequest({ request_id: 'req-dl6', status: 'downloading' });
+    const fieldsNoChannel: DownloadedFields = { ...FIELDS, youtubeChannelId: null };
+
+    const result = markDownloaded('req-dl6', fieldsNoChannel);
+
+    expect(result).toEqual({ transitioned: true, userId: USER_ID });
+    expect(ensurePersonForChannelMock).not.toHaveBeenCalled();
+    expect(applyChannelInfoToPersonMock).not.toHaveBeenCalled();
+  });
+
+  it('does not ensure a person row when the transition is a no-op', () => {
+    insertRequest({ request_id: 'req-dl7', status: 'rejected' });
+
+    const result = markDownloaded('req-dl7', FIELDS);
+
+    expect(result).toEqual({ transitioned: false, currentStatus: 'rejected' });
+    expect(ensurePersonForChannelMock).not.toHaveBeenCalled();
+    expect(applyChannelInfoToPersonMock).not.toHaveBeenCalled();
+  });
+
+  it('debug-logs when applyChannelInfoToPerson rejects and does not surface as unhandled rejection', async () => {
+    insertRequest({ request_id: 'req-dl8', status: 'downloading' });
+    applyChannelInfoToPersonMock.mockRejectedValueOnce(new Error('yt-dlp flaked'));
+
+    const result = markDownloaded('req-dl8', FIELDS);
+    expect(result).toEqual({ transitioned: true, userId: USER_ID });
+
+    // Let the rejected fire-and-forget settle.
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(vi.mocked(logger.debug)).toHaveBeenCalledTimes(1);
+    const [meta] = vi.mocked(logger.debug).mock.calls[0]!;
+    expect(meta).toMatchObject({ channelId: FIELDS.youtubeChannelId });
   });
 });
 

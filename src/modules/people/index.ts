@@ -285,8 +285,11 @@ peopleRouter.get('/following', (req: Request, res: Response) => {
 // effect — both /follow and /resolve route through this so the row layout
 // stays consistent and a search-tap can land on a person view before any
 // follow has happened. Wrapped in a transaction so a failure on the second
-// insert doesn't orphan the people row.
-const ensurePersonForChannel = db.transaction((channelId: string, channelName: string): { personId: string; outputId: string } => {
+// insert doesn't orphan the people row. The exported wrapper below gives this
+// a nameable signature — the raw `db.transaction(...)` result surfaces
+// BetterSqlite3.Transaction, which the type-checker can't name across the
+// module boundary.
+const ensurePersonForChannelTxn = db.transaction((channelId: string, channelName: string): { personId: string; outputId: string } => {
   const existing = db.prepare(
     'SELECT person_id, output_id FROM person_outputs WHERE output_type = ? AND external_id = ?'
   ).get('youtube', channelId) as { person_id: string; output_id: string } | undefined;
@@ -310,6 +313,10 @@ const ensurePersonForChannel = db.transaction((channelId: string, channelName: s
 
   return { personId, outputId };
 });
+
+export function ensurePersonForChannel(channelId: string, channelName: string): { personId: string; outputId: string } {
+  return ensurePersonForChannelTxn(channelId, channelName);
+}
 
 // POST /people/resolve — body: { userId, channelId, channelName }
 // Returns the personId for a channel, creating the person row on demand. Used

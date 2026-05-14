@@ -29,6 +29,14 @@ vi.mock('../notifications', () => ({
   validateActionToken: vi.fn(),
 }));
 
+// requests/state.ts imports `../people` at module top for the channel-info
+// capture side-effect on markDownloaded (#50). Bypass it so vi.importActual
+// on state.ts doesn't pull yt-dlp / ollama through the people barrel.
+vi.mock('../people', () => ({
+  ensurePersonForChannel: vi.fn(),
+  applyChannelInfoToPerson: vi.fn().mockResolvedValue(undefined),
+}));
+
 // Bypass requests/index.ts (which loads config) — re-export the real markWatched
 // from state.ts so transitions still hit the in-memory DB end-to-end. Wrapped
 // in a vi.fn so tests can assert call counts (e.g. dedup within a batch).
