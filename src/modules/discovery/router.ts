@@ -3,7 +3,7 @@ import { v7 as uuidv7 } from 'uuid';
 import { db } from '../../db/client';
 import { logger } from '../../logger';
 import { ValidationError, NotFoundError } from '../../errors';
-import { createFromCandidate } from '../requests';
+import { getRequestsState } from '../requests';
 import { resolveUserById } from '../users';
 import { freshnessMultiplier, rankWeight } from './ranker';
 
@@ -164,12 +164,18 @@ discoveryRouter.post('/request', async (req: Request, res: Response) => {
   } | undefined;
   if (!candidate) throw new NotFoundError(`candidate ${candidateId}`);
 
-  const { requestId } = await createFromCandidate({
-    url: candidate.url,
-    userId: user.user_id,
-    youtubeId: candidate.external_id,
-    title: candidate.title,
+  const requestId = uuidv7();
+  const { settled } = getRequestsState().apply({
+    kind: 'create_candidate',
+    requestId,
+    input: {
+      url: candidate.url,
+      userId: user.user_id,
+      youtubeId: candidate.external_id,
+      title: candidate.title,
+    },
   });
+  await settled;
 
   db.prepare(`UPDATE candidate_pool SET status = 'requested' WHERE candidate_id = ?`).run(candidateId);
 

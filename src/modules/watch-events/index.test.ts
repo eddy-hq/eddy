@@ -29,26 +29,34 @@ vi.mock('../notifications', () => ({
   validateActionToken: vi.fn(),
 }));
 
-// requests/state.ts imports from people/registry (#87) so markDownloaded can
-// populate person rows for discovery/share-sheet downloads (#50). The registry
-// pulls applyChannelInfo, which loads yt-dlp at module top — none of which
-// vi.importActual on state.ts needs — stub the leaf module out here.
+// requests/state.ts imports from people/registry (#87) so the mark_downloaded
+// event can populate person rows for discovery/share-sheet downloads (#50).
+// The registry pulls applyChannelInfo, which loads yt-dlp at module top —
+// none of which vi.importActual on state.ts needs — stub the leaf module out
+// here.
 vi.mock('../people/registry', () => ({
   applyChannelInfoToPerson: vi.fn().mockResolvedValue(undefined),
   ensurePersonForChannel: vi.fn().mockReturnValue({ personId: 'p', outputId: 'o', created: false }),
 }));
 
-// Bypass requests/index.ts (which loads config) — re-export the real markWatched
-// from state.ts so transitions still hit the in-memory DB end-to-end. Wrapped
+// Bypass requests/index.ts (which loads config) — wire the real
+// `getRequestsState` from `./state-default` (which builds Ports off the
+// vi.mock'd queue/notifications/people-registry above) so transitions still
+// hit the in-memory DB end-to-end. We also wrap the returned state's `apply`
 // in a vi.fn so tests can assert call counts (e.g. dedup within a batch).
-const { markWatchedSpy } = vi.hoisted(() => ({ markWatchedSpy: vi.fn() }));
+const { applySpy } = vi.hoisted(() => ({ applySpy: vi.fn() }));
 
 vi.mock('../requests', async () => {
-  const state = await vi.importActual<typeof import('../requests/state-default')>(
+  const stateDefault = await vi.importActual<typeof import('../requests/state-default')>(
     '../requests/state-default',
   );
-  markWatchedSpy.mockImplementation(state.markWatched);
-  return { markWatched: markWatchedSpy };
+  // Wrap the real `apply` so we can spy on calls while still hitting the
+  // in-memory DB through the underlying state machine.
+  const realState = stateDefault.getRequestsState();
+  applySpy.mockImplementation(realState.apply);
+  return {
+    getRequestsState: () => ({ apply: applySpy }),
+  };
 });
 
 import { db } from '../../db/client';
@@ -140,7 +148,7 @@ beforeAll(() => {
 beforeEach(() => {
   db.exec('DELETE FROM requests');
   db.exec('DELETE FROM watch_events');
-  markWatchedSpy.mockClear();
+  applySpy.mockClear();
 });
 
 describe('meetsWatchedThreshold', () => {
@@ -255,11 +263,11 @@ describe('recordEvents', () => {
     }
   });
 
-  it('de-dups within a batch — multiple qualifying events for one request fire markWatched once', () => {
+  it('de-dups within a batch — multiple qualifying events for one request fire mark_watched once', () => {
     insertReadyRequest('req-we-1');
 
     // Three qualifying events for the same requestId in a single POST.
-    // Without dedup: markWatched fires three times (extra UPDATE+SELECT each).
+    // Without dedup: mark_watched fires three times (extra UPDATE+SELECT each).
     // With dedup: it fires once, then the Set short-circuits the rest.
     recordEvents([
       makeEvent({ reason: 'ended', positionS: 600, durationS: 600 }),
@@ -267,10 +275,10 @@ describe('recordEvents', () => {
       makeEvent({ reason: 'ended', positionS: 600, durationS: 600 }),
     ]);
 
-    expect(markWatchedSpy).toHaveBeenCalledTimes(1);
-    expect(markWatchedSpy).toHaveBeenCalledWith('req-we-1');
+    expect(applySpy).toHaveBeenCalledTimes(1);
+    expect(applySpy).toHaveBeenCalledWith({ kind: 'mark_watched', requestId: 'req-we-1' });
 
-    // All three events still recorded — dedup applies only to markWatched calls.
+    // All three events still recorded — dedup applies only to apply() calls.
     const count = db.prepare('SELECT COUNT(*) AS n FROM watch_events').get() as { n: number };
     expect(count.n).toBe(3);
 
@@ -289,9 +297,9 @@ describe('recordEvents', () => {
       makeEvent({ requestId: 'req-we-2', reason: 'ended', positionS: 600, durationS: 600 }),
     ]);
 
-    expect(markWatchedSpy).toHaveBeenCalledTimes(2);
-    expect(markWatchedSpy).toHaveBeenNthCalledWith(1, 'req-we-1');
-    expect(markWatchedSpy).toHaveBeenNthCalledWith(2, 'req-we-2');
+    expect(applySpy).toHaveBeenCalledTimes(2);
+    expect(applySpy).toHaveBeenNthCalledWith(1, { kind: 'mark_watched', requestId: 'req-we-1' });
+    expect(applySpy).toHaveBeenNthCalledWith(2, { kind: 'mark_watched', requestId: 'req-we-2' });
   });
 });
 

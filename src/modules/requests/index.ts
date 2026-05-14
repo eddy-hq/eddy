@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express';
+import { v7 as uuidv7 } from 'uuid';
 import { db } from '../../db/client';
 import { logger } from '../../logger';
 import { ValidationError, NotFoundError } from '../../errors';
@@ -6,37 +7,31 @@ import { config } from '../../config';
 import { downloadQueue, redis } from '../../queue';
 import { sendVideoReady } from '../notifications';
 import { resolveUserByIdOrName } from '../users';
-// The state machine itself is in `./state`; the production-default port
-// wiring and the per-verb shim exports (`markWatched`, `createFromShareSheet`,
-// …) live in `./state-default`. Combining both into a single `state` namespace
-// here keeps the existing router call sites unchanged.
-import * as stateMachine from './state';
-import * as stateShim from './state-default';
-const state = { ...stateMachine, ...stateShim };
+// State machine lives in `./state` (pure dispatcher) with production wiring in
+// `./state-default` (default ports + `getRequestsState` accessor). The router
+// reaches `apply` via the accessor so the registered (or test-injected) state
+// is read at call time, not captured at import.
+import {
+  findActiveDuplicateRequest,
+  displayRejectionReason,
+} from './state';
+import { getRequestsState } from './state-default';
 
 export {
   createRequestsState,
   CANCELLED_REASON,
   displayRejectionReason,
+  findActiveDuplicateRequest,
 } from './state';
 export {
-  markWatched,
-  markDismissed,
-  markCancelled,
-  markSoftDeleted,
-  markDownloaded,
-  markRejected,
-  markGuardBlocked,
-  markFailed,
-  retry,
-  createFromShareSheet,
-  createFromChannelPoll,
-  createFromCandidate,
   registerDefaultRequestsState,
+  getRequestsState,
 } from './state-default';
 export type {
   Status,
   TransitionResult,
+  ApplyOutcome,
+  Event,
   DownloadedFields,
   DeleteJobData,
   CreateFromShareSheetInput,
@@ -148,7 +143,7 @@ requestsRouter.post('/', async (req: Request, res: Response) => {
 
   // Dedup: if this user already has a still-live request for the same video, return it
   if (youtubeId) {
-    const existing = state.findActiveDuplicateRequest(user.user_id, youtubeId);
+    const existing = findActiveDuplicateRequest(user.user_id, youtubeId);
 
     if (existing) {
       logger.info({ requestId: existing.requestId, youtubeId }, 'Returning existing request');
@@ -167,11 +162,17 @@ requestsRouter.post('/', async (req: Request, res: Response) => {
     }
   }
 
-  const { requestId } = await state.createFromShareSheet({
-    url: resolvedUrl,
-    userId: user.user_id,
-    youtubeId,
+  const requestId = uuidv7();
+  const { settled } = getRequestsState().apply({
+    kind: 'create_share_sheet',
+    requestId,
+    input: {
+      url: resolvedUrl,
+      userId: user.user_id,
+      youtubeId,
+    },
   });
+  await settled;
 
   logger.info({ requestId, userId: user.user_id, url: resolvedUrl }, 'Request received');
 
@@ -216,7 +217,7 @@ requestsRouter.get('/feed', (req: Request, res: Response) => {
   const yesterdayStr = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
 
   for (const row of rows) {
-    row.rejection_reason = state.displayRejectionReason(row.rejection_reason);
+    row.rejection_reason = displayRejectionReason(row.rejection_reason);
   }
 
   const dayMap = new Map<string, typeof rows>();
@@ -276,12 +277,12 @@ requestsRouter.get('/admin/pipeline', async (_req: Request, res: Response) => {
           progress = val !== null ? parseInt(val, 10) : null;
         } catch { /* Redis unavailable */ }
       }
-      return { ...r, rejection_reason: state.displayRejectionReason(r.rejection_reason), jobState, progress };
+      return { ...r, rejection_reason: displayRejectionReason(r.rejection_reason), jobState, progress };
     })
   );
 
   for (const r of recentRejected) {
-    r.rejection_reason = state.displayRejectionReason(r.rejection_reason);
+    r.rejection_reason = displayRejectionReason(r.rejection_reason);
   }
 
   res.json({ active: activeWithJobState, recentRejected });
@@ -347,7 +348,7 @@ requestsRouter.get('/:id', async (req: Request, res: Response) => {
     progress,
     title: row.title,
     channel: row.channel,
-    rejectionReason: state.displayRejectionReason(row.rejection_reason),
+    rejectionReason: displayRejectionReason(row.rejection_reason),
     videoUrl: row.nginx_url,
     requestedAt: row.requested_at,
     watchedAt: row.watched_at,
@@ -357,7 +358,7 @@ requestsRouter.get('/:id', async (req: Request, res: Response) => {
 
 // POST /requests/:id/watched — PWA marks video as watched
 requestsRouter.post('/:id/watched', (req: Request, res: Response) => {
-  state.markWatched(req.params['id']!);
+  getRequestsState().apply({ kind: 'mark_watched', requestId: req.params['id']! });
   res.status(204).end();
 });
 
@@ -380,7 +381,7 @@ requestsRouter.delete('/:id/save', (req: Request, res: Response) => {
 // POST /requests/:id/delete — soft-delete: marks record deleted, removes video file
 requestsRouter.post('/:id/delete', (req: Request, res: Response) => {
   const requestId = req.params['id']!;
-  const result = state.markSoftDeleted(requestId);
+  const { result } = getRequestsState().apply({ kind: 'mark_soft_deleted', requestId });
 
   if (!result.transitioned) {
     if (result.currentStatus === null) throw new NotFoundError('request');
@@ -396,7 +397,7 @@ requestsRouter.post('/:id/delete', (req: Request, res: Response) => {
 // POST /requests/:id/cancel — PWA cancels an in-progress download
 requestsRouter.post('/:id/cancel', (req: Request, res: Response) => {
   const requestId = req.params['id']!;
-  const result = state.markCancelled(requestId);
+  const { result } = getRequestsState().apply({ kind: 'mark_cancelled', requestId });
 
   if (!result.transitioned) {
     if (result.currentStatus === null) throw new NotFoundError('request');
@@ -411,7 +412,7 @@ requestsRouter.post('/:id/cancel', (req: Request, res: Response) => {
 
 // POST /requests/:id/dismiss — PWA dismisses a request
 requestsRouter.post('/:id/dismiss', (req: Request, res: Response) => {
-  state.markDismissed(req.params['id']!);
+  getRequestsState().apply({ kind: 'mark_dismissed', requestId: req.params['id']! });
   res.status(204).end();
 });
 
@@ -436,7 +437,7 @@ requestsRouter.get('/', (req: Request, res: Response) => {
   }>;
 
   for (const row of rows) {
-    row.rejection_reason = state.displayRejectionReason(row.rejection_reason);
+    row.rejection_reason = displayRejectionReason(row.rejection_reason);
   }
 
   res.json({ requests: rows });

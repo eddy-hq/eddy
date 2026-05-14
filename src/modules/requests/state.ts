@@ -1,4 +1,3 @@
-import { v7 as uuidv7 } from 'uuid';
 import { db } from '../../db/client';
 import { logger } from '../../logger';
 import type { DownloadJobData } from '../content';
@@ -167,12 +166,12 @@ export type Event =
 // ─── Effects ─────────────────────────────────────────────────────────────────
 //
 // Discriminated union: every side effect the dispatcher knows how to execute.
-// `enqueue_download_awaited` vs `enqueue_download` (and the two `cancel_*`
-// variants) encode the await-or-fire distinction the existing per-verb code
-// relied on (retry awaits and try/catches; markCancelled is fire-and-forget).
-// Adding a new effect kind forces a dispatcher branch — the `never` check at
-// the end of `runEffect` makes a missing case a typecheck error, not a
-// silent fall-through.
+// `enqueue_download` vs the two `cancel_*` variants encode the await-or-fire
+// distinction the descriptor table relies on (the `retry` descriptor awaits
+// and try/catches the cancel; `mark_cancelled` fires-and-forgets). Adding a
+// new effect kind forces a dispatcher branch — the `never` check at the end
+// of `runEffect` makes a missing case a typecheck error, not a silent
+// fall-through.
 
 export type Effect =
   | { kind: 'notify_video_ready'; userId: string; requestId: string; title: string }
@@ -320,7 +319,7 @@ export const TRANSITIONS = {
     },
   } as Descriptor<Extract<Event, { kind: 'mark_downloaded' }>>,
 
-  // markRejected and markGuardBlocked share identical SQL — kept distinct so
+  // mark_rejected and mark_guard_blocked share identical SQL — kept distinct so
   // call sites reflect the actual cause. Both gate on `downloading` only:
   // LEGAL's `rejected` destination is reachable from several sources (guard,
   // parent, cancel), and those have their own descriptors which must not
@@ -442,13 +441,13 @@ export const TRANSITIONS = {
         url: event.input.url,
       },
       logRequestId: event.requestId,
-      logMessage: 'createFromShareSheet: failed to enqueue BullMQ job',
+      logMessage: 'create_share_sheet: failed to enqueue BullMQ job',
     }],
   } as Descriptor<Extract<Event, { kind: 'create_share_sheet' }>>,
 
   // youtube_channel_id is populated at insert because the poller already
   // knows it, closing the transient gap where the row would otherwise have
-  // NULL channel_id until markDownloaded fires. Keeps the channel-name
+  // NULL channel_id until mark_downloaded fires. Keeps the channel-name
   // tap-through working for in-flight follow-poll cards.
   create_channel_poll: {
     sources: 'creation',
@@ -478,7 +477,7 @@ export const TRANSITIONS = {
         url: event.input.url,
       },
       logRequestId: event.requestId,
-      logMessage: 'createFromChannelPoll: failed to enqueue BullMQ job',
+      logMessage: 'create_channel_poll: failed to enqueue BullMQ job',
     }],
   } as Descriptor<Extract<Event, { kind: 'create_channel_poll' }>>,
 
@@ -512,7 +511,7 @@ export const TRANSITIONS = {
         url: event.input.url,
       },
       logRequestId: event.requestId,
-      logMessage: 'createFromCandidate: failed to enqueue BullMQ job',
+      logMessage: 'create_candidate: failed to enqueue BullMQ job',
     }],
   } as Descriptor<Extract<Event, { kind: 'create_candidate' }>>,
 } as const;
@@ -539,20 +538,6 @@ export type ApplyOutcome = {
 
 export interface RequestsState {
   apply: (event: Event) => ApplyOutcome;
-  // Per-verb adapter shims preserved as the test surface for this slice.
-  // Each one builds an Event and calls apply, then narrows the result.
-  markWatched: (id: string) => TransitionResult;
-  markDismissed: (id: string) => TransitionResult;
-  markSoftDeleted: (id: string) => TransitionResult;
-  markDownloaded: (id: string, fields: DownloadedFields) => TransitionResult;
-  markRejected: (id: string, reason: string) => TransitionResult;
-  markGuardBlocked: (id: string, reason: string) => TransitionResult;
-  markCancelled: (id: string) => TransitionResult;
-  markFailed: (id: string) => TransitionResult;
-  retry: (id: string) => Promise<TransitionResult>;
-  createFromShareSheet: (input: CreateFromShareSheetInput) => Promise<{ requestId: string }>;
-  createFromChannelPoll: (input: CreateFromChannelPollInput) => Promise<{ requestId: string }>;
-  createFromCandidate: (input: CreateFromCandidateInput) => Promise<{ requestId: string }>;
 }
 
 export function createRequestsState({ ports }: { ports: Ports }): RequestsState {
@@ -569,7 +554,7 @@ export function createRequestsState({ ports }: { ports: Ports }): RequestsState 
           .catch((err) =>
             logger.warn(
               { err, requestId: effect.requestId, userId: effect.userId },
-              'markDownloaded: failed to send video-ready notification',
+              'mark_downloaded: failed to send video-ready notification',
             ),
           );
         return;
@@ -594,12 +579,12 @@ export function createRequestsState({ ports }: { ports: Ports }): RequestsState 
         void ports
           .enqueueDelete(effect.jobData, { jobId: `delete:${effect.requestId}` })
           .catch((err) =>
-            logger.warn({ err, requestId: effect.requestId }, 'markSoftDeleted: failed to enqueue delete job'),
+            logger.warn({ err, requestId: effect.requestId }, 'mark_soft_deleted: failed to enqueue delete job'),
           );
         return;
       }
       case 'cancel_download_job_fire': {
-        // markCancelled path: best-effort, a missing job or unreachable
+        // mark_cancelled path: best-effort, a missing job or unreachable
         // Redis must not roll back the cancel.
         void ports
           .cancelDownloadJob(effect.requestId)
@@ -629,8 +614,9 @@ export function createRequestsState({ ports }: { ports: Ports }): RequestsState 
         // Best-effort person capture on download. `ensurePerson` is synchronous
         // and writes to the DB, so it can throw — wrap it so a transient DB
         // error doesn't surface as an unhandled rejection inside `apply`'s
-        // settled chain (which sync shims don't observe). The transition
-        // itself has already succeeded; person capture is a side concern.
+        // settled chain (which sync apply callers don't observe). The
+        // transition itself has already succeeded; person capture is a side
+        // concern.
         // The follow-up `applyChannelInfo` capture is logged at `debug`
         // because yt-dlp flakes are routine.
         try {
@@ -645,7 +631,7 @@ export function createRequestsState({ ports }: { ports: Ports }): RequestsState 
         } catch (err) {
           logger.warn(
             { err, channelId: effect.channelId },
-            'markDownloaded: failed to ensure person on download',
+            'mark_downloaded: failed to ensure person on download',
           );
         }
         return;
@@ -718,89 +704,11 @@ export function createRequestsState({ ports }: { ports: Ports }): RequestsState 
     return { result: stripCarrier(result), settled };
   }
 
-  // ── Per-verb adapter shims (preserved this slice for test-suite stability).
-  // Each one builds an Event and delegates to apply, then narrows to the
-  // pre-refactor return shape. Sync shims drop `settled` (their effect set is
-  // fire-and-forget only); async shims (retry, creators) `await` it so the
-  // BullMQ enqueue settles before the caller sees a return. The next slice
-  // (#84) rewrites the tests; #85 then deletes these adapters entirely.
-
-  function markWatched(id: string): TransitionResult {
-    return apply({ kind: 'mark_watched', requestId: id }).result;
-  }
-  function markDismissed(id: string): TransitionResult {
-    return apply({ kind: 'mark_dismissed', requestId: id }).result;
-  }
-  function markSoftDeleted(id: string): TransitionResult {
-    return apply({ kind: 'mark_soft_deleted', requestId: id }).result;
-  }
-  function markDownloaded(id: string, fields: DownloadedFields): TransitionResult {
-    return apply({ kind: 'mark_downloaded', requestId: id, fields }).result;
-  }
-  function markRejected(id: string, reason: string): TransitionResult {
-    return apply({ kind: 'mark_rejected', requestId: id, reason }).result;
-  }
-  function markGuardBlocked(id: string, reason: string): TransitionResult {
-    return apply({ kind: 'mark_guard_blocked', requestId: id, reason }).result;
-  }
-  function markCancelled(id: string): TransitionResult {
-    return apply({ kind: 'mark_cancelled', requestId: id }).result;
-  }
-  function markFailed(id: string): TransitionResult {
-    return apply({ kind: 'mark_failed', requestId: id }).result;
-  }
-
-  async function retry(id: string): Promise<TransitionResult> {
-    const { result, settled } = apply({ kind: 'retry', requestId: id });
-    await settled;
-    return result;
-  }
-
-  async function createFromShareSheet(
-    input: CreateFromShareSheetInput,
-  ): Promise<{ requestId: string }> {
-    const requestId = uuidv7();
-    const { settled } = apply({ kind: 'create_share_sheet', requestId, input });
-    await settled;
-    return { requestId };
-  }
-
-  async function createFromChannelPoll(
-    input: CreateFromChannelPollInput,
-  ): Promise<{ requestId: string }> {
-    const requestId = uuidv7();
-    const { settled } = apply({ kind: 'create_channel_poll', requestId, input });
-    await settled;
-    return { requestId };
-  }
-
-  async function createFromCandidate(
-    input: CreateFromCandidateInput,
-  ): Promise<{ requestId: string }> {
-    const requestId = uuidv7();
-    const { settled } = apply({ kind: 'create_candidate', requestId, input });
-    await settled;
-    return { requestId };
-  }
-
-  return {
-    apply,
-    markWatched,
-    markDismissed,
-    markSoftDeleted,
-    markDownloaded,
-    markRejected,
-    markGuardBlocked,
-    markCancelled,
-    markFailed,
-    retry,
-    createFromShareSheet,
-    createFromChannelPoll,
-    createFromCandidate,
-  };
+  return { apply };
 }
 
-// Production-wiring + per-verb shim exports live in ./state-default.ts so
-// this file's static imports stay free of the side-effect-heavy port
-// providers (BullMQ, ntfy, people/registry). See state-default.ts for the
-// boot-time `registerDefaultRequestsState` seam and the per-verb shims.
+// Production wiring lives in ./state-default.ts so this file's static imports
+// stay free of the side-effect-heavy port providers (BullMQ, ntfy,
+// people/registry). See state-default.ts for the boot-time
+// `registerDefaultRequestsState` seam and the `getRequestsState` accessor
+// that production call sites use to reach `apply`.

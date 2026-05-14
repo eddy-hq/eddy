@@ -3,7 +3,7 @@ import { db } from '../../db/client';
 import { logger } from '../../logger';
 import { downloadQueue } from '../../queue';
 import { verifySignedJson } from '../../signed-channel';
-import * as requests from '../requests';
+import { getRequestsState } from '../requests';
 import { checkStuckDownloads } from '../watchdog';
 import { scoreForRequest, classifyThumbnail, classifyYtImage } from '../guard';
 import { ollamaGenerate } from '../../ollama';
@@ -32,16 +32,20 @@ interface DownloadedPayload {
 internalRouter.post('/videos/:youtube_id/downloaded', verifySignedJson<DownloadedPayload>((req, res, payload) => {
   const { requestId, filePath, nginxUrl, thumbnailUrl, title, channel, youtubeChannelId, description, durationSecs, transcript } = payload;
 
-  const result = requests.markDownloaded(requestId, {
-    title,
-    channel,
-    youtubeChannelId: youtubeChannelId ?? null,
-    description,
-    durationSecs,
-    transcript,
-    filePath,
-    nginxUrl,
-    thumbnailUrl,
+  const { result } = getRequestsState().apply({
+    kind: 'mark_downloaded',
+    requestId,
+    fields: {
+      title,
+      channel,
+      youtubeChannelId: youtubeChannelId ?? null,
+      description,
+      durationSecs,
+      transcript,
+      filePath,
+      nginxUrl,
+      thumbnailUrl,
+    },
   });
 
   if (result.transitioned) {
@@ -59,7 +63,11 @@ internalRouter.post('/videos/:youtube_id/downloaded', verifySignedJson<Downloade
 
 // POST /internal/requests/:id/rejected — called by Ubuntu worker on terminal failure
 internalRouter.post('/requests/:id/rejected', verifySignedJson<{ requestId: string; reason: string }>((_req, res, payload) => {
-  const result = requests.markRejected(payload.requestId, payload.reason);
+  const { result } = getRequestsState().apply({
+    kind: 'mark_rejected',
+    requestId: payload.requestId,
+    reason: payload.reason,
+  });
 
   if (result.transitioned) {
     logger.info({ requestId: payload.requestId, reason: payload.reason }, 'Request rejected by worker');
@@ -138,7 +146,8 @@ internalRouter.get('/health/queue', async (_req: Request, res: Response) => {
 // POST /internal/requests/:id/retry — re-enqueue a stuck or failed download
 internalRouter.post('/requests/:id/retry', async (req: Request, res: Response) => {
   const requestId = req.params['id']!;
-  const result = await requests.retry(requestId);
+  const { result, settled } = getRequestsState().apply({ kind: 'retry', requestId });
+  await settled;
 
   if (!result.transitioned) {
     if (result.currentStatus === null) {
@@ -147,7 +156,7 @@ internalRouter.post('/requests/:id/retry', async (req: Request, res: Response) =
     return res.status(400).json({ error: 'INVALID_STATE', message: `Cannot retry a request in status '${result.currentStatus}'` });
   }
 
-  // requests.retry() is best-effort about the BullMQ enqueue — a failed add()
+  // The retry event is best-effort about the BullMQ enqueue — a failed add()
   // is logged-warned, not surfaced. The watchdog will pick up rows that end up
   // `downloading` without a live job. So response wording reflects what's
   // guaranteed (the transition), not the queue side-effect.

@@ -1,14 +1,15 @@
 // RSS poller for followed channels. Owns the 6-hour poll loop, per-channel
 // dedup, first-poll confirmation flow, and short filtering. Deep-imports
-// `createFromChannelPoll` from `../requests/state-default` (a one-way edge
-// now that `./registry` was extracted to break the requests↔people cycle)
-// to keep the poller's module graph free of the requests HTTP router. The
-// shim still pulls in BullMQ/ntfy transitively — `state-default.ts` is the
-// production-wiring surface; the pure state machine lives in `./state.ts`.
+// `getRequestsState` from `../requests/state-default` (a one-way edge now
+// that `./registry` was extracted to break the requests↔people cycle) to
+// keep the poller's module graph free of the requests HTTP router. The
+// accessor still pulls in BullMQ/ntfy transitively — `state-default.ts` is
+// the production-wiring surface; the pure state machine lives in `./state.ts`.
+import { v7 as uuidv7 } from 'uuid';
 import { db } from '../../db/client';
 import { logger } from '../../logger';
 import { SHORTS_MAX_SECS } from '../content';
-import { createFromChannelPoll } from '../requests/state-default';
+import { getRequestsState } from '../requests/state-default';
 import { videoDuration } from '../../ytdlp';
 import { applyChannelInfoToPerson } from './registry';
 
@@ -157,14 +158,20 @@ export async function pollChannel(output: OutputRow): Promise<void> {
       ).get(follower.user_id, video.videoId);
       if (exists) continue;
 
-      const { requestId } = await createFromChannelPoll({
-        url,
-        userId: follower.user_id,
-        youtubeId: video.videoId,
-        youtubeChannelId: output.channel_id,
-        title: video.title,
-        channel: output.channel_name,
+      const requestId = uuidv7();
+      const { settled } = getRequestsState().apply({
+        kind: 'create_channel_poll',
+        requestId,
+        input: {
+          url,
+          userId: follower.user_id,
+          youtubeId: video.videoId,
+          youtubeChannelId: output.channel_id,
+          title: video.title,
+          channel: output.channel_name,
+        },
       });
+      await settled;
 
       logger.info({ requestId, videoId: video.videoId, userId: follower.user_id }, 'Channel subscription request created');
     }
