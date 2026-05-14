@@ -12,7 +12,9 @@ vi.mock('../../logger', () => ({
 }));
 
 vi.mock('../requests', () => ({
-  createFromCandidate: vi.fn(),
+  getRequestsState: vi.fn(() => ({
+    apply: vi.fn(() => ({ result: { transitioned: true, userId: '' }, settled: Promise.resolve() })),
+  })),
 }));
 
 import { db } from '../../db/client';

@@ -121,11 +121,11 @@ beforeEach(() => {
   vi.mocked(logger.debug).mockClear();
 });
 
-describe('markWatched', () => {
+describe('mark_watched', () => {
   it('transitions ready → watched and returns the user_id', () => {
     insertRequest({ request_id: 'req-1', status: 'ready' });
 
-    const result = state.markWatched('req-1');
+    const { result } = state.apply({ kind: 'mark_watched', requestId: 'req-1' });
 
     expect(result).toEqual({ transitioned: true, userId: USER_ID });
   });
@@ -134,7 +134,7 @@ describe('markWatched', () => {
     insertRequest({ request_id: 'req-2', status: 'ready' });
     const before = Date.now();
 
-    state.markWatched('req-2');
+    state.apply({ kind: 'mark_watched', requestId: 'req-2' });
 
     const row = db
       .prepare('SELECT status, watched_at FROM requests WHERE request_id = ?')
@@ -148,7 +148,7 @@ describe('markWatched', () => {
     const originalWatchedAt = '2026-01-01T00:00:00.000Z';
     insertRequest({ request_id: 'req-3', status: 'watched', watched_at: originalWatchedAt });
 
-    const result = state.markWatched('req-3');
+    const { result } = state.apply({ kind: 'mark_watched', requestId: 'req-3' });
 
     expect(result).toEqual({ transitioned: false, currentStatus: 'watched' });
     const row = db
@@ -160,7 +160,7 @@ describe('markWatched', () => {
   it('is a no-op on a rejected row', () => {
     insertRequest({ request_id: 'req-4', status: 'rejected' });
 
-    const result = state.markWatched('req-4');
+    const { result } = state.apply({ kind: 'mark_watched', requestId: 'req-4' });
 
     expect(result).toEqual({ transitioned: false, currentStatus: 'rejected' });
     const row = db
@@ -171,11 +171,11 @@ describe('markWatched', () => {
   });
 });
 
-describe('markDismissed', () => {
+describe('mark_dismissed', () => {
   it('transitions ready → dismissed and returns the user_id', () => {
     insertRequest({ request_id: 'req-d1', status: 'ready' });
 
-    const result = state.markDismissed('req-d1');
+    const { result } = state.apply({ kind: 'mark_dismissed', requestId: 'req-d1' });
 
     expect(result).toEqual({ transitioned: true, userId: USER_ID });
     const row = db
@@ -187,7 +187,7 @@ describe('markDismissed', () => {
   it('is a no-op on a downloading row and does not change status', () => {
     insertRequest({ request_id: 'req-d2', status: 'downloading' });
 
-    const result = state.markDismissed('req-d2');
+    const { result } = state.apply({ kind: 'mark_dismissed', requestId: 'req-d2' });
 
     expect(result).toEqual({ transitioned: false, currentStatus: 'downloading' });
     const row = db
@@ -197,17 +197,17 @@ describe('markDismissed', () => {
   });
 
   it('returns currentStatus: null for an unknown id', () => {
-    const result = state.markDismissed('does-not-exist');
+    const { result } = state.apply({ kind: 'mark_dismissed', requestId: 'does-not-exist' });
 
     expect(result).toEqual({ transitioned: false, currentStatus: null });
   });
 });
 
-describe('markCancelled', () => {
+describe('mark_cancelled', () => {
   it('transitions downloading → rejected with sentinel reason and cancels the download job + progress key', async () => {
     insertRequest({ request_id: 'req-c1', status: 'downloading' });
 
-    const result = state.markCancelled('req-c1');
+    const { result } = state.apply({ kind: 'mark_cancelled', requestId: 'req-c1' });
 
     expect(result).toEqual({ transitioned: true, userId: USER_ID });
     const row = db
@@ -225,7 +225,7 @@ describe('markCancelled', () => {
   it('is a no-op on an already-rejected row and does not touch the cancel ports', () => {
     insertRequest({ request_id: 'req-c2', status: 'rejected' });
 
-    const result = state.markCancelled('req-c2');
+    const { result } = state.apply({ kind: 'mark_cancelled', requestId: 'req-c2' });
 
     expect(result).toEqual({ transitioned: false, currentStatus: 'rejected' });
     expect(fakePorts.cancelDownloadJob).not.toHaveBeenCalled();
@@ -233,7 +233,7 @@ describe('markCancelled', () => {
   });
 
   it('returns currentStatus: null for an unknown id and does not touch the cancel ports', () => {
-    const result = state.markCancelled('does-not-exist');
+    const { result } = state.apply({ kind: 'mark_cancelled', requestId: 'does-not-exist' });
 
     expect(result).toEqual({ transitioned: false, currentStatus: null });
     expect(fakePorts.cancelDownloadJob).not.toHaveBeenCalled();
@@ -241,14 +241,14 @@ describe('markCancelled', () => {
   });
 });
 
-describe('markSoftDeleted', () => {
+describe('mark_soft_deleted', () => {
   const FILE_PATH = '/mnt/ssd/eddy/videos/abc123.mp4';
 
   it('transitions ready → deleted, sets columns, and enqueues a delete job', () => {
     insertRequest({ request_id: 'req-s1', status: 'ready', file_path: FILE_PATH });
     const before = Date.now();
 
-    const result = state.markSoftDeleted('req-s1');
+    const { result } = state.apply({ kind: 'mark_soft_deleted', requestId: 'req-s1' });
 
     expect(result).toEqual({ transitioned: true, userId: USER_ID });
     const row = db
@@ -269,7 +269,7 @@ describe('markSoftDeleted', () => {
   it('transitions watched → deleted and enqueues a delete job', () => {
     insertRequest({ request_id: 'req-s2', status: 'watched', file_path: FILE_PATH });
 
-    const result = state.markSoftDeleted('req-s2');
+    const { result } = state.apply({ kind: 'mark_soft_deleted', requestId: 'req-s2' });
 
     expect(result).toEqual({ transitioned: true, userId: USER_ID });
     const row = db
@@ -287,7 +287,7 @@ describe('markSoftDeleted', () => {
   it('is a no-op on a downloading row and does not enqueue', () => {
     insertRequest({ request_id: 'req-s3', status: 'downloading', file_path: FILE_PATH });
 
-    const result = state.markSoftDeleted('req-s3');
+    const { result } = state.apply({ kind: 'mark_soft_deleted', requestId: 'req-s3' });
 
     expect(result).toEqual({ transitioned: false, currentStatus: 'downloading' });
     const row = db
@@ -301,14 +301,14 @@ describe('markSoftDeleted', () => {
   it('is a no-op on a rejected row and does not enqueue', () => {
     insertRequest({ request_id: 'req-s4', status: 'rejected', file_path: FILE_PATH });
 
-    const result = state.markSoftDeleted('req-s4');
+    const { result } = state.apply({ kind: 'mark_soft_deleted', requestId: 'req-s4' });
 
     expect(result).toEqual({ transitioned: false, currentStatus: 'rejected' });
     expect(fakePorts.enqueueDelete).not.toHaveBeenCalled();
   });
 
   it('returns currentStatus: null for an unknown id and does not enqueue', () => {
-    const result = state.markSoftDeleted('does-not-exist');
+    const { result } = state.apply({ kind: 'mark_soft_deleted', requestId: 'does-not-exist' });
 
     expect(result).toEqual({ transitioned: false, currentStatus: null });
     expect(fakePorts.enqueueDelete).not.toHaveBeenCalled();
@@ -317,7 +317,7 @@ describe('markSoftDeleted', () => {
   it('does not enqueue when the row has no file_path', () => {
     insertRequest({ request_id: 'req-s5', status: 'ready', file_path: null });
 
-    const result = state.markSoftDeleted('req-s5');
+    const { result } = state.apply({ kind: 'mark_soft_deleted', requestId: 'req-s5' });
 
     expect(result).toEqual({ transitioned: true, userId: USER_ID });
     expect(fakePorts.enqueueDelete).not.toHaveBeenCalled();
@@ -327,7 +327,7 @@ describe('markSoftDeleted', () => {
     insertRequest({ request_id: 'req-s6', status: 'ready', file_path: FILE_PATH });
     vi.mocked(fakePorts.enqueueDelete).mockRejectedValueOnce(new Error('redis down'));
 
-    const result = state.markSoftDeleted('req-s6');
+    const { result } = state.apply({ kind: 'mark_soft_deleted', requestId: 'req-s6' });
     expect(result).toEqual({ transitioned: true, userId: USER_ID });
 
     // Let the rejected fire-and-forget settle.
@@ -345,7 +345,7 @@ describe('markSoftDeleted', () => {
   });
 });
 
-describe('markDownloaded', () => {
+describe('mark_downloaded', () => {
   const FIELDS: DownloadedFields = {
     title: 'A grand title',
     channel: 'Channel One',
@@ -362,7 +362,7 @@ describe('markDownloaded', () => {
     insertRequest({ request_id: 'req-dl1', status: 'downloading' });
     const before = Date.now();
 
-    const result = state.markDownloaded('req-dl1', FIELDS);
+    const { result } = state.apply({ kind: 'mark_downloaded', requestId: 'req-dl1', fields: FIELDS });
 
     expect(result).toEqual({ transitioned: true, userId: USER_ID });
     const row = db
@@ -395,7 +395,7 @@ describe('markDownloaded', () => {
   it('is a no-op on an already-rejected row and does not fire the notification', () => {
     insertRequest({ request_id: 'req-dl2', status: 'rejected' });
 
-    const result = state.markDownloaded('req-dl2', FIELDS);
+    const { result } = state.apply({ kind: 'mark_downloaded', requestId: 'req-dl2', fields: FIELDS });
 
     expect(result).toEqual({ transitioned: false, currentStatus: 'rejected' });
     const row = db
@@ -409,14 +409,14 @@ describe('markDownloaded', () => {
   it('is a no-op on an already-ready row and does not re-fire the notification', () => {
     insertRequest({ request_id: 'req-dl3', status: 'ready' });
 
-    const result = state.markDownloaded('req-dl3', FIELDS);
+    const { result } = state.apply({ kind: 'mark_downloaded', requestId: 'req-dl3', fields: FIELDS });
 
     expect(result).toEqual({ transitioned: false, currentStatus: 'ready' });
     expect(fakePorts.notifyVideoReady).not.toHaveBeenCalled();
   });
 
   it('returns currentStatus: null for an unknown id and does not fire the notification', () => {
-    const result = state.markDownloaded('does-not-exist', FIELDS);
+    const { result } = state.apply({ kind: 'mark_downloaded', requestId: 'does-not-exist', fields: FIELDS });
 
     expect(result).toEqual({ transitioned: false, currentStatus: null });
     expect(fakePorts.notifyVideoReady).not.toHaveBeenCalled();
@@ -426,7 +426,7 @@ describe('markDownloaded', () => {
     insertRequest({ request_id: 'req-dl4', status: 'downloading' });
     vi.mocked(fakePorts.notifyVideoReady).mockRejectedValueOnce(new Error('ntfy down'));
 
-    const result = state.markDownloaded('req-dl4', FIELDS);
+    const { result } = state.apply({ kind: 'mark_downloaded', requestId: 'req-dl4', fields: FIELDS });
     expect(result).toEqual({ transitioned: true, userId: USER_ID });
 
     // Let the rejected fire-and-forget settle.
@@ -440,7 +440,7 @@ describe('markDownloaded', () => {
   it('ensures a person row and fires channel-info capture on first sighting of a channel', () => {
     insertRequest({ request_id: 'req-dl5', status: 'downloading' });
 
-    const result = state.markDownloaded('req-dl5', FIELDS);
+    const { result } = state.apply({ kind: 'mark_downloaded', requestId: 'req-dl5', fields: FIELDS });
 
     expect(result).toEqual({ transitioned: true, userId: USER_ID });
     expect(fakePorts.ensurePerson).toHaveBeenCalledWith(FIELDS.youtubeChannelId, FIELDS.channel);
@@ -451,7 +451,7 @@ describe('markDownloaded', () => {
     insertRequest({ request_id: 'req-dl5b', status: 'downloading' });
     vi.mocked(fakePorts.ensurePerson).mockReturnValueOnce({ personId: 'person-1', created: false });
 
-    const result = state.markDownloaded('req-dl5b', FIELDS);
+    const { result } = state.apply({ kind: 'mark_downloaded', requestId: 'req-dl5b', fields: FIELDS });
 
     expect(result).toEqual({ transitioned: true, userId: USER_ID });
     expect(fakePorts.ensurePerson).toHaveBeenCalledWith(FIELDS.youtubeChannelId, FIELDS.channel);
@@ -462,7 +462,7 @@ describe('markDownloaded', () => {
     insertRequest({ request_id: 'req-dl6', status: 'downloading' });
     const fieldsNoChannel: DownloadedFields = { ...FIELDS, youtubeChannelId: null };
 
-    const result = state.markDownloaded('req-dl6', fieldsNoChannel);
+    const { result } = state.apply({ kind: 'mark_downloaded', requestId: 'req-dl6', fields: fieldsNoChannel });
 
     expect(result).toEqual({ transitioned: true, userId: USER_ID });
     expect(fakePorts.ensurePerson).not.toHaveBeenCalled();
@@ -472,7 +472,7 @@ describe('markDownloaded', () => {
   it('does not ensure a person row when the transition is a no-op', () => {
     insertRequest({ request_id: 'req-dl7', status: 'rejected' });
 
-    const result = state.markDownloaded('req-dl7', FIELDS);
+    const { result } = state.apply({ kind: 'mark_downloaded', requestId: 'req-dl7', fields: FIELDS });
 
     expect(result).toEqual({ transitioned: false, currentStatus: 'rejected' });
     expect(fakePorts.ensurePerson).not.toHaveBeenCalled();
@@ -483,7 +483,7 @@ describe('markDownloaded', () => {
     insertRequest({ request_id: 'req-dl8', status: 'downloading' });
     vi.mocked(fakePorts.applyChannelInfo).mockRejectedValueOnce(new Error('yt-dlp flaked'));
 
-    const result = state.markDownloaded('req-dl8', FIELDS);
+    const { result } = state.apply({ kind: 'mark_downloaded', requestId: 'req-dl8', fields: FIELDS });
     expect(result).toEqual({ transitioned: true, userId: USER_ID });
 
     // Let the rejected fire-and-forget settle.
@@ -495,11 +495,11 @@ describe('markDownloaded', () => {
   });
 });
 
-describe('markRejected', () => {
+describe('mark_rejected', () => {
   it('transitions downloading → rejected and writes the reason', () => {
     insertRequest({ request_id: 'req-rj1', status: 'downloading' });
 
-    const result = state.markRejected('req-rj1', 'yt-dlp 403');
+    const { result } = state.apply({ kind: 'mark_rejected', requestId: 'req-rj1', reason: 'yt-dlp 403' });
 
     expect(result).toEqual({ transitioned: true, userId: USER_ID });
     const row = db
@@ -514,7 +514,7 @@ describe('markRejected', () => {
     db.prepare('UPDATE requests SET rejection_reason = ? WHERE request_id = ?')
       .run('original reason', 'req-rj2');
 
-    const result = state.markRejected('req-rj2', 'new reason');
+    const { result } = state.apply({ kind: 'mark_rejected', requestId: 'req-rj2', reason: 'new reason' });
 
     expect(result).toEqual({ transitioned: false, currentStatus: 'rejected' });
     const row = db
@@ -526,23 +526,23 @@ describe('markRejected', () => {
   it('is a no-op on a non-downloading source (e.g. ready)', () => {
     insertRequest({ request_id: 'req-rj3', status: 'ready' });
 
-    const result = state.markRejected('req-rj3', 'too late');
+    const { result } = state.apply({ kind: 'mark_rejected', requestId: 'req-rj3', reason: 'too late' });
 
     expect(result).toEqual({ transitioned: false, currentStatus: 'ready' });
   });
 
   it('returns currentStatus: null for an unknown id', () => {
-    const result = state.markRejected('does-not-exist', 'reason');
+    const { result } = state.apply({ kind: 'mark_rejected', requestId: 'does-not-exist', reason: 'reason' });
 
     expect(result).toEqual({ transitioned: false, currentStatus: null });
   });
 });
 
-describe('markGuardBlocked', () => {
-  it('transitions downloading → rejected with reason — same SQL as markRejected', () => {
+describe('mark_guard_blocked', () => {
+  it('transitions downloading → rejected with reason — same SQL as mark_rejected', () => {
     insertRequest({ request_id: 'req-gb1', status: 'downloading' });
 
-    const result = state.markGuardBlocked('req-gb1', 'unsafe content');
+    const { result } = state.apply({ kind: 'mark_guard_blocked', requestId: 'req-gb1', reason: 'unsafe content' });
 
     expect(result).toEqual({ transitioned: true, userId: USER_ID });
     const row = db
@@ -555,23 +555,23 @@ describe('markGuardBlocked', () => {
   it('is a no-op on a non-downloading source', () => {
     insertRequest({ request_id: 'req-gb2', status: 'rejected' });
 
-    const result = state.markGuardBlocked('req-gb2', 'unsafe content');
+    const { result } = state.apply({ kind: 'mark_guard_blocked', requestId: 'req-gb2', reason: 'unsafe content' });
 
     expect(result).toEqual({ transitioned: false, currentStatus: 'rejected' });
   });
 
   it('returns currentStatus: null for an unknown id', () => {
-    const result = state.markGuardBlocked('does-not-exist', 'unsafe');
+    const { result } = state.apply({ kind: 'mark_guard_blocked', requestId: 'does-not-exist', reason: 'unsafe' });
 
     expect(result).toEqual({ transitioned: false, currentStatus: null });
   });
 });
 
-describe('markFailed', () => {
+describe('mark_failed', () => {
   it('transitions downloading → failed', () => {
     insertRequest({ request_id: 'req-f1', status: 'downloading' });
 
-    const result = state.markFailed('req-f1');
+    const { result } = state.apply({ kind: 'mark_failed', requestId: 'req-f1' });
 
     expect(result).toEqual({ transitioned: true, userId: USER_ID });
     const row = db
@@ -583,7 +583,7 @@ describe('markFailed', () => {
   it('is a no-op on a ready row and does not change status', () => {
     insertRequest({ request_id: 'req-f2', status: 'ready' });
 
-    const result = state.markFailed('req-f2');
+    const { result } = state.apply({ kind: 'mark_failed', requestId: 'req-f2' });
 
     expect(result).toEqual({ transitioned: false, currentStatus: 'ready' });
     const row = db
@@ -593,7 +593,7 @@ describe('markFailed', () => {
   });
 
   it('returns currentStatus: null for an unknown id', () => {
-    const result = state.markFailed('does-not-exist');
+    const { result } = state.apply({ kind: 'mark_failed', requestId: 'does-not-exist' });
 
     expect(result).toEqual({ transitioned: false, currentStatus: null });
   });
@@ -606,7 +606,8 @@ describe('retry', () => {
   it('transitions failed → downloading, cancels the existing job, and re-adds with stored youtube_id and url', async () => {
     insertRequest({ request_id: 'req-r1', status: 'failed', youtube_id: YT_ID, url: URL });
 
-    const result = await state.retry('req-r1');
+    const { result, settled } = state.apply({ kind: 'retry', requestId: 'req-r1' });
+    await settled;
 
     expect(result).toEqual({ transitioned: true, userId: USER_ID });
     const row = db
@@ -624,7 +625,8 @@ describe('retry', () => {
   it('transitions downloading → downloading (idempotent re-enqueue) — same cancel + enqueue', async () => {
     insertRequest({ request_id: 'req-r2', status: 'downloading', youtube_id: YT_ID, url: URL });
 
-    const result = await state.retry('req-r2');
+    const { result, settled } = state.apply({ kind: 'retry', requestId: 'req-r2' });
+    await settled;
 
     expect(result).toEqual({ transitioned: true, userId: USER_ID });
     const row = db
@@ -642,7 +644,8 @@ describe('retry', () => {
   it('is a no-op on a rejected row and does not touch the queue ports', async () => {
     insertRequest({ request_id: 'req-r3', status: 'rejected' });
 
-    const result = await state.retry('req-r3');
+    const { result, settled } = state.apply({ kind: 'retry', requestId: 'req-r3' });
+    await settled;
 
     expect(result).toEqual({ transitioned: false, currentStatus: 'rejected' });
     expect(fakePorts.cancelDownloadJob).not.toHaveBeenCalled();
@@ -650,7 +653,8 @@ describe('retry', () => {
   });
 
   it('returns currentStatus: null for an unknown id and does not touch the queue ports', async () => {
-    const result = await state.retry('does-not-exist');
+    const { result, settled } = state.apply({ kind: 'retry', requestId: 'does-not-exist' });
+    await settled;
 
     expect(result).toEqual({ transitioned: false, currentStatus: null });
     expect(fakePorts.cancelDownloadJob).not.toHaveBeenCalled();
@@ -661,7 +665,8 @@ describe('retry', () => {
     insertRequest({ request_id: 'req-r4', status: 'failed', youtube_id: YT_ID, url: URL });
     vi.mocked(fakePorts.cancelDownloadJob).mockRejectedValueOnce(new Error('redis down'));
 
-    const result = await state.retry('req-r4');
+    const { result, settled } = state.apply({ kind: 'retry', requestId: 'req-r4' });
+    await settled;
 
     expect(result).toEqual({ transitioned: true, userId: USER_ID });
     expect(vi.mocked(logger.warn)).toHaveBeenCalledTimes(1);
@@ -672,7 +677,8 @@ describe('retry', () => {
     insertRequest({ request_id: 'req-r5', status: 'failed', youtube_id: YT_ID, url: URL });
     vi.mocked(fakePorts.enqueueDownload).mockRejectedValueOnce(new Error('redis down'));
 
-    const result = await state.retry('req-r5');
+    const { result, settled } = state.apply({ kind: 'retry', requestId: 'req-r5' });
+    await settled;
 
     expect(result).toEqual({ transitioned: true, userId: USER_ID });
     expect(vi.mocked(logger.warn)).toHaveBeenCalledTimes(1);
@@ -681,7 +687,8 @@ describe('retry', () => {
   it('passes empty string when youtube_id is null on the row', async () => {
     insertRequest({ request_id: 'req-r6', status: 'failed', youtube_id: null, url: URL });
 
-    await state.retry('req-r6');
+    const { settled } = state.apply({ kind: 'retry', requestId: 'req-r6' });
+    await settled;
 
     expect(fakePorts.enqueueDownload).toHaveBeenCalledWith(
       { requestId: 'req-r6', youtubeId: '', url: URL },
@@ -690,20 +697,20 @@ describe('retry', () => {
   });
 });
 
-describe('createFromShareSheet', () => {
+describe('create_share_sheet', () => {
   const URL = 'https://www.youtube.com/watch?v=abc';
   const YT_ID = 'abc12345xyz';
 
   it('inserts a downloading share_sheet row with auto decision and enqueues with the new id', async () => {
+    const requestId = 'req-css1';
     const before = Date.now();
 
-    const { requestId } = await state.createFromShareSheet({
-      url: URL,
-      userId: USER_ID,
-      youtubeId: YT_ID,
+    const { settled } = state.apply({
+      kind: 'create_share_sheet',
+      requestId,
+      input: { url: URL, userId: USER_ID, youtubeId: YT_ID },
     });
-
-    expect(requestId).toMatch(/^[0-9a-f-]{36}$/i);
+    await settled;
 
     const row = db
       .prepare(
@@ -732,7 +739,13 @@ describe('createFromShareSheet', () => {
   });
 
   it('passes empty string youtubeId to enqueueDownload when caller omits it', async () => {
-    const { requestId } = await state.createFromShareSheet({ url: URL, userId: USER_ID });
+    const requestId = 'req-css2';
+    const { settled } = state.apply({
+      kind: 'create_share_sheet',
+      requestId,
+      input: { url: URL, userId: USER_ID },
+    });
+    await settled;
 
     const row = db
       .prepare('SELECT youtube_id FROM requests WHERE request_id = ?')
@@ -748,11 +761,13 @@ describe('createFromShareSheet', () => {
   it('leaves the row in place and warn-logs when enqueueDownload throws', async () => {
     vi.mocked(fakePorts.enqueueDownload).mockRejectedValueOnce(new Error('redis down'));
 
-    const { requestId } = await state.createFromShareSheet({
-      url: URL,
-      userId: USER_ID,
-      youtubeId: YT_ID,
+    const requestId = 'req-css3';
+    const { settled } = state.apply({
+      kind: 'create_share_sheet',
+      requestId,
+      input: { url: URL, userId: USER_ID, youtubeId: YT_ID },
     });
+    await settled;
 
     const row = db
       .prepare('SELECT status FROM requests WHERE request_id = ?')
@@ -764,7 +779,7 @@ describe('createFromShareSheet', () => {
   });
 });
 
-describe('createFromChannelPoll', () => {
+describe('create_channel_poll', () => {
   const URL = 'https://www.youtube.com/watch?v=poll1';
   const YT_ID = 'poll1xxxxxx';
   const CHANNEL_ID = 'UCpoll1xxxxxxxxxxxxxxxxx';
@@ -772,16 +787,22 @@ describe('createFromChannelPoll', () => {
   const CHANNEL = 'A Followed Creator';
 
   it('inserts a downloading channel_subscription row with title/channel/youtube_channel_id/file_state=live and no decided_by', async () => {
+    const requestId = 'req-ccp1';
     const before = Date.now();
 
-    const { requestId } = await state.createFromChannelPoll({
-      url: URL,
-      userId: USER_ID,
-      youtubeId: YT_ID,
-      youtubeChannelId: CHANNEL_ID,
-      title: TITLE,
-      channel: CHANNEL,
+    const { settled } = state.apply({
+      kind: 'create_channel_poll',
+      requestId,
+      input: {
+        url: URL,
+        userId: USER_ID,
+        youtubeId: YT_ID,
+        youtubeChannelId: CHANNEL_ID,
+        title: TITLE,
+        channel: CHANNEL,
+      },
     });
+    await settled;
 
     const row = db
       .prepare(
@@ -819,14 +840,20 @@ describe('createFromChannelPoll', () => {
   it('leaves the row in place and warn-logs when enqueueDownload throws', async () => {
     vi.mocked(fakePorts.enqueueDownload).mockRejectedValueOnce(new Error('redis down'));
 
-    const { requestId } = await state.createFromChannelPoll({
-      url: URL,
-      userId: USER_ID,
-      youtubeId: YT_ID,
-      youtubeChannelId: CHANNEL_ID,
-      title: TITLE,
-      channel: CHANNEL,
+    const requestId = 'req-ccp2';
+    const { settled } = state.apply({
+      kind: 'create_channel_poll',
+      requestId,
+      input: {
+        url: URL,
+        userId: USER_ID,
+        youtubeId: YT_ID,
+        youtubeChannelId: CHANNEL_ID,
+        title: TITLE,
+        channel: CHANNEL,
+      },
     });
+    await settled;
 
     const row = db
       .prepare('SELECT status FROM requests WHERE request_id = ?')
@@ -836,20 +863,21 @@ describe('createFromChannelPoll', () => {
   });
 });
 
-describe('createFromCandidate', () => {
+describe('create_candidate', () => {
   const URL = 'https://www.youtube.com/watch?v=cand1';
   const YT_ID = 'cand1xxxxxx';
   const TITLE = 'A picked-for-you title';
 
   it('inserts a downloading recommended row with title and auto decision', async () => {
+    const requestId = 'req-cc1';
     const before = Date.now();
 
-    const { requestId } = await state.createFromCandidate({
-      url: URL,
-      userId: USER_ID,
-      youtubeId: YT_ID,
-      title: TITLE,
+    const { settled } = state.apply({
+      kind: 'create_candidate',
+      requestId,
+      input: { url: URL, userId: USER_ID, youtubeId: YT_ID, title: TITLE },
     });
+    await settled;
 
     const row = db
       .prepare(
@@ -876,12 +904,13 @@ describe('createFromCandidate', () => {
   });
 
   it('passes empty string youtubeId to enqueueDownload when external_id is null', async () => {
-    const { requestId } = await state.createFromCandidate({
-      url: URL,
-      userId: USER_ID,
-      youtubeId: null,
-      title: TITLE,
+    const requestId = 'req-cc2';
+    const { settled } = state.apply({
+      kind: 'create_candidate',
+      requestId,
+      input: { url: URL, userId: USER_ID, youtubeId: null, title: TITLE },
     });
+    await settled;
 
     expect(fakePorts.enqueueDownload).toHaveBeenCalledWith(
       { requestId, youtubeId: '', url: URL },
@@ -892,12 +921,13 @@ describe('createFromCandidate', () => {
   it('leaves the row in place and warn-logs when enqueueDownload throws', async () => {
     vi.mocked(fakePorts.enqueueDownload).mockRejectedValueOnce(new Error('redis down'));
 
-    const { requestId } = await state.createFromCandidate({
-      url: URL,
-      userId: USER_ID,
-      youtubeId: YT_ID,
-      title: TITLE,
+    const requestId = 'req-cc3';
+    const { settled } = state.apply({
+      kind: 'create_candidate',
+      requestId,
+      input: { url: URL, userId: USER_ID, youtubeId: YT_ID, title: TITLE },
     });
+    await settled;
 
     const row = db
       .prepare('SELECT status FROM requests WHERE request_id = ?')
@@ -1117,7 +1147,7 @@ describe('TRANSITIONS property test', () => {
   // this person", so `runEffect` doesn't fire the follow-up applyChannelInfo
   // call. That keeps the declared-vs-observed effect counts strictly equal
   // for `mark_downloaded`. The downloaded-then-new-channel path is asserted
-  // separately in the dedicated `markDownloaded` describe.
+  // separately in the dedicated `mark_downloaded` describe.
   beforeEach(() => {
     vi.mocked(fakePorts.ensurePerson).mockReturnValue({ personId: 'person-1', created: false });
   });

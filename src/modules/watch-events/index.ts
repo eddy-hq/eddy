@@ -3,7 +3,7 @@ import { v7 as uuidv7 } from 'uuid';
 import { db } from '../../db/client';
 import { logger } from '../../logger';
 import { ValidationError } from '../../errors';
-import { markWatched } from '../requests';
+import { getRequestsState, type TransitionResult } from '../requests';
 
 export const watchEventsRouter = Router();
 
@@ -81,9 +81,10 @@ const INSERT_SQL = `
 `;
 
 // Records each event and, in the same transaction, derives `requests.watched_at`
-// when an event crosses the threshold. markWatched() is itself idempotent, but
-// we de-dup within the batch so a single POST with multiple qualifying events
-// for the same requestId only issues one UPDATE+SELECT pair, not N.
+// when an event crosses the threshold. The mark_watched event is itself
+// idempotent, but we de-dup within the batch so a single POST with multiple
+// qualifying events for the same requestId only issues one UPDATE+SELECT
+// pair, not N.
 export function recordEvents(events: WatchEventInput[]): void {
   const insert = db.prepare(INSERT_SQL);
   const tx = db.transaction((batch: WatchEventInput[]) => {
@@ -102,7 +103,7 @@ export function recordEvents(events: WatchEventInput[]): void {
         reason: e.reason,
       });
       if (meetsWatchedThreshold(e) && !marked.has(e.requestId)) {
-        markWatched(e.requestId);
+        getRequestsState().apply({ kind: 'mark_watched', requestId: e.requestId });
         marked.add(e.requestId);
       }
     }
@@ -112,9 +113,10 @@ export function recordEvents(events: WatchEventInput[]): void {
 
 // One-shot backfill for `requests.watched_at`: scans the existing watch_events
 // stream, finds every request_id with at least one event meeting the
-// threshold, and replays markWatched() against it. Idempotent — re-running
-// after a partial run is safe because markWatched no-ops on already-watched
-// rows. Returns counts so callers (the CLI script, tests) can log/assert.
+// threshold, and replays the mark_watched event against it. Idempotent —
+// re-running after a partial run is safe because mark_watched no-ops on
+// already-watched rows. Returns counts so callers (the CLI script, tests)
+// can log/assert.
 //
 // Threshold mirrors meetsWatchedThreshold() — if the predicate above changes,
 // update this query too. Kept as raw SQL so the backfill is a single scan
@@ -145,8 +147,12 @@ export function backfillWatchedFromEvents(): BackfillResult {
   let transitioned = 0;
   let alreadyTerminal = 0;
   let missingRequest = 0;
+  const stateMachine = getRequestsState();
   for (const id of ids) {
-    const result = markWatched(id);
+    const result: TransitionResult = stateMachine.apply({
+      kind: 'mark_watched',
+      requestId: id,
+    }).result;
     if (result.transitioned) transitioned += 1;
     else if (result.currentStatus === null) missingRequest += 1;
     else alreadyTerminal += 1;

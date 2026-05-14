@@ -22,8 +22,8 @@ import { sendVideoReady } from './modules/notifications';
 import { ensurePersonForChannel, applyChannelInfoToPerson } from './modules/people/registry';
 import { API_PREFIXES } from './api-prefixes';
 
-// Wire the requests state seam at the production boot site. Per-verb shim
-// exports (markWatched, markDownloaded, …) route through whatever's
+// Wire the requests state seam at the production boot site. Call sites reach
+// `apply` via `getRequestsState()`, which routes through whatever was
 // registered here; the explicit wiring makes the side-effect graph visible
 // at the top of the M4 server module instead of being hidden behind
 // top-of-module imports inside state.ts.
