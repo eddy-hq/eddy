@@ -29,6 +29,16 @@ vi.mock('../notifications', () => ({
   validateActionToken: vi.fn(),
 }));
 
+// requests/state.ts imports from the people barrel so markDownloaded can
+// populate person rows for discovery/share-sheet downloads (#50). The barrel
+// pulls yt-dlp, the RSS poller, and ollama-backed interest inference at
+// module top, none of which vi.importActual on state.ts needs — stub the
+// whole module out here.
+vi.mock('../people', () => ({
+  applyChannelInfoToPerson: vi.fn().mockResolvedValue(undefined),
+  ensurePersonForChannel: vi.fn().mockReturnValue({ personId: 'p', outputId: 'o', created: false }),
+}));
+
 // Bypass requests/index.ts (which loads config) — re-export the real markWatched
 // from state.ts so transitions still hit the in-memory DB end-to-end. Wrapped
 // in a vi.fn so tests can assert call counts (e.g. dedup within a batch).

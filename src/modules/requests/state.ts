@@ -4,6 +4,12 @@ import { logger } from '../../logger';
 import { sendVideoReady } from '../notifications';
 import { downloadQueue, deleteQueue, redis } from '../../queue';
 import type { DownloadJobData } from '../content';
+// Module-boundary rule (CLAUDE.md): cross-module imports go through `index.ts`,
+// never deep paths. This creates a runtime cycle with `../people` (people's
+// barrel imports `createFromChannelPoll` from this module), which is fine —
+// every cross-module call on both sides happens inside function bodies, so
+// Node ESM resolves the bindings lazily.
+import { ensurePersonForChannel, applyChannelInfoToPerson } from '../people';
 
 // Shared job data for the delete queue. The worker uses filePath to unlink the
 // .mp4 + sidecars; requestId is carried so the callback can report which row
@@ -230,6 +236,23 @@ export function markDownloaded(id: string, fields: DownloadedFields): Transition
   void sendVideoReady(updated.user_id, id, fields.title).catch((err) =>
     logger.warn({ err, requestId: id, userId: updated.user_id }, 'markDownloaded: failed to send video-ready notification'),
   );
+
+  // Discovery and share-sheet requests don't know the channel at INSERT time —
+  // it lands here when the worker callback fires. Ensure a person row exists
+  // so feed-card tap-through to a person view always works. Channel-poll
+  // requests already route through ensurePersonForChannel on follow, so the
+  // ensure is a no-op for them; the channel-info capture is gated on `created`
+  // so a repeat download from a known channel doesn't fire a fresh yt-dlp call
+  // every time. Both side-effects are gated on a real transition above,
+  // mirroring the sendVideoReady contract.
+  if (fields.youtubeChannelId) {
+    const { personId, created } = ensurePersonForChannel(fields.youtubeChannelId, fields.channel);
+    if (created) {
+      void applyChannelInfoToPerson(personId, fields.youtubeChannelId).catch((err) =>
+        logger.debug({ err, channelId: fields.youtubeChannelId }, 'Capture channel info on download failed'),
+      );
+    }
+  }
 
   return { transitioned: true, userId: updated.user_id };
 }
