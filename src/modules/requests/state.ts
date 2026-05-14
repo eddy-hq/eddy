@@ -543,8 +543,20 @@ type SqlResultCarrier = TransitionResult & { __sqlResult?: Record<string, unknow
 
 // ─── Apply / dispatch ────────────────────────────────────────────────────────
 
+// Outcome of a single `apply(event)` call. The SQL write is synchronous, so
+// `result` is available immediately. `settled` resolves once every effect's
+// returned promise has settled — fire-and-forget effects (e.g. ntfy send) do
+// not contribute to it; only effects that genuinely need sequencing (BullMQ
+// `enqueue_download`, `cancel_download_job_awaited`) do. Sync callers ignore
+// `settled`; async callers (retry / creators) `await` it before returning so
+// the pre-refactor sequencing guarantees survive.
+export type ApplyOutcome = {
+  result: TransitionResult;
+  settled: Promise<void>;
+};
+
 export interface RequestsState {
-  apply: (event: Event) => Promise<TransitionResult>;
+  apply: (event: Event) => ApplyOutcome;
   // Per-verb adapter shims preserved as the test surface for this slice.
   // Each one builds an Event and calls apply, then narrows the result.
   markWatched: (id: string) => TransitionResult;
@@ -693,76 +705,65 @@ export function createRequestsState({ ports }: { ports: Ports }): RequestsState 
     return { transitioned: false, currentStatus: result.currentStatus };
   }
 
-  // ── apply: the single seam every status mutation flows through. Awaits
-  // each effect's promise so callers (retry, creators) get the same
-  // sequencing guarantees the pre-refactor per-verb functions provided.
-  async function apply(event: Event): Promise<TransitionResult> {
+  // ── apply: the single seam every status mutation flows through. The SQL
+  // write is synchronous, so `result` is available on return; effects fire
+  // immediately and any promise they return is collected into `settled` for
+  // async callers (retry, creators) that need the pre-refactor sequencing.
+  function apply(event: Event): ApplyOutcome {
     const { descriptor, result } = runSql(event);
+    const pending: Promise<void>[] = [];
     for (const effect of descriptor.effects(event, result)) {
       const ret = runEffect(effect);
-      if (ret) await ret;
+      if (ret) pending.push(ret);
     }
-    return stripCarrier(result);
+    const settled = pending.length === 0 ? Promise.resolve() : Promise.all(pending).then(() => undefined);
+    return { result: stripCarrier(result), settled };
   }
 
   // ── Per-verb adapter shims (preserved this slice for test-suite stability).
-  // Each one builds an Event and delegates to apply. Sync vs async signatures
-  // are preserved verbatim from the pre-refactor API; async-only operations
-  // (retry, creators) stay async; everything else is sync via runSyncApply
-  // below, which only handles descriptors whose effects are all
-  // fire-and-forget. The next slice (#84) collapses this into apply() once
-  // the test suite is rewritten.
+  // Each one builds an Event and delegates to apply, then narrows to the
+  // pre-refactor return shape. Sync shims drop `settled` (their effect set is
+  // fire-and-forget only); async shims (retry, creators) `await` it so the
+  // BullMQ enqueue settles before the caller sees a return. The next slice
+  // (#84) rewrites the tests; #85 then deletes these adapters entirely.
 
   function markWatched(id: string): TransitionResult {
-    return runSyncApply({ kind: 'mark_watched', requestId: id });
+    return apply({ kind: 'mark_watched', requestId: id }).result;
   }
   function markDismissed(id: string): TransitionResult {
-    return runSyncApply({ kind: 'mark_dismissed', requestId: id });
+    return apply({ kind: 'mark_dismissed', requestId: id }).result;
   }
   function markSoftDeleted(id: string): TransitionResult {
-    return runSyncApply({ kind: 'mark_soft_deleted', requestId: id });
+    return apply({ kind: 'mark_soft_deleted', requestId: id }).result;
   }
   function markDownloaded(id: string, fields: DownloadedFields): TransitionResult {
-    return runSyncApply({ kind: 'mark_downloaded', requestId: id, fields });
+    return apply({ kind: 'mark_downloaded', requestId: id, fields }).result;
   }
   function markRejected(id: string, reason: string): TransitionResult {
-    return runSyncApply({ kind: 'mark_rejected', requestId: id, reason });
+    return apply({ kind: 'mark_rejected', requestId: id, reason }).result;
   }
   function markGuardBlocked(id: string, reason: string): TransitionResult {
-    return runSyncApply({ kind: 'mark_guard_blocked', requestId: id, reason });
+    return apply({ kind: 'mark_guard_blocked', requestId: id, reason }).result;
   }
   function markCancelled(id: string): TransitionResult {
-    return runSyncApply({ kind: 'mark_cancelled', requestId: id });
+    return apply({ kind: 'mark_cancelled', requestId: id }).result;
   }
   function markFailed(id: string): TransitionResult {
-    return runSyncApply({ kind: 'mark_failed', requestId: id });
-  }
-
-  // Sync apply: runs the SQL synchronously, then fires effects. Used by
-  // every per-verb shim whose pre-refactor API was synchronous. The
-  // descriptors routed through here MUST NOT emit awaited effect kinds
-  // (`enqueue_download` / `cancel_download_job_awaited`) — the
-  // retry/creation paths go through `apply` directly and await it. The
-  // dispatcher swallows any returned promise so calling `runSyncApply` with
-  // an awaited effect would silently lose the await — guarded by which
-  // descriptors emit which effect kinds.
-  function runSyncApply(event: Event): TransitionResult {
-    const { descriptor, result } = runSql(event);
-    for (const effect of descriptor.effects(event, result)) {
-      runEffect(effect);
-    }
-    return stripCarrier(result);
+    return apply({ kind: 'mark_failed', requestId: id }).result;
   }
 
   async function retry(id: string): Promise<TransitionResult> {
-    return apply({ kind: 'retry', requestId: id });
+    const { result, settled } = apply({ kind: 'retry', requestId: id });
+    await settled;
+    return result;
   }
 
   async function createFromShareSheet(
     input: CreateFromShareSheetInput,
   ): Promise<{ requestId: string }> {
     const requestId = uuidv7();
-    await apply({ kind: 'create_share_sheet', requestId, input });
+    const { settled } = apply({ kind: 'create_share_sheet', requestId, input });
+    await settled;
     return { requestId };
   }
 
@@ -770,7 +771,8 @@ export function createRequestsState({ ports }: { ports: Ports }): RequestsState 
     input: CreateFromChannelPollInput,
   ): Promise<{ requestId: string }> {
     const requestId = uuidv7();
-    await apply({ kind: 'create_channel_poll', requestId, input });
+    const { settled } = apply({ kind: 'create_channel_poll', requestId, input });
+    await settled;
     return { requestId };
   }
 
@@ -778,7 +780,8 @@ export function createRequestsState({ ports }: { ports: Ports }): RequestsState 
     input: CreateFromCandidateInput,
   ): Promise<{ requestId: string }> {
     const requestId = uuidv7();
-    await apply({ kind: 'create_candidate', requestId, input });
+    const { settled } = apply({ kind: 'create_candidate', requestId, input });
+    await settled;
     return { requestId };
   }
 
