@@ -4,6 +4,7 @@ import { logger } from '../../logger';
 import { sendVideoReady } from '../notifications';
 import { downloadQueue, deleteQueue, redis } from '../../queue';
 import type { DownloadJobData } from '../content';
+import { ensurePersonForChannel, applyChannelInfoToPerson } from '../people';
 
 // Shared job data for the delete queue. The worker uses filePath to unlink the
 // .mp4 + sidecars; requestId is carried so the callback can report which row
@@ -222,6 +223,14 @@ export function markDownloaded(id: string, fields: DownloadedFields): Transition
     ) as { user_id: string } | undefined;
 
   if (!updated) return { transitioned: false, currentStatus: readStatus(id) };
+
+  const channelId = fields.youtubeChannelId?.trim() || null;
+  if (channelId) {
+    const { personId } = ensurePersonForChannel(channelId, fields.channel);
+    void applyChannelInfoToPerson(personId, channelId).catch((err) =>
+      logger.warn({ err, requestId: id, channelId }, 'markDownloaded: failed to capture channel info'),
+    );
+  }
 
   // Side-effect fires only after a real transition — a no-op (e.g. user
   // cancelled mid-download) must not page the user that their video is ready.

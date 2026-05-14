@@ -37,6 +37,11 @@ vi.mock('../notifications', () => ({
   validateActionToken: vi.fn(),
 }));
 
+vi.mock('../people', () => ({
+  ensurePersonForChannel: vi.fn().mockReturnValue({ personId: 'person-stub', outputId: 'output-stub' }),
+  applyChannelInfoToPerson: vi.fn().mockResolvedValue(undefined),
+}));
+
 import { db } from '../../db/client';
 import { logger } from '../../logger';
 import { runMigrations } from '../../db/migrate';

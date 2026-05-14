@@ -29,6 +29,11 @@ vi.mock('../notifications', () => ({
   validateActionToken: vi.fn(),
 }));
 
+vi.mock('../people', () => ({
+  ensurePersonForChannel: vi.fn().mockReturnValue({ personId: 'person-stub', outputId: 'output-stub' }),
+  applyChannelInfoToPerson: vi.fn().mockResolvedValue(undefined),
+}));
+
 // Bypass requests/index.ts (which loads config) — re-export the real markWatched
 // from state.ts so transitions still hit the in-memory DB end-to-end. Wrapped
 // in a vi.fn so tests can assert call counts (e.g. dedup within a batch).
