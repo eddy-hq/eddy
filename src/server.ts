@@ -3,17 +3,43 @@ import 'express-async-errors';
 import express, { NextFunction, Request, Response } from 'express';
 import { logger } from './logger';
 import { ollamaHealthCheck } from './ollama';
-import { downloadQueue } from './queue';
+import { downloadQueue, deleteQueue, redis } from './queue';
 import { db } from './db/client';
 import { EddyError, NotFoundError } from './errors';
-import { requestsRouter } from './modules/requests/index';
+import {
+  requestsRouter,
+  createRequestsState,
+  registerDefaultRequestsState,
+  type Ports,
+} from './modules/requests/index';
 import { internalRouter } from './modules/internal/index';
 import { peopleRouter } from './modules/people/index';
 import { searchRouter } from './modules/search/index';
 import { discoveryRouter } from './modules/discovery/router';
 import { interestsRouter } from './modules/interests/index';
 import { watchEventsRouter } from './modules/watch-events/index';
+import { sendVideoReady } from './modules/notifications';
+import { ensurePersonForChannel, applyChannelInfoToPerson } from './modules/people/registry';
 import { API_PREFIXES } from './api-prefixes';
+
+// Wire the requests state seam at the production boot site. Per-verb shim
+// exports (markWatched, markDownloaded, …) route through whatever's
+// registered here; the explicit wiring makes the side-effect graph visible
+// at the top of the M4 server module instead of being hidden behind
+// top-of-module imports inside state.ts.
+const requestsPorts: Ports = {
+  notifyVideoReady: (userId, requestId, title) => sendVideoReady(userId, requestId, title),
+  enqueueDownload: (jobData, opts) => downloadQueue.add('download', jobData, opts),
+  enqueueDelete: (jobData, opts) => deleteQueue.add('delete', jobData, opts),
+  cancelDownloadJob: async (requestId) => {
+    const job = await downloadQueue.getJob(requestId);
+    await job?.remove();
+  },
+  redisDel: (key) => redis.del(key),
+  ensurePerson: (channelId, channelName) => ensurePersonForChannel(channelId, channelName),
+  applyChannelInfo: (personId, channelId) => applyChannelInfoToPerson(personId, channelId),
+};
+registerDefaultRequestsState(createRequestsState({ ports: requestsPorts }));
 
 export const app = express();
 

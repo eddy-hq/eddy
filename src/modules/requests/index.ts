@@ -21,6 +21,8 @@ export {
   createFromShareSheet,
   createFromChannelPoll,
   createFromCandidate,
+  createRequestsState,
+  registerDefaultRequestsState,
   CANCELLED_REASON,
   displayRejectionReason,
 } from './state';
@@ -32,6 +34,8 @@ export type {
   CreateFromShareSheetInput,
   CreateFromChannelPollInput,
   CreateFromCandidateInput,
+  Ports,
+  RequestsState,
 } from './state';
 
 export const requestsRouter = Router();
