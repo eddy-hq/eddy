@@ -1,7 +1,8 @@
 import { db } from '../../db/client';
 import { logger } from '../../logger';
 import { downloadQueue } from '../../queue';
-import { sendDownloadAlert } from '../notifications';
+import { getNotifications } from '../notifications';
+import { config } from '../../config';
 import type { DownloadJobData } from '../content';
 import { getRequestsState } from '../requests';
 
@@ -80,12 +81,16 @@ export async function checkStuckDownloads(): Promise<void> {
       }
     }
 
-    void sendDownloadAlert({
-      requestId: req.request_id,
-      title: req.title ?? req.youtube_id ?? req.url,
-      stuckMins: Math.round((Date.now() - new Date(req.requested_at).getTime()) / 60_000),
-      action: jobState === null || jobState === 'failed' ? 're-enqueued' : 'failed',
-    });
+    void getNotifications().notify(
+      {
+        kind: 'download_alert',
+        requestId: req.request_id,
+        title: req.title ?? req.youtube_id ?? req.url,
+        stuckMins: Math.round((Date.now() - new Date(req.requested_at).getTime()) / 60_000),
+        action: jobState === null || jobState === 'failed' ? 're-enqueued' : 'failed',
+      },
+      config.USER_ID_STEVE,
+    );
   }
 }
 

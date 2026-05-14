@@ -1,4 +1,4 @@
-import { sendVideoReady } from '../notifications';
+import { getNotifications } from '../notifications';
 import { downloadQueue, deleteQueue, redis } from '../../queue';
 // Deep-imports `../people/registry` rather than the `../people` barrel — the
 // barrel imports from this module (the `getRequestsState` accessor below), so
@@ -17,7 +17,8 @@ import { createRequestsState, type Ports, type RequestsState } from './state';
 // modules see those mocks through these closures.
 function defaultPorts(): Ports {
   return {
-    notifyVideoReady: (userId, requestId, title) => sendVideoReady(userId, requestId, title),
+    notifyVideoReady: (userId, requestId, title) =>
+      getNotifications().notify({ kind: 'video_ready', requestId, title }, userId),
     enqueueDownload: (jobData, opts) => downloadQueue.add('download', jobData, opts),
     enqueueDelete: (jobData, opts) => deleteQueue.add('delete', jobData, opts),
     cancelDownloadJob: async (requestId) => {
