@@ -644,17 +644,27 @@ export function createRequestsState({ ports }: { ports: Ports }): RequestsState 
         return;
       }
       case 'ensure_person_capture': {
-        // Synchronous ensure (uses DB inside the people/registry module), then
-        // fire-and-forget channel-info capture gated on `created`. Capture
-        // failures log at `debug` rather than `warn` — yt-dlp flakes are
-        // routine and don't merit operator attention.
-        const { personId, created } = ports.ensurePerson(effect.channelId, effect.channelName);
-        if (created) {
-          void ports
-            .applyChannelInfo(personId, effect.channelId)
-            .catch((err) =>
-              logger.debug({ err, channelId: effect.channelId }, 'Capture channel info on download failed'),
-            );
+        // Best-effort person capture on download. `ensurePerson` is synchronous
+        // and writes to the DB, so it can throw — wrap it so a transient DB
+        // error doesn't surface as an unhandled rejection inside `apply`'s
+        // settled chain (which sync shims don't observe). The transition
+        // itself has already succeeded; person capture is a side concern.
+        // The follow-up `applyChannelInfo` capture is logged at `debug`
+        // because yt-dlp flakes are routine.
+        try {
+          const { personId, created } = ports.ensurePerson(effect.channelId, effect.channelName);
+          if (created) {
+            void ports
+              .applyChannelInfo(personId, effect.channelId)
+              .catch((err) =>
+                logger.debug({ err, channelId: effect.channelId }, 'Capture channel info on download failed'),
+              );
+          }
+        } catch (err) {
+          logger.warn(
+            { err, channelId: effect.channelId },
+            'markDownloaded: failed to ensure person on download',
+          );
         }
         return;
       }
