@@ -1,6 +1,6 @@
-import { Readable } from 'node:stream';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import 'express-async-errors';
+import supertest from 'supertest';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // ─── Module mocks ────────────────────────────────────────────────────────────
@@ -89,116 +89,26 @@ interface RouterResponse {
   json: <T = unknown>() => T;
 }
 
-// In-process test client — never opens a socket. Express's `app.handle` is
-// happy to take any (req, res) pair that quacks like Node's http types, so
-// we hand it a `Readable` masquerading as IncomingMessage (just needs
-// `method` / `url` / `headers` plus a stream of body bytes) and a minimal
-// fake ServerResponse that captures status / headers / body and resolves a
-// "finished" promise on `end()`. Express's `res.json()`, `res.send()`,
-// `res.status()` and `res.set()` all reduce to `setHeader` / `statusCode` /
-// `end()`, which is exactly the surface we implement.
-//
-// This avoids `listen()` entirely so the suite stays runnable in
-// socket-restricted review environments.
+// Supertest drives `app` directly via an ephemeral loopback socket it manages
+// itself — no manual `listen()`, no port flags. Wrapped here so call sites
+// stay framework-agnostic (and the existing `resp.json<T>()` shape continues
+// to work).
 async function request(
   method: string,
   path: string,
   init: { body?: unknown } = {},
 ): Promise<RouterResponse> {
-  const bodyStr = init.body === undefined ? null : JSON.stringify(init.body);
-  const bodyBuf = bodyStr === null ? null : Buffer.from(bodyStr, 'utf8');
-
-  const reqHeaders: Record<string, string> = { host: '127.0.0.1' };
-  if (bodyBuf) {
-    reqHeaders['content-type'] = 'application/json';
-    reqHeaders['content-length'] = String(bodyBuf.byteLength);
+  const verb = method.toLowerCase() as 'get' | 'post' | 'put' | 'delete' | 'patch';
+  let req = supertest(app)[verb](path);
+  if (init.body !== undefined) {
+    req = req.set('Content-Type', 'application/json').send(init.body as object);
   }
-  const req = Readable.from(bodyBuf ? [bodyBuf] : []) as Readable & {
-    method: string;
-    url: string;
-    headers: Record<string, string>;
-  };
-  req.method = method.toUpperCase();
-  req.url = path;
-  req.headers = reqHeaders;
-
-  let statusCode = 200;
-  let bodyOut = '';
-  const resHeaders: Record<string, string | number | string[]> = {};
-  const listeners: Record<string, Array<(...args: unknown[]) => void>> = {};
-  let finishedResolve!: () => void;
-  const finished = new Promise<void>((resolve) => { finishedResolve = resolve; });
-
-  // The minimal subset of `http.ServerResponse` that Express's response
-  // helpers (`res.status`, `res.json`, `res.send`, `res.set`, `res.end`)
-  // ultimately call. Anything extra would be ignored by them anyway.
-  const res = {
-    statusCode: 200,
-    headersSent: false,
-    writableEnded: false,
-    setHeader(k: string, v: string | number | string[]) {
-      resHeaders[k.toLowerCase()] = v;
-    },
-    getHeader(k: string) {
-      return resHeaders[k.toLowerCase()];
-    },
-    getHeaders() {
-      return { ...resHeaders };
-    },
-    removeHeader(k: string) {
-      delete resHeaders[k.toLowerCase()];
-    },
-    hasHeader(k: string) {
-      return Object.prototype.hasOwnProperty.call(resHeaders, k.toLowerCase());
-    },
-    write(chunk: Buffer | string) {
-      bodyOut += typeof chunk === 'string' ? chunk : chunk.toString('utf8');
-      return true;
-    },
-    end(chunk?: Buffer | string) {
-      if (chunk !== undefined) this.write(chunk);
-      this.headersSent = true;
-      this.writableEnded = true;
-      statusCode = this.statusCode;
-      finishedResolve();
-    },
-    on(event: string, cb: (...args: unknown[]) => void) {
-      (listeners[event] ??= []).push(cb);
-      return this;
-    },
-    once(event: string, cb: (...args: unknown[]) => void) {
-      const wrapped = (...args: unknown[]): void => {
-        cb(...args);
-        const list = listeners[event];
-        if (list) listeners[event] = list.filter((f) => f !== wrapped);
-      };
-      return this.on(event, wrapped);
-    },
-    emit(event: string, ...args: unknown[]) {
-      for (const cb of listeners[event] ?? []) cb(...args);
-      return true;
-    },
-  };
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (app as any).handle(req, res, (err: unknown) => {
-    if (err && !res.writableEnded) {
-      res.statusCode = 500;
-      res.end(JSON.stringify({ error: 'UNHANDLED', message: String(err) }));
-    }
-  });
-
-  await finished;
-
-  const lowered: Record<string, string | string[] | undefined> = {};
-  for (const [k, v] of Object.entries(resHeaders)) {
-    lowered[k] = typeof v === 'number' ? String(v) : v;
-  }
+  const res = await req;
   return {
-    status: statusCode,
-    headers: lowered,
-    body: bodyOut,
-    json: <T = unknown>() => JSON.parse(bodyOut) as T,
+    status: res.status,
+    headers: res.headers,
+    body: res.text ?? '',
+    json: <T = unknown>() => (res.text ? (JSON.parse(res.text) as T) : (res.body as T)),
   };
 }
 
