@@ -1,8 +1,7 @@
-import type { AddressInfo } from 'node:net';
-import type { Server } from 'node:http';
+import { Readable } from 'node:stream';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import 'express-async-errors';
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // ─── Module mocks ────────────────────────────────────────────────────────────
 //
@@ -90,41 +89,123 @@ interface RouterResponse {
   json: <T = unknown>() => T;
 }
 
-// In-process test client. The Express app is bound to a real ephemeral port
-// on the loopback interface and driven with the built-in `fetch`. Binding
-// 127.0.0.1 (rather than the default 0.0.0.0) keeps the suite runnable in
-// review/CI environments where unprivileged binds to wildcard addresses are
-// rejected. Mirrors the supertest happy-path without pulling in supertest.
-let baseUrl: string;
-let server: Server;
-
+// In-process test client — never opens a socket. Express's `app.handle` is
+// happy to take any (req, res) pair that quacks like Node's http types, so
+// we hand it a `Readable` masquerading as IncomingMessage (just needs
+// `method` / `url` / `headers` plus a stream of body bytes) and a minimal
+// fake ServerResponse that captures status / headers / body and resolves a
+// "finished" promise on `end()`. Express's `res.json()`, `res.send()`,
+// `res.status()` and `res.set()` all reduce to `setHeader` / `statusCode` /
+// `end()`, which is exactly the surface we implement.
+//
+// This avoids `listen()` entirely so the suite stays runnable in
+// socket-restricted review environments.
 async function request(
   method: string,
   path: string,
   init: { body?: unknown } = {},
 ): Promise<RouterResponse> {
-  const resp = await fetch(`${baseUrl}${path}`, {
-    method: method.toUpperCase(),
-    headers: init.body === undefined ? {} : { 'content-type': 'application/json' },
-    body: init.body === undefined ? undefined : JSON.stringify(init.body),
+  const bodyStr = init.body === undefined ? null : JSON.stringify(init.body);
+  const bodyBuf = bodyStr === null ? null : Buffer.from(bodyStr, 'utf8');
+
+  const reqHeaders: Record<string, string> = { host: '127.0.0.1' };
+  if (bodyBuf) {
+    reqHeaders['content-type'] = 'application/json';
+    reqHeaders['content-length'] = String(bodyBuf.byteLength);
+  }
+  const req = Readable.from(bodyBuf ? [bodyBuf] : []) as Readable & {
+    method: string;
+    url: string;
+    headers: Record<string, string>;
+  };
+  req.method = method.toUpperCase();
+  req.url = path;
+  req.headers = reqHeaders;
+
+  let statusCode = 200;
+  let bodyOut = '';
+  const resHeaders: Record<string, string | number | string[]> = {};
+  const listeners: Record<string, Array<(...args: unknown[]) => void>> = {};
+  let finishedResolve!: () => void;
+  const finished = new Promise<void>((resolve) => { finishedResolve = resolve; });
+
+  // The minimal subset of `http.ServerResponse` that Express's response
+  // helpers (`res.status`, `res.json`, `res.send`, `res.set`, `res.end`)
+  // ultimately call. Anything extra would be ignored by them anyway.
+  const res = {
+    statusCode: 200,
+    headersSent: false,
+    writableEnded: false,
+    setHeader(k: string, v: string | number | string[]) {
+      resHeaders[k.toLowerCase()] = v;
+    },
+    getHeader(k: string) {
+      return resHeaders[k.toLowerCase()];
+    },
+    getHeaders() {
+      return { ...resHeaders };
+    },
+    removeHeader(k: string) {
+      delete resHeaders[k.toLowerCase()];
+    },
+    hasHeader(k: string) {
+      return Object.prototype.hasOwnProperty.call(resHeaders, k.toLowerCase());
+    },
+    write(chunk: Buffer | string) {
+      bodyOut += typeof chunk === 'string' ? chunk : chunk.toString('utf8');
+      return true;
+    },
+    end(chunk?: Buffer | string) {
+      if (chunk !== undefined) this.write(chunk);
+      this.headersSent = true;
+      this.writableEnded = true;
+      statusCode = this.statusCode;
+      finishedResolve();
+    },
+    on(event: string, cb: (...args: unknown[]) => void) {
+      (listeners[event] ??= []).push(cb);
+      return this;
+    },
+    once(event: string, cb: (...args: unknown[]) => void) {
+      const wrapped = (...args: unknown[]): void => {
+        cb(...args);
+        const list = listeners[event];
+        if (list) listeners[event] = list.filter((f) => f !== wrapped);
+      };
+      return this.on(event, wrapped);
+    },
+    emit(event: string, ...args: unknown[]) {
+      for (const cb of listeners[event] ?? []) cb(...args);
+      return true;
+    },
+  };
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (app as any).handle(req, res, (err: unknown) => {
+    if (err && !res.writableEnded) {
+      res.statusCode = 500;
+      res.end(JSON.stringify({ error: 'UNHANDLED', message: String(err) }));
+    }
   });
-  const text = await resp.text();
-  const headers: Record<string, string | string[] | undefined> = {};
-  resp.headers.forEach((value, key) => {
-    headers[key.toLowerCase()] = value;
-  });
+
+  await finished;
+
+  const lowered: Record<string, string | string[] | undefined> = {};
+  for (const [k, v] of Object.entries(resHeaders)) {
+    lowered[k] = typeof v === 'number' ? String(v) : v;
+  }
   return {
-    status: resp.status,
-    headers,
-    body: text,
-    json: <T = unknown>() => JSON.parse(text) as T,
+    status: statusCode,
+    headers: lowered,
+    body: bodyOut,
+    json: <T = unknown>() => JSON.parse(bodyOut) as T,
   };
 }
 
 const USER_ID = '11111111-1111-7111-8111-111111111111';
 const OTHER_USER_ID = '22222222-2222-7222-8222-222222222222';
 
-beforeAll(async () => {
+beforeAll(() => {
   runMigrations();
   db.prepare(
     'INSERT INTO users (user_id, display_name, role, age_gate, created_at) VALUES (?, ?, ?, ?, ?)',
@@ -132,20 +213,6 @@ beforeAll(async () => {
   db.prepare(
     'INSERT INTO users (user_id, display_name, role, age_gate, created_at) VALUES (?, ?, ?, ?, ?)',
   ).run(OTHER_USER_ID, 'Boy2', 'kid', 10, new Date().toISOString());
-
-  await new Promise<void>((resolve) => {
-    server = app.listen(0, '127.0.0.1', () => {
-      const addr = server.address() as AddressInfo;
-      baseUrl = `http://127.0.0.1:${addr.port}`;
-      resolve();
-    });
-  });
-});
-
-afterAll(async () => {
-  await new Promise<void>((resolve, reject) => {
-    server.close((err) => (err ? reject(err) : resolve()));
-  });
 });
 
 beforeEach(() => {
