@@ -55,14 +55,11 @@ import {
   type RequestsState,
 } from '../requests/state';
 import { registerDefaultRequestsState } from '../requests/state-default';
-import { pollChannel, type OutputRow } from './poller';
+import { pollChannel, parseYoutubeRss, type OutputRow } from './poller';
 
-// `parseYoutubeRss` is private to the module, so its three acceptance bullets
-// (HTML-entity decoding, missing-thumbnail safety, multi-entry ordering) are
-// driven through `pollChannel`. The decoded title round-trips into the
-// `requests.title` column, a feed with no `<media:thumbnail>` parses without
-// throwing, and a multi-entry feed queues the first entry (the latest upload)
-// on first-poll confirmation.
+// `parseYoutubeRss` is exported (purely so tests can pin its three observable
+// properties) and is also exercised indirectly through `pollChannel`, which is
+// the actual production call site.
 
 const USER_ID_A = '11111111-1111-7111-8111-111111111111';
 const USER_ID_B = '22222222-2222-7222-8222-222222222222';
@@ -212,75 +209,78 @@ beforeEach(() => {
   vi.unstubAllGlobals();
 });
 
-// ─── parseYoutubeRss (exercised through pollChannel) ────────────────────────
+// ─── parseYoutubeRss (direct, pure) ─────────────────────────────────────────
 
-describe('parseYoutubeRss (via pollChannel)', () => {
-  it('decodes HTML entities in <title> (&amp;, &#39;, &quot;) on the queued row', async () => {
-    insertFollower(USER_ID_A);
+describe('parseYoutubeRss', () => {
+  it('decodes HTML entities in <title> (&amp;, &lt;, &gt;, &quot;, &#39;, &#x27;)', () => {
     const xml = rssXml({
       entries: [
         {
-          videoId: 'vid1abcdefg',
-          title: 'Lego &amp; Friends&#39;s &quot;best&quot; build',
+          videoId: 'entityvid01',
+          title: 'A &amp; B &lt;script&gt; said &quot;hi&quot; — it&#39;s &#x27;mine&#x27;',
         },
       ],
     });
-    mockFetchOk(xml);
-    vi.mocked(videoDuration).mockResolvedValue(600);
 
-    await pollChannel(OUTPUT);
+    const { videos } = parseYoutubeRss(xml);
 
-    const row = db
-      .prepare('SELECT title FROM requests WHERE user_id = ?')
-      .get(USER_ID_A) as { title: string };
-    expect(row.title).toBe(`Lego & Friends's "best" build`);
+    expect(videos).toHaveLength(1);
+    expect(videos[0]?.title).toBe(`A & B <script> said "hi" — it's 'mine'`);
   });
 
-  it('does not crash when an entry has no <media:thumbnail> (parses with thumbnailUrl: null)', async () => {
-    insertFollower(USER_ID_A);
+  it('returns thumbnailUrl: null when <media:thumbnail> is absent (and does not crash)', () => {
     const xml = rssXml({
       entries: [
-        { videoId: 'vidnothumb1', title: 'No thumbnail entry', thumbnailUrl: null },
+        { videoId: 'nothumbvid1', title: 'No thumbnail entry', thumbnailUrl: null },
       ],
     });
-    mockFetchOk(xml);
-    vi.mocked(videoDuration).mockResolvedValue(600);
 
-    await expect(pollChannel(OUTPUT)).resolves.toBeUndefined();
+    const { videos } = parseYoutubeRss(xml);
 
-    const row = db
-      .prepare('SELECT title FROM requests WHERE user_id = ?')
-      .get(USER_ID_A) as { title: string };
-    expect(row.title).toBe('No thumbnail entry');
+    expect(videos).toHaveLength(1);
+    expect(videos[0]?.thumbnailUrl).toBeNull();
   });
 
-  it('yields multi-entry feeds in order — first entry is the most recent and the queued one on first poll', async () => {
-    insertFollower(USER_ID_A);
+  it('captures <media:thumbnail url="..."> when present', () => {
     const xml = rssXml({
       entries: [
-        { videoId: 'newest12345', title: 'Newest' },
-        { videoId: 'middle12345', title: 'Middle' },
-        { videoId: 'oldest12345', title: 'Oldest' },
+        {
+          videoId: 'withthumb01',
+          title: 'Has a thumbnail',
+          thumbnailUrl: 'https://i.ytimg.com/vi/withthumb01/hq.jpg',
+        },
       ],
     });
-    mockFetchOk(xml);
-    vi.mocked(videoDuration).mockResolvedValue(600);
 
-    await pollChannel(OUTPUT);
+    const { videos } = parseYoutubeRss(xml);
 
-    const rows = db
-      .prepare('SELECT youtube_id, title FROM requests WHERE user_id = ?')
-      .all(USER_ID_A) as Array<{ youtube_id: string; title: string }>;
-    expect(rows).toHaveLength(1);
-    expect(rows[0]?.youtube_id).toBe('newest12345');
-    expect(rows[0]?.title).toBe('Newest');
+    expect(videos[0]?.thumbnailUrl).toBe('https://i.ytimg.com/vi/withthumb01/hq.jpg');
+  });
 
-    const seen = db
-      .prepare('SELECT video_id FROM seen_videos WHERE channel_id = ? ORDER BY video_id')
-      .all(CHANNEL_ID) as Array<{ video_id: string }>;
-    expect(seen.map((s) => s.video_id).sort()).toEqual(
-      ['middle12345', 'newest12345', 'oldest12345'].sort(),
-    );
+  it('yields multi-entry feeds in document order', () => {
+    const xml = rssXml({
+      entries: [
+        { videoId: 'first111111', title: 'First' },
+        { videoId: 'second22222', title: 'Second' },
+        { videoId: 'third333333', title: 'Third' },
+      ],
+    });
+
+    const { videos } = parseYoutubeRss(xml);
+
+    expect(videos.map((v) => v.videoId)).toEqual(['first111111', 'second22222', 'third333333']);
+    expect(videos.map((v) => v.title)).toEqual(['First', 'Second', 'Third']);
+  });
+
+  it('parses channel-level title (decoded) from the feed', () => {
+    const xml = rssXml({
+      channelName: 'Lego &amp; Friends',
+      entries: [{ videoId: 'cnamevid001', title: 't' }],
+    });
+
+    const { channelName } = parseYoutubeRss(xml);
+
+    expect(channelName).toBe('Lego & Friends');
   });
 });
 
