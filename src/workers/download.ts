@@ -14,7 +14,7 @@ import { redis, closeQueues, thumbsQueue } from '../queue';
 import { config } from '../config';
 import { logger } from '../logger';
 import { fetchMetadata, downloadVideo } from '../modules/content/download';
-import { triggerPlexScan } from '../modules/content/plex';
+import { triggerPlexScan, updatePlexMetadata } from '../modules/content/plex';
 import { postSigned } from '../signed-channel';
 import { generateThumbnail } from './thumb';
 import type { DownloadJobData } from '../modules/content';
@@ -151,9 +151,6 @@ async function processJob(job: Job<DownloadJobData>, token?: string): Promise<vo
   }
   log.info({ filePath }, 'Download complete');
 
-  // Plex scan — localhost on Ubuntu
-  void triggerPlexScan();
-
   // Build nginx URL
   const nginxBase = config.NGINX_VIDEO_BASE_URL ?? '';
   const nginxUrl = nginxBase
@@ -163,6 +160,17 @@ async function processJob(job: Job<DownloadJobData>, token?: string): Promise<vo
   // Immediate fallback thumbnail — the editorial-first upgrade runs in a separate
   // queue so the video is available without waiting on Gemma.
   const thumbnailUrl = `https://i.ytimg.com/vi/${youtubeId}/maxresdefault.jpg`;
+
+  // Plex scan + metadata. Awaited so item title/summary/poster are set before
+  // the M4 callback flips status to ready. Best-effort — both calls warn-log
+  // on failure and return without throwing.
+  await triggerPlexScan();
+  await updatePlexMetadata({
+    filePath,
+    title: metadata.title,
+    summary: metadata.description,
+    posterUrl: thumbnailUrl,
+  });
 
   // Final 100-tick is written immediately before the callback flips status to
   // ready, so any PWA poll catching the small window sees a full bar instead
