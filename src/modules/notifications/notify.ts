@@ -37,7 +37,13 @@ export function createNotifications(opts: CreateNotificationsOptions): Notificat
   const { ntfyConfig, pwaBaseUrl } = opts;
 
   function ntfyConfigForUser(userId: string): NtfyUserConfig | null {
-    return ntfyConfig.find((c) => c.userId === userId) ?? null;
+    const match = ntfyConfig.find((c) => c.userId === userId);
+    // Defence-in-depth: production wiring drops entries missing either field
+    // at config-build time, but the module owns the invariant on its own
+    // boundary — return null if either piece is missing so callers never see
+    // a partial entry.
+    if (!match || !match.topic || !match.credentials) return null;
+    return match;
   }
 
   function pwaUrl(path: string): string {

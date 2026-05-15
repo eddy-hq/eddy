@@ -74,6 +74,26 @@ describe('createNotifications — ntfy lookup by recipient', () => {
     expect(warnMock).toHaveBeenCalledTimes(1);
   });
 
+  it('skips sendNtfy and warns when the matched user has an empty topic', async () => {
+    const mod = build({ ntfyConfig: [{ ...USER, topic: '' }] });
+    await mod.notify(
+      { kind: 'video_ready', requestId: 'req-1', title: 'Some video' },
+      'user-1',
+    );
+    expect(sendNtfyMock).not.toHaveBeenCalled();
+    expect(warnMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('skips sendNtfy and warns when the matched user has empty credentials', async () => {
+    const mod = build({ ntfyConfig: [{ ...USER, credentials: '' }] });
+    await mod.notify(
+      { kind: 'video_ready', requestId: 'req-1', title: 'Some video' },
+      'user-1',
+    );
+    expect(sendNtfyMock).not.toHaveBeenCalled();
+    expect(warnMock).toHaveBeenCalledTimes(1);
+  });
+
   it('passes the matched user topic and credentials through to sendNtfy', async () => {
     const mod = build();
     await mod.notify(
