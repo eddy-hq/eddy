@@ -324,13 +324,25 @@ describe('POST /requests', () => {
   });
 
   it('rejects a non-YouTube URL with a 400 ValidationError', async () => {
-    const resp = await request('POST', '/requests', {
-      body: { url: 'https://example.com/not-youtube', user: 'Boy1' },
-    });
+    // resolveUrl in index.ts follows redirects via `fetch` for any non-YouTube
+    // URL on the way in (share.google / youtu.be / Shortcut shimmed URLs).
+    // Stub the global fetch so this assertion exercises the validation gate
+    // without making real network I/O — the brief explicitly puts `resolveUrl`
+    // integration coverage out of scope.
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response('', { status: 200, headers: { 'content-type': 'text/html' } }),
+    );
+    try {
+      const resp = await request('POST', '/requests', {
+        body: { url: 'https://example.com/not-youtube', user: 'Boy1' },
+      });
 
-    expect(resp.status).toBe(400);
-    expect(resp.json<{ error: string }>().error).toBe('VALIDATION_ERROR');
-    expect(applyMock).not.toHaveBeenCalled();
+      expect(resp.status).toBe(400);
+      expect(resp.json<{ error: string }>().error).toBe('VALIDATION_ERROR');
+      expect(applyMock).not.toHaveBeenCalled();
+    } finally {
+      fetchSpy.mockRestore();
+    }
   });
 
   it('returns 400 when url is missing', async () => {
