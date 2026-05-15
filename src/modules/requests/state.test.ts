@@ -260,10 +260,13 @@ describe('mark_soft_deleted', () => {
     expect(new Date(row.deleted_at!).getTime()).toBeGreaterThanOrEqual(before);
 
     // The unlink itself runs on the Ubuntu worker — the M4 just enqueues the job.
+    // jobId must not contain ':' — BullMQ rejects non-3-segment colon ids.
     expect(fakePorts.enqueueDelete).toHaveBeenCalledWith(
       { requestId: 'req-s1', filePath: FILE_PATH },
-      { jobId: 'delete:req-s1' },
+      { jobId: 'delete-req-s1' },
     );
+    const enqueuedJobId = vi.mocked(fakePorts.enqueueDelete).mock.calls[0]![1].jobId;
+    expect(enqueuedJobId).not.toContain(':');
   });
 
   it('transitions watched → deleted and enqueues a delete job', () => {
@@ -280,7 +283,7 @@ describe('mark_soft_deleted', () => {
 
     expect(fakePorts.enqueueDelete).toHaveBeenCalledWith(
       { requestId: 'req-s2', filePath: FILE_PATH },
-      { jobId: 'delete:req-s2' },
+      { jobId: 'delete-req-s2' },
     );
   });
 

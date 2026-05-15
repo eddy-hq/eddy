@@ -577,7 +577,7 @@ export function createRequestsState({ ports }: { ports: Ports }): RequestsState 
         // recoverable nuisance, but rolling back the user's delete intent
         // would be worse.
         void ports
-          .enqueueDelete(effect.jobData, { jobId: `delete:${effect.requestId}` })
+          .enqueueDelete(effect.jobData, { jobId: `delete-${effect.requestId}` })
           .catch((err) =>
             logger.warn({ err, requestId: effect.requestId }, 'mark_soft_deleted: failed to enqueue delete job'),
           );
