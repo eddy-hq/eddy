@@ -1092,18 +1092,23 @@ Specs in Sections 4a and 9a. ~2-3 sessions.
 - Profile editing surface — `Profile.tsx` with rank-ordered draggable interest list, expertise picker, freeform add. Rank-replaces-weight on `user_interests` (migration 015: `rank INTEGER`, `expertise TEXT CHECK (...)`)
 - Person bio + photo captured from YouTube channel info, person view page, tap-through from cards/watch/search (issues #40–43)
 - `watch_events` table (migration 021) capturing per-play-attempt signal — feeds Layer 2 behavioural signals and Drift dwell observations
+- Layer 2 behavioural snapshot (`behavioural_signals` table, migration 026) — thin v1: `watched_count` and `dismissed_count` per `(user, person)`, recomputed nightly. Richer signals (completion-by-duration, dwell, save rate, requested-and-finished) deferred to Phase 8 where Drift renders them
+- Layer 3 per-person trust weights inlined in discovery scoring (#79)
+- Layer 4 statement-shaped `inferred_affinities` with weekly Gemma run; `affinity_evidence` rows link each statement to its source content_item / person / interest (migration 027, #81)
+- Cleanup job — `pruneStalePool` deletes pending/scored candidates older than 30 days, runs at the end of every daily discovery pass
 
 **Remaining:**
 
-- Recommendation extraction — Gemma reading followed people's text outputs to populate `person_recommendations`
-- Kid interest-add routed through the guard as a distinct request_type (so the eval set per type stays clean)
-- Four-layer profile enrichment — behavioural signals, per-person trust weights, richer `inferred_affinities` (statements + evidence)
-- Related-people expansion (for follow suggestions, not direct surfacing)
-- "Why this?" UI affordance on discovery cards, routing through a specific person where possible
-- Cold start handling copy
-- Cleanup job: prune unsurfaced candidates >30 days old
+- Kid interest-add routed through the guard as a distinct `request_type` (so the eval set per type stays clean). Guard side already accepts `kid_interest`; `/interests/user-add` needs to route through `guard_eval` for kids and log a shadow verdict
+- "Why this?" — two parts: enforce the brief's hard filter at surface time (drop candidates with `why_text IS NULL`), and add a tap-to-reveal affordance on discovery cards that shows the one-sentence Gemma explanation
+- Cold start — rewrite the existing empty-state copy in `Feed.tsx` from passive ("check back soon") to directive ("follow a few people and rate what you watch"). No new trigger logic; the existing empty-state condition is the cold-start moment
 
-**Ends with:** Today has a populated "Picked for you" with visible reasoning, mostly naming a specific person. Adults can follow across media types; kids follow people via YouTube channels (v1). Scarcity principle honoured. Guard still shadow-mode.
+**Deferred to Phase 7** (need richer text outputs than YouTube descriptions to be worth the build):
+
+- Recommendation extraction — Gemma reading followed people's text outputs to populate `person_recommendations`. YT-only descriptions yield too little signal; lands naturally alongside Substack/podcast/book ingestion
+- Related-people expansion (for follow suggestions, not direct surfacing) — same reason; also gets a natural home when Phase 7 introduces new card types and surfaces
+
+**Ends with:** Today has a populated "Picked for you" with visible reasoning, mostly naming a specific person. Kids follow people via YouTube channels (v1). Scarcity principle honoured. Guard still shadow-mode.
 
 ### Phase 6 — Guard live
 
@@ -1133,6 +1138,7 @@ Specs in Sections 7 and 9a. ~2-3 sessions.
 - Direct-support link surfacing on person cards
 - Unified feed rendering (video + article + podcast + paper + book + recipe cards)
 - Dismiss/save/dwell signal capture across all types
+- **Deferred from Phase 5:** general recommendation extraction across all followed people's text outputs (populates `person_recommendations`), and related-people expansion (guests, collaborators, frequently-mentioned) feeding a follow-suggestions surface — both wait on richer-than-YT text inputs to be worth the build
 
 **Ends with:** adult feed is a proper daily read across all media types, driven by people you follow and their recommendations. Partner can get a real cooking + travel feed. Kids unchanged (video-only, channel-as-person).
 
