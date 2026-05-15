@@ -1,0 +1,400 @@
+import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest';
+
+vi.mock('../../config', () => ({
+  config: { OLLAMA_URL: 'http://localhost:11434', OLLAMA_MODEL: 'gemma4:e4b' },
+}));
+
+vi.mock('../../db/client', async () => {
+  const { default: Database } = await import('better-sqlite3');
+  const memoryDb = new Database(':memory:');
+  memoryDb.pragma('foreign_keys = ON');
+  return { db: memoryDb };
+});
+
+vi.mock('../../logger', () => ({
+  logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+}));
+
+vi.mock('../../queue', () => ({
+  redis: {},
+  discoveryQueue: { add: vi.fn() },
+  guardQueue: {},
+  downloadQueue: {},
+  thumbsQueue: {},
+  deleteQueue: {},
+}));
+
+vi.mock('../../ytdlp', () => ({
+  searchVideosWithDates: vi.fn(),
+  flatPlaylistChannel: vi.fn(),
+}));
+
+import { db } from '../../db/client';
+import { runMigrations } from '../../db/migrate';
+import { surfaceForToday } from './surface';
+
+const KID_USER_ID = '11111111-1111-7111-8111-111111111111';
+const ADULT_USER_ID = '22222222-2222-7222-8222-222222222222';
+const INTEREST_ID = '33333333-3333-7333-8333-333333333333';
+const INTEREST_ID_2 = '44444444-4444-7444-8444-444444444444';
+const INTEREST_ID_3 = '55555555-5555-7555-8555-555555555555';
+const INTEREST_ID_4 = '66666666-6666-7666-8666-666666666666';
+const INTEREST_ID_5 = '77777777-7777-7777-8777-777777777777';
+const INTEREST_ID_6 = '88888888-8888-7888-8888-888888888888';
+
+interface CandidateOpts {
+  candidateId: string;
+  userId?: string;
+  status?: string;
+  guardVerdict?: string | null;
+  title?: string | null;
+  publishedAt?: string | null;
+  connectionScore?: number | null;
+  qualityScore?: number | null;
+  timeSensitivity?: string | null;
+  interestId?: string | null;
+  surfacedDate?: string | null;
+  externalId?: string;
+  createdAt?: string;
+}
+
+function insertCandidate(opts: CandidateOpts): void {
+  const userId = opts.userId ?? KID_USER_ID;
+  const externalId = opts.externalId ?? opts.candidateId;
+  const createdAt = opts.createdAt ?? new Date().toISOString();
+  db.prepare(`
+    INSERT INTO candidate_pool
+      (candidate_id, user_id, content_type, source_type,
+       interest_id, url, external_id, title,
+       connection_score, quality_score, time_sensitivity,
+       published_at, guard_verdict, status, surfaced_date, created_at)
+    VALUES (?, ?, 'video', 'interest_search',
+            ?, ?, ?, ?,
+            ?, ?, ?,
+            ?, ?, ?, ?, ?)
+  `).run(
+    opts.candidateId,
+    userId,
+    opts.interestId ?? null,
+    `https://www.youtube.com/watch?v=${opts.candidateId}`,
+    externalId,
+    opts.title ?? `Title for ${opts.candidateId}`,
+    opts.connectionScore ?? 8,
+    opts.qualityScore ?? 8,
+    opts.timeSensitivity ?? 'evergreen',
+    opts.publishedAt ?? new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
+    opts.guardVerdict ?? null,
+    opts.status ?? 'scored',
+    opts.surfacedDate ?? null,
+    createdAt,
+  );
+}
+
+function insertRequest(userId: string, youtubeId: string): void {
+  db.prepare(`
+    INSERT INTO requests
+      (request_id, user_id, source, url, youtube_id, status, requested_at)
+    VALUES (?, ?, 'search', ?, ?, 'pending', ?)
+  `).run(
+    `req-${youtubeId}`,
+    userId,
+    `https://www.youtube.com/watch?v=${youtubeId}`,
+    youtubeId,
+    new Date().toISOString(),
+  );
+}
+
+function todayIso(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+beforeAll(() => {
+  runMigrations();
+  db.prepare(
+    'INSERT INTO users (user_id, display_name, role, age_gate, created_at) VALUES (?, ?, ?, ?, ?)',
+  ).run(KID_USER_ID, 'Boy1', 'kid', 12, new Date().toISOString());
+  db.prepare(
+    'INSERT INTO users (user_id, display_name, role, age_gate, created_at) VALUES (?, ?, ?, ?, ?)',
+  ).run(ADULT_USER_ID, 'Parent1', 'parent', 18, new Date().toISOString());
+
+  const insertInterest = db.prepare(`
+    INSERT INTO interests (id, label, search_terms, category, source)
+    VALUES (?, ?, '["x"]', 'tech', 'seed')
+  `);
+  insertInterest.run(INTEREST_ID, 'functional programming');
+  insertInterest.run(INTEREST_ID_2, 'submarines');
+  insertInterest.run(INTEREST_ID_3, 'crystallography');
+  insertInterest.run(INTEREST_ID_4, 'origami');
+  insertInterest.run(INTEREST_ID_5, 'pottery');
+  insertInterest.run(INTEREST_ID_6, 'gardening');
+
+  const insertUserInterest = db.prepare(`
+    INSERT INTO user_interests (user_id, interest_id, rank, expertise, liked, added_at)
+    VALUES (?, ?, ?, 'comfortable', 1, ?)
+  `);
+  const now = new Date().toISOString();
+  // Kid: ranks 1..6. The cap-blocked / per-interest-cap tests want rank 1
+  // (top interest), the "stretch only" tests want rank > 3.
+  insertUserInterest.run(KID_USER_ID, INTEREST_ID, 1, now);
+  insertUserInterest.run(KID_USER_ID, INTEREST_ID_2, 2, now);
+  insertUserInterest.run(KID_USER_ID, INTEREST_ID_3, 3, now);
+  insertUserInterest.run(KID_USER_ID, INTEREST_ID_4, 4, now);
+  insertUserInterest.run(KID_USER_ID, INTEREST_ID_5, 5, now);
+  insertUserInterest.run(KID_USER_ID, INTEREST_ID_6, 6, now);
+  insertUserInterest.run(ADULT_USER_ID, INTEREST_ID, 1, now);
+  insertUserInterest.run(ADULT_USER_ID, INTEREST_ID_2, 2, now);
+});
+
+beforeEach(() => {
+  db.exec('DELETE FROM candidate_pool');
+  db.exec('DELETE FROM requests');
+});
+
+describe('surfaceForToday — kid-safety filter (eligibleGuard)', () => {
+  it('excludes kid candidates with guard_verdict = clear_no', () => {
+    insertCandidate({ candidateId: 'cand-no', guardVerdict: 'clear_no' });
+    insertCandidate({ candidateId: 'cand-yes', guardVerdict: 'clear_yes' });
+
+    const verdicts = surfaceForToday(KID_USER_ID, true);
+
+    const ids = verdicts.map((v) => v.candidate.candidateId);
+    expect(ids).not.toContain('cand-no');
+    expect(ids).toContain('cand-yes');
+  });
+
+  it('excludes kid candidates with guard_verdict = uncertain', () => {
+    insertCandidate({ candidateId: 'cand-uncertain', guardVerdict: 'uncertain' });
+    insertCandidate({ candidateId: 'cand-yes', guardVerdict: 'clear_yes' });
+
+    const verdicts = surfaceForToday(KID_USER_ID, true);
+
+    const ids = verdicts.map((v) => v.candidate.candidateId);
+    expect(ids).not.toContain('cand-uncertain');
+    expect(ids).toContain('cand-yes');
+  });
+
+  it('admits kid candidates with guard_verdict = clear_yes OR NULL', () => {
+    insertCandidate({ candidateId: 'cand-null', guardVerdict: null });
+    insertCandidate({ candidateId: 'cand-yes', guardVerdict: 'clear_yes' });
+    insertCandidate({ candidateId: 'cand-no', guardVerdict: 'clear_no' });
+    insertCandidate({ candidateId: 'cand-unc', guardVerdict: 'uncertain' });
+
+    const verdicts = surfaceForToday(KID_USER_ID, true);
+    const ids = verdicts.map((v) => v.candidate.candidateId);
+
+    expect(ids).toEqual(expect.arrayContaining(['cand-null', 'cand-yes']));
+    expect(ids).not.toContain('cand-no');
+    expect(ids).not.toContain('cand-unc');
+  });
+
+  it('admits every guard verdict for a non-kid user (eligibleGuard is empty)', () => {
+    insertCandidate({ candidateId: 'a-null', userId: ADULT_USER_ID, guardVerdict: null });
+    insertCandidate({ candidateId: 'a-yes', userId: ADULT_USER_ID, guardVerdict: 'clear_yes' });
+    insertCandidate({ candidateId: 'a-no', userId: ADULT_USER_ID, guardVerdict: 'clear_no' });
+    insertCandidate({ candidateId: 'a-unc', userId: ADULT_USER_ID, guardVerdict: 'uncertain' });
+
+    const verdicts = surfaceForToday(ADULT_USER_ID, false);
+    const ids = verdicts.map((v) => v.candidate.candidateId).sort();
+
+    expect(ids).toEqual(['a-no', 'a-null', 'a-unc', 'a-yes']);
+  });
+});
+
+describe('surfaceForToday — per-day cap', () => {
+  it('returns [] and writes nothing when 5 already surfaced today for a kid', () => {
+    for (let i = 0; i < 5; i++) {
+      insertCandidate({
+        candidateId: `already-${i}`,
+        guardVerdict: 'clear_yes',
+        status: 'surfaced',
+        surfacedDate: todayIso(),
+      });
+    }
+    // A fresh candidate that *would* be eligible if the cap weren't full.
+    insertCandidate({ candidateId: 'fresh', guardVerdict: 'clear_yes' });
+
+    const verdicts = surfaceForToday(KID_USER_ID, true);
+
+    expect(verdicts).toEqual([]);
+    const fresh = db.prepare(
+      'SELECT status, surfaced_date FROM candidate_pool WHERE candidate_id = ?',
+    ).get('fresh') as { status: string; surfaced_date: string | null };
+    expect(fresh.status).toBe('scored');
+    expect(fresh.surfaced_date).toBeNull();
+  });
+
+  it('surfaces at most one new candidate when 4 already surfaced for a kid', () => {
+    // Pre-surface 4 items on distinct interests so they don't consume the
+    // kid per-interest cap (1) for fresh items below. interestId left null
+    // on the prefill rows — they still consume the daily-cap slot via the
+    // surfaced_date count.
+    for (let i = 0; i < 4; i++) {
+      insertCandidate({
+        candidateId: `already-${i}`,
+        guardVerdict: 'clear_yes',
+        status: 'surfaced',
+        surfacedDate: todayIso(),
+        title: `Already surfaced item ${i}`,
+        interestId: null,
+      });
+    }
+    // Three fresh items, each on a distinct ranked interest. With cap=5
+    // and 4 already used, remaining=1: the ranker is called with cap=1,
+    // so stretchQuota=1 and regularQuota=0. Stretch picks require rank>3,
+    // so the fresh items use ranks 4, 5, 6 — distinct interests so the
+    // kid per-interest cap (1) doesn't shrink the pool further.
+    insertCandidate({
+      candidateId: 'fresh-1', guardVerdict: 'clear_yes',
+      title: 'Aardvark biology basics', interestId: INTEREST_ID_4,
+      connectionScore: 9, qualityScore: 9,
+    });
+    insertCandidate({
+      candidateId: 'fresh-2', guardVerdict: 'clear_yes',
+      title: 'Bagpipe maintenance guide', interestId: INTEREST_ID_5,
+      connectionScore: 9, qualityScore: 9,
+    });
+    insertCandidate({
+      candidateId: 'fresh-3', guardVerdict: 'clear_yes',
+      title: 'Crystallography for amateurs', interestId: INTEREST_ID_6,
+      connectionScore: 9, qualityScore: 9,
+    });
+
+    surfaceForToday(KID_USER_ID, true);
+
+    const surfacedToday = db.prepare(
+      "SELECT candidate_id FROM candidate_pool WHERE surfaced_date = ? AND status = 'surfaced'",
+    ).all(todayIso()) as Array<{ candidate_id: string }>;
+    expect(surfacedToday).toHaveLength(5);
+    const freshSurfaced = surfacedToday.filter((r) => r.candidate_id.startsWith('fresh-'));
+    expect(freshSurfaced).toHaveLength(1);
+  });
+});
+
+describe('surfaceForToday — mid-day re-run carry-over', () => {
+  it('dedups against an already-surfaced similar title from earlier today', () => {
+    // Earlier today: a kid had one item surfaced (interest_id left null
+    // so the per-interest cap on fresh items below isn't pre-consumed).
+    insertCandidate({
+      candidateId: 'earlier',
+      guardVerdict: 'clear_yes',
+      status: 'surfaced',
+      surfacedDate: todayIso(),
+      title: 'Beginner monad tutorial walkthrough',
+      interestId: null,
+    });
+    // Now: an eligible candidate with a near-duplicate title. The ranker
+    // dedup (Jaccard ≥ 0.4 on shared tokens) should refuse it.
+    insertCandidate({
+      candidateId: 'near-dup',
+      guardVerdict: 'clear_yes',
+      title: 'Beginner monad tutorial walkthrough revisited',
+      interestId: INTEREST_ID,
+    });
+    // And one with a totally different title (different interest so the
+    // per-interest cap doesn't bite), which should be picked.
+    insertCandidate({
+      candidateId: 'distinct',
+      guardVerdict: 'clear_yes',
+      title: 'Submarine sonar history overview',
+      interestId: INTEREST_ID_2,
+    });
+
+    surfaceForToday(KID_USER_ID, true);
+
+    const nearDup = db.prepare(
+      'SELECT status FROM candidate_pool WHERE candidate_id = ?',
+    ).get('near-dup') as { status: string };
+    const distinct = db.prepare(
+      'SELECT status FROM candidate_pool WHERE candidate_id = ?',
+    ).get('distinct') as { status: string };
+
+    // The near-dup candidate was not picked (still 'scored'); the
+    // unrelated title was, proving prefilledTitles was passed into rank.
+    expect(nearDup.status).toBe('scored');
+    expect(distinct.status).toBe('surfaced');
+  });
+
+  it("writes status='surfaced', surfaced_date, surfaced_at only for regular/stretch verdicts", () => {
+    // pickable: high-scoring item on a fresh interest — gets surfaced.
+    insertCandidate({
+      candidateId: 'pickable',
+      guardVerdict: 'clear_yes',
+      title: 'Alpha pickable item',
+      connectionScore: 9, qualityScore: 9,
+      interestId: INTEREST_ID_2,
+    });
+    // low-qual: hits the hard quality floor (< MIN_QUALITY_SCORE = 5).
+    insertCandidate({
+      candidateId: 'low-qual',
+      guardVerdict: 'clear_yes',
+      title: 'Bravo too low quality',
+      connectionScore: 9, qualityScore: 2,
+      interestId: INTEREST_ID_3,
+    });
+    // Pre-surface one item on INTEREST_ID so cap (1 for kid) is full.
+    insertCandidate({
+      candidateId: 'already-on-interest',
+      guardVerdict: 'clear_yes',
+      status: 'surfaced',
+      surfacedDate: todayIso(),
+      title: 'Charlie filler title',
+      interestId: INTEREST_ID,
+    });
+    insertCandidate({
+      candidateId: 'cap-blocked',
+      guardVerdict: 'clear_yes',
+      title: 'Delta capped out candidate',
+      interestId: INTEREST_ID,
+      connectionScore: 9, qualityScore: 9,
+    });
+
+    surfaceForToday(KID_USER_ID, true);
+
+    const rows = db.prepare(
+      'SELECT candidate_id, status, surfaced_date, surfaced_at FROM candidate_pool ORDER BY candidate_id',
+    ).all() as Array<{ candidate_id: string; status: string; surfaced_date: string | null; surfaced_at: string | null }>;
+
+    const byId = new Map(rows.map((r) => [r.candidate_id, r]));
+
+    const pickable = byId.get('pickable');
+    expect(pickable?.status).toBe('surfaced');
+    expect(pickable?.surfaced_date).toBe(todayIso());
+    expect(pickable?.surfaced_at).not.toBeNull();
+
+    const lowQual = byId.get('low-qual');
+    expect(lowQual?.status).toBe('scored');
+    expect(lowQual?.surfaced_date).toBeNull();
+    expect(lowQual?.surfaced_at).toBeNull();
+
+    const capped = byId.get('cap-blocked');
+    expect(capped?.status).toBe('scored');
+    expect(capped?.surfaced_date).toBeNull();
+    expect(capped?.surfaced_at).toBeNull();
+  });
+});
+
+describe('surfaceForToday — already-requested exclusion', () => {
+  it("excludes a candidate whose external_id matches a row in requests for the same user", () => {
+    insertCandidate({ candidateId: 'requested', guardVerdict: 'clear_yes', externalId: 'yt-aaa' });
+    insertCandidate({ candidateId: 'fresh', guardVerdict: 'clear_yes', externalId: 'yt-bbb' });
+    insertRequest(KID_USER_ID, 'yt-aaa');
+
+    const verdicts = surfaceForToday(KID_USER_ID, true);
+    const ids = verdicts.map((v) => v.candidate.candidateId);
+
+    expect(ids).not.toContain('requested');
+    expect(ids).toContain('fresh');
+  });
+
+  it("only excludes when the request belongs to the same user", () => {
+    insertCandidate({ candidateId: 'mine', guardVerdict: 'clear_yes', externalId: 'yt-shared' });
+    // A different user already requested the same youtube_id — should not
+    // exclude it from this user's surface.
+    insertRequest(ADULT_USER_ID, 'yt-shared');
+
+    const verdicts = surfaceForToday(KID_USER_ID, true);
+    const ids = verdicts.map((v) => v.candidate.candidateId);
+
+    expect(ids).toContain('mine');
+  });
+});
