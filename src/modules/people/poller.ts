@@ -17,7 +17,7 @@ const RSS_POLL_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
 // ── RSS parsing ───────────────────────────────────────────────────────────────
 
-interface RssVideo {
+export interface RssVideo {
   videoId: string;
   title: string;
   publishedAt: string;
@@ -34,7 +34,10 @@ function decodeHtmlEntities(s: string): string {
     .replace(/&#x27;/g, "'");
 }
 
-function parseYoutubeRss(xml: string): { channelName: string; videos: RssVideo[] } {
+// Exported for direct unit-testing of the parser's three observable
+// properties (HTML-entity decoding, missing-thumbnail safety, entry
+// ordering). Callers inside this module are the only production users.
+export function parseYoutubeRss(xml: string): { channelName: string; videos: RssVideo[] } {
   const feedTitleMatch = /<feed[^>]*>[\s\S]*?<title>([^<]+)<\/title>/.exec(xml);
   const channelName = decodeHtmlEntities(feedTitleMatch?.[1]?.trim() ?? '');
 
