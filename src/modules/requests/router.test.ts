@@ -67,8 +67,9 @@ import {
 //
 // Minimal mount: same body parser, same error-to-status mapping the real
 // server uses (server.ts:130-140), so ValidationError lands as 400 and
-// NotFoundError as 404 under test. We listen on port 0 for an ephemeral port
-// and hit it with the built-in fetch so we don't add supertest as a dep.
+// NotFoundError as 404 under test. We listen on an ephemeral port on the
+// loopback interface and drive the app with the built-in `fetch`, which is
+// the supertest happy-path without the dep.
 
 const app = express();
 app.use(express.json());
@@ -82,8 +83,43 @@ app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
   res.status(500).json({ error: 'INTERNAL_ERROR', message: 'Something went wrong' });
 });
 
-let server: Server;
+interface RouterResponse {
+  status: number;
+  headers: Record<string, string | string[] | undefined>;
+  body: string;
+  json: <T = unknown>() => T;
+}
+
+// In-process test client. The Express app is bound to a real ephemeral port
+// on the loopback interface and driven with the built-in `fetch`. Binding
+// 127.0.0.1 (rather than the default 0.0.0.0) keeps the suite runnable in
+// review/CI environments where unprivileged binds to wildcard addresses are
+// rejected. Mirrors the supertest happy-path without pulling in supertest.
 let baseUrl: string;
+let server: Server;
+
+async function request(
+  method: string,
+  path: string,
+  init: { body?: unknown } = {},
+): Promise<RouterResponse> {
+  const resp = await fetch(`${baseUrl}${path}`, {
+    method: method.toUpperCase(),
+    headers: init.body === undefined ? {} : { 'content-type': 'application/json' },
+    body: init.body === undefined ? undefined : JSON.stringify(init.body),
+  });
+  const text = await resp.text();
+  const headers: Record<string, string | string[] | undefined> = {};
+  resp.headers.forEach((value, key) => {
+    headers[key.toLowerCase()] = value;
+  });
+  return {
+    status: resp.status,
+    headers,
+    body: text,
+    json: <T = unknown>() => JSON.parse(text) as T,
+  };
+}
 
 const USER_ID = '11111111-1111-7111-8111-111111111111';
 const OTHER_USER_ID = '22222222-2222-7222-8222-222222222222';
@@ -98,7 +134,7 @@ beforeAll(async () => {
   ).run(OTHER_USER_ID, 'Boy2', 'kid', 10, new Date().toISOString());
 
   await new Promise<void>((resolve) => {
-    server = app.listen(0, () => {
+    server = app.listen(0, '127.0.0.1', () => {
       const addr = server.address() as AddressInfo;
       baseUrl = `http://127.0.0.1:${addr.port}`;
       resolve();
@@ -189,10 +225,8 @@ describe('POST /requests', () => {
   it('extracts the first http URL from share-sheet text and passes it through to apply', async () => {
     const shareText = 'Source: YouTube\nhttps://www.youtube.com/watch?v=abc12345xyz';
 
-    const resp = await fetch(`${baseUrl}/requests`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ url: shareText, user: 'Boy1' }),
+    const resp = await request('POST', '/requests', {
+      body: { url: shareText, user: 'Boy1' },
     });
 
     expect(resp.status).toBe(202);
@@ -211,10 +245,8 @@ describe('POST /requests', () => {
     ['https://www.youtube.com/live/livestream1', 'livestream1'],
     ['https://youtu.be/shortidab12', 'shortidab12'],
   ])('accepts %s and extracts youtube id %s', async (url, expectedId) => {
-    const resp = await fetch(`${baseUrl}/requests`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ url, user: 'Boy1' }),
+    const resp = await request('POST', '/requests', {
+      body: { url, user: 'Boy1' },
     });
 
     expect(resp.status).toBe(202);
@@ -225,34 +257,25 @@ describe('POST /requests', () => {
   });
 
   it('rejects a non-YouTube URL with a 400 ValidationError', async () => {
-    const resp = await fetch(`${baseUrl}/requests`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ url: 'https://example.com/not-youtube', user: 'Boy1' }),
+    const resp = await request('POST', '/requests', {
+      body: { url: 'https://example.com/not-youtube', user: 'Boy1' },
     });
 
     expect(resp.status).toBe(400);
-    const body = (await resp.json()) as { error: string };
-    expect(body.error).toBe('VALIDATION_ERROR');
+    expect(resp.json<{ error: string }>().error).toBe('VALIDATION_ERROR');
     expect(applyMock).not.toHaveBeenCalled();
   });
 
   it('returns 400 when url is missing', async () => {
-    const resp = await fetch(`${baseUrl}/requests`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ user: 'Boy1' }),
-    });
+    const resp = await request('POST', '/requests', { body: { user: 'Boy1' } });
 
     expect(resp.status).toBe(400);
     expect(applyMock).not.toHaveBeenCalled();
   });
 
   it('returns 400 when neither userId nor user is provided', async () => {
-    const resp = await fetch(`${baseUrl}/requests`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ url: 'https://www.youtube.com/watch?v=abc12345xyz' }),
+    const resp = await request('POST', '/requests', {
+      body: { url: 'https://www.youtube.com/watch?v=abc12345xyz' },
     });
 
     expect(resp.status).toBe(400);
@@ -260,13 +283,8 @@ describe('POST /requests', () => {
   });
 
   it('resolves a user by display name passed as `user`', async () => {
-    const resp = await fetch(`${baseUrl}/requests`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        url: 'https://www.youtube.com/watch?v=byname12345',
-        user: 'Boy1',
-      }),
+    const resp = await request('POST', '/requests', {
+      body: { url: 'https://www.youtube.com/watch?v=byname12345', user: 'Boy1' },
     });
 
     expect(resp.status).toBe(202);
@@ -275,13 +293,8 @@ describe('POST /requests', () => {
   });
 
   it('resolves a user by UUID passed as `userId`', async () => {
-    const resp = await fetch(`${baseUrl}/requests`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        url: 'https://www.youtube.com/watch?v=byuuid12345',
-        userId: USER_ID,
-      }),
+    const resp = await request('POST', '/requests', {
+      body: { url: 'https://www.youtube.com/watch?v=byuuid12345', userId: USER_ID },
     });
 
     expect(resp.status).toBe(202);
@@ -298,24 +311,23 @@ describe('POST /requests', () => {
       title: 'Existing title',
     });
 
-    const resp = await fetch(`${baseUrl}/requests`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        url: `https://www.youtube.com/watch?v=${youtubeId}`,
-        user: 'Boy1',
-      }),
+    const resp = await request('POST', '/requests', {
+      body: { url: `https://www.youtube.com/watch?v=${youtubeId}`, user: 'Boy1' },
     });
 
     expect(resp.status).toBe(202);
-    const body = (await resp.json()) as { requestId: string; status: string };
+    const body = resp.json<{ requestId: string; status: string }>();
     expect(body.requestId).toBe('existing-ready');
     expect(body.status).toBe('ready');
     // Dedup short-circuits before create_share_sheet would fire.
     expect(applyMock).not.toHaveBeenCalled();
 
     // The re-notify is deliberate UX: easy to delete by accident, so we always
-    // re-fire video_ready on a ready-dedup.
+    // re-fire video_ready on a ready-dedup. The router schedules the notify
+    // call with `void`-style fire-and-forget, so the microtask queue may not
+    // have drained by the time `res.end()` returns. Flush before asserting.
+    await new Promise((resolve) => setImmediate(resolve));
+
     expect(notifyMock).toHaveBeenCalledTimes(1);
     const [event, userIdArg] = notifyMock.mock.calls[0]!;
     expect(event).toEqual({
@@ -334,40 +346,34 @@ describe('POST /requests', () => {
       youtube_id: youtubeId,
     });
 
-    const resp = await fetch(`${baseUrl}/requests`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        url: `https://www.youtube.com/watch?v=${youtubeId}`,
-        user: 'Boy1',
-      }),
+    const resp = await request('POST', '/requests', {
+      body: { url: `https://www.youtube.com/watch?v=${youtubeId}`, user: 'Boy1' },
     });
 
     expect(resp.status).toBe(202);
-    const body = (await resp.json()) as { requestId: string; status: string };
+    const body = resp.json<{ requestId: string; status: string }>();
     expect(body.requestId).toBe('existing-downloading');
     expect(body.status).toBe('downloading');
     expect(applyMock).not.toHaveBeenCalled();
+
+    // Even after flushing the microtask queue, notify must not fire for a
+    // non-ready dedup — only the `ready` branch re-notifies.
+    await new Promise((resolve) => setImmediate(resolve));
     expect(notifyMock).not.toHaveBeenCalled();
   });
 
   it('happy path: no duplicate exists → applies create_share_sheet and responds 202 with status downloading', async () => {
-    const resp = await fetch(`${baseUrl}/requests`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        url: 'https://www.youtube.com/watch?v=happy123abc',
-        user: 'Boy1',
-      }),
+    const resp = await request('POST', '/requests', {
+      body: { url: 'https://www.youtube.com/watch?v=happy123abc', user: 'Boy1' },
     });
 
     expect(resp.status).toBe(202);
-    const body = (await resp.json()) as {
+    const body = resp.json<{
       requestId: string;
       status: string;
       message: string;
       pwaUrl: string;
-    };
+    }>();
     expect(body.status).toBe('downloading');
     expect(typeof body.requestId).toBe('string');
     expect(body.requestId.length).toBeGreaterThan(0);
@@ -433,16 +439,16 @@ describe('GET /requests/feed', () => {
       added_at: isoAt(2),
     });
 
-    const resp = await fetch(`${baseUrl}/requests/feed?user=Boy1`);
+    const resp = await request('GET', '/requests/feed?user=Boy1');
     expect(resp.status).toBe(200);
-    const body = (await resp.json()) as {
+    const body = resp.json<{
       days: Array<{
         date: string;
         label: string;
         cards: Array<{ request_id: string }>;
         sections?: Array<{ id: string; label: string; cards: Array<{ request_id: string }> }>;
       }>;
-    };
+    }>();
 
     // Days come back DESC by added_at — today first.
     expect(body.days.length).toBe(3);
@@ -490,11 +496,11 @@ describe('GET /requests/feed', () => {
       added_at: isoAt(0),
     });
 
-    const resp = await fetch(`${baseUrl}/requests/feed?user=Boy1`);
+    const resp = await request('GET', '/requests/feed?user=Boy1');
     expect(resp.status).toBe(200);
-    const body = (await resp.json()) as {
+    const body = resp.json<{
       days: Array<{ cards: Array<{ request_id: string }> }>;
-    };
+    }>();
     const ids = body.days.flatMap((d) => d.cards.map((c) => c.request_id));
     expect(ids).toContain('visible');
     expect(ids).not.toContain('hidden-dismissed');
@@ -529,11 +535,11 @@ describe('GET /requests/feed', () => {
       added_at: isoAt(0),
     });
 
-    const resp = await fetch(`${baseUrl}/requests/feed?user=Boy1`);
+    const resp = await request('GET', '/requests/feed?user=Boy1');
     expect(resp.status).toBe(200);
-    const body = (await resp.json()) as {
+    const body = resp.json<{
       days: Array<{ cards: Array<{ request_id: string }> }>;
-    };
+    }>();
     const ids = body.days.flatMap((d) => d.cards.map((c) => c.request_id));
     expect(ids).toContain('channel-ready');
     expect(ids).toContain('share-downloading');
@@ -559,11 +565,11 @@ describe('GET /requests/feed', () => {
       rejection_reason: 'Not suitable for this age band',
     });
 
-    const resp = await fetch(`${baseUrl}/requests/feed?user=Boy1`);
+    const resp = await request('GET', '/requests/feed?user=Boy1');
     expect(resp.status).toBe(200);
-    const body = (await resp.json()) as {
+    const body = resp.json<{
       days: Array<{ cards: Array<{ request_id: string; rejection_reason: string | null }> }>;
-    };
+    }>();
     const byId = new Map(
       body.days.flatMap((d) => d.cards).map((c) => [c.request_id, c.rejection_reason]),
     );
@@ -572,7 +578,45 @@ describe('GET /requests/feed', () => {
   });
 
   it('returns 400 when neither userId nor user is provided', async () => {
-    const resp = await fetch(`${baseUrl}/requests/feed`);
+    const resp = await request('GET', '/requests/feed');
+    expect(resp.status).toBe(400);
+  });
+});
+
+// ─── GET /requests — list endpoint (search-equivalent) ──────────────────────
+//
+// The acceptance criteria pair `GET /feed` with the `GET /search-equivalent`
+// list endpoint (`GET /requests?user=...`) for the rejection-reason mapping —
+// a regression that removed `displayRejectionReason` from this path would
+// otherwise sneak past the feed-only assertion above.
+
+describe('GET /requests (list)', () => {
+  it('applies displayRejectionReason to every outgoing row', async () => {
+    insertRequestRow({
+      request_id: 'list-cancelled',
+      status: 'rejected',
+      source: 'share_sheet',
+      rejection_reason: '__cancelled_by_user',
+    });
+    insertRequestRow({
+      request_id: 'list-blocked',
+      status: 'rejected',
+      source: 'share_sheet',
+      rejection_reason: 'Not suitable for this age band',
+    });
+
+    const resp = await request('GET', '/requests?user=Boy1');
+    expect(resp.status).toBe(200);
+    const body = resp.json<{
+      requests: Array<{ request_id: string; rejection_reason: string | null }>;
+    }>();
+    const byId = new Map(body.requests.map((r) => [r.request_id, r.rejection_reason]));
+    expect(byId.get('list-cancelled')).toBe('Cancelled');
+    expect(byId.get('list-blocked')).toBe('Not suitable for this age band');
+  });
+
+  it('returns 400 when neither userId nor user is provided', async () => {
+    const resp = await request('GET', '/requests');
     expect(resp.status).toBe(400);
   });
 });
@@ -592,7 +636,7 @@ describe('lifecycle POST endpoints (smoke)', () => {
       settled: Promise.resolve(),
     });
 
-    const resp = await fetch(`${baseUrl}/requests/watch-req/watched`, { method: 'POST' });
+    const resp = await request('POST', '/requests/watch-req/watched');
 
     expect(resp.status).toBe(204);
     expect(applyMock).toHaveBeenCalledWith({ kind: 'mark_watched', requestId: 'watch-req' });
@@ -608,10 +652,10 @@ describe('lifecycle POST endpoints (smoke)', () => {
       settled: Promise.resolve(),
     });
 
-    const resp = await fetch(`${baseUrl}/requests/cancel-illegal/cancel`, { method: 'POST' });
+    const resp = await request('POST', '/requests/cancel-illegal/cancel');
 
     expect(resp.status).toBe(409);
-    const body = (await resp.json()) as { error: string; message: string };
+    const body = resp.json<{ error: string; message: string }>();
     expect(body.error).toBe('INVALID_STATE');
     expect(body.message).toMatch(/ready/);
   });
@@ -622,7 +666,7 @@ describe('lifecycle POST endpoints (smoke)', () => {
       settled: Promise.resolve(),
     });
 
-    const resp = await fetch(`${baseUrl}/requests/does-not-exist/delete`, { method: 'POST' });
+    const resp = await request('POST', '/requests/does-not-exist/delete');
 
     expect(resp.status).toBe(404);
   });
