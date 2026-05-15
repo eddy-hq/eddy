@@ -118,6 +118,20 @@ describe('validateActionToken — malformed inputs', () => {
       reason: 'malformed',
     });
   });
+
+  it('rejects when the base64 payload contains characters outside the base64url alphabet', () => {
+    // Spaces, `+`, `/`, `=` are all outside base64url. Node's Buffer.from
+    // currently tolerates these by skipping them, so the failure mode falls
+    // through to the colon-count check — but the test pins the externally
+    // observable behaviour for the "bad base64" case so a stricter decoder
+    // would still report `malformed` rather than e.g. silently advancing to
+    // signature verification with a partly-decoded payload.
+    const sig = 'deadbeef';
+    expect(validateActionToken(`not a valid base64!.${sig}`)).toEqual({
+      ok: false,
+      reason: 'malformed',
+    });
+  });
 });
 
 describe('validateActionToken — signature failures', () => {
