@@ -48,6 +48,7 @@ No Python in Eddy — yt-dlp is a binary shell-out.
 - Module boundaries: import only from `index.ts`. No reaching into internals.
 - DB access only via `src/db/client.ts`. DB calls live inside the owning module, not in shared helpers.
 - Tests (Vitest) for: guard verdicts, override expiry, deletion logic, MCP privacy filter, signed-token validation. Skip trivial.
+- **BullMQ custom job IDs:** must contain 0 colons or exactly 2 (the repeatable-job `name:id:type` form). A single colon throws synchronously inside BullMQ and is only caught at `warn` level — the job never lands in Redis. Use `-` as separator for new job types (e.g. `delete-${id}`).
 
 ## Push back if asked to
 
