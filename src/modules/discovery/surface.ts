@@ -55,8 +55,12 @@ export function surfaceForToday(userId: string, isKid: boolean): Verdict[] {
   const eligibleGuard = isKid ? "AND (c.guard_verdict = 'clear_yes' OR c.guard_verdict IS NULL)" : '';
 
   // Data-shape SQL only: status, surfaced_date, kid guard, history
-  // exclusion. Score floors live in the ranker so production and preview
-  // can't drift on what counts as eligible.
+  // exclusion, why_text presence. Score floors live in the ranker so
+  // production and preview can't drift on what counts as eligible.
+  //
+  // why_text IS NOT NULL enforces brief §9a: every surfaced item must
+  // carry a one-sentence explanation. If Gemma couldn't generate one,
+  // the candidate doesn't surface.
   const rows = db.prepare(`
     SELECT c.candidate_id, c.title, c.published_at, c.connection_score,
            c.quality_score, c.time_sensitivity, c.interest_id,
@@ -67,6 +71,7 @@ export function surfaceForToday(userId: string, isKid: boolean): Verdict[] {
       ON ui.user_id = c.user_id AND ui.interest_id = c.interest_id
     WHERE c.user_id = ? AND c.status = 'scored' ${eligibleGuard}
       AND c.surfaced_date IS NULL
+      AND c.why_text IS NOT NULL
       AND NOT EXISTS (
         SELECT 1 FROM requests r
         WHERE r.user_id = c.user_id AND r.youtube_id = c.external_id
