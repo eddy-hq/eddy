@@ -80,22 +80,31 @@ interface StatResult {
 }
 
 async function statBatch(filePaths: string[]): Promise<StatResult[]> {
-  // Existence check and stat are kept separate on the remote side so an
-  // ENOENT (file truly gone — safe to flip to `gone`) is distinguishable
-  // from any other stat failure (permissions, mount glitch — leave the row
-  // alone). `test -e` is used rather than `-f` so a broken symlink still
-  // reports MISSING; downloads are written as regular files so this is
-  // belt-and-braces but cheap.
+  // Per-file outcome on the remote side:
+  //   stat succeeds                     → "<size>\t<path>"   (size)
+  //   stat fails AND error is ENOENT    → "MISSING\t<path>"  (flip to gone)
+  //   stat fails for any other reason   → "STATERR\t<path>"  (leave row)
+  //
+  // `test -e` is not used to disambiguate: it returns false for both ENOENT
+  // and EACCES-on-parent-traversal, so a permissions blip would emit
+  // MISSING and corrupt the row exactly the way this script must not. The
+  // only reliable ENOENT signal from a POSIX `stat` is the "No such file or
+  // directory" message in stderr, so stderr is captured and pattern-matched
+  // rather than discarded. GNU coreutils and BusyBox both use that phrase;
+  // anything else (EACCES, EPERM, "Permission denied", "Stale file
+  // handle", I/O errors, etc.) falls through to STATERR.
   const remoteScript = filePaths
     .map((p) => {
       const escaped = p.replace(/'/g, `'\\''`);
       return (
-        `if [ ! -e '${escaped}' ]; then ` +
-        `printf 'MISSING\\t%s\\n' '${escaped}'; ` +
-        `elif size=$(stat -c %s '${escaped}' 2>/dev/null); then ` +
+        `if size=$(stat -c %s '${escaped}' 2>/dev/null); then ` +
         `printf '%s\\t%s\\n' "$size" '${escaped}'; ` +
         `else ` +
-        `printf 'STATERR\\t%s\\n' '${escaped}'; ` +
+        `err=$(stat -c %s '${escaped}' 2>&1 >/dev/null); ` +
+        `case "$err" in ` +
+        `*'No such file or directory'*) printf 'MISSING\\t%s\\n' '${escaped}' ;; ` +
+        `*) printf 'STATERR\\t%s\\n' '${escaped}' ;; ` +
+        `esac; ` +
         `fi`
       );
     })
