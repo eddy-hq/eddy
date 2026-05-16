@@ -233,6 +233,11 @@ export async function fetchMetadata(url: string): Promise<VideoMetadata> {
 // the same format code) the server returns HTTP 416 and the job aborts.
 // Without this cleanup the watchdog re-enqueues forever and never recovers.
 export function cleanStaleIntermediates(outputDir: string, youtubeId: string): void {
+  // Empty youtubeId would collapse the prefix to '.' and match every dotfile
+  // (`.DS_Store`, etc.) in the output dir. Callers higher up should have
+  // bailed before reaching here, but defend against it locally so a stray
+  // empty value can't trash sibling files.
+  if (!youtubeId) return;
   let entries: string[];
   try {
     entries = fs.readdirSync(outputDir);

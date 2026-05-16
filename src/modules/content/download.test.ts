@@ -164,4 +164,14 @@ describe('cleanStaleIntermediates', () => {
   it('is a no-op when the directory does not exist', () => {
     expect(() => cleanStaleIntermediates('/nonexistent/path/xyz', 'whatever')).not.toThrow();
   });
+
+  it('is a no-op when the youtubeId is empty — must not match dotfiles', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'eddy-clean-'));
+    fs.writeFileSync(path.join(dir, '.DS_Store'), 'x');
+    fs.writeFileSync(path.join(dir, '.mp4'), 'x'); // pathological but possible
+
+    cleanStaleIntermediates(dir, '');
+
+    expect(fs.readdirSync(dir).sort()).toEqual(['.DS_Store', '.mp4']);
+  });
 });
