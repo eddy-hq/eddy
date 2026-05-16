@@ -11,9 +11,7 @@
 // operator's `~/.ssh/config` under the `eddy-mediaserver` Host alias —
 // this script just calls `ssh eddy-mediaserver …`. Keeping the config in
 // `~/.ssh/config` instead of repo env vars removes the duplication and
-// keeps Steve-specific identity out of committed source. (The shell
-// scripts under scripts/ still use VIDEO_SSH_* — see follow-up issue
-// for the wider consolidation.)
+// keeps operator-specific identity out of committed source.
 //
 // Why raw SQL for the gone-flip: the `requests` state machine has no event
 // for `file_state: live → gone` independent of the soft-delete user-intent

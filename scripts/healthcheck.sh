@@ -78,24 +78,23 @@ fi
 # ── Ubuntu services ──────────────────────────────────────────────────────────
 printf "\n${BOLD}Ubuntu — Media server${RESET}\n"
 
-SSH_USER="${VIDEO_SSH_USER:-steveu}"
-SSH_HOST="${VIDEO_SSH_HOST:-100.95.170.27}"
-SSH_KEY="${VIDEO_SSH_KEY:-$HOME/.ssh/id_ed25519_eddy}"
-SSH_KEY="${SSH_KEY/\~/$HOME}"
-SSH_OPTS="-i ${SSH_KEY} -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new -o BatchMode=yes"
+# SSH user/host/identity come from the operator's ~/.ssh/config under the
+# `eddy-mediaserver` Host alias.
+SSH_TARGET="eddy-mediaserver"
+SSH_OPTS="-o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new -o BatchMode=yes"
 
 # SSH connectivity
-if ssh $SSH_OPTS "${SSH_USER}@${SSH_HOST}" "exit 0" 2>/dev/null; then
+if ssh $SSH_OPTS "${SSH_TARGET}" "exit 0" 2>/dev/null; then
   check "SSH to Ubuntu" "ok"
   SSH_OK=true
 else
-  check "SSH to Ubuntu" "fail" "check ~/.ssh/id_ed25519_eddy"
+  check "SSH to Ubuntu" "fail" "check ~/.ssh/config Host eddy-mediaserver"
   SSH_OK=false
 fi
 
 if [[ "$SSH_OK" == true ]]; then
   # yt-dlp — non-interactive SSH won't load .profile, so check common paths
-  YTDLP_VER=$(ssh $SSH_OPTS "${SSH_USER}@${SSH_HOST}" \
+  YTDLP_VER=$(ssh $SSH_OPTS "${SSH_TARGET}" \
     "for p in /usr/local/bin/yt-dlp \$HOME/.local/bin/yt-dlp; do [ -x \"\$p\" ] && \$p --version 2>/dev/null && break; done" \
     2>/dev/null || echo "")
   if [[ -n "$YTDLP_VER" ]]; then
@@ -106,7 +105,7 @@ if [[ "$SSH_OK" == true ]]; then
 
   # Video path
   REMOTE_PATH="${VIDEO_OUTPUT_PATH:-/home/steveu/eddy/videos}"
-  if ssh $SSH_OPTS "${SSH_USER}@${SSH_HOST}" "test -w '${REMOTE_PATH}'" 2>/dev/null; then
+  if ssh $SSH_OPTS "${SSH_TARGET}" "test -w '${REMOTE_PATH}'" 2>/dev/null; then
     check "Video path (${REMOTE_PATH})" "ok"
   else
     check "Video path (${REMOTE_PATH})" "fail" "path missing or not writable"
@@ -115,7 +114,7 @@ if [[ "$SSH_OK" == true ]]; then
   # ntfy
   NTFY_URL="${NTFY_BASE_URL:-http://100.95.170.27:2586}"
   if docker exec eddy-ntfy wget -qO- http://localhost:80/v1/health &>/dev/null 2>/dev/null ||
-     ssh $SSH_OPTS "${SSH_USER}@${SSH_HOST}" "docker exec eddy-ntfy wget -qO- http://localhost:80/v1/health > /dev/null 2>&1" 2>/dev/null; then
+     ssh $SSH_OPTS "${SSH_TARGET}" "docker exec eddy-ntfy wget -qO- http://localhost:80/v1/health > /dev/null 2>&1" 2>/dev/null; then
     check "ntfy" "ok"
   else
     check "ntfy" "fail" "run: deploy/setup-ubuntu.sh"
@@ -124,7 +123,7 @@ if [[ "$SSH_OK" == true ]]; then
   # nginx — a 200, 403 (no listing) or 404 from the host all confirm nginx is up
   NGINX_URL="${NGINX_VIDEO_BASE_URL:-http://100.95.170.27/videos}"
   NGINX_HOST=$(echo "$NGINX_URL" | python3 -c "import sys; from urllib.parse import urlparse; u=urlparse(sys.stdin.read().strip()); print(f'{u.scheme}://{u.netloc}')")
-  NGINX_STATUS=$(ssh $SSH_OPTS "${SSH_USER}@${SSH_HOST}" \
+  NGINX_STATUS=$(ssh $SSH_OPTS "${SSH_TARGET}" \
     "curl -s -o /dev/null -w '%{http_code}' --max-time 3 '${NGINX_HOST}/videos/' 2>/dev/null" 2>/dev/null || echo "")
   if echo "${NGINX_STATUS}" | grep -qE '^(200|403|404)$'; then
     check "nginx" "ok"
@@ -133,7 +132,7 @@ if [[ "$SSH_OK" == true ]]; then
   fi
 
   # Eddy worker systemd service (user-level)
-  WORKER_STATE=$(ssh $SSH_OPTS "${SSH_USER}@${SSH_HOST}" \
+  WORKER_STATE=$(ssh $SSH_OPTS "${SSH_TARGET}" \
     "systemctl --user is-active eddy-worker 2>/dev/null" 2>/dev/null || echo "unknown")
   if [[ "${WORKER_STATE}" == "active" ]]; then
     check "Eddy worker (systemd)" "ok"
