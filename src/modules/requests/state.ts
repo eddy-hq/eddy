@@ -125,6 +125,11 @@ export interface DownloadedFields {
   filePath: string;
   nginxUrl: string | null;
   thumbnailUrl: string | null;
+  // Bytes on disk at download completion — feeds the per-user recycler budget
+  // (issue #113). Nullable because pre-#114 rows that never get backfilled
+  // (e.g. file already gone) will stay null; the recycler treats null as
+  // "not counted yet" rather than "zero bytes".
+  fileSizeBytes: number | null;
 }
 
 export interface CreateFromShareSheetInput {
@@ -276,6 +281,7 @@ export const TRANSITIONS = {
                   file_path          = ?,
                   nginx_url          = ?,
                   thumbnail_url      = ?,
+                  file_size_bytes    = ?,
                   downloaded_at      = ?
             WHERE request_id = ? AND status IN ('downloading')
             RETURNING user_id`,
@@ -289,6 +295,7 @@ export const TRANSITIONS = {
         event.fields.filePath,
         event.fields.nginxUrl,
         event.fields.thumbnailUrl,
+        event.fields.fileSizeBytes,
         now,
         event.requestId,
       ],

@@ -178,6 +178,19 @@ async function processJob(job: Job<DownloadJobData>, token?: string): Promise<vo
   // once status leaves 'downloading', so the key just decays harmlessly.
   await redis.set(PROGRESS_KEY(requestId), 100, 'EX', 3600);
 
+  // Capture on-disk size for the per-user recycler budget (issue #114). The
+  // file is local to this worker host (no rsync; nginx/Plex read this same
+  // mount), so a sync stat is the natural and cheapest measurement. Log-and-
+  // continue on stat failure: the row should still flip to ready, and the
+  // backfill script will fill the bytes in later. Sending null on stat error
+  // is preferable to silently posting a wrong value.
+  let fileSizeBytes: number | null = null;
+  try {
+    fileSizeBytes = fs.statSync(filePath).size;
+  } catch (err) {
+    log.warn({ err, filePath }, 'Failed to stat downloaded file for size — leaving file_size_bytes null');
+  }
+
   // Callback to M4 — M4 writes SQLite and sends ntfy
   await postSigned(`/internal/videos/${youtubeId}/downloaded`, {
     requestId,
@@ -191,6 +204,7 @@ async function processJob(job: Job<DownloadJobData>, token?: string): Promise<vo
     description: metadata.description,
     durationSecs: metadata.durationSecs,
     transcript: metadata.transcript,
+    fileSizeBytes,
   });
 
   // Enqueue the thumbnail-upgrade job — non-blocking, processed serially.
