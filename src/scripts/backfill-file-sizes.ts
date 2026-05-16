@@ -7,21 +7,21 @@
 // that already have a non-null `file_size_bytes` or have left `file_state =
 // 'live'`. Safe to abort and restart at any point.
 //
-// SSH config comes from the same env vars the shell scripts use
-// (VIDEO_SSH_USER / VIDEO_SSH_HOST / VIDEO_SSH_KEY) but is required here
-// rather than defaulted to Steve's host — committed TS source under src/
-// stays free of any specific operator's identity, matching the `.env`-only
-// config rule. A missing var fails loudly at startup with a clear message.
+// SSH connection details (user / host / identity-file) come from the
+// operator's `~/.ssh/config` under the `eddy-mediaserver` Host alias —
+// this script just calls `ssh eddy-mediaserver …`. Keeping the config in
+// `~/.ssh/config` instead of repo env vars removes the duplication and
+// keeps Steve-specific identity out of committed source. (The shell
+// scripts under scripts/ still use VIDEO_SSH_* — see follow-up issue
+// for the wider consolidation.)
 //
 // Why raw SQL for the gone-flip: the `requests` state machine has no event
 // for `file_state: live → gone` independent of the soft-delete user-intent
 // path (which also flips status to 'deleted'). A row whose file vanished from
 // disk should keep its existing status; only the file_state column moves. A
 // new event for this one-shot would be over-fitting.
-import 'dotenv/config';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
-import os from 'os';
 import { db } from '../db/client';
 import { runMigrations } from '../db/migrate';
 import { logger } from '../logger';
@@ -33,27 +33,9 @@ interface Row {
   file_path: string;
 }
 
-function requireEnv(name: string): string {
-  const v = process.env[name];
-  if (!v || !v.trim()) {
-    // eslint-disable-next-line no-console
-    console.error(`backfill-file-sizes: ${name} is required (export it or set in .env)`);
-    process.exit(1);
-  }
-  return v;
-}
-
-const SSH_USER = requireEnv('VIDEO_SSH_USER');
-const SSH_HOST = requireEnv('VIDEO_SSH_HOST');
-const SSH_KEY_RAW = requireEnv('VIDEO_SSH_KEY');
-// Tilde-expand if the env var was set with a literal `~/` — matches the
-// gotcha handled in scripts/deploy.sh:23 when the value comes from a shell.
-const SSH_KEY = SSH_KEY_RAW.startsWith('~/')
-  ? `${os.homedir()}${SSH_KEY_RAW.slice(1)}`
-  : SSH_KEY_RAW;
+const SSH_TARGET = 'eddy-mediaserver';
 
 const SSH_OPTS = [
-  '-i', SSH_KEY,
   '-o', 'ConnectTimeout=10',
   '-o', 'BatchMode=yes',
   '-o', 'StrictHostKeyChecking=accept-new',
@@ -112,7 +94,7 @@ async function statBatch(filePaths: string[]): Promise<StatResult[]> {
 
   const { stdout } = await execFileAsync(
     'ssh',
-    [...SSH_OPTS, `${SSH_USER}@${SSH_HOST}`, remoteScript],
+    [...SSH_OPTS, SSH_TARGET, remoteScript],
     { maxBuffer: 50 * 1024 * 1024, timeout: 60_000 },
   );
 
@@ -162,7 +144,7 @@ async function run(): Promise<void> {
     return;
   }
 
-  logger.info({ count: rows.length, host: SSH_HOST, user: SSH_USER }, 'Backfill: starting file-size backfill');
+  logger.info({ count: rows.length, target: SSH_TARGET }, 'Backfill: starting file-size backfill');
 
   // Update statements are prepared once and re-used per row. setBytes leaves
   // file_state alone; setGone clears the file pointer the same way the
