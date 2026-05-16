@@ -69,31 +69,28 @@ function resolveSshTarget(): SshTarget {
 }
 
 // Spawn ssh once and run a small bash one-liner that emits exactly one record
-// per NUL-separated input path:
-//   - `<path>\0FOUND\0<bytes>\n` when stat -c '%s' succeeds
-//   - `<path>\0MISSING\n` when stat fails (file absent, permission denied)
-// One record per input means the parent can detect a wholly-failed chunk
-// (zero records, or mismatched count) and skip it for retry, rather than
-// mis-reading absence-of-output as "every file in the chunk is gone" and
-// flipping live rows to gone on a broken pipeline.
+// per NUL-separated input. Each record carries the per-input *index* (not the
+// path) so duplicate paths within a chunk — common because multiple users can
+// own a live request for the same YouTube id, and downloads are keyed on the
+// id (`${youtubeId}.mp4`) — produce one record per input, never collapse.
+// Record shape:
+//   - `<idx>\0FOUND\0<bytes>\n` when stat -c '%s' succeeds
+//   - `<idx>\0MISSING\n` when stat fails (file absent, permission denied)
+// Mismatched record count surfaces as a chunk failure so a broken pipeline
+// (no bash, missing stat, hung ssh) doesn't get mis-read as "every file
+// gone" and flip live rows.
 //
-// `set -eo pipefail` propagates real shell-setup failures (no bash, broken
-// pipe to read) back as a non-zero exit code. The per-path branch swallows
-// stat errors explicitly and emits MISSING — those are expected and must
-// not abort the chunk.
+// `set -eo pipefail` propagates real shell-setup failures back as a non-zero
+// exit. The per-path branch swallows stat errors explicitly and emits
+// MISSING — those are expected and must not abort the chunk.
 function statRemote(target: SshTarget, filePaths: string[]): Promise<StatResult[]> {
   return new Promise((resolve, reject) => {
     const sshKey = expandHome(target.key);
-    // The remote script reads NUL-separated paths and decides per path. Kept
-    // inline (rather than scp'd) because it is small and ops-only. Uses bash
-    // `read -d ''` to consume up to NUL.
-    // Note on quoting: this whole string is passed as one arg to ssh, which
-    // sends it to the remote shell which evaluates it. Stat's format string is
-    // single-quoted so `%s` is literal; `printf` and `read` are bash
-    // built-ins so the heredoc-style escapes here are bash-side, not host
-    // shell. Stdin stays available for the path stream because `bash -c`
-    // (which ssh invokes implicitly for a command) doesn't consume it.
-    const remoteScript = `set -eo pipefail; while IFS= read -r -d '' p; do if size=$(stat -c '%s' -- "$p" 2>/dev/null); then printf '%s\\0FOUND\\0%s\\n' "$p" "$size"; else printf '%s\\0MISSING\\n' "$p"; fi; done`;
+    // The remote script reads <idx>\0<path>\0 records off stdin. The index
+    // round-trips back so the parent can slot results positionally even
+    // when two inputs share the same path. Kept inline (not scp'd) because
+    // it is small and ops-only.
+    const remoteScript = `set -eo pipefail; while IFS= read -r -d '' idx && IFS= read -r -d '' p; do if size=$(stat -c '%s' -- "$p" 2>/dev/null); then printf '%s\\0FOUND\\0%s\\n' "$idx" "$size"; else printf '%s\\0MISSING\\n' "$idx"; fi; done`;
     const sshArgs = [
       '-i', sshKey,
       '-o', 'ConnectTimeout=10',
@@ -115,43 +112,48 @@ function statRemote(target: SshTarget, filePaths: string[]): Promise<StatResult[
       if (code !== 0) {
         return reject(new Error(`ssh exited ${code}: ${stderr.slice(0, 500)}`));
       }
-      const byPath = new Map<string, StatResult>();
+      const byIdx = new Map<number, StatResult>();
       for (const line of stdout.split('\n')) {
         if (!line) continue;
         const parts = line.split('\0');
-        const p = parts[0];
+        const idxStr = parts[0];
         const tag = parts[1];
-        if (!p || !tag) continue;
+        if (!idxStr || !tag) continue;
+        const idx = Number.parseInt(idxStr, 10);
+        if (!Number.isInteger(idx) || idx < 0 || idx >= filePaths.length) continue;
+        const filePath = filePaths[idx]!;
         if (tag === 'FOUND') {
           const size = Number.parseInt(parts[2] ?? '', 10);
           if (!Number.isFinite(size)) continue;
-          byPath.set(p, { filePath: p, sizeBytes: size, kind: 'found' });
+          byIdx.set(idx, { filePath, sizeBytes: size, kind: 'found' });
         } else if (tag === 'MISSING') {
-          byPath.set(p, { filePath: p, sizeBytes: null, kind: 'missing' });
+          byIdx.set(idx, { filePath, sizeBytes: null, kind: 'missing' });
         }
       }
       // If we got fewer records than inputs the remote pipeline didn't
       // complete cleanly — surface as a chunk failure so we don't flip
       // unreported paths to gone. Re-run picks them up.
-      if (byPath.size !== filePaths.length) {
+      if (byIdx.size !== filePaths.length) {
         return reject(new Error(
-          `remote stat returned ${byPath.size} records for ${filePaths.length} inputs ` +
+          `remote stat returned ${byIdx.size} records for ${filePaths.length} inputs ` +
             `(stderr: ${stderr.slice(0, 200)})`,
         ));
       }
-      const results: StatResult[] = filePaths.map((p) => {
-        const r = byPath.get(p);
-        // Belt-and-braces: byPath.size matches above, so this should never
+      const results: StatResult[] = filePaths.map((p, idx) => {
+        const r = byIdx.get(idx);
+        // Belt-and-braces: byIdx.size matches above, so this should never
         // hit. Treat as a chunk-level failure if it somehow does.
-        if (!r) throw new Error(`internal: no record for ${p}`);
+        if (!r) throw new Error(`internal: no record for idx=${idx} (${p})`);
         return r;
       });
       resolve(results);
     });
 
-    // NUL-terminate every record (including the last) so `read -d ''` on the
-    // remote end consumes the final path before EOF closes stdin.
-    proc.stdin.write(filePaths.map((p) => `${p}\0`).join(''));
+    // For each input write `<idx>\0<path>\0` so the remote `read -d ''`
+    // pair pulls them out in lockstep. Terminating the final path with NUL
+    // matters: `read -d ''` waits for a NUL, not EOF.
+    const payload = filePaths.map((p, idx) => `${idx}\0${p}\0`).join('');
+    proc.stdin.write(payload);
     proc.stdin.end();
   });
 }
