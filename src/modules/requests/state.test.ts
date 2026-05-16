@@ -245,18 +245,21 @@ describe('mark_cancelled', () => {
 describe('mark_soft_deleted', () => {
   const FILE_PATH = '/mnt/ssd/eddy/videos/abc123.mp4';
 
-  it('transitions ready → deleted, sets columns, and enqueues a delete job', () => {
+  it('transitions ready → deleted, sets columns, nulls file_size_bytes, and enqueues a delete job', () => {
     insertRequest({ request_id: 'req-s1', status: 'ready', file_path: FILE_PATH });
+    // Seed a non-null file_size_bytes so the null-out assertion is meaningful.
+    db.prepare('UPDATE requests SET file_size_bytes = 99 WHERE request_id = ?').run('req-s1');
     const before = Date.now();
 
     const { result } = state.apply({ kind: 'mark_soft_deleted', requestId: 'req-s1' });
 
     expect(result).toEqual({ transitioned: true, userId: USER_ID });
     const row = db
-      .prepare('SELECT status, file_state, deleted_at FROM requests WHERE request_id = ?')
-      .get('req-s1') as { status: string; file_state: string; deleted_at: string | null };
+      .prepare('SELECT status, file_state, file_size_bytes, deleted_at FROM requests WHERE request_id = ?')
+      .get('req-s1') as { status: string; file_state: string; file_size_bytes: number | null; deleted_at: string | null };
     expect(row.status).toBe('deleted');
     expect(row.file_state).toBe('gone');
+    expect(row.file_size_bytes).toBeNull();
     expect(row.deleted_at).not.toBeNull();
     expect(new Date(row.deleted_at!).getTime()).toBeGreaterThanOrEqual(before);
 
@@ -1043,17 +1046,20 @@ describe('findActiveDuplicateRequest', () => {
 });
 
 describe('markFileMissing', () => {
-  it('flips file_state live → gone and leaves status untouched', () => {
+  it('flips file_state live → gone, nulls file_size_bytes, and leaves status untouched', () => {
     insertRequest({ request_id: 'req-fm1', status: 'ready' });
+    // Seed a non-null file_size_bytes so the null-out assertion is meaningful.
+    db.prepare('UPDATE requests SET file_size_bytes = 99 WHERE request_id = ?').run('req-fm1');
 
     const changed = markFileMissing('req-fm1');
 
     expect(changed).toBe(true);
     const row = db
-      .prepare('SELECT status, file_state FROM requests WHERE request_id = ?')
-      .get('req-fm1') as { status: string; file_state: string };
+      .prepare('SELECT status, file_state, file_size_bytes FROM requests WHERE request_id = ?')
+      .get('req-fm1') as { status: string; file_state: string; file_size_bytes: number | null };
     expect(row.status).toBe('ready');
     expect(row.file_state).toBe('gone');
+    expect(row.file_size_bytes).toBeNull();
   });
 
   it('also works for a watched row — status stays watched', () => {

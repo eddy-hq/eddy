@@ -73,12 +73,15 @@ const DEDUP_TERMINAL: Status[] = ['rejected', 'dismissed', 'watched', 'deleted']
 // the requests table is this module's domain, per the "DB calls live inside
 // the owning module" rule.
 //
+// file_size_bytes is also nulled out: the column's contract is bytes-on-disk
+// for live files, so a row moving to gone shouldn't keep its old size.
+//
 // Idempotent: returns true if a row was flipped, false if no matching live
 // row was found (already gone, or unknown id).
 export function markFileMissing(requestId: string): boolean {
   const result = db
     .prepare(
-      `UPDATE requests SET file_state = 'gone'
+      `UPDATE requests SET file_state = 'gone', file_size_bytes = NULL
        WHERE request_id = ? AND file_state = 'live'`,
     )
     .run(requestId);
@@ -275,7 +278,11 @@ export const TRANSITIONS = {
     sources: ['ready', 'watched'],
     target: 'deleted',
     buildSql: (event, now) => ({
-      sql: `UPDATE requests SET status = 'deleted', file_state = 'gone', deleted_at = ?
+      // Also null out file_size_bytes: the column's contract (#114) is that
+      // it carries bytes for rows with a live file, and a delete moves
+      // file_state to 'gone'. Keeping the old size around would skew any
+      // future per-user usage rollup that joins on file_state.
+      sql: `UPDATE requests SET status = 'deleted', file_state = 'gone', file_size_bytes = NULL, deleted_at = ?
             WHERE request_id = ? AND status IN ('ready', 'watched')
             RETURNING user_id, file_path`,
       params: [now, event.requestId],

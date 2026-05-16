@@ -53,11 +53,14 @@ const schema = z.object({
   // SSH access from M4 to the mediaserver (for ops-only scripts that need to
   // read files on the worker box from the M4 — e.g. the file-size backfill
   // for #114). Matches the convention the shell scripts already use under
-  // VIDEO_SSH_*: defaults preserve the historical behaviour so existing
-  // .env files keep working without edits.
-  VIDEO_SSH_USER: z.string().default('steveu'),
-  VIDEO_SSH_HOST: z.string().default('100.95.170.27'),
-  VIDEO_SSH_KEY: z.string().default('~/.ssh/id_ed25519_eddy'),
+  // VIDEO_SSH_* (see scripts/watchdog.sh, deploy.sh, healthcheck.sh).
+  // Optional so non-ops boots (server, tests) don't require them; the
+  // backfill script validates presence at run time and aborts with a clear
+  // error message if missing — that's safer than embedding a default host
+  // that could send a script at the wrong machine.
+  VIDEO_SSH_USER: z.string().optional(),
+  VIDEO_SSH_HOST: z.string().optional(),
+  VIDEO_SSH_KEY: z.string().optional(),
 });
 
 const result = schema.safeParse(process.env);

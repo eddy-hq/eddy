@@ -41,20 +41,45 @@ function expandHome(p: string): string {
   return p;
 }
 
+interface SshTarget {
+  user: string;
+  host: string;
+  key: string;
+}
+
+// Read the SSH target out of config and assert all three are set. Held in a
+// script-local interface (not pushed back into config.ts) because nothing
+// else in the runtime needs them — this is the only caller and a missing
+// var here should be a clear ops error, not a server boot failure.
+function resolveSshTarget(): SshTarget {
+  const { VIDEO_SSH_USER, VIDEO_SSH_HOST, VIDEO_SSH_KEY } = config;
+  const missing: string[] = [];
+  if (!VIDEO_SSH_USER) missing.push('VIDEO_SSH_USER');
+  if (!VIDEO_SSH_HOST) missing.push('VIDEO_SSH_HOST');
+  if (!VIDEO_SSH_KEY) missing.push('VIDEO_SSH_KEY');
+  if (missing.length > 0) {
+    throw new Error(
+      `Missing required env var(s) for backfill: ${missing.join(', ')}. ` +
+        `See .env.example for the VIDEO_SSH_* block.`,
+    );
+  }
+  return { user: VIDEO_SSH_USER!, host: VIDEO_SSH_HOST!, key: VIDEO_SSH_KEY! };
+}
+
 // Spawn ssh once with `xargs -0 stat -c '%n\0%s'` reading NUL-separated paths
 // off stdin. One round-trip per chunk keeps the script under a few seconds
 // even for several hundred rows, and the NUL framing tolerates any path
 // content. Paths that don't exist make stat print to stderr and skip the
 // stdout record — we reconcile by tracking which inputs got a stdout record.
-function statRemote(filePaths: string[]): Promise<StatResult[]> {
+function statRemote(target: SshTarget, filePaths: string[]): Promise<StatResult[]> {
   return new Promise((resolve, reject) => {
-    const sshKey = expandHome(config.VIDEO_SSH_KEY);
+    const sshKey = expandHome(target.key);
     const sshArgs = [
       '-i', sshKey,
       '-o', 'ConnectTimeout=10',
       '-o', 'BatchMode=yes',
       '-o', 'StrictHostKeyChecking=accept-new',
-      `${config.VIDEO_SSH_USER}@${config.VIDEO_SSH_HOST}`,
+      `${target.user}@${target.host}`,
       // -0 = NUL-separated; -r exits clean if no inputs; -n1 = one stat call
       // per path so a single missing file can't kill the whole batch (stat
       // exits non-zero for that path only). We pipe through `true` so the
@@ -107,6 +132,8 @@ const CHUNK_SIZE = 50;
 async function run(): Promise<void> {
   runMigrations();
 
+  const sshTarget = resolveSshTarget();
+
   const rows = db
     .prepare(
       `SELECT request_id, file_path
@@ -126,8 +153,8 @@ async function run(): Promise<void> {
   logger.info(
     {
       total: rows.length,
-      sshHost: config.VIDEO_SSH_HOST,
-      sshUser: config.VIDEO_SSH_USER,
+      sshHost: sshTarget.host,
+      sshUser: sshTarget.user,
       chunkSize: CHUNK_SIZE,
     },
     'Backfill: starting file_size_bytes backfill',
@@ -147,7 +174,7 @@ async function run(): Promise<void> {
 
     let results: StatResult[];
     try {
-      results = await statRemote(paths);
+      results = await statRemote(sshTarget, paths);
     } catch (err) {
       errored += chunk.length;
       logger.warn(
