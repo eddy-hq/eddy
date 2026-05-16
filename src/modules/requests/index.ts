@@ -425,7 +425,22 @@ requestsRouter.post('/:id/restore', async (req: Request, res: Response) => {
   // distinct prefix sidesteps that and matches the `delete-${id}` shape we
   // already use for the deletes queue. Single hyphen, no colon — see
   // CLAUDE.md on the BullMQ custom-job-id colon constraint.
+  //
+  // The same retain-completed-jobs gotcha applies to repeated restores of the
+  // same row (restore → recycle → restore again). We mirror what the retry
+  // descriptor does: remove any pre-existing completed/failed job at this
+  // jobId before adding the new one, so the second restore actually enqueues
+  // instead of returning the prior completed job as a duplicate. Best-effort
+  // — a missing job is the common path on a first restore.
   const jobId = `restore-${requestId}`;
+  try {
+    const existing = await downloadQueue.getJob(jobId);
+    if (existing) await existing.remove();
+  } catch (err) {
+    // Don't block the restore on a flaky remove — if Redis is down, the
+    // add() below will surface a clearer failure. Log and continue.
+    logger.warn({ err, requestId, jobId }, 'Restore: pre-add cleanup of stale job failed');
+  }
   try {
     await downloadQueue.add(
       'download',

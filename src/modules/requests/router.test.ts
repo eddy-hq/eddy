@@ -736,6 +736,52 @@ describe('POST /requests/:id/restore', () => {
     expect((opts as { jobId: string }).jobId).not.toBe('distinct-id-check');
   });
 
+  // Regression for the codex round-2 finding: a video can be restored, then
+  // recycled again, then restored again — and the second restore must
+  // actually enqueue, not no-op against the prior completed `restore-${id}`
+  // job that BullMQ still has in its retained-completions list. The router
+  // calls `downloadQueue.getJob(jobId)` + `remove()` first to clear the
+  // stale entry, mirroring the retry descriptor's `cancel_download_job_awaited`
+  // → `enqueue_download` sequencing.
+  it('removes a prior completed restore job before re-adding so a re-restore actually enqueues', async () => {
+    insertRequestRow({
+      request_id: 'rerestore',
+      status: 'watched',
+      youtube_id: 'rerestoreyt',
+      file_state: 'recycled',
+    });
+    const removeMock = vi.fn().mockResolvedValue(undefined);
+    vi.mocked(downloadQueue.getJob).mockResolvedValueOnce({ remove: removeMock } as never);
+
+    const resp = await request('POST', '/requests/rerestore/restore');
+    expect(resp.status).toBe(202);
+
+    // getJob must be called against the restore jobId, not the bare requestId.
+    expect(vi.mocked(downloadQueue.getJob)).toHaveBeenCalledWith('restore-rerestore');
+    expect(removeMock).toHaveBeenCalledTimes(1);
+    // And then the add fires with the same jobId — the slot is now clear.
+    expect(vi.mocked(downloadQueue.add)).toHaveBeenCalledTimes(1);
+    const [, , opts] = vi.mocked(downloadQueue.add).mock.calls[0]!;
+    expect((opts as { jobId: string }).jobId).toBe('restore-rerestore');
+  });
+
+  // Defensive: if the pre-add cleanup fails (e.g. Redis flake), the restore
+  // still attempts the add — we don't block the user's intent on a flaky
+  // remove that might be operating on a phantom job anyway.
+  it('still enqueues when the pre-add getJob/remove throws', async () => {
+    insertRequestRow({
+      request_id: 'flaky-cleanup',
+      status: 'watched',
+      youtube_id: 'flakyy00001',
+      file_state: 'recycled',
+    });
+    vi.mocked(downloadQueue.getJob).mockRejectedValueOnce(new Error('redis flaked'));
+
+    const resp = await request('POST', '/requests/flaky-cleanup/restore');
+    expect(resp.status).toBe(202);
+    expect(vi.mocked(downloadQueue.add)).toHaveBeenCalledTimes(1);
+  });
+
   it('returns 400 for a live row with a descriptive error body and does not enqueue', async () => {
     insertRequestRow({
       request_id: 'restore-live',
