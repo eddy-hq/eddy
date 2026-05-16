@@ -17,11 +17,10 @@ if [[ -f "$ENV_FILE" ]]; then
   set -a; source "$ENV_FILE"; set +a
 fi
 
-SSH_USER="${VIDEO_SSH_USER:-steveu}"
-SSH_HOST="${VIDEO_SSH_HOST:-100.95.170.27}"
-SSH_KEY="${VIDEO_SSH_KEY:-$HOME/.ssh/id_ed25519_eddy}"
-SSH_KEY="${SSH_KEY/\~/$HOME}"
-SSH_OPTS="-i ${SSH_KEY} -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new -o BatchMode=yes"
+# SSH user/host/identity come from the operator's ~/.ssh/config under the
+# `eddy-mediaserver` Host alias.
+SSH_TARGET="eddy-mediaserver"
+SSH_OPTS="-o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new -o BatchMode=yes"
 
 NTFY_URL="${NTFY_BASE_URL:-}"
 NTFY_TOPIC="${NTFY_TOPIC_STEVE:-}"
@@ -126,22 +125,22 @@ run_checks() (
   fi
 
   # ── SSH connectivity ───────────────────────────────────────────────────────
-  if ! ssh $SSH_OPTS "${SSH_USER}@${SSH_HOST}" "exit 0" 2>/dev/null; then
+  if ! ssh $SSH_OPTS "${SSH_TARGET}" "exit 0" 2>/dev/null; then
     log "ERROR" "SSH to Ubuntu failed despite Tailscale being up"
     notify "Eddy watchdog — action needed" "Tailscale is up but SSH to Ubuntu failed — server may be down"
     exit 1
   fi
 
   # ── Eddy worker ────────────────────────────────────────────────────────────
-  WORKER_STATE=$(ssh $SSH_OPTS "${SSH_USER}@${SSH_HOST}" \
+  WORKER_STATE=$(ssh $SSH_OPTS "${SSH_TARGET}" \
     "systemctl --user is-active eddy-worker 2>/dev/null" 2>/dev/null || echo "unknown")
 
   if [[ "$WORKER_STATE" != "active" ]]; then
     log "WARN" "eddy-worker state=${WORKER_STATE}, restarting"
-    ssh $SSH_OPTS "${SSH_USER}@${SSH_HOST}" \
+    ssh $SSH_OPTS "${SSH_TARGET}" \
       "systemctl --user restart eddy-worker" 2>/dev/null || true
     sleep 5
-    WORKER_STATE=$(ssh $SSH_OPTS "${SSH_USER}@${SSH_HOST}" \
+    WORKER_STATE=$(ssh $SSH_OPTS "${SSH_TARGET}" \
       "systemctl --user is-active eddy-worker 2>/dev/null" 2>/dev/null || echo "unknown")
     if [[ "$WORKER_STATE" == "active" ]]; then
       log "INFO" "eddy-worker recovered"

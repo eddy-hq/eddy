@@ -17,11 +17,10 @@ if [[ -f "$ENV_FILE" ]]; then
   set -a; source "$ENV_FILE"; set +a
 fi
 
-SSH_USER="${VIDEO_SSH_USER:-steveu}"
-SSH_HOST="${VIDEO_SSH_HOST:-100.95.170.27}"
-SSH_KEY="${VIDEO_SSH_KEY:-$HOME/.ssh/id_ed25519_eddy}"
-SSH_KEY="${SSH_KEY/\~/$HOME}"
-SSH_OPTS="-i ${SSH_KEY} -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new -o BatchMode=yes"
+# SSH user/host/identity come from the operator's ~/.ssh/config under the
+# `eddy-mediaserver` Host alias.
+SSH_TARGET="eddy-mediaserver"
+SSH_OPTS="-o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new -o BatchMode=yes"
 
 GREEN='\033[0;32m'; RED='\033[0;31m'; YELLOW='\033[0;33m'; RESET='\033[0m'; BOLD='\033[1m'
 info()  { printf "${GREEN}▶ %s${RESET}\n" "$*"; }
@@ -62,7 +61,7 @@ fi
 if [[ "$DO_UBUNTU" == true ]]; then
   step "2/3  Ubuntu worker"
 
-  UBUNTU_SHA=$(ssh $SSH_OPTS "${SSH_USER}@${SSH_HOST}" \
+  UBUNTU_SHA=$(ssh $SSH_OPTS "${SSH_TARGET}" \
     "git -C ~/eddy rev-parse HEAD 2>/dev/null" || echo "unknown")
 
   if [[ "$UBUNTU_SHA" == "$LOCAL_SHA" ]]; then
@@ -71,7 +70,7 @@ if [[ "$DO_UBUNTU" == true ]]; then
     info "Ubuntu at ${UBUNTU_SHA:0:7} → deploying ${LOCAL_SHA:0:7}"
   fi
 
-  ssh $SSH_OPTS "${SSH_USER}@${SSH_HOST}" "
+  ssh $SSH_OPTS "${SSH_TARGET}" "
     set -euo pipefail
     export NVM_DIR=\"\$HOME/.nvm\"
     [ -s \"\$NVM_DIR/nvm.sh\" ] && . \"\$NVM_DIR/nvm.sh\"
