@@ -56,22 +56,29 @@ interface CandidateOpts {
   surfacedDate?: string | null;
   externalId?: string;
   createdAt?: string;
+  whyText?: string | null;
 }
 
 function insertCandidate(opts: CandidateOpts): void {
   const userId = opts.userId ?? KID_USER_ID;
   const externalId = opts.externalId ?? opts.candidateId;
   const createdAt = opts.createdAt ?? new Date().toISOString();
+  // Default why_text to a non-null sentinel — brief §9a requires it,
+  // and the surface query enforces `why_text IS NOT NULL`. Tests that
+  // care about the null path opt in explicitly via whyText: null.
+  const whyText = opts.whyText === undefined ? 'Because it matches your interests.' : opts.whyText;
   db.prepare(`
     INSERT INTO candidate_pool
       (candidate_id, user_id, content_type, source_type,
        interest_id, url, external_id, title,
        connection_score, quality_score, time_sensitivity,
-       published_at, guard_verdict, status, surfaced_date, created_at)
+       published_at, guard_verdict, status, surfaced_date, created_at,
+       why_text)
     VALUES (?, ?, 'video', 'interest_search',
             ?, ?, ?, ?,
             ?, ?, ?,
-            ?, ?, ?, ?, ?)
+            ?, ?, ?, ?, ?,
+            ?)
   `).run(
     opts.candidateId,
     userId,
@@ -87,6 +94,7 @@ function insertCandidate(opts: CandidateOpts): void {
     opts.status ?? 'scored',
     opts.surfacedDate ?? null,
     createdAt,
+    whyText,
   );
 }
 
@@ -370,6 +378,37 @@ describe('surfaceForToday — mid-day re-run carry-over', () => {
     expect(capped?.status).toBe('scored');
     expect(capped?.surfaced_date).toBeNull();
     expect(capped?.surfaced_at).toBeNull();
+  });
+});
+
+describe('surfaceForToday — why_text required (brief §9a)', () => {
+  it('excludes candidates with why_text = NULL', () => {
+    insertCandidate({ candidateId: 'cand-no-why', guardVerdict: 'clear_yes', whyText: null });
+    insertCandidate({ candidateId: 'cand-with-why', guardVerdict: 'clear_yes' });
+
+    const verdicts = surfaceForToday(KID_USER_ID, true);
+
+    const ids = verdicts.map((v) => v.candidate.candidateId);
+    expect(ids).not.toContain('cand-no-why');
+    expect(ids).toContain('cand-with-why');
+
+    // The null-why candidate stays 'scored' (never surfaced).
+    const row = db.prepare(
+      "SELECT status, surfaced_date FROM candidate_pool WHERE candidate_id = ?",
+    ).get('cand-no-why') as { status: string; surfaced_date: string | null };
+    expect(row.status).toBe('scored');
+    expect(row.surfaced_date).toBeNull();
+  });
+
+  it('excludes null-why candidates for adults too (filter is not kid-only)', () => {
+    insertCandidate({ candidateId: 'a-no-why', userId: ADULT_USER_ID, guardVerdict: 'clear_yes', whyText: null });
+    insertCandidate({ candidateId: 'a-with-why', userId: ADULT_USER_ID, guardVerdict: 'clear_yes' });
+
+    const verdicts = surfaceForToday(ADULT_USER_ID, false);
+    const ids = verdicts.map((v) => v.candidate.candidateId);
+
+    expect(ids).not.toContain('a-no-why');
+    expect(ids).toContain('a-with-why');
   });
 });
 

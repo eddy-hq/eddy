@@ -6,6 +6,7 @@ import { X } from 'lucide-react';
 import { Card, type CardData } from '../components/Card';
 import { CompactCard, type SourceKind } from '../components/CompactCard';
 import { VideoDetailSheet } from '../components/VideoDetailSheet';
+import { WhyThisSheet } from '../components/WhyThisSheet';
 import { BottomNav } from '../components/BottomNav';
 import { AppHeader } from '../components/AppHeader';
 import { useVideoSheet } from '../hooks/useVideoSheet';
@@ -281,7 +282,12 @@ function TodayBlock({
   // Heavy-follow days swap compact; otherwise hero.
   const followAsCompact = followCards.length > 6;
 
-  const firstVoice = candidates[0]?.why ?? (pickedCards.length > 0 ? 'A few more you might like.' : null);
+  // Brief §9a: "why" is tap-to-see only — never rendered inline above the
+  // card. Keep the neutral lead-in when there are picked rows; otherwise
+  // the section header is the only chrome.
+  const firstVoice = (pickedCards.length > 0 || candidates.length > 0)
+    ? 'A few more you might like.'
+    : null;
 
   return (
     <section>
@@ -358,11 +364,8 @@ function TodayBlock({
               />
             ))}
             <AnimatePresence mode="popLayout">
-              {candidates.map((c, i) => (
-                <React.Fragment key={c.candidateId}>
-                  {i > 0 && c.why && <VoiceLine text={c.why} />}
-                  <HeroDiscoveryCard candidate={c} onDismiss={onDismiss} onAdd={onAdd} />
-                </React.Fragment>
+              {candidates.map((c) => (
+                <HeroDiscoveryCard key={c.candidateId} candidate={c} onDismiss={onDismiss} onAdd={onAdd} />
               ))}
             </AnimatePresence>
           </CardList>
@@ -555,6 +558,7 @@ function HeroDiscoveryCard({
   onAdd: (id: string) => void;
 }) {
   const [adding, setAdding] = useState(false);
+  const [whyOpen, setWhyOpen] = useState(false);
 
   async function handleAdd() {
     if (adding) return;
@@ -562,104 +566,140 @@ function HeroDiscoveryCard({
     await onAdd(candidate.candidateId);
   }
 
+  // Hidden by default — brief §9a is explicit on "tap to see". Only render
+  // the affordance when the API actually gave us a sentence to show.
+  const hasWhy = !!candidate.why;
+
   return (
-    <motion.article
-      layout
-      initial={{ opacity: 0, y: 8 }}
-      animate={{ opacity: 1, y: 0 }}
-      exit={{ opacity: 0, scale: 0.96 }}
-      transition={{ duration: 0.22 }}
-      onClick={handleAdd}
-      style={{
-        position: 'relative',
-        display: 'flex',
-        flexDirection: 'column',
-        borderRadius: 16,
-        overflow: 'hidden',
-        background: 'var(--bg-surface)',
-        boxShadow: 'var(--shadow-card)',
-        border: '1px solid var(--border-subtle)',
-        cursor: adding ? 'default' : 'pointer',
-      }}
-    >
-      {/* Thumbnail */}
-      <div style={{
-        position: 'relative',
-        aspectRatio: '16/9',
-        overflow: 'hidden',
-        background: '#2A2826',
-      }}>
-        {candidate.thumbnailUrl && (
-          <img
-            src={candidate.thumbnailUrl}
-            alt=""
-            loading="lazy"
-            style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }}
-          />
-        )}
-
-        {/* Dismiss */}
-        <button
-          aria-label="Dismiss"
-          onClick={(e) => { e.stopPropagation(); onDismiss(candidate.candidateId); }}
-          style={{
-            position: 'absolute', top: 10, right: 10, zIndex: 3,
-            width: 28, height: 28, borderRadius: '50%',
-            background: 'rgba(0,0,0,0.55)', border: 'none',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            cursor: 'pointer', color: '#fff',
-            backdropFilter: 'blur(4px)',
-          }}
-        >
-          <X size={14} strokeWidth={2.5} />
-        </button>
-      </div>
-
-      {/* Title + meta */}
-      <div style={{ padding: '12px 14px 14px' }}>
-        <h3 style={{
-          fontFamily: 'var(--font-serif)',
-          fontSize: 19, fontWeight: 500, lineHeight: 1.22,
-          letterSpacing: '-0.008em', margin: '0 0 6px',
-          color: 'var(--text-primary)',
-          display: '-webkit-box',
-          WebkitLineClamp: 2,
-          WebkitBoxOrient: 'vertical',
+    <>
+      <motion.article
+        layout
+        initial={{ opacity: 0, y: 8 }}
+        animate={{ opacity: 1, y: 0 }}
+        exit={{ opacity: 0, scale: 0.96 }}
+        transition={{ duration: 0.22 }}
+        onClick={handleAdd}
+        style={{
+          position: 'relative',
+          display: 'flex',
+          flexDirection: 'column',
+          borderRadius: 16,
           overflow: 'hidden',
-        }}>
-          {candidate.title ?? candidate.url}
-        </h3>
+          background: 'var(--bg-surface)',
+          boxShadow: 'var(--shadow-card)',
+          border: '1px solid var(--border-subtle)',
+          cursor: adding ? 'default' : 'pointer',
+        }}
+      >
+        {/* Thumbnail */}
         <div style={{
-          display: 'flex', alignItems: 'center', gap: 6,
-          fontSize: 11, fontWeight: 500, color: 'var(--text-secondary)',
-          letterSpacing: '0.005em',
+          position: 'relative',
+          aspectRatio: '16/9',
+          overflow: 'hidden',
+          background: '#2A2826',
         }}>
-          <span style={{
-            display: 'inline-flex', alignItems: 'center', gap: 5,
-            fontSize: 11, fontWeight: 600, letterSpacing: '0.02em',
-            color: 'var(--save)',
-          }}>
-            <span style={{ width: 5, height: 5, borderRadius: '50%', background: 'var(--save)' }} />
-            Picked
-          </span>
-          <span style={{ color: 'var(--text-tertiary)' }}>·</span>
-          <span>Tap to add</span>
-        </div>
-      </div>
+          {candidate.thumbnailUrl && (
+            <img
+              src={candidate.thumbnailUrl}
+              alt=""
+              loading="lazy"
+              style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }}
+            />
+          )}
 
-      {adding && (
-        <div style={{
-          position: 'absolute', inset: 0, zIndex: 4,
-          background: 'rgba(0,0,0,0.45)',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          backdropFilter: 'blur(2px)',
-        }}>
-          <span style={{ fontSize: 12, fontWeight: 600, color: '#fff', letterSpacing: '0.04em' }}>
-            Adding…
-          </span>
+          {/* Dismiss */}
+          <button
+            aria-label="Dismiss"
+            onClick={(e) => { e.stopPropagation(); onDismiss(candidate.candidateId); }}
+            style={{
+              position: 'absolute', top: 10, right: 10, zIndex: 3,
+              width: 28, height: 28, borderRadius: '50%',
+              background: 'rgba(0,0,0,0.55)', border: 'none',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              cursor: 'pointer', color: '#fff',
+              backdropFilter: 'blur(4px)',
+            }}
+          >
+            <X size={14} strokeWidth={2.5} />
+          </button>
         </div>
-      )}
-    </motion.article>
+
+        {/* Title + meta */}
+        <div style={{ padding: '12px 14px 14px' }}>
+          <h3 style={{
+            fontFamily: 'var(--font-serif)',
+            fontSize: 19, fontWeight: 500, lineHeight: 1.22,
+            letterSpacing: '-0.008em', margin: '0 0 6px',
+            color: 'var(--text-primary)',
+            display: '-webkit-box',
+            WebkitLineClamp: 2,
+            WebkitBoxOrient: 'vertical',
+            overflow: 'hidden',
+          }}>
+            {candidate.title ?? candidate.url}
+          </h3>
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap',
+            fontSize: 11, fontWeight: 500, color: 'var(--text-secondary)',
+            letterSpacing: '0.005em',
+          }}>
+            <span style={{
+              display: 'inline-flex', alignItems: 'center', gap: 5,
+              fontSize: 11, fontWeight: 600, letterSpacing: '0.02em',
+              color: 'var(--save)',
+            }}>
+              <span style={{ width: 5, height: 5, borderRadius: '50%', background: 'var(--save)' }} />
+              Picked
+            </span>
+            <span style={{ color: 'var(--text-tertiary)' }}>·</span>
+            <span>Tap to add</span>
+            {hasWhy && (
+              <>
+                <span style={{ color: 'var(--text-tertiary)' }}>·</span>
+                <button
+                  type="button"
+                  onClick={(e) => { e.stopPropagation(); setWhyOpen(true); }}
+                  aria-label="Why this?"
+                  aria-haspopup="dialog"
+                  aria-expanded={whyOpen}
+                  style={{
+                    background: 'none', border: 'none', padding: 0,
+                    fontFamily: 'inherit', fontSize: 11, fontWeight: 500,
+                    color: 'var(--text-secondary)',
+                    textDecoration: 'underline',
+                    textDecorationColor: 'var(--border-subtle)',
+                    textUnderlineOffset: 2,
+                    cursor: 'pointer',
+                    WebkitTapHighlightColor: 'transparent',
+                  }}
+                >
+                  Why this?
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+
+        {adding && (
+          <div style={{
+            position: 'absolute', inset: 0, zIndex: 4,
+            background: 'rgba(0,0,0,0.45)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            backdropFilter: 'blur(2px)',
+          }}>
+            <span style={{ fontSize: 12, fontWeight: 600, color: '#fff', letterSpacing: '0.04em' }}>
+              Adding…
+            </span>
+          </div>
+        )}
+      </motion.article>
+
+      <AnimatePresence>
+        {whyOpen && candidate.why && (
+          <WhyThisSheet why={candidate.why} onClose={() => setWhyOpen(false)} />
+        )}
+      </AnimatePresence>
+    </>
   );
 }
 

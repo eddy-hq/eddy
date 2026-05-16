@@ -111,6 +111,7 @@ function buildSection(user: UserRow): Section {
     WHERE c.user_id = ?
       AND c.status = 'scored'
       AND c.surfaced_date IS NULL
+      AND c.why_text IS NOT NULL
       ${guardClause}
       AND NOT EXISTS (
         SELECT 1 FROM requests r
