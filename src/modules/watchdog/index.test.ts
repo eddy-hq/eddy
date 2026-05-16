@@ -45,7 +45,7 @@ vi.mock('../notifications', () => ({
 
 import { db } from '../../db/client';
 import { runMigrations } from '../../db/migrate';
-import { checkStuckDownloads } from './index';
+import { checkStuckDownloads, resetWatchdogStateForTests } from './index';
 
 const STUCK_AGO_MS = 10 * 60 * 1000; // older than the watchdog's 2-min MIN_AGE_MS
 
@@ -100,6 +100,24 @@ describe('watchdog checkStuckDownloads', () => {
     expect(notifyMock).not.toHaveBeenCalled();
   });
 
+  it.each(['waiting', 'waiting-children', 'prioritized', 'paused'])(
+    'leaves jobs in `%s` state alone — healthy-pending, must not count toward escalation',
+    async (state) => {
+      resetWatchdogStateForTests();
+      insertStuckRequest(`req_${state}`);
+      getJobMock.mockResolvedValue(jobInState(state));
+
+      // Drive past the escalation threshold; a healthy-pending job must never
+      // tip the watchdog into marking the row `failed`.
+      for (let i = 0; i < 5; i++) await checkStuckDownloads();
+
+      expect(addJobMock).not.toHaveBeenCalled();
+      expect(notifyMock).not.toHaveBeenCalled();
+      const row = db.prepare('SELECT status FROM requests WHERE request_id = ?').get(`req_${state}`) as { status: string };
+      expect(row.status).toBe('downloading');
+    },
+  );
+
   it('re-enqueues a `failed` job and alerts', async () => {
     insertStuckRequest('req_failed');
     getJobMock.mockResolvedValue(jobInState('failed'));
@@ -121,5 +139,65 @@ describe('watchdog checkStuckDownloads', () => {
       }),
       '00000000-0000-7000-8000-000000000001',
     );
+  });
+
+  describe('escalation after repeated re-enqueues', () => {
+    beforeEach(() => {
+      resetWatchdogStateForTests();
+    });
+
+    it('escalates to failed after the re-enqueue threshold is exceeded', async () => {
+      insertStuckRequest('req_loop');
+      getJobMock.mockResolvedValue(jobInState('failed'));
+
+      // 3 re-enqueue cycles — the threshold — should all pass through normally.
+      for (let i = 0; i < 3; i++) await checkStuckDownloads();
+      expect(addJobMock).toHaveBeenCalledTimes(3);
+      expect(notifyMock).toHaveBeenCalledTimes(3);
+      for (const call of notifyMock.mock.calls) {
+        expect(call[0]).toMatchObject({ action: 're-enqueued' });
+      }
+
+      // 4th cycle — over threshold — should escalate, not re-enqueue.
+      await checkStuckDownloads();
+      expect(addJobMock).toHaveBeenCalledTimes(3); // unchanged
+      expect(notifyMock).toHaveBeenCalledTimes(4);
+      expect(notifyMock).toHaveBeenLastCalledWith(
+        expect.objectContaining({ action: 'failed', requestId: 'req_loop' }),
+        '00000000-0000-7000-8000-000000000001',
+      );
+
+      const row = db.prepare('SELECT status FROM requests WHERE request_id = ?').get('req_loop') as { status: string };
+      expect(row.status).toBe('failed');
+    });
+
+    it('resets the counter when a request leaves `downloading` between cycles', async () => {
+      insertStuckRequest('req_recovers');
+      getJobMock.mockResolvedValue(jobInState('failed'));
+
+      // Two re-enqueues — build up some counter state.
+      await checkStuckDownloads();
+      await checkStuckDownloads();
+      expect(addJobMock).toHaveBeenCalledTimes(2);
+
+      // Simulate the worker succeeding: row moves to `ready` (or anywhere out
+      // of `downloading`).
+      db.prepare(`UPDATE requests SET status = 'ready' WHERE request_id = ?`).run('req_recovers');
+
+      // Next cycle clears the counter (request no longer stuck).
+      await checkStuckDownloads();
+
+      // Row goes back to `downloading` (manual retry, watchdog can't tell).
+      // The escalation grace window should reset: 3 fresh re-enqueues, no escalation.
+      db.prepare(`UPDATE requests SET status = 'downloading' WHERE request_id = ?`).run('req_recovers');
+      addJobMock.mockClear();
+      notifyMock.mockClear();
+
+      for (let i = 0; i < 3; i++) await checkStuckDownloads();
+      expect(addJobMock).toHaveBeenCalledTimes(3);
+      for (const call of notifyMock.mock.calls) {
+        expect(call[0]).toMatchObject({ action: 're-enqueued' });
+      }
+    });
   });
 });
