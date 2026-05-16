@@ -835,6 +835,20 @@ When Eddy sends a notification with actions:
 
 Same pattern for every action across every notification.
 
+### Parent PIN on approvals
+
+Approvals require a parent PIN. Signed tokens prove the device received the notification; the PIN proves the parent is the one acting. Without it, anyone holding the parent's unlocked phone — including the kid — can approve content the guard escalated.
+
+Applies to every action that grants something to a kid or changes their profile:
+
+- Guard approve / deny (uncertain verdicts and appeals — Phase 6)
+- Override grants — Pi-hole and TV access (Phase 9)
+- Parent edits to kids' interests, followed people, expertise
+
+Not applied to kid-facing actions (tap to play, save, dismiss) or parents' own informational notifications (video ready, weekly Drift).
+
+One PIN per parent, stored as scrypt hash. Same PIN across every approval surface — ntfy action URLs and direct PWA (e.g. `/admin/guard-review`) — so there is one mental model, not two. Rate-limit wrong attempts. Reset via SSH-only CLI; no over-network recovery flow.
+
 ### Module interface
 
 ```typescript
