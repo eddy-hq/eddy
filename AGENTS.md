@@ -1,8 +1,15 @@
-# CLAUDE.md
+# AGENTS.md
 
-Self-hosted family media system. Full spec: **`docs/brief.md`** — read it.
+Self-hosted family media system.
 
-**Operations** (service map, watchdog, deploy script, manual restart commands): **`docs/ops.md`** — read before touching infrastructure or asking how to restart things.
+**Read first:**
+- **`docs/brief.md`** — full product spec
+- **`docs/ops.md`** — service map, watchdog, deploy script, restart commands (read before touching infrastructure)
+
+**Read when relevant:**
+- **`CONTEXT.md`** — domain glossary; canonical terms and aliases to avoid
+- **`docs/adr/`** — load-bearing decisions (architecture, data model, notification channel, privacy boundary)
+- **`docs/design-notes.md`** — prose design rationale below the ADR threshold
 
 ## Data location
 
@@ -22,6 +29,8 @@ Self-hosted family media system. Full spec: **`docs/brief.md`** — read it.
 - **The five rules in Section 1 of the brief are constraints, not aspirations.**
 
 ## Decisions already made — don't relitigate
+
+Quick reference; durable form in `docs/adr/`.
 
 - Modular monolith. Two Node entry points (M4 server, Ubuntu worker) sharing modules. Modules are TS files, not services.
 - yt-dlp directly (no Tube Archivist). Eddy owns video files; Plex/nginx read.

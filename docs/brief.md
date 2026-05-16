@@ -2,7 +2,7 @@
 
 **Status:** Phase 5 in progress. Phases 0–4 shipped (feed, guard shadow mode, RSS poller, channel follow, search). Discovery engine, interest picker, balance prompts, channel→interest inference, profile-editing surface (Interests + People), freeform-interest input, person bio/photo capture, and topic→interest schema rename all live; recommendation extraction and "why this?" UI affordance still to come.
 
-Reasoning and trade-offs that led to these decisions live in `docs/decisions.md`. This document is the spec.
+Load-bearing decisions live in `docs/adr/`; prose-form design rationale lives in `docs/design-notes.md`; domain vocabulary lives in `CONTEXT.md`. This document is the spec.
 
 ---
 
@@ -446,7 +446,7 @@ The feed is *what was offered to me*. Drift is *what did I do with it*. Differen
 Today is structured as three short stretches in a fixed order — **You asked → From people you follow → Picked for you**. Past days are unified lists by date.
 
 - **Provenance lives on the card, not in section headers.** Every card carries a small pill (dot + short label): *You asked* (amber), creator name (teal) for follows, *Picked* (terracotta) for picks. Cards are self-describing wherever they appear — Saved, search, history, Drift — without needing a header above them.
-- **Section dividers are structural, not categorical.** Today shows small serif labels with a hairline rule for the *You asked* and *From people you follow* sections. The Picks section has no divider label — its cluster intro line ("I thought you'd like this one…") *is* the section opener (see decisions.md).
+- **Section dividers are structural, not categorical.** Today shows small serif labels with a hairline rule for the *You asked* and *From people you follow* sections. The Picks section has no divider label — its cluster intro line ("I thought you'd like this one…") *is* the section opener (see `docs/design-notes.md`).
 - **Single-source days suppress dividers.** A day with only requests just reads as a list — there's nothing to divide.
 - **Past days don't use dividers at all.** Past days are unified by date.
 
@@ -1198,8 +1198,6 @@ Only if 6+ months of parent-decision data from Phase 6 justifies it. Spec in Sec
 - General article extraction beyond schema.org recipes
 - Book catalogue ingestion or general book search (discovery via followed people only)
 - Annual support-allocation/budget view (tempting, deferred)
-
-Native iOS app is explicit v2. See `docs/decisions.md`.
 
 ---
 

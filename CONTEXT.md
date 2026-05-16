@@ -224,7 +224,7 @@ _Avoid_: API (overloaded), control plane (descriptive but not the term)
 > **Claude:** "Under the hood, yes — DanTDM has one **Output** in v1, his YouTube channel. But the unit of subscription is the **Person**, not the channel. When he eventually has a Substack or a podcast, following him already covers it."
 
 > **Steve:** "Why did this **Pick** show up on Boy1's **Today** if its **Relevance axis** was a 4?"
-> **Claude:** "Its **Quality axis** was 9 and the recommender is a high-trust **Person** for him — the ranker weights quality heavier on a kid's picks surface. Picks are a curated set, not a ranked list — see `docs/decisions.md`."
+> **Claude:** "Its **Quality axis** was 9 and the recommender is a high-trust **Person** for him — the ranker weights quality heavier on a kid's picks surface. Picks are a curated set, not a ranked list — see `docs/design-notes.md`."
 
 ## Flagged ambiguities
 
