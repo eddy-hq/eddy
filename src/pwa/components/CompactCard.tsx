@@ -1,8 +1,12 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
+import { RotateCw } from 'lucide-react';
 import { readProgress, onProgressChange } from '../lib/videoProgress';
 import { useResolvePersonId } from '../hooks/useResolvePersonId';
+import { useRestoreRequest } from '../hooks/useRestoreRequest';
+import { useRestoreStore } from '../store/restore';
+import { EddySpinner } from './EddySpinner';
 import type { CardData } from './Card';
 
 export type SourceKind = 'req' | 'follow' | 'pick';
@@ -50,6 +54,16 @@ export function CompactCard({
   const isRejected = data.status === 'rejected';
   const isWatched  = !!data.watchedAt;
 
+  // Restore flow — same global store as the full Card, so a tap on either
+  // surface drives one shared in-flight state for this requestId.
+  const { restore, entry: restoreEntry } = useRestoreRequest(data.requestId);
+  const finishRestore = useRestoreStore((s) => s.finish);
+  const isRestoring = !!restoreEntry && !restoreEntry.errored;
+  const restoreError = restoreEntry?.errored ? (restoreEntry.errorMsg ?? null) : null;
+  useEffect(() => {
+    if (restoreEntry && !restoreEntry.errored && isLive) finishRestore(data.requestId);
+  }, [restoreEntry, isLive, data.requestId, finishRestore]);
+
   const [progressFraction, setProgressFraction] = useState<number>(() => {
     if (!userId) return 0;
     const p = readProgress(userId, data.requestId);
@@ -69,7 +83,10 @@ export function CompactCard({
     ?? (data.youtubeId ? `https://i.ytimg.com/vi/${data.youtubeId}/hqdefault.jpg` : null);
 
   function handleTap() {
-    if (isRecycled) return; // TODO: restore flow — inherits from Card behaviour
+    if (isRecycled) {
+      if (!isRestoring) void restore();
+      return;
+    }
     if (isGone || isRejected) return;
     if (!isLive) return;
     if (onSelect) onSelect(data);
@@ -77,7 +94,7 @@ export function CompactCard({
   }
 
   const metaLabel = isRecycled
-    ? 'Tap to restore'
+    ? (restoreError ?? (isRestoring ? 'Restoring…' : 'Tap to restore'))
     : isGone
     ? 'Find similar'
     : isRejected
@@ -100,7 +117,7 @@ export function CompactCard({
       animate={{ opacity: isGone ? 0.72 : 1, y: 0 }}
       exit={{ opacity: 0, y: -6, scale: 0.98 }}
       transition={{ duration: 0.22, ease: [0.33, 1, 0.68, 1] }}
-      whileTap={isLive ? { scale: 0.985 } : undefined}
+      whileTap={(isLive || (isRecycled && !isRestoring)) ? { scale: 0.985 } : undefined}
       onClick={handleTap}
       style={{
         display: 'flex',
@@ -111,7 +128,7 @@ export function CompactCard({
         border: '1px solid var(--border-subtle)',
         borderRadius: 14,
         boxShadow: 'var(--shadow-card)',
-        cursor: isLive ? 'pointer' : 'default',
+        cursor: (isLive || (isRecycled && !isRestoring)) ? 'pointer' : 'default',
       }}
     >
       {/* Thumbnail */}
@@ -132,14 +149,37 @@ export function CompactCard({
             style={{
               width: '100%', height: '100%', objectFit: 'cover',
               filter: isGone ? 'grayscale(1) brightness(0.55)'
-                : isRecycled ? 'grayscale(0.65) brightness(0.88)'
+                : isRecycled ? 'grayscale(1) opacity(0.5)'
                 : 'none',
+              transition: 'filter 0.4s ease',
             }}
           />
         )}
 
         {isRecycled && (
-          <span style={badgeLight}>Recycled</span>
+          <div
+            aria-hidden
+            style={{
+              position: 'absolute', inset: 0, zIndex: 2,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              pointerEvents: 'none',
+              color: '#F4F1EA',
+            }}
+          >
+            {isRestoring ? (
+              <EddySpinner size={26} />
+            ) : (
+              <div style={{
+                width: 32, height: 32, borderRadius: '50%',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                background: 'rgba(0,0,0,0.55)',
+                backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)',
+                border: '1.2px solid rgba(255,255,255,0.4)',
+              }}>
+                <RotateCw size={14} strokeWidth={2.4} />
+              </div>
+            )}
+          </div>
         )}
         {isGone && (
           <span style={badgeDark}>Gone</span>

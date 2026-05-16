@@ -7,6 +7,7 @@ import { VideoDetailSheet } from '../components/VideoDetailSheet';
 import { BottomNav } from '../components/BottomNav';
 import { AppHeader } from '../components/AppHeader';
 import { useVideoSheet } from '../hooks/useVideoSheet';
+import { useRestorePolling } from '../hooks/useRestorePolling';
 
 interface FeedCard {
   request_id: string;
@@ -71,6 +72,7 @@ export function Saved() {
   const [params] = useSearchParams();
   const user = params.get('userId') ?? params.get('user') ?? '';
   const { selectedCard, selectedSource, onSelect, onClose } = useVideoSheet();
+  useRestorePolling();
 
   const { data, isLoading, isError } = useQuery({
     queryKey: ['feed', user],

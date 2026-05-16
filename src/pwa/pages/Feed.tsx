@@ -9,6 +9,7 @@ import { VideoDetailSheet } from '../components/VideoDetailSheet';
 import { BottomNav } from '../components/BottomNav';
 import { AppHeader } from '../components/AppHeader';
 import { useVideoSheet } from '../hooks/useVideoSheet';
+import { useRestorePolling } from '../hooks/useRestorePolling';
 import type { WatchSource } from '../lib/watchEvents';
 
 // ── Discovery API ────────────────────────────────────────────────────────────
@@ -134,6 +135,7 @@ export function Feed() {
   const { selectedCard, selectedSource, onSelect, onClose } = useVideoSheet();
   const user = params.get('userId') ?? params.get('user') ?? '';
   const queryClient = useQueryClient();
+  useRestorePolling();
 
   const [dismissedIds, setDismissedIds] = useState<Set<string>>(new Set());
   const [addedIds, setAddedIds] = useState<Set<string>>(new Set());

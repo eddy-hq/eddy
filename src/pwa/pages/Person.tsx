@@ -7,6 +7,7 @@ import { type CardData } from '../components/Card';
 import { CompactCard } from '../components/CompactCard';
 import { VideoDetailSheet } from '../components/VideoDetailSheet';
 import { useVideoSheet } from '../hooks/useVideoSheet';
+import { useRestorePolling } from '../hooks/useRestorePolling';
 
 interface PersonViewItem {
   request_id: string;
@@ -121,6 +122,7 @@ export function Person() {
   const profileHref = profileQs ? `/profile?${profileQs}` : '/profile';
 
   const { selectedCard, selectedSource, onSelect, onClose } = useVideoSheet();
+  useRestorePolling();
   const [showConfirm, setShowConfirm] = useState(false);
 
   const { data, isLoading, isError } = useQuery({
