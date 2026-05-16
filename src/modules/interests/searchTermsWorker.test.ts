@@ -13,10 +13,8 @@ vi.mock('../../ollama', async (importOriginal) => ({
   ollamaGenerate: vi.fn(),
 }));
 
-const { guardAdd } = vi.hoisted(() => ({ guardAdd: vi.fn().mockResolvedValue(undefined) }));
 vi.mock('../../queue', () => ({
   redis: {},
-  guardQueue: { add: guardAdd },
   interestsQueue: { add: vi.fn() },
 }));
 
@@ -35,49 +33,16 @@ import { ollamaGenerate } from '../../ollama';
 import { processGenerateSearchTerms } from './searchTermsWorker';
 
 beforeEach(() => {
-  guardAdd.mockClear();
   mockRun.mockReset();
   vi.mocked(ollamaGenerate).mockReset();
   vi.mocked(ollamaGenerate).mockResolvedValue('["a","b","c","d"]');
 });
 
-describe('processGenerateSearchTerms — kid-interest chain', () => {
-  it('enqueues kid-interest-eval after a kid-authored interest', async () => {
-    await processGenerateSearchTerms({
-      interestId: 'bird_watching', label: 'Bird Watching',
-      userId: 'user-kid', isUserAdded: true, isKid: true,
-    });
-
-    expect(guardAdd).toHaveBeenCalledTimes(1);
-    expect(guardAdd).toHaveBeenCalledWith('kid-interest-eval', {
-      userId: 'user-kid',
-      interestId: 'bird_watching',
-      rawLabel: 'Bird Watching',
-    });
-  });
-
-  it('does not enqueue when isKid is false', async () => {
-    await processGenerateSearchTerms({
-      interestId: 'investing', label: 'Investing',
-      userId: 'user-parent', isUserAdded: true, isKid: false,
-    });
-
-    expect(guardAdd).not.toHaveBeenCalled();
-  });
-
-  it('does not enqueue when isUserAdded is false', async () => {
-    await processGenerateSearchTerms({
-      interestId: 'seeded', label: 'Seeded Interest',
-      userId: 'user-kid', isUserAdded: false, isKid: true,
-    });
-
-    expect(guardAdd).not.toHaveBeenCalled();
-  });
-
+describe('processGenerateSearchTerms', () => {
   it('persists search terms to interests.search_terms', async () => {
     await processGenerateSearchTerms({
       interestId: 'x', label: 'X',
-      userId: 'user-kid', isUserAdded: true, isKid: true,
+      userId: 'user-kid', isUserAdded: true,
     });
 
     const updateCall = mockRun.mock.calls.find((c) => c[0] === JSON.stringify(['a', 'b', 'c', 'd']));
@@ -89,11 +54,10 @@ describe('processGenerateSearchTerms — kid-interest chain', () => {
     vi.mocked(ollamaGenerate).mockResolvedValue('not json');
     await expect(processGenerateSearchTerms({
       interestId: 'x', label: 'X',
-      userId: 'user-kid', isUserAdded: true, isKid: true,
+      userId: 'user-kid', isUserAdded: true,
     })).rejects.toThrow(/parse failed/i);
 
-    // No update, no chain enqueue
+    // No DB update on parse failure
     expect(mockRun).not.toHaveBeenCalled();
-    expect(guardAdd).not.toHaveBeenCalled();
   });
 });

@@ -2,12 +2,12 @@ import { Worker } from 'bullmq';
 import { db } from '../../db/client';
 import { logger } from '../../logger';
 import { ollamaGenerate, parseOllamaJson } from '../../ollama';
-import { redis, guardQueue } from '../../queue';
-import { KID_INTEREST_EVAL_JOB } from '../guard/index';
+import { redis } from '../../queue';
 
 // Generate 4 YouTube search queries for a freeform interest label and persist
-// them on the row. Used by the kid-interest guard chain (#52) as the point at
-// which `search_terms` is populated before the guard eval reads it.
+// them on the row so discovery can use them on the next pass. The kid-interest
+// guard eval (#110) runs in-band from the interests router on add; it is no
+// longer chained from this worker.
 export const GENERATE_SEARCH_TERMS_JOB = 'generate-search-terms';
 
 export interface GenerateSearchTermsJob {
@@ -15,13 +15,10 @@ export interface GenerateSearchTermsJob {
   label: string;
   userId: string;
   isUserAdded: boolean;
-  // Resolved at enqueue time and passed through so the chain decision uses the
-  // role at submission, and the worker doesn't have to round-trip to users.
-  isKid: boolean;
 }
 
 export async function processGenerateSearchTerms(job: GenerateSearchTermsJob): Promise<void> {
-  const { interestId, label, userId, isUserAdded, isKid } = job;
+  const { interestId, label } = job;
   const prompt = `Generate 4 YouTube search queries that would find good videos about "${label}". Return a JSON array of strings only, for example ["query one","query two","query three","query four"]. No explanation.`;
 
   const raw = await ollamaGenerate(prompt);
@@ -30,8 +27,8 @@ export async function processGenerateSearchTerms(job: GenerateSearchTermsJob): P
     return (parsed as unknown[]).filter((v): v is string => typeof v === 'string').slice(0, 4);
   });
   // Throw on parse failure so BullMQ retries per the queue's backoff policy
-  // — a successful no-op would leave search_terms='[]' permanently and
-  // silently skip the kid-interest chain.
+  // — a successful no-op would leave search_terms='[]' permanently and the
+  // interest would never surface candidates.
   if (!terms) {
     logger.warn({ interestId, raw }, 'Search-terms job: could not parse Gemma response — failing for retry');
     throw new Error('Search-terms parse failed');
@@ -41,12 +38,6 @@ export async function processGenerateSearchTerms(job: GenerateSearchTermsJob): P
     .run(JSON.stringify(terms), interestId);
 
   logger.info({ interestId, terms }, 'Search-terms job: interest search terms generated');
-
-  // Chain: only kid-authored freeform interests get a guard eval. Adult-typed
-  // interests are trusted, and the curated /select flow doesn't enqueue at all.
-  if (isUserAdded && isKid) {
-    await guardQueue.add(KID_INTEREST_EVAL_JOB, { userId, interestId, rawLabel: label });
-  }
 }
 
 let worker: Worker | null = null;

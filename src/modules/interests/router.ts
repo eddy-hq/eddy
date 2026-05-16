@@ -1,7 +1,9 @@
 import { Router, Request, Response } from 'express';
 import { db } from '../../db/client';
 import { ValidationError, NotFoundError } from '../../errors';
+import { logger } from '../../logger';
 import { resolveUserById } from '../users';
+import { evaluateKidInterest } from '../guard';
 import { normalizeUserAddedInterest } from './normalize';
 
 interface InterestRow {
@@ -165,11 +167,32 @@ interestsRouter.patch('/expertise', (req: Request, res: Response) => {
   res.json({ interestId, expertise });
 });
 
-interestsRouter.post('/user-add', (req: Request, res: Response) => {
+interestsRouter.post('/user-add', async (req: Request, res: Response) => {
   const { userId, label } = req.body as { userId?: string; label?: string };
   const user = resolveUserById(userId);
   if (!label?.trim()) throw new ValidationError('label required');
 
   const result = normalizeUserAddedInterest(user.user_id, label);
+
+  // Shadow-mode guard eval for kid-authored interests (issue #110). Routes
+  // through the same Gemma machinery as content requests so the eval set
+  // gets `kid_interest` rows before Phase 6 flips the guard live. The add
+  // is unconditional — verdict is logged, not enforced. Errors inside the
+  // guard never block the add.
+  if (user.role === 'kid') {
+    try {
+      await evaluateKidInterest({
+        userId: user.user_id,
+        interestId: result.interestId,
+        rawLabel: result.label,
+      });
+    } catch (err) {
+      logger.warn(
+        { err, interestId: result.interestId },
+        'Kid-interest guard eval failed — interest still added',
+      );
+    }
+  }
+
   res.json(result);
 });

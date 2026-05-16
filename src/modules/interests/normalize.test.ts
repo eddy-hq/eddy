@@ -9,18 +9,15 @@ vi.mock('../../logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 
-const { interestsAdd, guardAdd } = vi.hoisted(() => ({
+const { interestsAdd } = vi.hoisted(() => ({
   interestsAdd: vi.fn().mockResolvedValue(undefined),
-  guardAdd: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock('../../queue', () => ({
   interestsQueue: { add: interestsAdd },
-  guardQueue: { add: guardAdd },
 }));
 
 let nextRank = 1;
 let existingMatch: { id: string } | undefined;
-let userRole: 'kid' | 'parent' | undefined = 'kid';
 const mockRun = vi.fn();
 const prepareCalls: string[] = [];
 
@@ -31,7 +28,6 @@ vi.mock('../../db/client', () => ({
       return {
         get: vi.fn(() => {
           if (sql.includes('MAX(rank)')) return { r: nextRank };
-          if (sql.includes('FROM users')) return userRole ? { role: userRole } : undefined;
           if (sql.includes('FROM interests WHERE id')) return existingMatch;
           return undefined;
         }),
@@ -45,11 +41,9 @@ vi.mock('../../db/client', () => ({
 beforeEach(() => {
   nextRank = 1;
   existingMatch = undefined;
-  userRole = 'kid';
   mockRun.mockReset();
   prepareCalls.length = 0;
   interestsAdd.mockClear();
-  guardAdd.mockClear();
 });
 
 describe('normalizeUserAddedInterest', () => {
@@ -93,8 +87,7 @@ describe('normalizeUserAddedInterest', () => {
     expect(result.isNew).toBe(true);
   });
 
-  it('enqueues generate-search-terms with isKid for a kid-authored new interest', () => {
-    userRole = 'kid';
+  it('enqueues generate-search-terms for a new interest', () => {
     normalizeUserAddedInterest('user-1', 'Bird Watching');
 
     expect(interestsAdd).toHaveBeenCalledTimes(1);
@@ -103,41 +96,13 @@ describe('normalizeUserAddedInterest', () => {
       label: 'Bird Watching',
       userId: 'user-1',
       isUserAdded: true,
-      isKid: true,
     });
-    // New-interest path: search-terms job carries the chain; no direct guard enqueue here.
-    expect(guardAdd).not.toHaveBeenCalled();
   });
 
-  it('enqueues kid-interest-eval directly when a kid links to an existing interest', () => {
-    userRole = 'kid';
+  it('does not enqueue search-terms when linking to an existing interest', () => {
     existingMatch = { id: 'cycling' };
     normalizeUserAddedInterest('user-1', 'Cycling');
 
-    // Existing path: search_terms already populated, so the search-terms job is skipped.
     expect(interestsAdd).not.toHaveBeenCalled();
-    expect(guardAdd).toHaveBeenCalledTimes(1);
-    expect(guardAdd).toHaveBeenCalledWith('kid-interest-eval', {
-      userId: 'user-1',
-      interestId: 'cycling',
-      rawLabel: 'Cycling',
-    });
-  });
-
-  it('does not enqueue any guard eval when a parent adds an interest', () => {
-    userRole = 'parent';
-    normalizeUserAddedInterest('user-parent', 'Investing');
-    expect(guardAdd).not.toHaveBeenCalled();
-    // search-terms job still runs (so search_terms get populated), but with isKid=false.
-    expect(interestsAdd).toHaveBeenCalledWith(
-      'generate-search-terms',
-      expect.objectContaining({ isKid: false }),
-    );
-
-    interestsAdd.mockClear();
-    existingMatch = { id: 'investing' };
-    normalizeUserAddedInterest('user-parent', 'Investing');
-    expect(interestsAdd).not.toHaveBeenCalled();
-    expect(guardAdd).not.toHaveBeenCalled();
   });
 });
