@@ -63,11 +63,29 @@ export async function checkStuckDownloads(): Promise<void> {
       continue; // Redis unavailable — skip rather than false-positive
     }
 
-    // Job is active or delayed — legitimately in-flight. `active` is a real
-    // download in progress (possibly a long video); `delayed` is the worker
-    // having parked a job for a future retry (e.g. live broadcast waiting on
-    // its VOD). Either way: leave it alone.
-    if (jobState === 'active' || jobState === 'delayed') continue;
+    // Healthy-pending BullMQ states — leave alone.
+    //   active            — a real download in progress (possibly a long video)
+    //   delayed           — worker parked the job for a future retry (e.g.
+    //                       live broadcast waiting on its VOD)
+    //   waiting           — queued, not yet picked up (worker backlogged or down)
+    //   waiting-children  — waiting on child jobs (unused here, defensive)
+    //   prioritized       — queued in priority lane (unused here, defensive)
+    //   paused            — queue paused by an operator
+    //
+    // The escalation path mustn't count these against the threshold: a worker
+    // outage that lasts >15 minutes would otherwise transition every queued
+    // download to `failed` while a valid job is still sitting in the queue.
+    // When the worker returns, it would complete the download but the
+    // `mark_downloaded` callback would no-op against a `failed` row, leaving
+    // an orphan file on disk.
+    if (
+      jobState === 'active' ||
+      jobState === 'delayed' ||
+      jobState === 'waiting' ||
+      jobState === 'waiting-children' ||
+      jobState === 'prioritized' ||
+      jobState === 'paused'
+    ) continue;
 
     // Escalate before re-enqueueing if we've already retried this request the
     // threshold number of times without it making progress. Stops the

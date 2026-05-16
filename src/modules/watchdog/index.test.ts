@@ -100,6 +100,24 @@ describe('watchdog checkStuckDownloads', () => {
     expect(notifyMock).not.toHaveBeenCalled();
   });
 
+  it.each(['waiting', 'waiting-children', 'prioritized', 'paused'])(
+    'leaves jobs in `%s` state alone — healthy-pending, must not count toward escalation',
+    async (state) => {
+      resetWatchdogStateForTests();
+      insertStuckRequest(`req_${state}`);
+      getJobMock.mockResolvedValue(jobInState(state));
+
+      // Drive past the escalation threshold; a healthy-pending job must never
+      // tip the watchdog into marking the row `failed`.
+      for (let i = 0; i < 5; i++) await checkStuckDownloads();
+
+      expect(addJobMock).not.toHaveBeenCalled();
+      expect(notifyMock).not.toHaveBeenCalled();
+      const row = db.prepare('SELECT status FROM requests WHERE request_id = ?').get(`req_${state}`) as { status: string };
+      expect(row.status).toBe('downloading');
+    },
+  );
+
   it('re-enqueues a `failed` job and alerts', async () => {
     insertStuckRequest('req_failed');
     getJobMock.mockResolvedValue(jobInState('failed'));
