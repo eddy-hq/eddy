@@ -50,6 +50,12 @@ const schema = z.object({
   PLEX_URL: z.string().optional(),
   PLEX_TOKEN: z.string().optional(),
   PLEX_LIBRARY_SECTION_ID: z.string().optional(),
+  // Storage recycling (issue #115). Per-user soft budget and global hard cap;
+  // the recycler runs nightly, freeing video files for users over budget in
+  // priority order (dismissed → watched → unwatched-skip-48h; saved never).
+  // Defaults: 100 GiB per user, 350 GiB across all users.
+  USER_STORAGE_QUOTA_BYTES: z.coerce.number().int().positive().default(107_374_182_400),
+  GLOBAL_STORAGE_CAP_BYTES: z.coerce.number().int().positive().default(375_809_638_400),
 });
 
 const result = schema.safeParse(process.env);

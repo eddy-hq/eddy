@@ -283,19 +283,20 @@ The feed is a forever timeline (Section 8). Content items are never removed from
 
 **When files are recycled:**
 
-- Only at storage threshold (configurable, default 80% full). Not time-based.
+- Per-user budget first (configurable, default 100 GiB per user). The nightly pass picks victims from users over budget until they're back under. Not time-based.
+- Global hard cap as a second guard (configurable, default 350 GiB total). After the per-user sweep, if the global live total is still over the cap, the same priority order recycles further victims across all users.
 - Priority order (first-to-recycle → last):
-  1. Dismissed items
-  2. Watched items, oldest first
-  3. Unwatched items, oldest first, skipping last 48h
+  1. Dismissed items, oldest by `added_at`
+  2. Watched items, oldest by most-recent watch event (re-watched stays alive longer)
+  3. Unwatched items, oldest by `added_at`, skipping last 48h
   4. Saved items — never recycled
-- `file_state` transitions `live` → `recycled`. `file_path` and `nginx_url` cleared. Row preserved.
+- `file_state` transitions `live` → `recycled`. `file_path`, `nginx_url`, and `file_size_bytes` cleared; `status` unchanged so the card stays in its timeline tier. Row preserved.
 
 **Restore (one tap):** same yt-dlp pipeline re-runs. Original guard verdict preserved — no re-triage. Card stays in its original timeline position.
 
 **Non-restorable (`file_state` = `gone`):** YouTube removed the source, channel taken down, geo-block. "No longer available" treatment, offers to find similar via search.
 
-Recycling runs as a scheduled job on Ubuntu.
+The nightly recycler pass runs on the M4 (04:00 local, before discovery and profile-enrichment). File unlinks land on the existing delete queue and are executed by the Ubuntu worker.
 
 ### Reliability
 

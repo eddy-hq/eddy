@@ -367,6 +367,130 @@ describe('mark_soft_deleted', () => {
   });
 });
 
+describe('mark_recycled', () => {
+  const FILE_PATH = '/mnt/ssd/eddy/videos/recycled.mp4';
+  const NGINX_URL = 'http://mediaserver/videos/recycled.mp4';
+
+  function insertRecyclable(opts: {
+    request_id: string;
+    status: Status;
+    file_state?: string;
+    file_size_bytes?: number | null;
+    nginx_url?: string | null;
+  }): void {
+    insertRequest({
+      request_id: opts.request_id,
+      status: opts.status,
+      file_path: FILE_PATH,
+    });
+    db.prepare(
+      `UPDATE requests
+         SET file_state = ?,
+             file_size_bytes = ?,
+             nginx_url = ?
+       WHERE request_id = ?`,
+    ).run(
+      opts.file_state ?? 'live',
+      opts.file_size_bytes ?? 500,
+      opts.nginx_url ?? NGINX_URL,
+      opts.request_id,
+    );
+  }
+
+  it.each(['ready', 'watched', 'dismissed'] as const)(
+    'transitions live → recycled from %s without changing status, nulls bytes/paths, enqueues delete',
+    (sourceStatus) => {
+      const requestId = `req-rcy-${sourceStatus}`;
+      insertRecyclable({ request_id: requestId, status: sourceStatus });
+      const before = Date.now();
+
+      const { result } = state.apply({ kind: 'mark_recycled', requestId });
+
+      expect(result).toEqual({ transitioned: true, userId: USER_ID });
+      const row = db
+        .prepare(
+          `SELECT status, file_state, file_path, nginx_url, file_size_bytes, recycled_at
+             FROM requests WHERE request_id = ?`,
+        )
+        .get(requestId) as {
+          status: string; file_state: string;
+          file_path: string | null; nginx_url: string | null;
+          file_size_bytes: number | null; recycled_at: string | null;
+        };
+      expect(row.status).toBe(sourceStatus);
+      expect(row.file_state).toBe('recycled');
+      expect(row.file_path).toBeNull();
+      expect(row.nginx_url).toBeNull();
+      expect(row.file_size_bytes).toBeNull();
+      expect(row.recycled_at).not.toBeNull();
+      expect(new Date(row.recycled_at!).getTime()).toBeGreaterThanOrEqual(before);
+
+      // Reuses the existing delete queue — same jobId shape as soft-delete.
+      expect(fakePorts.enqueueDelete).toHaveBeenCalledWith(
+        { requestId, filePath: FILE_PATH },
+        { jobId: `delete-${requestId}` },
+      );
+    },
+  );
+
+  it('is a no-op on an already-recycled row (file_state != live) and does not enqueue', () => {
+    insertRecyclable({
+      request_id: 'req-rcy-already',
+      status: 'watched',
+      file_state: 'recycled',
+      file_size_bytes: null,
+    });
+
+    const { result } = state.apply({ kind: 'mark_recycled', requestId: 'req-rcy-already' });
+
+    expect(result).toEqual({ transitioned: false, currentStatus: 'watched' });
+    expect(fakePorts.enqueueDelete).not.toHaveBeenCalled();
+  });
+
+  it('is a no-op on a downloading row and does not enqueue', () => {
+    insertRecyclable({ request_id: 'req-rcy-dl', status: 'downloading' });
+
+    const { result } = state.apply({ kind: 'mark_recycled', requestId: 'req-rcy-dl' });
+
+    expect(result).toEqual({ transitioned: false, currentStatus: 'downloading' });
+    expect(fakePorts.enqueueDelete).not.toHaveBeenCalled();
+  });
+
+  it('returns currentStatus: null for an unknown id and does not enqueue', () => {
+    const { result } = state.apply({ kind: 'mark_recycled', requestId: 'does-not-exist' });
+
+    expect(result).toEqual({ transitioned: false, currentStatus: null });
+    expect(fakePorts.enqueueDelete).not.toHaveBeenCalled();
+  });
+
+  it('does not enqueue when the row has no file_path', () => {
+    insertRequest({ request_id: 'req-rcy-nofile', status: 'ready', file_path: null });
+    // file_state defaults to 'live' from migration 002. Even with no file_path
+    // the descriptor still flips columns — but no unlink work to queue.
+    const { result } = state.apply({ kind: 'mark_recycled', requestId: 'req-rcy-nofile' });
+
+    expect(result).toEqual({ transitioned: true, userId: USER_ID });
+    const row = db
+      .prepare('SELECT file_state FROM requests WHERE request_id = ?')
+      .get('req-rcy-nofile') as { file_state: string };
+    expect(row.file_state).toBe('recycled');
+    expect(fakePorts.enqueueDelete).not.toHaveBeenCalled();
+  });
+
+  it('is idempotent — second apply on a recycled row is a no-op', () => {
+    insertRecyclable({ request_id: 'req-rcy-idem', status: 'ready' });
+
+    const first = state.apply({ kind: 'mark_recycled', requestId: 'req-rcy-idem' });
+    expect(first.result).toEqual({ transitioned: true, userId: USER_ID });
+
+    vi.mocked(fakePorts.enqueueDelete).mockClear();
+
+    const second = state.apply({ kind: 'mark_recycled', requestId: 'req-rcy-idem' });
+    expect(second.result).toEqual({ transitioned: false, currentStatus: 'ready' });
+    expect(fakePorts.enqueueDelete).not.toHaveBeenCalled();
+  });
+});
+
 describe('mark_downloaded', () => {
   const FIELDS: DownloadedFields = {
     title: 'A grand title',
@@ -1099,6 +1223,8 @@ function buildEvent(kind: Event['kind'], requestId: string): Event {
       return { kind, requestId };
     case 'mark_soft_deleted':
       return { kind, requestId };
+    case 'mark_recycled':
+      return { kind, requestId };
     case 'mark_downloaded':
       return { kind, requestId, fields: PROP_DOWNLOADED_FIELDS };
     case 'mark_rejected':
@@ -1149,13 +1275,16 @@ function buildEvent(kind: Event['kind'], requestId: string): Event {
 // Cast to a generic shape that matches what the property test reads.
 interface GenericDescriptor {
   sources: Status[] | 'creation';
-  target: Status;
+  target: Status | 'preserve';
   effects: (event: Event, result: TransitionResult) => Effect[];
 }
 
 // Build the (eventKind, source) pairs to feed into it.each. Mutation events
 // produce one row per legal source; creation events produce a single row
-// flagged with source='creation' so the test exercises the INSERT path.
+// flagged with source='creation' so the test exercises the INSERT path. The
+// `target` field on each row is the post-transition status the test should
+// assert against. `descriptor.target === 'preserve'` (status-preserving
+// descriptors like mark_recycled) resolves to the row's source status.
 type LegalPairRow = {
   kind: Event['kind'];
   source: Status | 'creation';
@@ -1165,9 +1294,18 @@ type LegalPairRow = {
 const LEGAL_PAIRS: LegalPairRow[] = (Object.entries(TRANSITIONS) as [Event['kind'], GenericDescriptor][])
   .flatMap(([kind, descriptor]): LegalPairRow[] => {
     if (descriptor.sources === 'creation') {
+      // Creation descriptors must declare a concrete target; 'preserve' would
+      // be meaningless on an INSERT (there's no prior status to preserve).
+      if (descriptor.target === 'preserve') {
+        throw new Error(`Creation descriptor ${kind} cannot use 'preserve' target`);
+      }
       return [{ kind, source: 'creation', target: descriptor.target }];
     }
-    return descriptor.sources.map((source) => ({ kind, source, target: descriptor.target }));
+    return descriptor.sources.map((source) => ({
+      kind,
+      source,
+      target: descriptor.target === 'preserve' ? source : descriptor.target,
+    }));
   });
 
 type IllegalPairRow = { kind: Event['kind']; source: Status };
@@ -1237,12 +1375,17 @@ describe('TRANSITIONS property test', () => {
       // SqlResultCarrier-shaped result to compute the expected effect list:
       // descriptors that read RETURNING columns (file_path / youtube_id / url)
       // see them via __sqlResult, which mirrors what runSql stashed at runtime.
+      // Mirror the columns runSql merges into __sqlResult: every column a
+      // descriptor might read in `effects(...)` (RETURNING columns from the
+      // UPDATE, plus any preFetch keys). `pre_file_path` is mark_recycled's
+      // preFetch alias for the pre-update file_path.
       const fakeResult: TransitionResult & { __sqlResult?: Record<string, unknown> } = {
         transitioned: true,
         userId: source === 'creation' ? '' : USER_ID,
         __sqlResult: {
           user_id: USER_ID,
           file_path: PROP_FILE_PATH,
+          pre_file_path: PROP_FILE_PATH,
           youtube_id: PROP_YT_ID,
           url: PROP_URL,
         },

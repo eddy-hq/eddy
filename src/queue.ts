@@ -88,12 +88,26 @@ export const interestsQueue = new Queue('interests', {
 // failures and reports them via the file-deleted callback), so retries would
 // only re-run unlinks against now-absent files. Real failure is observed via
 // the M4 logger.warn from the callback handler, not via BullMQ retries.
+// The recycler reuses this queue for its unlinks (issue #115) so all file
+// removals — soft-delete or recycle — land in the same worker log stream.
 export const deleteQueue = new Queue('deletes', {
   connection: redis,
   defaultJobOptions: {
     attempts: 1,
     removeOnComplete: { count: 100 },
     removeOnFail: { count: 200 },
+  },
+});
+
+// Recycler queue (issue #115) — nightly per-user budget enforcement. Carries
+// the schedule trigger only; the actual file unlinks the recycler issues go
+// onto `deleteQueue` (see above) so the worker handles both paths uniformly.
+export const recyclerQueue = new Queue('recycler', {
+  connection: redis,
+  defaultJobOptions: {
+    attempts: 1,
+    removeOnComplete: { count: 10 },
+    removeOnFail: { count: 20 },
   },
 });
 
@@ -106,6 +120,7 @@ export async function closeQueues(): Promise<void> {
     thumbsQueue.close(),
     interestsQueue.close(),
     deleteQueue.close(),
+    recyclerQueue.close(),
   ]);
   await redis.quit();
 }
