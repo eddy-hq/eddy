@@ -4,6 +4,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { BottomNav } from '../components/BottomNav';
 import { Card } from '../components/Card';
 import type { CardData } from '../components/Card';
+import { useRestorePolling } from '../hooks/useRestorePolling';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -169,6 +170,7 @@ export function Search() {
   const navigate = useNavigate();
   const userId = params.get('userId') ?? params.get('user') ?? '';
   const queryClient = useQueryClient();
+  useRestorePolling();
 
   const [inputValue, setInputValue] = useState('');
   const [activeTab, setActiveTab] = useState<Tab>('all');

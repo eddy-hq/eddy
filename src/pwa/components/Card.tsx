@@ -1,8 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
+import { RotateCw } from 'lucide-react';
 import { readProgress, onProgressChange } from '../lib/videoProgress';
 import { useResolvePersonId } from '../hooks/useResolvePersonId';
+import { useRestoreRequest } from '../hooks/useRestoreRequest';
+import { useRestoreStore } from '../store/restore';
 import { EddySpinner } from './EddySpinner';
 
 export interface CardData {
@@ -107,6 +110,19 @@ export function Card({
   const isInProgress  = ['downloading', 'guard_review', 'parent_review', 'pending', 'approved'].includes(data.status);
 
   const { pct, done: downloadDone } = useDownloadProgress(data.requestId, isDownloading);
+
+  // Restore flow — only meaningful when the row is recycled (or just was).
+  // We hold the entry from the global restore store so the spinner persists
+  // across page navigations. Once the worker callback lands and the server
+  // reports the row as 'live' again, clear the store entry.
+  const { restore, entry: restoreEntry } = useRestoreRequest(data.requestId);
+  const finishRestore = useRestoreStore((s) => s.finish);
+  const isRestoring = !!restoreEntry && !restoreEntry.errored;
+  const restoreError = restoreEntry?.errored ? (restoreEntry.errorMsg ?? null) : null;
+  useEffect(() => {
+    if (restoreEntry && !restoreEntry.errored && isLive) finishRestore(data.requestId);
+  }, [restoreEntry, isLive, data.requestId, finishRestore]);
+
   const effectivelyLive = isLive || downloadDone;
 
   const [progressFraction, setProgressFraction] = useState<number>(() => {
@@ -128,6 +144,10 @@ export function Card({
     ?? (data.youtubeId ? `https://i.ytimg.com/vi/${data.youtubeId}/hqdefault.jpg` : null);
 
   function handleTap() {
+    if (isRecycled && !isRestoring) {
+      void restore();
+      return;
+    }
     if (!effectivelyLive) return;
     if (onSelect) onSelect(data);
     else navigate(`/watch/${data.requestId}`);
@@ -136,7 +156,9 @@ export function Card({
   const trailingMeta =
     isRejected ? (data.rejectionReason ?? 'Not available')
     : isInProgress && !effectivelyLive ? (STATUS_LABEL[data.status] ?? data.status)
-    : isRecycled ? 'Recycled'
+    : restoreError ? restoreError
+    : isRestoring ? 'Restoring…'
+    : isRecycled ? 'Tap to restore'
     : isWatched && data.watchedAt ? watchedAgo(data.watchedAt)
     : timeAgo(data.requestedAt);
 
@@ -147,14 +169,14 @@ export function Card({
       animate={{ opacity: isSelected ? 0 : (isGone ? 0.65 : 1), y: 0 }}
       exit={{ opacity: 0, y: -8, scale: 0.97 }}
       transition={{ duration: 0.3, ease: [0.33, 1, 0.68, 1] }}
-      whileTap={effectivelyLive ? { scale: 0.97 } : undefined}
+      whileTap={(effectivelyLive || (isRecycled && !isRestoring)) ? { scale: 0.97 } : undefined}
       onClick={handleTap}
       style={{
         display: 'flex',
         flexDirection: 'column',
         borderRadius: 16,
         overflow: 'hidden',
-        cursor: effectivelyLive ? 'pointer' : 'default',
+        cursor: (effectivelyLive || (isRecycled && !isRestoring)) ? 'pointer' : 'default',
         background: 'var(--bg-surface)',
         boxShadow: 'var(--shadow-card)',
         border: '1px solid var(--border-subtle)',
@@ -177,7 +199,9 @@ export function Card({
               src={effectiveThumbnailUrl} alt=""
               style={{
                 width: '100%', height: '100%', objectFit: 'cover',
-                filter: (isRecycled || (isDownloading && !downloadDone))
+                filter: isRecycled
+                  ? 'grayscale(1) opacity(0.5)'
+                  : (isDownloading && !downloadDone)
                   ? 'grayscale(1) opacity(0.3)'
                   : isGone ? 'grayscale(1) opacity(0.12)'
                   : 'none',
@@ -243,6 +267,47 @@ export function Card({
             <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
               <polyline points="3.5,8 6.5,11.5 12.5,4.5" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
             </svg>
+          </div>
+        )}
+
+        {/* Recycled overlay — dim thumbnail handled via filter above; this is
+            the restore affordance. Whole card is the tap target (handleTap),
+            so this is purely visual. While restoring, swap the icon for the
+            EddySpinner so it reads as "working on it". */}
+        {isRecycled && (
+          <div
+            aria-hidden
+            style={{
+              position: 'absolute', inset: 0, zIndex: 2,
+              display: 'flex', flexDirection: 'column',
+              alignItems: 'center', justifyContent: 'center', gap: 8,
+              pointerEvents: 'none',
+              color: '#F4F1EA',
+            }}
+          >
+            {isRestoring ? (
+              <EddySpinner size={44} />
+            ) : (
+              <div
+                style={{
+                  width: 56, height: 56, borderRadius: '50%',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  background: 'rgba(0,0,0,0.55)',
+                  backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)',
+                  border: '1.5px solid rgba(255,255,255,0.4)',
+                }}
+              >
+                <RotateCw size={24} strokeWidth={2.2} />
+              </div>
+            )}
+            <span style={{
+              fontSize: 9, fontWeight: 700,
+              letterSpacing: '0.1em', textTransform: 'uppercase',
+              padding: '3px 8px', borderRadius: 4,
+              background: 'rgba(0,0,0,0.55)',
+            }}>
+              {restoreError ? 'Tap again' : isRestoring ? 'Restoring' : 'Recycled'}
+            </span>
           </div>
         )}
 
