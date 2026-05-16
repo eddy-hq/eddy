@@ -125,6 +125,11 @@ export interface DownloadedFields {
   filePath: string;
   nginxUrl: string | null;
   thumbnailUrl: string | null;
+  // Bytes on disk at download completion — feeds the per-user recycler budget
+  // (issue #113). Nullable because pre-#114 rows that never get backfilled
+  // (e.g. file already gone) will stay null; the recycler treats null as
+  // "not counted yet" rather than "zero bytes".
+  fileSizeBytes: number | null;
 }
 
 export interface CreateFromShareSheetInput {
@@ -245,7 +250,15 @@ export const TRANSITIONS = {
     sources: ['ready', 'watched'],
     target: 'deleted',
     buildSql: (event, now) => ({
-      sql: `UPDATE requests SET status = 'deleted', file_state = 'gone', deleted_at = ?
+      // file_size_bytes is cleared alongside the file_state flip so the
+      // recycler's per-user accounting (#113) never counts bytes that aren't
+      // on disk any more. Issue #114 contract: file_size_bytes is null for
+      // every row without a live file.
+      sql: `UPDATE requests
+              SET status          = 'deleted',
+                  file_state      = 'gone',
+                  file_size_bytes = NULL,
+                  deleted_at      = ?
             WHERE request_id = ? AND status IN ('ready', 'watched')
             RETURNING user_id, file_path`,
       params: [now, event.requestId],
@@ -276,6 +289,7 @@ export const TRANSITIONS = {
                   file_path          = ?,
                   nginx_url          = ?,
                   thumbnail_url      = ?,
+                  file_size_bytes    = ?,
                   downloaded_at      = ?
             WHERE request_id = ? AND status IN ('downloading')
             RETURNING user_id`,
@@ -289,6 +303,7 @@ export const TRANSITIONS = {
         event.fields.filePath,
         event.fields.nginxUrl,
         event.fields.thumbnailUrl,
+        event.fields.fileSizeBytes,
         now,
         event.requestId,
       ],

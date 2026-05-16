@@ -346,6 +346,25 @@ describe('mark_soft_deleted', () => {
     const [meta] = vi.mocked(logger.warn).mock.calls[0]!;
     expect(meta).toMatchObject({ requestId: 'req-s6' });
   });
+
+  // #114 contract: file_size_bytes is null for every row without a live file.
+  // mark_soft_deleted is the one production path that flips file_state to
+  // 'gone'; if it left the bytes set, the recycler's per-user accounting
+  // would count files that aren't on disk any more.
+  it('nulls file_size_bytes when flipping file_state to gone', () => {
+    insertRequest({ request_id: 'req-s7', status: 'ready', file_path: FILE_PATH });
+    db.prepare('UPDATE requests SET file_size_bytes = ? WHERE request_id = ?')
+      .run(123_456_789, 'req-s7');
+
+    const { result } = state.apply({ kind: 'mark_soft_deleted', requestId: 'req-s7' });
+    expect(result).toEqual({ transitioned: true, userId: USER_ID });
+
+    const row = db
+      .prepare('SELECT file_state, file_size_bytes FROM requests WHERE request_id = ?')
+      .get('req-s7') as { file_state: string; file_size_bytes: number | null };
+    expect(row.file_state).toBe('gone');
+    expect(row.file_size_bytes).toBeNull();
+  });
 });
 
 describe('mark_downloaded', () => {
@@ -359,6 +378,7 @@ describe('mark_downloaded', () => {
     filePath: '/videos/abc123.mp4',
     nginxUrl: 'https://m4.local/videos/abc123.mp4',
     thumbnailUrl: 'https://m4.local/videos/abc123.jpg',
+    fileSizeBytes: 123_456_789,
   };
 
   it('transitions downloading → ready, writes all fields, and fires notifyVideoReady', () => {
@@ -371,14 +391,15 @@ describe('mark_downloaded', () => {
     const row = db
       .prepare(
         `SELECT status, title, channel, youtube_channel_id, description, duration_secs, transcript,
-                file_path, nginx_url, thumbnail_url, downloaded_at
+                file_path, nginx_url, thumbnail_url, file_size_bytes, downloaded_at
          FROM requests WHERE request_id = ?`,
       )
       .get('req-dl1') as {
         status: string; title: string; channel: string; youtube_channel_id: string;
         description: string;
         duration_secs: number; transcript: string; file_path: string;
-        nginx_url: string; thumbnail_url: string; downloaded_at: string;
+        nginx_url: string; thumbnail_url: string; file_size_bytes: number;
+        downloaded_at: string;
       };
     expect(row.status).toBe('ready');
     expect(row.title).toBe(FIELDS.title);
@@ -390,9 +411,23 @@ describe('mark_downloaded', () => {
     expect(row.file_path).toBe(FIELDS.filePath);
     expect(row.nginx_url).toBe(FIELDS.nginxUrl);
     expect(row.thumbnail_url).toBe(FIELDS.thumbnailUrl);
+    expect(row.file_size_bytes).toBe(FIELDS.fileSizeBytes);
     expect(new Date(row.downloaded_at).getTime()).toBeGreaterThanOrEqual(before);
 
     expect(fakePorts.notifyVideoReady).toHaveBeenCalledWith(USER_ID, 'req-dl1', FIELDS.title);
+  });
+
+  it('writes null file_size_bytes when the worker could not stat the file', () => {
+    insertRequest({ request_id: 'req-dl1b', status: 'downloading' });
+    const fieldsNullSize: DownloadedFields = { ...FIELDS, fileSizeBytes: null };
+
+    const { result } = state.apply({ kind: 'mark_downloaded', requestId: 'req-dl1b', fields: fieldsNullSize });
+
+    expect(result).toEqual({ transitioned: true, userId: USER_ID });
+    const row = db
+      .prepare('SELECT file_size_bytes FROM requests WHERE request_id = ?')
+      .get('req-dl1b') as { file_size_bytes: number | null };
+    expect(row.file_size_bytes).toBeNull();
   });
 
   it('is a no-op on an already-rejected row and does not fire the notification', () => {
@@ -1053,6 +1088,7 @@ const PROP_DOWNLOADED_FIELDS: DownloadedFields = {
   filePath: PROP_FILE_PATH,
   nginxUrl: null,
   thumbnailUrl: null,
+  fileSizeBytes: 42,
 };
 
 function buildEvent(kind: Event['kind'], requestId: string): Event {
