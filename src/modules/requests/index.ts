@@ -416,6 +416,16 @@ requestsRouter.post('/:id/restore', async (req: Request, res: Response) => {
   // Enqueue with mode:'restore' so the worker skips the guard score (the
   // original verdict already approved this video) and posts the completion
   // callback to the /restored endpoint, which preserves status.
+  //
+  // jobId is `restore-${requestId}`, not the bare requestId, because the
+  // original download job ran with `jobId: requestId` and BullMQ retains
+  // completed jobs (`removeOnComplete: { count: 100 }`). Re-using the same
+  // jobId would silently no-op against the still-present completed job — the
+  // endpoint would return 202 but the worker would never run. Using a
+  // distinct prefix sidesteps that and matches the `delete-${id}` shape we
+  // already use for the deletes queue. Single hyphen, no colon — see
+  // CLAUDE.md on the BullMQ custom-job-id colon constraint.
+  const jobId = `restore-${requestId}`;
   try {
     await downloadQueue.add(
       'download',
@@ -425,7 +435,7 @@ requestsRouter.post('/:id/restore', async (req: Request, res: Response) => {
         url: row.url,
         mode: 'restore',
       },
-      { jobId: requestId },
+      { jobId },
     );
   } catch (err) {
     logger.warn({ err, requestId }, 'Restore: failed to enqueue download job');
@@ -435,8 +445,8 @@ requestsRouter.post('/:id/restore', async (req: Request, res: Response) => {
     });
   }
 
-  logger.info({ requestId }, 'Restore enqueued');
-  res.status(202).json({ requestId, jobId: requestId });
+  logger.info({ requestId, jobId }, 'Restore enqueued');
+  res.status(202).json({ requestId, jobId });
 });
 
 // POST /requests/:id/delete — soft-delete: marks record deleted, removes video file

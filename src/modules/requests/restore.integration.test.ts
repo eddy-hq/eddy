@@ -155,7 +155,9 @@ describe('restore round trip — endpoint + worker mark_restored', () => {
 
     const resp = await postRestore('rt-watched');
     expect(resp.status).toBe(202);
-    expect(resp.body).toMatchObject({ requestId: 'rt-watched', jobId: 'rt-watched' });
+    // jobId is restore-${requestId} so it can't collide with the still-retained
+    // original download job (see router.test.ts regression test).
+    expect(resp.body).toMatchObject({ requestId: 'rt-watched', jobId: 'restore-rt-watched' });
 
     // Endpoint enqueued the worker job with mode:restore — the real worker
     // would now download and post back. Simulate that callback.
@@ -165,6 +167,7 @@ describe('restore round trip — endpoint + worker mark_restored', () => {
       url: 'https://www.youtube.com/watch?v=rt-watched',
       mode: 'restore',
     });
+    expect(downloadQueueAdd.mock.calls[0]![2]).toEqual({ jobId: 'restore-rt-watched' });
 
     simulateWorkerRestoredCallback({
       requestId: 'rt-watched',

@@ -690,7 +690,9 @@ describe('POST /requests/:id/restore', () => {
     expect(resp.status).toBe(202);
     const body = resp.json<{ requestId: string; jobId: string }>();
     expect(body.requestId).toBe('restore-ok');
-    expect(body.jobId).toBe('restore-ok');
+    // jobId is `restore-${requestId}` so it can't collide with the original
+    // download's completed job (still in BullMQ's retained-completions list).
+    expect(body.jobId).toBe('restore-restore-ok');
 
     expect(vi.mocked(downloadQueue.add)).toHaveBeenCalledTimes(1);
     const [name, jobData, opts] = vi.mocked(downloadQueue.add).mock.calls[0]!;
@@ -701,11 +703,37 @@ describe('POST /requests/:id/restore', () => {
       url: 'https://www.youtube.com/watch?v=restoreyt01',
       mode: 'restore',
     });
-    expect(opts).toEqual({ jobId: 'restore-ok' });
+    expect(opts).toEqual({ jobId: 'restore-restore-ok' });
+    // Defensive: jobId must not contain a colon — see CLAUDE.md on the
+    // BullMQ custom-job-id colon constraint (single colon throws synchronously
+    // and silently drops the job).
+    expect((opts as { jobId: string }).jobId).not.toContain(':');
 
     // Restore does not transition state on the M4 — that happens via the
     // worker callback later. Apply must not be touched.
     expect(applyMock).not.toHaveBeenCalled();
+  });
+
+  // Regression for the codex round-1 finding: the original download job ran
+  // with `jobId: requestId` and BullMQ retains completed jobs by default
+  // (removeOnComplete: { count: 100 }). The restore enqueue must use a
+  // distinct jobId so a duplicate add doesn't silently no-op against the
+  // still-present completed download job — which would return 202 to the
+  // user while the worker never ran.
+  it('uses a `restore-` prefixed jobId distinct from the original download id', async () => {
+    insertRequestRow({
+      request_id: 'distinct-id-check',
+      status: 'watched',
+      youtube_id: 'someyt0001',
+      file_state: 'recycled',
+    });
+
+    const resp = await request('POST', '/requests/distinct-id-check/restore');
+    expect(resp.status).toBe(202);
+
+    const [, , opts] = vi.mocked(downloadQueue.add).mock.calls[0]!;
+    expect((opts as { jobId: string }).jobId).toBe('restore-distinct-id-check');
+    expect((opts as { jobId: string }).jobId).not.toBe('distinct-id-check');
   });
 
   it('returns 400 for a live row with a descriptive error body and does not enqueue', async () => {
