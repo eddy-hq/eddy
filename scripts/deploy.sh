@@ -102,6 +102,12 @@ if [[ "$DO_SERVER" == true ]]; then
   fi
 fi
 
+# ── Watchdog refresh ──────────────────────────────────────────────────────────
+# Watchdog is a long-running bash daemon: its source is read once at launch,
+# so on-disk changes to scripts/watchdog.sh aren't picked up until kickstart.
+launchctl kickstart -k "gui/$(id -u)/com.eddy.watchdog" 2>/dev/null || true
+ok "Watchdog refreshed"
+
 echo ""
 echo "────────────────────────────────────────"
 printf "${GREEN}${BOLD}Deploy complete${RESET}\n\n"

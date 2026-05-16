@@ -39,6 +39,7 @@ Quick reference; durable form in `docs/adr/`.
 - Gemma 4 E4B for guard triage. No frontier API calls until Phase 11 (optional).
 - No Tailwind, no CSS-in-JS, no Storybook in the PWA.
 - Signed-token pattern for every notification action endpoint.
+- **Kid-interest guard eval runs after search-term generation, via the BullMQ chain** (`normalize.ts` → `searchTermsWorker` → `guardQueue`). Don't move inline — guard needs populated `search_terms` (issue #52 acceptance criterion).
 
 ## Stack
 
