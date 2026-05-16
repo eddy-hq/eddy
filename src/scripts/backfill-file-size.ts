@@ -73,16 +73,24 @@ function resolveSshTarget(): SshTarget {
 // path) so duplicate paths within a chunk — common because multiple users can
 // own a live request for the same YouTube id, and downloads are keyed on the
 // id (`${youtubeId}.mp4`) — produce one record per input, never collapse.
+//
 // Record shape:
-//   - `<idx>\0FOUND\0<bytes>\n` when stat -c '%s' succeeds
-//   - `<idx>\0MISSING\n` when stat fails (file absent, permission denied)
+//   - `<idx>\0FOUND\0<bytes>\n` — stat -c '%s' succeeded
+//   - `<idx>\0MISSING\n`        — stat failed AND stderr mentions ENOENT
+//   - `<idx>\0ERROR\0<msg>\n`   — stat failed for some other reason
+//                                 (permission denied, mount gone, I/O error)
+//
+// MISSING and ERROR are distinct because only the first justifies flipping
+// the row to file_state = 'gone'. A permission or mount problem must fail
+// the chunk for ops investigation, not silently mark every row as gone.
+//
 // Mismatched record count surfaces as a chunk failure so a broken pipeline
 // (no bash, missing stat, hung ssh) doesn't get mis-read as "every file
 // gone" and flip live rows.
 //
 // `set -eo pipefail` propagates real shell-setup failures back as a non-zero
-// exit. The per-path branch swallows stat errors explicitly and emits
-// MISSING — those are expected and must not abort the chunk.
+// exit. The per-path branch handles stat failures explicitly per the record
+// shape above and must not abort the chunk.
 function statRemote(target: SshTarget, filePaths: string[]): Promise<StatResult[]> {
   return new Promise((resolve, reject) => {
     const sshKey = expandHome(target.key);
@@ -90,7 +98,12 @@ function statRemote(target: SshTarget, filePaths: string[]): Promise<StatResult[
     // round-trips back so the parent can slot results positionally even
     // when two inputs share the same path. Kept inline (not scp'd) because
     // it is small and ops-only.
-    const remoteScript = `set -eo pipefail; while IFS= read -r -d '' idx && IFS= read -r -d '' p; do if size=$(stat -c '%s' -- "$p" 2>/dev/null); then printf '%s\\0FOUND\\0%s\\n' "$idx" "$size"; else printf '%s\\0MISSING\\n' "$idx"; fi; done`;
+    //
+    // Quoting note: GNU stat's ENOENT message is "cannot statx ... No such
+    // file or directory" (or "cannot stat" on older versions). We grep for
+    // "No such file or directory" as the stable substring — permission
+    // failures say "Permission denied" instead.
+    const remoteScript = `set -eo pipefail; while IFS= read -r -d '' idx && IFS= read -r -d '' p; do if out=$(stat -c '%s' -- "$p" 2>&1); then printf '%s\\0FOUND\\0%s\\n' "$idx" "$out"; elif printf '%s' "$out" | grep -q 'No such file or directory'; then printf '%s\\0MISSING\\n' "$idx"; else printf '%s\\0ERROR\\0%s\\n' "$idx" "$out"; fi; done`;
     const sshArgs = [
       '-i', sshKey,
       '-o', 'ConnectTimeout=10',
@@ -113,6 +126,7 @@ function statRemote(target: SshTarget, filePaths: string[]): Promise<StatResult[
         return reject(new Error(`ssh exited ${code}: ${stderr.slice(0, 500)}`));
       }
       const byIdx = new Map<number, StatResult>();
+      const errors: Array<{ idx: number; filePath: string; msg: string }> = [];
       for (const line of stdout.split('\n')) {
         if (!line) continue;
         const parts = line.split('\0');
@@ -128,7 +142,21 @@ function statRemote(target: SshTarget, filePaths: string[]): Promise<StatResult[
           byIdx.set(idx, { filePath, sizeBytes: size, kind: 'found' });
         } else if (tag === 'MISSING') {
           byIdx.set(idx, { filePath, sizeBytes: null, kind: 'missing' });
+        } else if (tag === 'ERROR') {
+          // Reserve the slot so the count check still passes, but record
+          // the error so we can fail the chunk below — we must not flip
+          // live rows to gone on permission/mount failures.
+          byIdx.set(idx, { filePath, sizeBytes: null, kind: 'missing' });
+          errors.push({ idx, filePath, msg: parts[2] ?? '' });
         }
+      }
+      if (errors.length > 0) {
+        // Re-run after fixing the access issue; nothing is mutated.
+        const sample = errors.slice(0, 3).map((e) => `${e.filePath}: ${e.msg}`).join(' | ');
+        return reject(new Error(
+          `remote stat reported ${errors.length} non-ENOENT error(s); ` +
+            `chunk skipped to avoid wrongly flipping rows to gone. sample: ${sample}`,
+        ));
       }
       // If we got fewer records than inputs the remote pipeline didn't
       // complete cleanly — surface as a chunk failure so we don't flip
