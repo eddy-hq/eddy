@@ -52,10 +52,15 @@ async function postGuardScore(payload: GuardScorePayload): Promise<GuardScoreRes
 const LIVE_BROADCAST_RETRY_MS = 30 * 60 * 1000;
 
 async function processJob(job: Job<DownloadJobData>, token?: string): Promise<void> {
-  const { requestId, youtubeId, url } = job.data;
-  const log = logger.child({ requestId, youtubeId });
+  const { requestId, youtubeId, url, mode } = job.data;
+  // Restore-mode (issue #116) re-downloads a previously-recycled file: the
+  // original guard verdict already approved this video, so we skip the
+  // scoring round trip and post the completion callback to the /restored
+  // endpoint, which preserves status instead of flipping to ready.
+  const isRestore = mode === 'restore';
+  const log = logger.child({ requestId, youtubeId, ...(isRestore ? { mode: 'restore' } : {}) });
 
-  log.info('Picked up download job');
+  log.info(isRestore ? 'Picked up restore job' : 'Picked up download job');
 
   // Surface 0% as soon as the job is picked up so the PWA card replaces its
   // metadata-phase spinner with a moving bar instead of going spinner→jump.
@@ -93,25 +98,33 @@ async function processJob(job: Job<DownloadJobData>, token?: string): Promise<vo
     throw err;
   }
 
-  // Start guard score and download concurrently — guard runs while video downloads
-  log.info('Starting guard score and download in parallel');
+  // Start guard score (skipped on restore) and download concurrently — guard
+  // runs while video downloads.
+  log.info(isRestore ? 'Starting download (guard skipped — restore)' : 'Starting guard score and download in parallel');
   // Metadata done — bump to the unified scale's 5% floor before yt-dlp opens its first stream.
   await redis.set(PROGRESS_KEY(requestId), 5, 'EX', 3600);
 
-  const guardPromise = postGuardScore({
-    requestId,
-    url,
-    title: metadata.title,
-    channel: metadata.channel,
-    description: metadata.description,
-    transcript: metadata.transcript,
-  }).then((r) => {
-    log.info({ verdict: r.verdict }, 'Guard scored');
-    return r;
-  }).catch((err) => {
-    log.warn({ err }, 'Guard score failed — proceeding (shadow mode)');
-    return { proceed: true, verdict: 'uncertain', reason: 'Guard error' } as GuardScoreResponse;
-  });
+  // Restore: the original verdict already approved this video, and re-evaluating
+  // would (a) burn Gemma time, (b) risk a different verdict if the model has
+  // drifted, and (c) write a new guard_eval row the acceptance criteria
+  // explicitly forbid. Synthesise the same "proceed" shape so the rest of the
+  // pipeline stays uniform.
+  const guardPromise: Promise<GuardScoreResponse> = isRestore
+    ? Promise.resolve({ proceed: true, verdict: 'restore', reason: 'Restore — guard skipped' })
+    : postGuardScore({
+        requestId,
+        url,
+        title: metadata.title,
+        channel: metadata.channel,
+        description: metadata.description,
+        transcript: metadata.transcript,
+      }).then((r) => {
+        log.info({ verdict: r.verdict }, 'Guard scored');
+        return r;
+      }).catch((err) => {
+        log.warn({ err }, 'Guard score failed — proceeding (shadow mode)');
+        return { proceed: true, verdict: 'uncertain', reason: 'Guard error' } as GuardScoreResponse;
+      });
 
   let filePath: string;
   try {
@@ -191,31 +204,53 @@ async function processJob(job: Job<DownloadJobData>, token?: string): Promise<vo
     log.warn({ err, filePath }, 'Failed to stat downloaded file for size — leaving file_size_bytes null');
   }
 
-  // Callback to M4 — M4 writes SQLite and sends ntfy
-  await postSigned(`/internal/videos/${youtubeId}/downloaded`, {
-    requestId,
-    youtubeId,
-    filePath,
-    nginxUrl,
-    thumbnailUrl,
-    title: metadata.title,
-    channel: metadata.channel,
-    youtubeChannelId: metadata.youtubeChannelId,
-    description: metadata.description,
-    durationSecs: metadata.durationSecs,
-    transcript: metadata.transcript,
-    fileSizeBytes,
-  });
+  // Callback to M4. Restore routes to /restored so the M4 fires mark_restored
+  // (status preserved, recycled_at cleared); fresh downloads route to
+  // /downloaded so the M4 fires mark_downloaded (status → ready, video_ready
+  // notification). The /restored payload is narrower because title / channel
+  // / description / transcript / youtube_channel_id were captured on the
+  // original download and don't need rewriting.
+  if (isRestore) {
+    await postSigned(`/internal/videos/${youtubeId}/restored`, {
+      requestId,
+      youtubeId,
+      filePath,
+      nginxUrl,
+      thumbnailUrl,
+      fileSizeBytes,
+    });
+  } else {
+    await postSigned(`/internal/videos/${youtubeId}/downloaded`, {
+      requestId,
+      youtubeId,
+      filePath,
+      nginxUrl,
+      thumbnailUrl,
+      title: metadata.title,
+      channel: metadata.channel,
+      youtubeChannelId: metadata.youtubeChannelId,
+      description: metadata.description,
+      durationSecs: metadata.durationSecs,
+      transcript: metadata.transcript,
+      fileSizeBytes,
+    });
+  }
 
   // Enqueue the thumbnail-upgrade job — non-blocking, processed serially.
-  await thumbsQueue.add('upgrade', {
-    requestId,
-    youtubeId,
-    filePath,
-    durationSecs: metadata.durationSecs,
-  } satisfies ThumbJobData, { jobId: `thumb:upgrade:${requestId}` });
+  // Skipped on restore: the editorial-first upgrade ran on the original
+  // download and any chosen frame is still in the row's thumbnail_url
+  // (preserved via COALESCE in mark_restored). Re-running would burn
+  // Gemma time for no UX benefit.
+  if (!isRestore) {
+    await thumbsQueue.add('upgrade', {
+      requestId,
+      youtubeId,
+      filePath,
+      durationSecs: metadata.durationSecs,
+    } satisfies ThumbJobData, { jobId: `thumb:upgrade:${requestId}` });
+  }
 
-  log.info({ nginxUrl }, 'Job complete');
+  log.info({ nginxUrl }, isRestore ? 'Restore job complete' : 'Job complete');
 }
 
 interface DeleteFailure {

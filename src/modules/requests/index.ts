@@ -33,6 +33,7 @@ export type {
   ApplyOutcome,
   Event,
   DownloadedFields,
+  RestoredFields,
   DeleteJobData,
   CreateFromShareSheetInput,
   CreateFromChannelPollInput,
@@ -383,6 +384,100 @@ requestsRouter.delete('/:id/save', (req: Request, res: Response) => {
     `UPDATE requests SET saved_at = NULL WHERE request_id = ?`
   ).run(req.params['id']);
   res.status(204).end();
+});
+
+// POST /requests/:id/restore — re-download a recycled video (issue #116).
+// Gate is `file_state = 'recycled'` regardless of `status`: the recycler
+// preserves status, so the row that needs restoring may be `ready`, `watched`
+// or `dismissed`. Anything else (live, gone) is rejected with 400 — `live`
+// has nothing to restore, `gone` means YouTube removed the source and a
+// re-download can't bring it back. No notification, no signed-token URL:
+// restore is an in-PWA action on the standard authenticated path. The
+// worker callback fires `mark_restored` to flip file_state back to `live`.
+requestsRouter.post('/:id/restore', async (req: Request, res: Response) => {
+  const requestId = req.params['id']!;
+
+  const row = db
+    .prepare(
+      `SELECT youtube_id, url, file_state FROM requests WHERE request_id = ?`,
+    )
+    .get(requestId) as
+      | { youtube_id: string | null; url: string; file_state: string }
+      | undefined;
+  if (!row) throw new NotFoundError('request');
+
+  if (row.file_state !== 'recycled') {
+    return res.status(400).json({
+      error: 'INVALID_STATE',
+      message: `Cannot restore a request with file_state '${row.file_state}'`,
+    });
+  }
+
+  // Restore requires youtube_id: the worker keys the file path on it
+  // (`${youtubeId}.mp4`) and the completion callback path (`/internal/
+  // videos/${youtubeId}/restored`) is keyed on it too. A row that landed
+  // recycled without youtube_id (rare edge case — original extractYoutubeId
+  // returned null on an unusual URL, but yt-dlp still resolved internally
+  // and downloaded) can't round-trip through this path; reject loudly
+  // rather than enqueue work that would post to /internal/videos//restored
+  // and never match the route.
+  if (!row.youtube_id) {
+    return res.status(400).json({
+      error: 'MISSING_YOUTUBE_ID',
+      message: 'Cannot restore a request without a stored youtube_id',
+    });
+  }
+
+  // Enqueue with mode:'restore' so the worker skips the guard score (the
+  // original verdict already approved this video) and posts the completion
+  // callback to the /restored endpoint, which preserves status.
+  //
+  // jobId is `restore-${requestId}`, not the bare requestId, because the
+  // original download job ran with `jobId: requestId` and BullMQ retains
+  // completed jobs (`removeOnComplete: { count: 100 }`). Re-using the same
+  // jobId would silently no-op against the still-present completed job — the
+  // endpoint would return 202 but the worker would never run. Using a
+  // distinct prefix sidesteps that and matches the `delete-${id}` shape we
+  // already use for the deletes queue. Single hyphen, no colon — see
+  // CLAUDE.md on the BullMQ custom-job-id colon constraint.
+  //
+  // The same retain-completed-jobs gotcha applies to repeated restores of the
+  // same row (restore → recycle → restore again). We mirror what the retry
+  // descriptor does: remove any pre-existing completed/failed job at this
+  // jobId before adding the new one, so the second restore actually enqueues
+  // instead of returning the prior completed job as a duplicate. Best-effort
+  // — a missing job is the common path on a first restore.
+  const jobId = `restore-${requestId}`;
+  try {
+    const existing = await downloadQueue.getJob(jobId);
+    if (existing) await existing.remove();
+  } catch (err) {
+    // Don't block the restore on a flaky remove — if Redis is down, the
+    // add() below will surface a clearer failure. Log and continue.
+    logger.warn({ err, requestId, jobId }, 'Restore: pre-add cleanup of stale job failed');
+  }
+  try {
+    await downloadQueue.add(
+      'download',
+      {
+        requestId,
+        // Guaranteed non-null by the MISSING_YOUTUBE_ID gate above.
+        youtubeId: row.youtube_id,
+        url: row.url,
+        mode: 'restore',
+      },
+      { jobId },
+    );
+  } catch (err) {
+    logger.warn({ err, requestId }, 'Restore: failed to enqueue download job');
+    return res.status(500).json({
+      error: 'ENQUEUE_FAILED',
+      message: 'Failed to enqueue restore job',
+    });
+  }
+
+  logger.info({ requestId, jobId }, 'Restore enqueued');
+  res.status(202).json({ requestId, jobId });
 });
 
 // POST /requests/:id/delete — soft-delete: marks record deleted, removes video file

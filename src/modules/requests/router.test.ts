@@ -30,7 +30,7 @@ vi.mock('../../config', () => ({
 
 vi.mock('../../queue', () => ({
   redis: { get: vi.fn(), del: vi.fn() },
-  downloadQueue: { getJob: vi.fn() },
+  downloadQueue: { getJob: vi.fn(), add: vi.fn().mockResolvedValue(undefined) },
   deleteQueue: { add: vi.fn() },
   guardQueue: {},
   discoveryQueue: {},
@@ -57,6 +57,7 @@ vi.mock('./state-default', () => ({
 import { db } from '../../db/client';
 import { runMigrations } from '../../db/migrate';
 import { EddyError } from '../../errors';
+import { downloadQueue } from '../../queue';
 import {
   requestsRouter,
   readRecentRejectedRequestsForAdmin,
@@ -129,6 +130,7 @@ beforeEach(() => {
   db.exec('DELETE FROM requests');
   notifyMock.mockClear();
   applyMock.mockReset();
+  vi.mocked(downloadQueue.add).mockReset().mockResolvedValue(undefined as never);
   // Default: every apply call succeeds and settles immediately. Individual
   // tests that care about a specific event shape inspect applyMock directly.
   applyMock.mockReturnValue({
@@ -148,6 +150,7 @@ function insertRequestRow(opts: {
   added_at?: string;
   requested_at?: string;
   rejection_reason?: string | null;
+  file_state?: string;
 }): void {
   const now = new Date().toISOString();
   db.prepare(
@@ -167,6 +170,10 @@ function insertRequestRow(opts: {
     opts.requested_at ?? now,
     opts.added_at ?? now,
   );
+  if (opts.file_state !== undefined) {
+    db.prepare('UPDATE requests SET file_state = ? WHERE request_id = ?')
+      .run(opts.file_state, opts.request_id);
+  }
 }
 
 // ─── Existing admin-pipeline coverage (kept verbatim) ────────────────────────
@@ -658,5 +665,195 @@ describe('lifecycle POST endpoints (smoke)', () => {
     const resp = await request('POST', '/requests/does-not-exist/delete');
 
     expect(resp.status).toBe(404);
+  });
+});
+
+// ─── POST /requests/:id/restore (issue #116) ────────────────────────────────
+//
+// The four response paths the issue calls out: 202 for recycled / 400 for
+// live / 400 for gone / 404 for unknown. The endpoint does not go through
+// `apply`, it enqueues directly — assert on the `downloadQueue.add` mock and
+// confirm `applyMock` was never touched.
+
+describe('POST /requests/:id/restore', () => {
+  it('returns 202 with the jobId for a recycled row and enqueues mode:restore', async () => {
+    insertRequestRow({
+      request_id: 'restore-ok',
+      status: 'watched',
+      youtube_id: 'restoreyt01',
+      url: 'https://www.youtube.com/watch?v=restoreyt01',
+      file_state: 'recycled',
+    });
+
+    const resp = await request('POST', '/requests/restore-ok/restore');
+
+    expect(resp.status).toBe(202);
+    const body = resp.json<{ requestId: string; jobId: string }>();
+    expect(body.requestId).toBe('restore-ok');
+    // jobId is `restore-${requestId}` so it can't collide with the original
+    // download's completed job (still in BullMQ's retained-completions list).
+    expect(body.jobId).toBe('restore-restore-ok');
+
+    expect(vi.mocked(downloadQueue.add)).toHaveBeenCalledTimes(1);
+    const [name, jobData, opts] = vi.mocked(downloadQueue.add).mock.calls[0]!;
+    expect(name).toBe('download');
+    expect(jobData).toEqual({
+      requestId: 'restore-ok',
+      youtubeId: 'restoreyt01',
+      url: 'https://www.youtube.com/watch?v=restoreyt01',
+      mode: 'restore',
+    });
+    expect(opts).toEqual({ jobId: 'restore-restore-ok' });
+    // Defensive: jobId must not contain a colon — see CLAUDE.md on the
+    // BullMQ custom-job-id colon constraint (single colon throws synchronously
+    // and silently drops the job).
+    expect((opts as { jobId: string }).jobId).not.toContain(':');
+
+    // Restore does not transition state on the M4 — that happens via the
+    // worker callback later. Apply must not be touched.
+    expect(applyMock).not.toHaveBeenCalled();
+  });
+
+  // Regression for the codex round-1 finding: the original download job ran
+  // with `jobId: requestId` and BullMQ retains completed jobs by default
+  // (removeOnComplete: { count: 100 }). The restore enqueue must use a
+  // distinct jobId so a duplicate add doesn't silently no-op against the
+  // still-present completed download job — which would return 202 to the
+  // user while the worker never ran.
+  it('uses a `restore-` prefixed jobId distinct from the original download id', async () => {
+    insertRequestRow({
+      request_id: 'distinct-id-check',
+      status: 'watched',
+      youtube_id: 'someyt0001',
+      file_state: 'recycled',
+    });
+
+    const resp = await request('POST', '/requests/distinct-id-check/restore');
+    expect(resp.status).toBe(202);
+
+    const [, , opts] = vi.mocked(downloadQueue.add).mock.calls[0]!;
+    expect((opts as { jobId: string }).jobId).toBe('restore-distinct-id-check');
+    expect((opts as { jobId: string }).jobId).not.toBe('distinct-id-check');
+  });
+
+  // Regression for the codex round-2 finding: a video can be restored, then
+  // recycled again, then restored again — and the second restore must
+  // actually enqueue, not no-op against the prior completed `restore-${id}`
+  // job that BullMQ still has in its retained-completions list. The router
+  // calls `downloadQueue.getJob(jobId)` + `remove()` first to clear the
+  // stale entry, mirroring the retry descriptor's `cancel_download_job_awaited`
+  // → `enqueue_download` sequencing.
+  it('removes a prior completed restore job before re-adding so a re-restore actually enqueues', async () => {
+    insertRequestRow({
+      request_id: 'rerestore',
+      status: 'watched',
+      youtube_id: 'rerestoreyt',
+      file_state: 'recycled',
+    });
+    const removeMock = vi.fn().mockResolvedValue(undefined);
+    vi.mocked(downloadQueue.getJob).mockResolvedValueOnce({ remove: removeMock } as never);
+
+    const resp = await request('POST', '/requests/rerestore/restore');
+    expect(resp.status).toBe(202);
+
+    // getJob must be called against the restore jobId, not the bare requestId.
+    expect(vi.mocked(downloadQueue.getJob)).toHaveBeenCalledWith('restore-rerestore');
+    expect(removeMock).toHaveBeenCalledTimes(1);
+    // And then the add fires with the same jobId — the slot is now clear.
+    expect(vi.mocked(downloadQueue.add)).toHaveBeenCalledTimes(1);
+    const [, , opts] = vi.mocked(downloadQueue.add).mock.calls[0]!;
+    expect((opts as { jobId: string }).jobId).toBe('restore-rerestore');
+  });
+
+  // Defensive: if the pre-add cleanup fails (e.g. Redis flake), the restore
+  // still attempts the add — we don't block the user's intent on a flaky
+  // remove that might be operating on a phantom job anyway.
+  it('still enqueues when the pre-add getJob/remove throws', async () => {
+    insertRequestRow({
+      request_id: 'flaky-cleanup',
+      status: 'watched',
+      youtube_id: 'flakyy00001',
+      file_state: 'recycled',
+    });
+    vi.mocked(downloadQueue.getJob).mockRejectedValueOnce(new Error('redis flaked'));
+
+    const resp = await request('POST', '/requests/flaky-cleanup/restore');
+    expect(resp.status).toBe(202);
+    expect(vi.mocked(downloadQueue.add)).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns 400 for a live row with a descriptive error body and does not enqueue', async () => {
+    insertRequestRow({
+      request_id: 'restore-live',
+      status: 'ready',
+      file_state: 'live',
+    });
+
+    const resp = await request('POST', '/requests/restore-live/restore');
+
+    expect(resp.status).toBe(400);
+    const body = resp.json<{ error: string; message: string }>();
+    expect(body.error).toBe('INVALID_STATE');
+    expect(body.message).toMatch(/live/);
+    expect(vi.mocked(downloadQueue.add)).not.toHaveBeenCalled();
+  });
+
+  it('returns 400 for a gone row with a descriptive error body and does not enqueue', async () => {
+    insertRequestRow({
+      request_id: 'restore-gone',
+      status: 'deleted',
+      file_state: 'gone',
+    });
+
+    const resp = await request('POST', '/requests/restore-gone/restore');
+
+    expect(resp.status).toBe(400);
+    const body = resp.json<{ error: string; message: string }>();
+    expect(body.error).toBe('INVALID_STATE');
+    expect(body.message).toMatch(/gone/);
+    expect(vi.mocked(downloadQueue.add)).not.toHaveBeenCalled();
+  });
+
+  it('returns 404 for an unknown id and does not enqueue', async () => {
+    const resp = await request('POST', '/requests/does-not-exist/restore');
+
+    expect(resp.status).toBe(404);
+    expect(vi.mocked(downloadQueue.add)).not.toHaveBeenCalled();
+  });
+
+  it('returns 500 when the queue enqueue throws and surfaces a clear error body', async () => {
+    insertRequestRow({
+      request_id: 'restore-enqfail',
+      status: 'watched',
+      youtube_id: 'restoreyt02',
+      file_state: 'recycled',
+    });
+    vi.mocked(downloadQueue.add).mockRejectedValueOnce(new Error('redis down'));
+
+    const resp = await request('POST', '/requests/restore-enqfail/restore');
+
+    expect(resp.status).toBe(500);
+    const body = resp.json<{ error: string }>();
+    expect(body.error).toBe('ENQUEUE_FAILED');
+  });
+
+  // youtube_id is mandatory for restore: the worker keys the file path and
+  // the completion callback URL on it, so a null would post to
+  // `/internal/videos//restored` and never match the route — silently
+  // breaking the round trip while the endpoint returned 202.
+  it('returns 400 MISSING_YOUTUBE_ID when the row has no youtube_id, and does not enqueue', async () => {
+    insertRequestRow({
+      request_id: 'restore-noid',
+      status: 'watched',
+      youtube_id: null,
+      file_state: 'recycled',
+    });
+
+    const resp = await request('POST', '/requests/restore-noid/restore');
+
+    expect(resp.status).toBe(400);
+    const body = resp.json<{ error: string }>();
+    expect(body.error).toBe('MISSING_YOUTUBE_ID');
+    expect(vi.mocked(downloadQueue.add)).not.toHaveBeenCalled();
   });
 });

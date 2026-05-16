@@ -491,6 +491,219 @@ describe('mark_recycled', () => {
   });
 });
 
+describe('mark_restored', () => {
+  const FILE_PATH = '/mnt/ssd/eddy/videos/restored.mp4';
+  const NGINX_URL = 'http://mediaserver/videos/restored.mp4';
+  const THUMB_URL = 'https://m4.local/thumbs/restored.jpg';
+  const FIELDS = {
+    filePath: FILE_PATH,
+    nginxUrl: NGINX_URL,
+    thumbnailUrl: THUMB_URL,
+    fileSizeBytes: 987_654_321,
+  };
+
+  function insertRecycledRow(opts: {
+    request_id: string;
+    status: Status;
+    thumbnail_url?: string | null;
+  }): void {
+    insertRequest({
+      request_id: opts.request_id,
+      status: opts.status,
+      file_path: null,
+    });
+    db.prepare(
+      `UPDATE requests
+         SET file_state      = 'recycled',
+             file_path       = NULL,
+             nginx_url       = NULL,
+             file_size_bytes = NULL,
+             recycled_at     = ?,
+             thumbnail_url   = ?
+       WHERE request_id = ?`,
+    ).run(
+      '2026-04-01T00:00:00.000Z',
+      opts.thumbnail_url ?? null,
+      opts.request_id,
+    );
+  }
+
+  it.each(['ready', 'watched', 'dismissed'] as const)(
+    'restores a recycled row from %s, preserving status and re-populating columns',
+    (sourceStatus) => {
+      const requestId = `req-res-${sourceStatus}`;
+      insertRecycledRow({ request_id: requestId, status: sourceStatus });
+
+      const { result } = state.apply({ kind: 'mark_restored', requestId, fields: FIELDS });
+
+      expect(result).toEqual({ transitioned: true, userId: USER_ID });
+      const row = db
+        .prepare(
+          `SELECT status, file_state, file_path, nginx_url, thumbnail_url,
+                  file_size_bytes, recycled_at
+             FROM requests WHERE request_id = ?`,
+        )
+        .get(requestId) as {
+          status: string; file_state: string;
+          file_path: string | null; nginx_url: string | null;
+          thumbnail_url: string | null; file_size_bytes: number | null;
+          recycled_at: string | null;
+        };
+      expect(row.status).toBe(sourceStatus);
+      expect(row.file_state).toBe('live');
+      expect(row.file_path).toBe(FILE_PATH);
+      expect(row.nginx_url).toBe(NGINX_URL);
+      expect(row.thumbnail_url).toBe(THUMB_URL);
+      expect(row.file_size_bytes).toBe(FIELDS.fileSizeBytes);
+      expect(row.recycled_at).toBeNull();
+    },
+  );
+
+  // The defining property: an existing editorial thumbnail captured on the
+  // original download must survive a restore, regardless of whether the
+  // payload carries the worker's maxresdefault fallback URL or a null. The
+  // worker always sends a non-null thumbnail URL (the maxresdefault fallback)
+  // on every download, so the COALESCE ordering in the descriptor SQL — row
+  // value first, payload second — is the only thing stopping the fallback
+  // from overwriting an editorial pick. Restore also skips the thumb-upgrade
+  // job, so if the fallback won here the editorial pick would be lost forever.
+  it('preserves an existing editorial thumbnail when the payload carries the worker fallback URL', () => {
+    const requestId = 'req-res-keepthumb-fallback';
+    insertRecycledRow({
+      request_id: requestId,
+      status: 'watched',
+      thumbnail_url: 'https://existing/editorial.jpg',
+    });
+
+    const fieldsWithFallback = {
+      ...FIELDS,
+      thumbnailUrl: `https://i.ytimg.com/vi/${requestId}/maxresdefault.jpg`,
+    };
+    const { result } = state.apply({ kind: 'mark_restored', requestId, fields: fieldsWithFallback });
+
+    expect(result).toEqual({ transitioned: true, userId: USER_ID });
+    const row = db
+      .prepare('SELECT thumbnail_url FROM requests WHERE request_id = ?')
+      .get(requestId) as { thumbnail_url: string };
+    expect(row.thumbnail_url).toBe('https://existing/editorial.jpg');
+  });
+
+  it('preserves an existing thumbnail_url when the restore payload carries null', () => {
+    const requestId = 'req-res-keepthumb-null';
+    insertRecycledRow({
+      request_id: requestId,
+      status: 'watched',
+      thumbnail_url: 'https://existing/editorial.jpg',
+    });
+
+    const fieldsNoThumb = { ...FIELDS, thumbnailUrl: null };
+    const { result } = state.apply({ kind: 'mark_restored', requestId, fields: fieldsNoThumb });
+
+    expect(result).toEqual({ transitioned: true, userId: USER_ID });
+    const row = db
+      .prepare('SELECT thumbnail_url FROM requests WHERE request_id = ?')
+      .get(requestId) as { thumbnail_url: string };
+    expect(row.thumbnail_url).toBe('https://existing/editorial.jpg');
+  });
+
+  // Defensive: pre-#43 rows might lack a thumbnail entirely. In that case
+  // COALESCE falls through to the payload, so the row at least gets the
+  // worker's fallback URL rather than staying null.
+  it('falls back to the payload thumbnail_url when the row has none', () => {
+    const requestId = 'req-res-falloverthumb';
+    insertRecycledRow({
+      request_id: requestId,
+      status: 'watched',
+      thumbnail_url: null,
+    });
+
+    const fieldsWithFallback = {
+      ...FIELDS,
+      thumbnailUrl: 'https://i.ytimg.com/vi/x/maxresdefault.jpg',
+    };
+    state.apply({ kind: 'mark_restored', requestId, fields: fieldsWithFallback });
+
+    const row = db
+      .prepare('SELECT thumbnail_url FROM requests WHERE request_id = ?')
+      .get(requestId) as { thumbnail_url: string };
+    expect(row.thumbnail_url).toBe('https://i.ytimg.com/vi/x/maxresdefault.jpg');
+  });
+
+  it('is a no-op on a live row (file_state mismatch) and does not change file_path', () => {
+    insertRequest({ request_id: 'req-res-live', status: 'watched', file_path: '/old/path.mp4' });
+    // file_state defaults to 'live'
+
+    const { result } = state.apply({ kind: 'mark_restored', requestId: 'req-res-live', fields: FIELDS });
+
+    expect(result).toEqual({ transitioned: false, currentStatus: 'watched' });
+    const row = db
+      .prepare('SELECT file_state, file_path FROM requests WHERE request_id = ?')
+      .get('req-res-live') as { file_state: string; file_path: string };
+    expect(row.file_state).toBe('live');
+    expect(row.file_path).toBe('/old/path.mp4');
+  });
+
+  it('is a no-op on a downloading row even if file_state is recycled', () => {
+    // Synthetic but defensive: the source-status gate must still reject
+    // statuses outside ['ready', 'watched', 'dismissed'] regardless of
+    // file_state.
+    insertRequest({ request_id: 'req-res-dl', status: 'downloading' });
+    db.prepare('UPDATE requests SET file_state = ? WHERE request_id = ?')
+      .run('recycled', 'req-res-dl');
+
+    const { result } = state.apply({ kind: 'mark_restored', requestId: 'req-res-dl', fields: FIELDS });
+
+    expect(result).toEqual({ transitioned: false, currentStatus: 'downloading' });
+  });
+
+  it('returns currentStatus: null for an unknown id', () => {
+    const { result } = state.apply({ kind: 'mark_restored', requestId: 'does-not-exist', fields: FIELDS });
+
+    expect(result).toEqual({ transitioned: false, currentStatus: null });
+  });
+
+  it('does not call notify or any port', async () => {
+    const requestId = 'req-res-noeffects';
+    insertRecycledRow({ request_id: requestId, status: 'watched' });
+
+    const { result, settled } = state.apply({ kind: 'mark_restored', requestId, fields: FIELDS });
+    await settled;
+
+    expect(result).toEqual({ transitioned: true, userId: USER_ID });
+    expect(fakePorts.notifyVideoReady).not.toHaveBeenCalled();
+    expect(fakePorts.enqueueDownload).not.toHaveBeenCalled();
+    expect(fakePorts.enqueueDelete).not.toHaveBeenCalled();
+    expect(fakePorts.ensurePerson).not.toHaveBeenCalled();
+  });
+
+  // Recycle then restore — the round trip that closes #116. status survives.
+  it('round-trip: mark_recycled then mark_restored leaves status unchanged', () => {
+    const requestId = 'req-res-roundtrip';
+    insertRequest({ request_id: requestId, status: 'watched', file_path: FILE_PATH });
+    db.prepare(
+      `UPDATE requests SET file_state = ?, file_size_bytes = ?, nginx_url = ? WHERE request_id = ?`,
+    ).run('live', 500, NGINX_URL, requestId);
+
+    state.apply({ kind: 'mark_recycled', requestId });
+
+    let row = db
+      .prepare('SELECT status, file_state, recycled_at FROM requests WHERE request_id = ?')
+      .get(requestId) as { status: string; file_state: string; recycled_at: string | null };
+    expect(row.status).toBe('watched');
+    expect(row.file_state).toBe('recycled');
+    expect(row.recycled_at).not.toBeNull();
+
+    state.apply({ kind: 'mark_restored', requestId, fields: FIELDS });
+
+    row = db
+      .prepare('SELECT status, file_state, recycled_at FROM requests WHERE request_id = ?')
+      .get(requestId) as { status: string; file_state: string; recycled_at: string | null };
+    expect(row.status).toBe('watched');
+    expect(row.file_state).toBe('live');
+    expect(row.recycled_at).toBeNull();
+  });
+});
+
 describe('mark_downloaded', () => {
   const FIELDS: DownloadedFields = {
     title: 'A grand title',
@@ -1225,6 +1438,17 @@ function buildEvent(kind: Event['kind'], requestId: string): Event {
       return { kind, requestId };
     case 'mark_recycled':
       return { kind, requestId };
+    case 'mark_restored':
+      return {
+        kind,
+        requestId,
+        fields: {
+          filePath: PROP_FILE_PATH,
+          nginxUrl: null,
+          thumbnailUrl: null,
+          fileSizeBytes: 84,
+        },
+      };
     case 'mark_downloaded':
       return { kind, requestId, fields: PROP_DOWNLOADED_FIELDS };
     case 'mark_rejected':
@@ -1358,6 +1582,15 @@ describe('TRANSITIONS property test', () => {
           youtube_id: PROP_YT_ID,
           url: PROP_URL,
         });
+        // mark_restored gates on file_state = 'recycled'; the default row
+        // file_state is 'live' (migration 002). Flip it so the descriptor's
+        // SQL WHERE actually matches. Illegal sources (downloading, …) are
+        // still rejected by the status check, so the ILLEGAL_PAIRS coverage
+        // stays correct without a parallel fix.
+        if (kind === 'mark_restored') {
+          db.prepare('UPDATE requests SET file_state = ? WHERE request_id = ?')
+            .run('recycled', requestId);
+        }
 
         const event = buildEvent(kind, requestId);
         const { result, settled } = state.apply(event);

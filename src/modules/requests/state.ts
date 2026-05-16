@@ -154,11 +154,26 @@ export interface CreateFromCandidateInput {
   title: string | null;
 }
 
+// Fields supplied by the worker on a successful restore (issue #116).
+// Mirrors the subset of `DownloadedFields` that mark_restored re-populates:
+// file_path / nginx_url / thumbnail_url / file_size_bytes. Title, channel,
+// description, transcript, duration and youtube_channel_id are deliberately
+// excluded — those were captured on the original download and re-writing them
+// would needlessly churn columns the PWA already shows. The restore is a
+// "bring back the bytes" action, not a "re-discover the video" one.
+export interface RestoredFields {
+  filePath: string;
+  nginxUrl: string | null;
+  thumbnailUrl: string | null;
+  fileSizeBytes: number | null;
+}
+
 export type Event =
   | { kind: 'mark_watched'; requestId: string }
   | { kind: 'mark_dismissed'; requestId: string }
   | { kind: 'mark_soft_deleted'; requestId: string }
   | { kind: 'mark_recycled'; requestId: string }
+  | { kind: 'mark_restored'; requestId: string; fields: RestoredFields }
   | { kind: 'mark_downloaded'; requestId: string; fields: DownloadedFields }
   | { kind: 'mark_rejected'; requestId: string; reason: string }
   | { kind: 'mark_guard_blocked'; requestId: string; reason: string }
@@ -327,6 +342,52 @@ export const TRANSITIONS = {
       return [{ kind: 'enqueue_delete', jobData: { requestId: event.requestId, filePath }, requestId: event.requestId }];
     },
   } as Descriptor<Extract<Event, { kind: 'mark_recycled' }>>,
+
+  // Restore (issue #116): the worker has re-downloaded a previously-recycled
+  // file. Reverses what `mark_recycled` did — re-populates file_path,
+  // nginx_url, thumbnail_url and file_size_bytes; clears recycled_at; flips
+  // file_state back to `live`. `status` is preserved (a watched row stays
+  // watched, a dismissed row stays dismissed) because the original verdict
+  // was a real engagement signal the restore must not erase.
+  //
+  // Source-status list mirrors mark_recycled's, but the gate that actually
+  // decides eligibility is `file_state = 'recycled'` in the UPDATE WHERE —
+  // status is just the descriptor table's coarse filter. No notify effect:
+  // restore is an in-PWA action the user just initiated; surprising them
+  // with a `video_ready` ntfy would be noise. No ensure_person_capture
+  // either — the person row already exists from the original mark_downloaded.
+  mark_restored: {
+    sources: ['ready', 'watched', 'dismissed'],
+    target: 'preserve',
+    buildSql: (event) => ({
+      sql: `UPDATE requests
+              SET file_state      = 'live',
+                  recycled_at     = NULL,
+                  file_path       = ?,
+                  nginx_url       = ?,
+                  thumbnail_url   = COALESCE(thumbnail_url, ?),
+                  file_size_bytes = ?
+            WHERE request_id = ?
+              AND status IN ('ready', 'watched', 'dismissed')
+              AND file_state = 'recycled'
+            RETURNING user_id`,
+      params: [
+        event.fields.filePath,
+        event.fields.nginxUrl,
+        // COALESCE order is deliberate: existing row value first, payload
+        // second. The worker always sends the maxresdefault fallback on
+        // every download — without this ordering it would overwrite an
+        // editorial-upgrade pick captured on the original download, and
+        // since the thumb-upgrade job is skipped on restore there'd be no
+        // recovery. Falls back to the payload only when the row has no
+        // thumbnail yet (a pre-#43 edge case worth handling defensively).
+        event.fields.thumbnailUrl,
+        event.fields.fileSizeBytes,
+        event.requestId,
+      ],
+    }),
+    effects: () => [],
+  } as Descriptor<Extract<Event, { kind: 'mark_restored' }>>,
 
   mark_downloaded: {
     sources: ['downloading'],
