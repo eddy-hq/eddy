@@ -19,7 +19,7 @@ Placeholder identifiers for the two kids, used in commits, code comments, logs, 
 _Avoid_: real names anywhere outside `.env`
 
 **Person**:
-The subscription unit in Eddy — an individual creator, duo, or studio treated as a single identity across all the things they produce. See [[adr-people-as-subscription-unit]].
+The subscription unit in Eddy — an individual creator, duo, or studio treated as a single identity across all the things they produce. See [[0007-people-as-subscription-unit]].
 _Avoid_: creator, channel (when referring to who is followed), author, host
 
 **Output**:
@@ -224,11 +224,11 @@ _Avoid_: API (overloaded), control plane (descriptive but not the term)
 > **Claude:** "Under the hood, yes — DanTDM has one **Output** in v1, his YouTube channel. But the unit of subscription is the **Person**, not the channel. When he eventually has a Substack or a podcast, following him already covers it."
 
 > **Steve:** "Why did this **Pick** show up on Boy1's **Today** if its **Relevance axis** was a 4?"
-> **Claude:** "Its **Quality axis** was 9 and the recommender is a high-trust **Person** for him — the ranker weights quality heavier on a kid's picks surface. That's the 'librarian's shelf pick' shape from [[adr-picked-voice-outside-card]]."
+> **Claude:** "Its **Quality axis** was 9 and the recommender is a high-trust **Person** for him — the ranker weights quality heavier on a kid's picks surface. Picks are a curated set, not a ranked list — see `docs/decisions.md`."
 
 ## Flagged ambiguities
 
-- **"Channel" / "creator" / "person" / "output"** — all four words have been used for the subscription unit. **Resolved**: the unit is **Person**; an **Output** is a specific feed they produce (their YouTube channel, their Substack). "Channel" in conversation usually means a YouTube channel — i.e. an output — but in product copy prefer "person" or the person's name. See [[adr-people-as-subscription-unit]].
+- **"Channel" / "creator" / "person" / "output"** — all four words have been used for the subscription unit. **Resolved**: the unit is **Person**; an **Output** is a specific feed they produce (their YouTube channel, their Substack). "Channel" in conversation usually means a YouTube channel — i.e. an output — but in product copy prefer "person" or the person's name. See [[0007-people-as-subscription-unit]].
 - **"Recommendation"** — used to mean *(a)* a thing a followed person pointed at, and *(b)* a **Pick** Eddy surfaced. **Resolved**: a **Recommendation** is sense (a) only; senses (b) is a **Pick**. The "no automated recommendation without a visible reason" rule applies to **Picks** — every pick must have a "why this?".
 - **"Source"** — used for *(a)* a content **Output**, *(b)* the YouTube site itself, and *(c)* the **Provenance** of a card. **Resolved**: avoid "source" as a domain term; use **Output**, **YouTube**, or **Provenance** as appropriate. The `sources` module name is grandfathered.
 - **"Feed"** — used for *(a)* Eddy's timeline, and *(b)* an RSS feed (an **Output**). **Resolved**: the **Feed** is Eddy's timeline; an upstream RSS feed is an **Output**.
