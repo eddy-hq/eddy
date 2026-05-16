@@ -346,6 +346,25 @@ describe('mark_soft_deleted', () => {
     const [meta] = vi.mocked(logger.warn).mock.calls[0]!;
     expect(meta).toMatchObject({ requestId: 'req-s6' });
   });
+
+  // #114 contract: file_size_bytes is null for every row without a live file.
+  // mark_soft_deleted is the one production path that flips file_state to
+  // 'gone'; if it left the bytes set, the recycler's per-user accounting
+  // would count files that aren't on disk any more.
+  it('nulls file_size_bytes when flipping file_state to gone', () => {
+    insertRequest({ request_id: 'req-s7', status: 'ready', file_path: FILE_PATH });
+    db.prepare('UPDATE requests SET file_size_bytes = ? WHERE request_id = ?')
+      .run(123_456_789, 'req-s7');
+
+    const { result } = state.apply({ kind: 'mark_soft_deleted', requestId: 'req-s7' });
+    expect(result).toEqual({ transitioned: true, userId: USER_ID });
+
+    const row = db
+      .prepare('SELECT file_state, file_size_bytes FROM requests WHERE request_id = ?')
+      .get('req-s7') as { file_state: string; file_size_bytes: number | null };
+    expect(row.file_state).toBe('gone');
+    expect(row.file_size_bytes).toBeNull();
+  });
 });
 
 describe('mark_downloaded', () => {

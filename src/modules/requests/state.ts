@@ -250,7 +250,15 @@ export const TRANSITIONS = {
     sources: ['ready', 'watched'],
     target: 'deleted',
     buildSql: (event, now) => ({
-      sql: `UPDATE requests SET status = 'deleted', file_state = 'gone', deleted_at = ?
+      // file_size_bytes is cleared alongside the file_state flip so the
+      // recycler's per-user accounting (#113) never counts bytes that aren't
+      // on disk any more. Issue #114 contract: file_size_bytes is null for
+      // every row without a live file.
+      sql: `UPDATE requests
+              SET status          = 'deleted',
+                  file_state      = 'gone',
+                  file_size_bytes = NULL,
+                  deleted_at      = ?
             WHERE request_id = ? AND status IN ('ready', 'watched')
             RETURNING user_id, file_path`,
       params: [now, event.requestId],

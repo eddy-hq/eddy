@@ -7,9 +7,11 @@
 // that already have a non-null `file_size_bytes` or have left `file_state =
 // 'live'`. Safe to abort and restart at any point.
 //
-// SSH config follows the same env-var pattern as scripts/deploy.sh /
-// scripts/watchdog.sh: VIDEO_SSH_USER / VIDEO_SSH_HOST / VIDEO_SSH_KEY, with
-// the same Tailscale defaults so a vanilla run on the M4 just works.
+// SSH config comes from the same env vars the shell scripts use
+// (VIDEO_SSH_USER / VIDEO_SSH_HOST / VIDEO_SSH_KEY) but is required here
+// rather than defaulted to Steve's host — committed TS source under src/
+// stays free of any specific operator's identity, matching the `.env`-only
+// config rule. A missing var fails loudly at startup with a clear message.
 //
 // Why raw SQL for the gone-flip: the `requests` state machine has no event
 // for `file_state: live → gone` independent of the soft-delete user-intent
@@ -31,11 +33,21 @@ interface Row {
   file_path: string;
 }
 
-const SSH_USER = process.env['VIDEO_SSH_USER'] ?? 'steveu';
-const SSH_HOST = process.env['VIDEO_SSH_HOST'] ?? '100.95.170.27';
-const SSH_KEY_RAW = process.env['VIDEO_SSH_KEY'] ?? `${os.homedir()}/.ssh/id_ed25519_eddy`;
-// Tilde-expand if the env var was set with a literal `~` (matches
-// scripts/deploy.sh:23 — same gotcha when the value comes from a shell var).
+function requireEnv(name: string): string {
+  const v = process.env[name];
+  if (!v || !v.trim()) {
+    // eslint-disable-next-line no-console
+    console.error(`backfill-file-sizes: ${name} is required (export it or set in .env)`);
+    process.exit(1);
+  }
+  return v;
+}
+
+const SSH_USER = requireEnv('VIDEO_SSH_USER');
+const SSH_HOST = requireEnv('VIDEO_SSH_HOST');
+const SSH_KEY_RAW = requireEnv('VIDEO_SSH_KEY');
+// Tilde-expand if the env var was set with a literal `~/` — matches the
+// gotcha handled in scripts/deploy.sh:23 when the value comes from a shell.
 const SSH_KEY = SSH_KEY_RAW.startsWith('~/')
   ? `${os.homedir()}${SSH_KEY_RAW.slice(1)}`
   : SSH_KEY_RAW;
@@ -121,8 +133,15 @@ async function run(): Promise<void> {
     `UPDATE requests SET file_size_bytes = ? WHERE request_id = ? AND file_state = 'live'`,
   );
   const setGone = db.prepare(
+    // file_size_bytes is also nulled out for symmetry with mark_soft_deleted —
+    // the SELECT already filters to NULL bytes, but if a future caller widens
+    // the gone-flip path we'd rather it stay self-consistent than rely on the
+    // SELECT to enforce the #114 contract.
     `UPDATE requests
-        SET file_state = 'gone', file_path = NULL, nginx_url = NULL
+        SET file_state      = 'gone',
+            file_path       = NULL,
+            nginx_url       = NULL,
+            file_size_bytes = NULL
       WHERE request_id = ? AND file_state = 'live'`,
   );
 
