@@ -61,25 +61,43 @@ const SSH_OPTS = [
 
 // Batch size for per-SSH-call stat. Big enough to amortise SSH handshake;
 // small enough that an unexpectedly long argv stays well under ARG_MAX. The
-// stat output format is a single line per file: "<size>\t<path>" on success
-// or "MISSING\t<path>" on stat failure — easy to parse without a shell.
+// stat output format is a single line per file:
+//   "<size>\t<path>"     — success
+//   "MISSING\t<path>"    — file genuinely absent (ENOENT)
+//   "STATERR\t<path>"    — stat failed for some other reason (EPERM, mount
+//                          issue, etc.) — caller leaves the row alone so a
+//                          re-run after the underlying fix can pick it up.
 const BATCH_SIZE = 50;
+
+type StatOutcome =
+  | { kind: 'size'; sizeBytes: number }
+  | { kind: 'missing' }
+  | { kind: 'staterr' };
 
 interface StatResult {
   filePath: string;
-  sizeBytes: number | null; // null means file is missing on disk
+  outcome: StatOutcome;
 }
 
 async function statBatch(filePaths: string[]): Promise<StatResult[]> {
-  // `stat -c %s <path>` prints the size and exits 0 on success, non-zero on
-  // missing file. Running stat under `sh -c` per-file inside a single SSH
-  // invocation keeps every file independent — one missing path can't poison
-  // the whole batch. The trailing `|| echo MISSING` flips a per-file failure
-  // into a parseable "MISSING" token rather than a non-zero ssh exit.
+  // Existence check and stat are kept separate on the remote side so an
+  // ENOENT (file truly gone — safe to flip to `gone`) is distinguishable
+  // from any other stat failure (permissions, mount glitch — leave the row
+  // alone). `test -e` is used rather than `-f` so a broken symlink still
+  // reports MISSING; downloads are written as regular files so this is
+  // belt-and-braces but cheap.
   const remoteScript = filePaths
     .map((p) => {
       const escaped = p.replace(/'/g, `'\\''`);
-      return `printf '%s\\t%s\\n' "$(stat -c %s '${escaped}' 2>/dev/null || echo MISSING)" '${escaped}'`;
+      return (
+        `if [ ! -e '${escaped}' ]; then ` +
+        `printf 'MISSING\\t%s\\n' '${escaped}'; ` +
+        `elif size=$(stat -c %s '${escaped}' 2>/dev/null); then ` +
+        `printf '%s\\t%s\\n' "$size" '${escaped}'; ` +
+        `else ` +
+        `printf 'STATERR\\t%s\\n' '${escaped}'; ` +
+        `fi`
+      );
     })
     .join('; ');
 
@@ -89,7 +107,7 @@ async function statBatch(filePaths: string[]): Promise<StatResult[]> {
     { maxBuffer: 50 * 1024 * 1024, timeout: 60_000 },
   );
 
-  const byPath = new Map<string, number | null>();
+  const byPath = new Map<string, StatOutcome>();
   for (const line of stdout.split('\n')) {
     if (!line.trim()) continue;
     const tabIndex = line.indexOf('\t');
@@ -97,14 +115,25 @@ async function statBatch(filePaths: string[]): Promise<StatResult[]> {
     const sizeToken = line.slice(0, tabIndex);
     const path = line.slice(tabIndex + 1);
     if (sizeToken === 'MISSING') {
-      byPath.set(path, null);
+      byPath.set(path, { kind: 'missing' });
+    } else if (sizeToken === 'STATERR') {
+      byPath.set(path, { kind: 'staterr' });
     } else {
       const n = Number(sizeToken);
-      byPath.set(path, Number.isFinite(n) && n >= 0 ? n : null);
+      if (Number.isFinite(n) && n >= 0) {
+        byPath.set(path, { kind: 'size', sizeBytes: n });
+      } else {
+        // Unparseable size token — treat as a stat error rather than a
+        // missing file, same conservative posture: leave the row alone.
+        byPath.set(path, { kind: 'staterr' });
+      }
     }
   }
 
-  return filePaths.map((p) => ({ filePath: p, sizeBytes: byPath.get(p) ?? null }));
+  return filePaths.map((p) => {
+    const outcome = byPath.get(p);
+    return outcome ? { filePath: p, outcome } : { filePath: p, outcome: { kind: 'staterr' as const } };
+  });
 }
 
 async function run(): Promise<void> {
@@ -160,22 +189,28 @@ async function run(): Promise<void> {
       continue;
     }
 
-    const byPath = new Map(stats.map((s) => [s.filePath, s.sizeBytes]));
+    const byPath = new Map(stats.map((s) => [s.filePath, s.outcome]));
     for (const row of batch) {
-      const sizeBytes = byPath.get(row.file_path);
-      if (sizeBytes === undefined) {
-        // stat output didn't include this path — treat as failure but don't
-        // touch the row, so a re-run will retry.
+      const outcome = byPath.get(row.file_path);
+      if (!outcome) {
+        // stat output didn't include this path — treat as a stat failure
+        // and leave the row alone so a re-run can retry.
         failed += 1;
         logger.warn({ requestId: row.request_id, filePath: row.file_path }, 'Backfill: no stat line returned for path');
         continue;
       }
-      if (sizeBytes === null) {
+      if (outcome.kind === 'missing') {
         setGone.run(row.request_id);
         flippedToGone += 1;
         logger.info({ requestId: row.request_id, filePath: row.file_path }, 'Backfill: file missing on mediaserver — flipped to gone');
+      } else if (outcome.kind === 'staterr') {
+        // Non-ENOENT stat failure (permissions, mount glitch, etc.). Don't
+        // touch the row — let a re-run pick it up once the underlying
+        // condition is fixed, rather than silently flipping it to gone.
+        failed += 1;
+        logger.warn({ requestId: row.request_id, filePath: row.file_path }, 'Backfill: stat failed for non-ENOENT reason — leaving row for re-run');
       } else {
-        setBytes.run(sizeBytes, row.request_id);
+        setBytes.run(outcome.sizeBytes, row.request_id);
         updated += 1;
       }
     }
