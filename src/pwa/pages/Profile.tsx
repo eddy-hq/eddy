@@ -4,11 +4,12 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { AnimatePresence, motion, Reorder, useDragControls } from 'framer-motion';
 import { ChevronLeft, Plus, Trash2, X } from 'lucide-react';
 import { BottomNav } from '../components/BottomNav';
+import { AvatarTab } from '../components/AvatarTab';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
 type Expertise = 'beginner' | 'comfortable' | 'deep';
-type TabKey = 'interests' | 'people';
+type TabKey = 'avatar' | 'interests' | 'people';
 
 interface MyInterest {
   interestId: string;
@@ -88,7 +89,10 @@ export function Profile() {
   const userId = params.get('userId') ?? params.get('user') ?? '';
 
   const tabParam = params.get('tab');
-  const activeTab: TabKey = tabParam === 'people' ? 'people' : 'interests';
+  const activeTab: TabKey =
+    tabParam === 'people' ? 'people'
+    : tabParam === 'avatar' ? 'avatar'
+    : 'interests';
 
   function setActiveTab(tab: TabKey) {
     const next = new URLSearchParams(params);
@@ -131,7 +135,9 @@ export function Profile() {
       </div>
 
       <main style={{ paddingBottom: 120 }}>
-        {activeTab === 'interests' ? (
+        {activeTab === 'avatar' ? (
+          <AvatarTab userId={userId} />
+        ) : activeTab === 'interests' ? (
           <InterestsTab userId={userId} />
         ) : (
           <PeopleTab userId={userId} />
@@ -148,6 +154,7 @@ export function Profile() {
 function TabBar({ active, onChange }: { active: TabKey; onChange: (t: TabKey) => void }) {
   return (
     <div style={{ display: 'flex', padding: '0 8px' }}>
+      <TabButton label="Avatar"    active={active === 'avatar'}    onClick={() => onChange('avatar')} />
       <TabButton label="Interests" active={active === 'interests'} onClick={() => onChange('interests')} />
       <TabButton label="People"    active={active === 'people'}    onClick={() => onChange('people')} />
     </div>

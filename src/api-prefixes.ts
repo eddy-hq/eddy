@@ -8,6 +8,7 @@ export const API_PREFIXES = [
   '/people',
   '/search',
   '/interests',
+  '/avatars',
   '/discovery',
   '/watch-events',
   '/health',

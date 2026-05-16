@@ -18,6 +18,7 @@ import { peopleRouter } from './modules/people/index';
 import { searchRouter } from './modules/search/index';
 import { discoveryRouter } from './modules/discovery/router';
 import { interestsRouter } from './modules/interests/index';
+import { avatarsRouter } from './modules/avatars/index';
 import { watchEventsRouter } from './modules/watch-events/index';
 import {
   createNotifications,
@@ -74,6 +75,7 @@ app.use('/internal', internalRouter);
 app.use('/people', peopleRouter);
 app.use('/search', searchRouter);
 app.use('/interests', interestsRouter);
+app.use('/avatars', avatarsRouter);
 app.use('/discovery', discoveryRouter);
 app.use('/watch-events', watchEventsRouter);
 
