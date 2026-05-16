@@ -133,6 +133,30 @@ systemctl --user restart eddy-worker
 
 ---
 
+## Plex — Eddy Videos library prefs
+
+Plex's per-library credit-marker detection (`enableCreditsMarkerGeneration`) runs ffmpeg analysis over every clip. Pointless on the Eddy Videos library — YouTube clips have no credits — and it pegs ~10 cores for hours per sweep. Disable it once on the mediaserver:
+
+```bash
+# Run from M4 with .env loaded, or substitute values by hand.
+set -a; source .env; set +a
+curl -s -X PUT \
+  "${PLEX_URL}/library/sections/${PLEX_LIBRARY_SECTION_ID}/prefs?enableCreditsMarkerGeneration=0&X-Plex-Token=${PLEX_TOKEN}"
+```
+
+Verify:
+
+```bash
+curl -s "${PLEX_URL}/library/sections/${PLEX_LIBRARY_SECTION_ID}/prefs?X-Plex-Token=${PLEX_TOKEN}" \
+  | grep -o 'id="enableCreditsMarkerGeneration"[^/]*value="[^"]*"'
+```
+
+Should report `value="false"`.
+
+One-shot per Plex install — the pref persists across Plex restarts. Only re-run when rebuilding the mediaserver from scratch or recreating the Eddy Videos library. Leave Movies / TV libraries on Plex defaults; this URL targets section `${PLEX_LIBRARY_SECTION_ID}` only.
+
+---
+
 ## API route prefixes
 
 `src/api-prefixes.ts` is the single source of truth for top-level HTTP prefixes. Two consumers read it:
