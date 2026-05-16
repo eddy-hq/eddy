@@ -20,6 +20,7 @@
 // path (which also flips status to 'deleted'). A row whose file vanished from
 // disk should keep its existing status; only the file_state column moves. A
 // new event for this one-shot would be over-fitting.
+import 'dotenv/config';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { db } from '../db/client';
