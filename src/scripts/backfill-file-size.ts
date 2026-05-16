@@ -24,13 +24,15 @@ interface Row {
   file_path: string;
 }
 
-// stat exit-code conventions: 0 = found, 1 = missing on Linux GNU coreutils.
-// We carry the raw size string back so the parent can distinguish "size
-// returned" from "missing" without re-querying.
+// The remote bash one-liner emits exactly one record per input path so the
+// parent can distinguish "remote command died entirely" (zero records, chunk
+// retried) from "this specific file is missing" (explicit MISSING token).
+// Without that distinction a broken pipeline could be mis-read as "every
+// file is gone" and would flip live rows.
 interface StatResult {
   filePath: string;
-  sizeBytes: number | null; // null when stat reported missing (or unparseable)
-  missing: boolean;
+  sizeBytes: number | null; // present iff `kind === 'found'`
+  kind: 'found' | 'missing';
 }
 
 // Resolve a path that may begin with `~/` against the home dir. Node's
@@ -66,25 +68,39 @@ function resolveSshTarget(): SshTarget {
   return { user: VIDEO_SSH_USER!, host: VIDEO_SSH_HOST!, key: VIDEO_SSH_KEY! };
 }
 
-// Spawn ssh once with `xargs -0 stat -c '%n\0%s'` reading NUL-separated paths
-// off stdin. One round-trip per chunk keeps the script under a few seconds
-// even for several hundred rows, and the NUL framing tolerates any path
-// content. Paths that don't exist make stat print to stderr and skip the
-// stdout record — we reconcile by tracking which inputs got a stdout record.
+// Spawn ssh once and run a small bash one-liner that emits exactly one record
+// per NUL-separated input path:
+//   - `<path>\0FOUND\0<bytes>\n` when stat -c '%s' succeeds
+//   - `<path>\0MISSING\n` when stat fails (file absent, permission denied)
+// One record per input means the parent can detect a wholly-failed chunk
+// (zero records, or mismatched count) and skip it for retry, rather than
+// mis-reading absence-of-output as "every file in the chunk is gone" and
+// flipping live rows to gone on a broken pipeline.
+//
+// `set -eo pipefail` propagates real shell-setup failures (no bash, broken
+// pipe to read) back as a non-zero exit code. The per-path branch swallows
+// stat errors explicitly and emits MISSING — those are expected and must
+// not abort the chunk.
 function statRemote(target: SshTarget, filePaths: string[]): Promise<StatResult[]> {
   return new Promise((resolve, reject) => {
     const sshKey = expandHome(target.key);
+    // The remote script reads NUL-separated paths and decides per path. Kept
+    // inline (rather than scp'd) because it is small and ops-only. Uses bash
+    // `read -d ''` to consume up to NUL.
+    // Note on quoting: this whole string is passed as one arg to ssh, which
+    // sends it to the remote shell which evaluates it. Stat's format string is
+    // single-quoted so `%s` is literal; `printf` and `read` are bash
+    // built-ins so the heredoc-style escapes here are bash-side, not host
+    // shell. Stdin stays available for the path stream because `bash -c`
+    // (which ssh invokes implicitly for a command) doesn't consume it.
+    const remoteScript = `set -eo pipefail; while IFS= read -r -d '' p; do if size=$(stat -c '%s' -- "$p" 2>/dev/null); then printf '%s\\0FOUND\\0%s\\n' "$p" "$size"; else printf '%s\\0MISSING\\n' "$p"; fi; done`;
     const sshArgs = [
       '-i', sshKey,
       '-o', 'ConnectTimeout=10',
       '-o', 'BatchMode=yes',
       '-o', 'StrictHostKeyChecking=accept-new',
       `${target.user}@${target.host}`,
-      // -0 = NUL-separated; -r exits clean if no inputs; -n1 = one stat call
-      // per path so a single missing file can't kill the whole batch (stat
-      // exits non-zero for that path only). We pipe through `true` so the
-      // remote shell exits 0 even when some stats fail.
-      `xargs -0 -r -n1 stat -c '%n\\0%s\\n' 2>/dev/null; true`,
+      remoteScript,
     ];
 
     const proc = spawn('ssh', sshArgs);
@@ -99,28 +115,43 @@ function statRemote(target: SshTarget, filePaths: string[]): Promise<StatResult[
       if (code !== 0) {
         return reject(new Error(`ssh exited ${code}: ${stderr.slice(0, 500)}`));
       }
-      // Each stat record is `<path>\0<size>\n`. Multiple records concatenated.
-      const sizeByPath = new Map<string, number>();
+      const byPath = new Map<string, StatResult>();
       for (const line of stdout.split('\n')) {
         if (!line) continue;
-        const nulIdx = line.indexOf('\0');
-        if (nulIdx === -1) continue;
-        const p = line.slice(0, nulIdx);
-        const sizeStr = line.slice(nulIdx + 1);
-        const size = Number.parseInt(sizeStr, 10);
-        if (!Number.isFinite(size)) continue;
-        sizeByPath.set(p, size);
+        const parts = line.split('\0');
+        const p = parts[0];
+        const tag = parts[1];
+        if (!p || !tag) continue;
+        if (tag === 'FOUND') {
+          const size = Number.parseInt(parts[2] ?? '', 10);
+          if (!Number.isFinite(size)) continue;
+          byPath.set(p, { filePath: p, sizeBytes: size, kind: 'found' });
+        } else if (tag === 'MISSING') {
+          byPath.set(p, { filePath: p, sizeBytes: null, kind: 'missing' });
+        }
+      }
+      // If we got fewer records than inputs the remote pipeline didn't
+      // complete cleanly — surface as a chunk failure so we don't flip
+      // unreported paths to gone. Re-run picks them up.
+      if (byPath.size !== filePaths.length) {
+        return reject(new Error(
+          `remote stat returned ${byPath.size} records for ${filePaths.length} inputs ` +
+            `(stderr: ${stderr.slice(0, 200)})`,
+        ));
       }
       const results: StatResult[] = filePaths.map((p) => {
-        const size = sizeByPath.get(p);
-        if (size === undefined) return { filePath: p, sizeBytes: null, missing: true };
-        return { filePath: p, sizeBytes: size, missing: false };
+        const r = byPath.get(p);
+        // Belt-and-braces: byPath.size matches above, so this should never
+        // hit. Treat as a chunk-level failure if it somehow does.
+        if (!r) throw new Error(`internal: no record for ${p}`);
+        return r;
       });
       resolve(results);
     });
 
-    // Write NUL-separated paths to stdin and close.
-    proc.stdin.write(filePaths.join('\0'));
+    // NUL-terminate every record (including the last) so `read -d ''` on the
+    // remote end consumes the final path before EOF closes stdin.
+    proc.stdin.write(filePaths.map((p) => `${p}\0`).join(''));
     proc.stdin.end();
   });
 }
@@ -160,12 +191,19 @@ async function run(): Promise<void> {
     'Backfill: starting file_size_bytes backfill',
   );
 
+  // Gate the size write on the row still being live + unsized. If a user
+  // soft-deleted between the initial SELECT and this UPDATE the delete path
+  // has already moved file_state to gone and nulled file_size_bytes; we
+  // mustn't write the stale size back. `result.changes === 0` is normal in
+  // that race, not an error — the row was correctly handled by the delete.
   const updateSize = db.prepare(
-    `UPDATE requests SET file_size_bytes = ? WHERE request_id = ?`,
+    `UPDATE requests SET file_size_bytes = ?
+       WHERE request_id = ? AND file_state = 'live' AND file_size_bytes IS NULL`,
   );
 
   let sized = 0;
   let missing = 0;
+  let raced = 0;
   let errored = 0;
 
   for (let i = 0; i < rows.length; i += CHUNK_SIZE) {
@@ -187,7 +225,10 @@ async function run(): Promise<void> {
     for (let j = 0; j < chunk.length; j += 1) {
       const row = chunk[j]!;
       const result = results[j]!;
-      if (result.missing) {
+      if (result.kind === 'missing') {
+        // markFileMissing is itself gated on file_state = 'live' so a row
+        // that raced into 'gone' via soft-delete returns `false` and is a
+        // safe no-op.
         const flipped = markFileMissing(row.request_id);
         missing += 1;
         logger.info(
@@ -196,11 +237,11 @@ async function run(): Promise<void> {
         );
         continue;
       }
-      if (result.sizeBytes === null) {
-        errored += 1;
+      const ranResult = updateSize.run(result.sizeBytes, row.request_id);
+      if (ranResult.changes === 0) {
+        raced += 1;
         continue;
       }
-      updateSize.run(result.sizeBytes, row.request_id);
       sized += 1;
     }
 
@@ -210,7 +251,7 @@ async function run(): Promise<void> {
     );
   }
 
-  logger.info({ sized, missing, errored, total: rows.length }, 'Backfill complete');
+  logger.info({ sized, missing, raced, errored, total: rows.length }, 'Backfill complete');
 }
 
 run().catch((err: unknown) => {
