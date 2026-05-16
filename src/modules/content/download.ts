@@ -223,6 +223,36 @@ export async function fetchMetadata(url: string): Promise<VideoMetadata> {
   };
 }
 
+// Remove leftover format-specific pre-merge files (`<id>.fNNN.<ext>`), subtitle
+// files, and other yt-dlp scratch artefacts for a given youtubeId. The final
+// merged `<id>.mp4` is preserved — its presence is the idempotency signal.
+//
+// Why: on a failed download attempt yt-dlp leaves the per-format streams on
+// disk. The next attempt sees them and tries to resume with a Range header;
+// if YouTube has since rotated the format manifest (different byte count for
+// the same format code) the server returns HTTP 416 and the job aborts.
+// Without this cleanup the watchdog re-enqueues forever and never recovers.
+export function cleanStaleIntermediates(outputDir: string, youtubeId: string): void {
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(outputDir);
+  } catch {
+    return;
+  }
+  const prefix = `${youtubeId}.`;
+  const finalName = `${youtubeId}.mp4`;
+  for (const name of entries) {
+    if (!name.startsWith(prefix)) continue;
+    if (name === finalName) continue;
+    try {
+      fs.unlinkSync(path.join(outputDir, name));
+      logger.info({ youtubeId, file: name }, 'Removed stale yt-dlp intermediate');
+    } catch (err) {
+      logger.warn({ youtubeId, file: name, err }, 'Failed to remove stale intermediate');
+    }
+  }
+}
+
 export async function downloadVideo(
   youtubeId: string,
   url: string,
@@ -243,6 +273,8 @@ export async function downloadVideo(
   } catch {
     // file does not exist — proceed with download
   }
+
+  cleanStaleIntermediates(outputDir, youtubeId);
 
   logger.info({ youtubeId, outputPath }, 'Starting yt-dlp download');
 

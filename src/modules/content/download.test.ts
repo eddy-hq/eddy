@@ -1,4 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
 
 vi.mock('../../config', () => ({
   config: { YTDLP_BIN: '/fake/yt-dlp', VIDEO_OUTPUT_PATH: '/tmp', NODE_ENV: 'test' },
@@ -8,7 +11,7 @@ vi.mock('../../logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 
-import { makeUnifiedProgressParser } from './download';
+import { cleanStaleIntermediates, makeUnifiedProgressParser } from './download';
 
 function feedAll(lines: string[]): number[] {
   const emitted: number[] = [];
@@ -129,5 +132,36 @@ describe('makeUnifiedProgressParser', () => {
 
     expect(isMonotonic(emitted)).toBe(true);
     expect(emitted[emitted.length - 1]).toBe(60);
+  });
+});
+
+describe('cleanStaleIntermediates', () => {
+  function setup(youtubeId: string, files: string[]): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'eddy-clean-'));
+    for (const name of files) fs.writeFileSync(path.join(dir, name), 'x');
+    cleanStaleIntermediates(dir, youtubeId);
+    return dir;
+  }
+
+  it('removes per-format intermediates and subtitle files', () => {
+    const id = 'vidABC';
+    const dir = setup(id, [`${id}.f137.mp4`, `${id}.f140.m4a`, `${id}.en.vtt`]);
+    expect(fs.readdirSync(dir)).toEqual([]);
+  });
+
+  it('preserves the final merged mp4 (idempotency signal)', () => {
+    const id = 'vidABC';
+    const dir = setup(id, [`${id}.mp4`, `${id}.f137.mp4`]);
+    expect(fs.readdirSync(dir)).toEqual([`${id}.mp4`]);
+  });
+
+  it('does not touch files for other youtubeIds', () => {
+    const id = 'vidABC';
+    const dir = setup(id, [`${id}.f137.mp4`, 'vidXYZ.f137.mp4', 'vidXYZ.mp4']);
+    expect(fs.readdirSync(dir).sort()).toEqual(['vidXYZ.f137.mp4', 'vidXYZ.mp4']);
+  });
+
+  it('is a no-op when the directory does not exist', () => {
+    expect(() => cleanStaleIntermediates('/nonexistent/path/xyz', 'whatever')).not.toThrow();
   });
 });
