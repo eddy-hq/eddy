@@ -60,6 +60,31 @@ export function displayRejectionReason(reason: string | null): string | null {
 // later re-request must produce a brand-new download, not return the dead row.
 const DEDUP_TERMINAL: Status[] = ['rejected', 'dismissed', 'watched', 'deleted'];
 
+// Operations-only: flip a row's file_state from 'live' to 'gone' without
+// touching status. Used by the file-size backfill (#114) and any future drift
+// detector that observes an expected file is missing on disk. Status stays
+// where it was (typically ready/watched) so the kid-facing card keeps its
+// current shape — the recycler/restore plumbing introduced later in #113's
+// sub-tree reacts to the gone file_state separately.
+//
+// Distinct from the state-machine descriptor table because it does not
+// transition `status` — the descriptor shape (`target: Status`) and the
+// property test that walks it both assume status changes. Lives here because
+// the requests table is this module's domain, per the "DB calls live inside
+// the owning module" rule.
+//
+// Idempotent: returns true if a row was flipped, false if no matching live
+// row was found (already gone, or unknown id).
+export function markFileMissing(requestId: string): boolean {
+  const result = db
+    .prepare(
+      `UPDATE requests SET file_state = 'gone'
+       WHERE request_id = ? AND file_state = 'live'`,
+    )
+    .run(requestId);
+  return result.changes > 0;
+}
+
 // Find a still-live request for this user + video that a fresh POST should
 // dedup against. Returns null when no such row exists (including when the only
 // matching row is in a terminal state — that's the soft-delete re-request path).
@@ -125,6 +150,11 @@ export interface DownloadedFields {
   filePath: string;
   nginxUrl: string | null;
   thumbnailUrl: string | null;
+  // Bytes on disk after yt-dlp + merge. Captured by the worker via fs.stat on
+  // the local file before the callback to the M4. Null for rows produced by
+  // workers that pre-date this field (defensive — the current worker always
+  // sends a value).
+  fileSizeBytes: number | null;
 }
 
 export interface CreateFromShareSheetInput {
@@ -276,6 +306,7 @@ export const TRANSITIONS = {
                   file_path          = ?,
                   nginx_url          = ?,
                   thumbnail_url      = ?,
+                  file_size_bytes    = ?,
                   downloaded_at      = ?
             WHERE request_id = ? AND status IN ('downloading')
             RETURNING user_id`,
@@ -289,6 +320,7 @@ export const TRANSITIONS = {
         event.fields.filePath,
         event.fields.nginxUrl,
         event.fields.thumbnailUrl,
+        event.fields.fileSizeBytes,
         now,
         event.requestId,
       ],

@@ -20,6 +20,10 @@ interface DownloadedPayload {
   filePath: string;
   nginxUrl: string | null;
   thumbnailUrl: string | null;
+  // Bytes on disk after merge — optional in the payload so a worker that
+  // pre-dates #114 (or one whose stat fails) can still post a successful
+  // callback. Persisted as null when missing; the backfill script picks it up.
+  fileSizeBytes?: number | null;
   title: string;
   channel: string;
   youtubeChannelId?: string | null;
@@ -30,7 +34,7 @@ interface DownloadedPayload {
 
 // POST /internal/videos/:youtube_id/downloaded — called by Ubuntu worker on success
 internalRouter.post('/videos/:youtube_id/downloaded', verifySignedJson<DownloadedPayload>((req, res, payload) => {
-  const { requestId, filePath, nginxUrl, thumbnailUrl, title, channel, youtubeChannelId, description, durationSecs, transcript } = payload;
+  const { requestId, filePath, nginxUrl, thumbnailUrl, fileSizeBytes, title, channel, youtubeChannelId, description, durationSecs, transcript } = payload;
 
   const { result } = getRequestsState().apply({
     kind: 'mark_downloaded',
@@ -45,6 +49,7 @@ internalRouter.post('/videos/:youtube_id/downloaded', verifySignedJson<Downloade
       filePath,
       nginxUrl,
       thumbnailUrl,
+      fileSizeBytes: fileSizeBytes ?? null,
     },
   });
 

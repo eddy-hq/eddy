@@ -178,6 +178,18 @@ async function processJob(job: Job<DownloadJobData>, token?: string): Promise<vo
   // once status leaves 'downloading', so the key just decays harmlessly.
   await redis.set(PROGRESS_KEY(requestId), 100, 'EX', 3600);
 
+  // Capture file size after yt-dlp + merge finish, before the callback flips
+  // status to ready. Storage-recycling accounting (#114) reads this column for
+  // every live row. Best-effort: if stat fails (race with an external mover,
+  // permission flake), log and send null — the file_size_bytes column is
+  // nullable and the backfill script can fill it in later.
+  let fileSizeBytes: number | null = null;
+  try {
+    fileSizeBytes = fs.statSync(filePath).size;
+  } catch (err) {
+    log.warn({ err, filePath }, 'Failed to stat file for size capture — sending null');
+  }
+
   // Callback to M4 — M4 writes SQLite and sends ntfy
   await postSigned(`/internal/videos/${youtubeId}/downloaded`, {
     requestId,
@@ -185,6 +197,7 @@ async function processJob(job: Job<DownloadJobData>, token?: string): Promise<vo
     filePath,
     nginxUrl,
     thumbnailUrl,
+    fileSizeBytes,
     title: metadata.title,
     channel: metadata.channel,
     youtubeChannelId: metadata.youtubeChannelId,

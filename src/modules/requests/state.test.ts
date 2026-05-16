@@ -22,6 +22,7 @@ import { runMigrations } from '../../db/migrate';
 import {
   createRequestsState,
   findActiveDuplicateRequest,
+  markFileMissing,
   CANCELLED_REASON,
   TRANSITIONS,
   type DownloadedFields,
@@ -359,6 +360,7 @@ describe('mark_downloaded', () => {
     filePath: '/videos/abc123.mp4',
     nginxUrl: 'https://m4.local/videos/abc123.mp4',
     thumbnailUrl: 'https://m4.local/videos/abc123.jpg',
+    fileSizeBytes: 12_345_678,
   };
 
   it('transitions downloading → ready, writes all fields, and fires notifyVideoReady', () => {
@@ -371,14 +373,15 @@ describe('mark_downloaded', () => {
     const row = db
       .prepare(
         `SELECT status, title, channel, youtube_channel_id, description, duration_secs, transcript,
-                file_path, nginx_url, thumbnail_url, downloaded_at
+                file_path, nginx_url, thumbnail_url, file_size_bytes, downloaded_at
          FROM requests WHERE request_id = ?`,
       )
       .get('req-dl1') as {
         status: string; title: string; channel: string; youtube_channel_id: string;
         description: string;
         duration_secs: number; transcript: string; file_path: string;
-        nginx_url: string; thumbnail_url: string; downloaded_at: string;
+        nginx_url: string; thumbnail_url: string; file_size_bytes: number | null;
+        downloaded_at: string;
       };
     expect(row.status).toBe('ready');
     expect(row.title).toBe(FIELDS.title);
@@ -390,9 +393,27 @@ describe('mark_downloaded', () => {
     expect(row.file_path).toBe(FIELDS.filePath);
     expect(row.nginx_url).toBe(FIELDS.nginxUrl);
     expect(row.thumbnail_url).toBe(FIELDS.thumbnailUrl);
+    expect(row.file_size_bytes).toBe(FIELDS.fileSizeBytes);
     expect(new Date(row.downloaded_at).getTime()).toBeGreaterThanOrEqual(before);
 
     expect(fakePorts.notifyVideoReady).toHaveBeenCalledWith(USER_ID, 'req-dl1', FIELDS.title);
+  });
+
+  it('persists file_size_bytes as null when the worker could not stat the file', () => {
+    insertRequest({ request_id: 'req-dl-null-size', status: 'downloading' });
+    const fieldsNullSize: DownloadedFields = { ...FIELDS, fileSizeBytes: null };
+
+    const { result } = state.apply({
+      kind: 'mark_downloaded',
+      requestId: 'req-dl-null-size',
+      fields: fieldsNullSize,
+    });
+
+    expect(result).toEqual({ transitioned: true, userId: USER_ID });
+    const row = db
+      .prepare('SELECT file_size_bytes FROM requests WHERE request_id = ?')
+      .get('req-dl-null-size') as { file_size_bytes: number | null };
+    expect(row.file_size_bytes).toBeNull();
   });
 
   it('is a no-op on an already-rejected row and does not fire the notification', () => {
@@ -1021,6 +1042,53 @@ describe('findActiveDuplicateRequest', () => {
   });
 });
 
+describe('markFileMissing', () => {
+  it('flips file_state live → gone and leaves status untouched', () => {
+    insertRequest({ request_id: 'req-fm1', status: 'ready' });
+
+    const changed = markFileMissing('req-fm1');
+
+    expect(changed).toBe(true);
+    const row = db
+      .prepare('SELECT status, file_state FROM requests WHERE request_id = ?')
+      .get('req-fm1') as { status: string; file_state: string };
+    expect(row.status).toBe('ready');
+    expect(row.file_state).toBe('gone');
+  });
+
+  it('also works for a watched row — status stays watched', () => {
+    insertRequest({ request_id: 'req-fm2', status: 'watched' });
+
+    const changed = markFileMissing('req-fm2');
+
+    expect(changed).toBe(true);
+    const row = db
+      .prepare('SELECT status, file_state FROM requests WHERE request_id = ?')
+      .get('req-fm2') as { status: string; file_state: string };
+    expect(row.status).toBe('watched');
+    expect(row.file_state).toBe('gone');
+  });
+
+  it('is a no-op on a row whose file_state is already gone (idempotent re-run)', () => {
+    insertRequest({ request_id: 'req-fm3', status: 'ready' });
+    db.prepare(`UPDATE requests SET file_state = 'gone' WHERE request_id = ?`).run('req-fm3');
+
+    const changed = markFileMissing('req-fm3');
+
+    expect(changed).toBe(false);
+    const row = db
+      .prepare('SELECT file_state FROM requests WHERE request_id = ?')
+      .get('req-fm3') as { file_state: string };
+    expect(row.file_state).toBe('gone');
+  });
+
+  it('is a no-op on an unknown id', () => {
+    const changed = markFileMissing('does-not-exist');
+
+    expect(changed).toBe(false);
+  });
+});
+
 // ─── TRANSITIONS property test ───────────────────────────────────────────────
 //
 // Walks every `(Event type × source status)` pair off the `TRANSITIONS`
@@ -1053,6 +1121,7 @@ const PROP_DOWNLOADED_FIELDS: DownloadedFields = {
   filePath: PROP_FILE_PATH,
   nginxUrl: null,
   thumbnailUrl: null,
+  fileSizeBytes: 1024,
 };
 
 function buildEvent(kind: Event['kind'], requestId: string): Event {

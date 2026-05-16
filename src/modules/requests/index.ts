@@ -22,6 +22,7 @@ export {
   CANCELLED_REASON,
   displayRejectionReason,
   findActiveDuplicateRequest,
+  markFileMissing,
 } from './state';
 export {
   registerDefaultRequestsState,
