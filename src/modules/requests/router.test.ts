@@ -837,7 +837,11 @@ describe('POST /requests/:id/restore', () => {
     expect(body.error).toBe('ENQUEUE_FAILED');
   });
 
-  it('enqueues with empty-string youtubeId when the row has no youtube_id', async () => {
+  // youtube_id is mandatory for restore: the worker keys the file path and
+  // the completion callback URL on it, so a null would post to
+  // `/internal/videos//restored` and never match the route — silently
+  // breaking the round trip while the endpoint returned 202.
+  it('returns 400 MISSING_YOUTUBE_ID when the row has no youtube_id, and does not enqueue', async () => {
     insertRequestRow({
       request_id: 'restore-noid',
       status: 'watched',
@@ -847,8 +851,9 @@ describe('POST /requests/:id/restore', () => {
 
     const resp = await request('POST', '/requests/restore-noid/restore');
 
-    expect(resp.status).toBe(202);
-    const [, jobData] = vi.mocked(downloadQueue.add).mock.calls[0]!;
-    expect((jobData as { youtubeId: string }).youtubeId).toBe('');
+    expect(resp.status).toBe(400);
+    const body = resp.json<{ error: string }>();
+    expect(body.error).toBe('MISSING_YOUTUBE_ID');
+    expect(vi.mocked(downloadQueue.add)).not.toHaveBeenCalled();
   });
 });

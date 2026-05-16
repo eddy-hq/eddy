@@ -413,6 +413,21 @@ requestsRouter.post('/:id/restore', async (req: Request, res: Response) => {
     });
   }
 
+  // Restore requires youtube_id: the worker keys the file path on it
+  // (`${youtubeId}.mp4`) and the completion callback path (`/internal/
+  // videos/${youtubeId}/restored`) is keyed on it too. A row that landed
+  // recycled without youtube_id (rare edge case — original extractYoutubeId
+  // returned null on an unusual URL, but yt-dlp still resolved internally
+  // and downloaded) can't round-trip through this path; reject loudly
+  // rather than enqueue work that would post to /internal/videos//restored
+  // and never match the route.
+  if (!row.youtube_id) {
+    return res.status(400).json({
+      error: 'MISSING_YOUTUBE_ID',
+      message: 'Cannot restore a request without a stored youtube_id',
+    });
+  }
+
   // Enqueue with mode:'restore' so the worker skips the guard score (the
   // original verdict already approved this video) and posts the completion
   // callback to the /restored endpoint, which preserves status.
@@ -446,7 +461,8 @@ requestsRouter.post('/:id/restore', async (req: Request, res: Response) => {
       'download',
       {
         requestId,
-        youtubeId: row.youtube_id ?? '',
+        // Guaranteed non-null by the MISSING_YOUTUBE_ID gate above.
+        youtubeId: row.youtube_id,
         url: row.url,
         mode: 'restore',
       },
