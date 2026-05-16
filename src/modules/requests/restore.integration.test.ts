@@ -201,7 +201,13 @@ describe('restore round trip — endpoint + worker mark_restored', () => {
     expect(row.nginx_url).toBe(NGINX_URL);       // nginx_url re-populated
     expect(row.file_size_bytes).toBe(234_567_890); // file_size_bytes refreshed
     expect(row.recycled_at).toBeNull();          // recycled_at cleared
-    expect(row.thumbnail_url).not.toBeNull();    // thumbnail re-populated (or preserved)
+    // Thumbnail was the editorial pick captured on the original download
+    // (seeded as THUMB_URL). It must survive the restore even though the
+    // worker sends a maxresdefault fallback URL in the payload — the
+    // descriptor COALESCEs row-first to preserve the editorial choice,
+    // and the thumb-upgrade job is skipped on restore so there's no
+    // second chance to re-pick.
+    expect(row.thumbnail_url).toBe(THUMB_URL);
 
     // Guard not re-invoked on restore — guard_eval row count unchanged.
     const guardEvalCountAfter = (db

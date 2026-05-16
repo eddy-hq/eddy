@@ -365,7 +365,7 @@ export const TRANSITIONS = {
                   recycled_at     = NULL,
                   file_path       = ?,
                   nginx_url       = ?,
-                  thumbnail_url   = COALESCE(?, thumbnail_url),
+                  thumbnail_url   = COALESCE(thumbnail_url, ?),
                   file_size_bytes = ?
             WHERE request_id = ?
               AND status IN ('ready', 'watched', 'dismissed')
@@ -374,10 +374,13 @@ export const TRANSITIONS = {
       params: [
         event.fields.filePath,
         event.fields.nginxUrl,
-        // Worker passes the fallback maxresdefault URL on every download;
-        // COALESCE means a null arriving here (e.g. older worker) leaves
-        // whatever thumbnail the row already had — the editorial-upgrade
-        // thumbnail captured on the original download survives.
+        // COALESCE order is deliberate: existing row value first, payload
+        // second. The worker always sends the maxresdefault fallback on
+        // every download — without this ordering it would overwrite an
+        // editorial-upgrade pick captured on the original download, and
+        // since the thumb-upgrade job is skipped on restore there'd be no
+        // recovery. Falls back to the payload only when the row has no
+        // thumbnail yet (a pre-#43 edge case worth handling defensively).
         event.fields.thumbnailUrl,
         event.fields.fileSizeBytes,
         event.requestId,

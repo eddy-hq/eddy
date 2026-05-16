@@ -560,11 +560,36 @@ describe('mark_restored', () => {
   );
 
   // The defining property: an existing editorial thumbnail captured on the
-  // original download must survive a restore that arrives with a null in the
-  // payload (older worker / fallback path didn't choose one). The COALESCE
-  // in the descriptor SQL is the only thing preserving it.
+  // original download must survive a restore, regardless of whether the
+  // payload carries the worker's maxresdefault fallback URL or a null. The
+  // worker always sends a non-null thumbnail URL (the maxresdefault fallback)
+  // on every download, so the COALESCE ordering in the descriptor SQL — row
+  // value first, payload second — is the only thing stopping the fallback
+  // from overwriting an editorial pick. Restore also skips the thumb-upgrade
+  // job, so if the fallback won here the editorial pick would be lost forever.
+  it('preserves an existing editorial thumbnail when the payload carries the worker fallback URL', () => {
+    const requestId = 'req-res-keepthumb-fallback';
+    insertRecycledRow({
+      request_id: requestId,
+      status: 'watched',
+      thumbnail_url: 'https://existing/editorial.jpg',
+    });
+
+    const fieldsWithFallback = {
+      ...FIELDS,
+      thumbnailUrl: `https://i.ytimg.com/vi/${requestId}/maxresdefault.jpg`,
+    };
+    const { result } = state.apply({ kind: 'mark_restored', requestId, fields: fieldsWithFallback });
+
+    expect(result).toEqual({ transitioned: true, userId: USER_ID });
+    const row = db
+      .prepare('SELECT thumbnail_url FROM requests WHERE request_id = ?')
+      .get(requestId) as { thumbnail_url: string };
+    expect(row.thumbnail_url).toBe('https://existing/editorial.jpg');
+  });
+
   it('preserves an existing thumbnail_url when the restore payload carries null', () => {
-    const requestId = 'req-res-keepthumb';
+    const requestId = 'req-res-keepthumb-null';
     insertRecycledRow({
       request_id: requestId,
       status: 'watched',
@@ -579,6 +604,29 @@ describe('mark_restored', () => {
       .prepare('SELECT thumbnail_url FROM requests WHERE request_id = ?')
       .get(requestId) as { thumbnail_url: string };
     expect(row.thumbnail_url).toBe('https://existing/editorial.jpg');
+  });
+
+  // Defensive: pre-#43 rows might lack a thumbnail entirely. In that case
+  // COALESCE falls through to the payload, so the row at least gets the
+  // worker's fallback URL rather than staying null.
+  it('falls back to the payload thumbnail_url when the row has none', () => {
+    const requestId = 'req-res-falloverthumb';
+    insertRecycledRow({
+      request_id: requestId,
+      status: 'watched',
+      thumbnail_url: null,
+    });
+
+    const fieldsWithFallback = {
+      ...FIELDS,
+      thumbnailUrl: 'https://i.ytimg.com/vi/x/maxresdefault.jpg',
+    };
+    state.apply({ kind: 'mark_restored', requestId, fields: fieldsWithFallback });
+
+    const row = db
+      .prepare('SELECT thumbnail_url FROM requests WHERE request_id = ?')
+      .get(requestId) as { thumbnail_url: string };
+    expect(row.thumbnail_url).toBe('https://i.ytimg.com/vi/x/maxresdefault.jpg');
   });
 
   it('is a no-op on a live row (file_state mismatch) and does not change file_path', () => {
