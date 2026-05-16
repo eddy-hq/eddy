@@ -67,6 +67,45 @@ internalRouter.post('/videos/:youtube_id/downloaded', verifySignedJson<Downloade
   res.status(204).end();
 }));
 
+// POST /internal/videos/:youtube_id/restored — called by Ubuntu worker on
+// successful re-download of a recycled file (issue #116). Sibling of the
+// /downloaded callback, but threads through `mark_restored` instead of
+// `mark_downloaded` so status is preserved and the user isn't re-notified.
+interface RestoredPayload {
+  requestId: string;
+  youtubeId: string;
+  filePath: string;
+  nginxUrl: string | null;
+  thumbnailUrl: string | null;
+  fileSizeBytes?: number | null;
+}
+internalRouter.post('/videos/:youtube_id/restored', verifySignedJson<RestoredPayload>((req, res, payload) => {
+  const { requestId, filePath, nginxUrl, thumbnailUrl, fileSizeBytes } = payload;
+
+  const { result } = getRequestsState().apply({
+    kind: 'mark_restored',
+    requestId,
+    fields: {
+      filePath,
+      nginxUrl,
+      thumbnailUrl,
+      fileSizeBytes: fileSizeBytes ?? null,
+    },
+  });
+
+  if (result.transitioned) {
+    logger.info({ requestId, youtubeId: req.params['youtube_id'] }, 'Request restored from recycle');
+  } else {
+    // No-op: the row's file_state was no longer 'recycled' (concurrent
+    // restore, or the recycler ran again between enqueue and callback).
+    logger.info(
+      { requestId, youtubeId: req.params['youtube_id'], currentStatus: result.currentStatus },
+      'Worker restored callback ignored — request no longer in recycled state',
+    );
+  }
+  res.status(204).end();
+}));
+
 // POST /internal/requests/:id/rejected — called by Ubuntu worker on terminal failure
 internalRouter.post('/requests/:id/rejected', verifySignedJson<{ requestId: string; reason: string }>((_req, res, payload) => {
   const { result } = getRequestsState().apply({

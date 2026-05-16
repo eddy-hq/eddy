@@ -33,6 +33,7 @@ export type {
   ApplyOutcome,
   Event,
   DownloadedFields,
+  RestoredFields,
   DeleteJobData,
   CreateFromShareSheetInput,
   CreateFromChannelPollInput,
@@ -383,6 +384,59 @@ requestsRouter.delete('/:id/save', (req: Request, res: Response) => {
     `UPDATE requests SET saved_at = NULL WHERE request_id = ?`
   ).run(req.params['id']);
   res.status(204).end();
+});
+
+// POST /requests/:id/restore — re-download a recycled video (issue #116).
+// Gate is `file_state = 'recycled'` regardless of `status`: the recycler
+// preserves status, so the row that needs restoring may be `ready`, `watched`
+// or `dismissed`. Anything else (live, gone) is rejected with 400 — `live`
+// has nothing to restore, `gone` means YouTube removed the source and a
+// re-download can't bring it back. No notification, no signed-token URL:
+// restore is an in-PWA action on the standard authenticated path. The
+// worker callback fires `mark_restored` to flip file_state back to `live`.
+requestsRouter.post('/:id/restore', async (req: Request, res: Response) => {
+  const requestId = req.params['id']!;
+
+  const row = db
+    .prepare(
+      `SELECT youtube_id, url, file_state FROM requests WHERE request_id = ?`,
+    )
+    .get(requestId) as
+      | { youtube_id: string | null; url: string; file_state: string }
+      | undefined;
+  if (!row) throw new NotFoundError('request');
+
+  if (row.file_state !== 'recycled') {
+    return res.status(400).json({
+      error: 'INVALID_STATE',
+      message: `Cannot restore a request with file_state '${row.file_state}'`,
+    });
+  }
+
+  // Enqueue with mode:'restore' so the worker skips the guard score (the
+  // original verdict already approved this video) and posts the completion
+  // callback to the /restored endpoint, which preserves status.
+  try {
+    await downloadQueue.add(
+      'download',
+      {
+        requestId,
+        youtubeId: row.youtube_id ?? '',
+        url: row.url,
+        mode: 'restore',
+      },
+      { jobId: requestId },
+    );
+  } catch (err) {
+    logger.warn({ err, requestId }, 'Restore: failed to enqueue download job');
+    return res.status(500).json({
+      error: 'ENQUEUE_FAILED',
+      message: 'Failed to enqueue restore job',
+    });
+  }
+
+  logger.info({ requestId }, 'Restore enqueued');
+  res.status(202).json({ requestId, jobId: requestId });
 });
 
 // POST /requests/:id/delete — soft-delete: marks record deleted, removes video file

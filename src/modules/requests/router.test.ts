@@ -30,7 +30,7 @@ vi.mock('../../config', () => ({
 
 vi.mock('../../queue', () => ({
   redis: { get: vi.fn(), del: vi.fn() },
-  downloadQueue: { getJob: vi.fn() },
+  downloadQueue: { getJob: vi.fn(), add: vi.fn().mockResolvedValue(undefined) },
   deleteQueue: { add: vi.fn() },
   guardQueue: {},
   discoveryQueue: {},
@@ -57,6 +57,7 @@ vi.mock('./state-default', () => ({
 import { db } from '../../db/client';
 import { runMigrations } from '../../db/migrate';
 import { EddyError } from '../../errors';
+import { downloadQueue } from '../../queue';
 import {
   requestsRouter,
   readRecentRejectedRequestsForAdmin,
@@ -129,6 +130,7 @@ beforeEach(() => {
   db.exec('DELETE FROM requests');
   notifyMock.mockClear();
   applyMock.mockReset();
+  vi.mocked(downloadQueue.add).mockReset().mockResolvedValue(undefined as never);
   // Default: every apply call succeeds and settles immediately. Individual
   // tests that care about a specific event shape inspect applyMock directly.
   applyMock.mockReturnValue({
@@ -148,6 +150,7 @@ function insertRequestRow(opts: {
   added_at?: string;
   requested_at?: string;
   rejection_reason?: string | null;
+  file_state?: string;
 }): void {
   const now = new Date().toISOString();
   db.prepare(
@@ -167,6 +170,10 @@ function insertRequestRow(opts: {
     opts.requested_at ?? now,
     opts.added_at ?? now,
   );
+  if (opts.file_state !== undefined) {
+    db.prepare('UPDATE requests SET file_state = ? WHERE request_id = ?')
+      .run(opts.file_state, opts.request_id);
+  }
 }
 
 // ─── Existing admin-pipeline coverage (kept verbatim) ────────────────────────
@@ -658,5 +665,116 @@ describe('lifecycle POST endpoints (smoke)', () => {
     const resp = await request('POST', '/requests/does-not-exist/delete');
 
     expect(resp.status).toBe(404);
+  });
+});
+
+// ─── POST /requests/:id/restore (issue #116) ────────────────────────────────
+//
+// The four response paths the issue calls out: 202 for recycled / 400 for
+// live / 400 for gone / 404 for unknown. The endpoint does not go through
+// `apply`, it enqueues directly — assert on the `downloadQueue.add` mock and
+// confirm `applyMock` was never touched.
+
+describe('POST /requests/:id/restore', () => {
+  it('returns 202 with the jobId for a recycled row and enqueues mode:restore', async () => {
+    insertRequestRow({
+      request_id: 'restore-ok',
+      status: 'watched',
+      youtube_id: 'restoreyt01',
+      url: 'https://www.youtube.com/watch?v=restoreyt01',
+      file_state: 'recycled',
+    });
+
+    const resp = await request('POST', '/requests/restore-ok/restore');
+
+    expect(resp.status).toBe(202);
+    const body = resp.json<{ requestId: string; jobId: string }>();
+    expect(body.requestId).toBe('restore-ok');
+    expect(body.jobId).toBe('restore-ok');
+
+    expect(vi.mocked(downloadQueue.add)).toHaveBeenCalledTimes(1);
+    const [name, jobData, opts] = vi.mocked(downloadQueue.add).mock.calls[0]!;
+    expect(name).toBe('download');
+    expect(jobData).toEqual({
+      requestId: 'restore-ok',
+      youtubeId: 'restoreyt01',
+      url: 'https://www.youtube.com/watch?v=restoreyt01',
+      mode: 'restore',
+    });
+    expect(opts).toEqual({ jobId: 'restore-ok' });
+
+    // Restore does not transition state on the M4 — that happens via the
+    // worker callback later. Apply must not be touched.
+    expect(applyMock).not.toHaveBeenCalled();
+  });
+
+  it('returns 400 for a live row with a descriptive error body and does not enqueue', async () => {
+    insertRequestRow({
+      request_id: 'restore-live',
+      status: 'ready',
+      file_state: 'live',
+    });
+
+    const resp = await request('POST', '/requests/restore-live/restore');
+
+    expect(resp.status).toBe(400);
+    const body = resp.json<{ error: string; message: string }>();
+    expect(body.error).toBe('INVALID_STATE');
+    expect(body.message).toMatch(/live/);
+    expect(vi.mocked(downloadQueue.add)).not.toHaveBeenCalled();
+  });
+
+  it('returns 400 for a gone row with a descriptive error body and does not enqueue', async () => {
+    insertRequestRow({
+      request_id: 'restore-gone',
+      status: 'deleted',
+      file_state: 'gone',
+    });
+
+    const resp = await request('POST', '/requests/restore-gone/restore');
+
+    expect(resp.status).toBe(400);
+    const body = resp.json<{ error: string; message: string }>();
+    expect(body.error).toBe('INVALID_STATE');
+    expect(body.message).toMatch(/gone/);
+    expect(vi.mocked(downloadQueue.add)).not.toHaveBeenCalled();
+  });
+
+  it('returns 404 for an unknown id and does not enqueue', async () => {
+    const resp = await request('POST', '/requests/does-not-exist/restore');
+
+    expect(resp.status).toBe(404);
+    expect(vi.mocked(downloadQueue.add)).not.toHaveBeenCalled();
+  });
+
+  it('returns 500 when the queue enqueue throws and surfaces a clear error body', async () => {
+    insertRequestRow({
+      request_id: 'restore-enqfail',
+      status: 'watched',
+      youtube_id: 'restoreyt02',
+      file_state: 'recycled',
+    });
+    vi.mocked(downloadQueue.add).mockRejectedValueOnce(new Error('redis down'));
+
+    const resp = await request('POST', '/requests/restore-enqfail/restore');
+
+    expect(resp.status).toBe(500);
+    const body = resp.json<{ error: string }>();
+    expect(body.error).toBe('ENQUEUE_FAILED');
+  });
+
+  it('enqueues with empty-string youtubeId when the row has no youtube_id', async () => {
+    insertRequestRow({
+      request_id: 'restore-noid',
+      status: 'watched',
+      youtube_id: null,
+      file_state: 'recycled',
+    });
+
+    const resp = await request('POST', '/requests/restore-noid/restore');
+
+    expect(resp.status).toBe(202);
+    const [, jobData] = vi.mocked(downloadQueue.add).mock.calls[0]!;
+    expect((jobData as { youtubeId: string }).youtubeId).toBe('');
   });
 });
