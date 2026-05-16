@@ -282,7 +282,12 @@ function TodayBlock({
   // Heavy-follow days swap compact; otherwise hero.
   const followAsCompact = followCards.length > 6;
 
-  const firstVoice = candidates[0]?.why ?? (pickedCards.length > 0 ? 'A few more you might like.' : null);
+  // Brief §9a: "why" is tap-to-see only — never rendered inline above the
+  // card. Keep the neutral lead-in when there are picked rows; otherwise
+  // the section header is the only chrome.
+  const firstVoice = (pickedCards.length > 0 || candidates.length > 0)
+    ? 'A few more you might like.'
+    : null;
 
   return (
     <section>
@@ -359,11 +364,8 @@ function TodayBlock({
               />
             ))}
             <AnimatePresence mode="popLayout">
-              {candidates.map((c, i) => (
-                <React.Fragment key={c.candidateId}>
-                  {i > 0 && c.why && <VoiceLine text={c.why} />}
-                  <HeroDiscoveryCard candidate={c} onDismiss={onDismiss} onAdd={onAdd} />
-                </React.Fragment>
+              {candidates.map((c) => (
+                <HeroDiscoveryCard key={c.candidateId} candidate={c} onDismiss={onDismiss} onAdd={onAdd} />
               ))}
             </AnimatePresence>
           </CardList>
