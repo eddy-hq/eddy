@@ -379,7 +379,7 @@ function TodayBlock({
             background: 'var(--bg-surface)', border: '1px solid var(--border-subtle)',
             fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.5,
           }}>
-            Eddy is still figuring out what you like — check back soon.
+            Eddy is still figuring out what you like — follow a few people and rate what you watch.
           </p>
         </div>
       )}
