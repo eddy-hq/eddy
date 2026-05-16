@@ -158,6 +158,7 @@ export type Event =
   | { kind: 'mark_watched'; requestId: string }
   | { kind: 'mark_dismissed'; requestId: string }
   | { kind: 'mark_soft_deleted'; requestId: string }
+  | { kind: 'mark_recycled'; requestId: string }
   | { kind: 'mark_downloaded'; requestId: string; fields: DownloadedFields }
   | { kind: 'mark_rejected'; requestId: string; reason: string }
   | { kind: 'mark_guard_blocked'; requestId: string; reason: string }
@@ -192,8 +193,17 @@ export type Effect =
 interface Descriptor<E extends Event> {
   // `'creation'` flags an INSERT-shaped descriptor (no source-status gate).
   sources: Status[] | 'creation';
-  target: Status;
+  // The post-transition `status` value. `'preserve'` signals that `status` is
+  // left untouched (the descriptor mutates other columns only — e.g. the
+  // recycler flips `file_state` without disturbing the user-facing tier).
+  target: Status | 'preserve';
   buildSql: (event: E, now: string) => { sql: string; params: unknown[] };
+  // Optional read-only SELECT executed inside the same transaction as the
+  // main UPDATE, *before* it runs. Its row is merged into __sqlResult so
+  // `effects(...)` can read pre-update column values. Used by mark_recycled
+  // to capture file_path before the UPDATE clears it (SQLite RETURNING only
+  // sees the post-update row). Returning undefined means "no pre-fetch".
+  preFetch?: (event: E) => { sql: string; params: unknown[] } | undefined;
   effects: (event: E, result: TransitionResult) => Effect[];
 }
 
@@ -273,6 +283,50 @@ export const TRANSITIONS = {
       return [{ kind: 'enqueue_delete', jobData: { requestId: event.requestId, filePath }, requestId: event.requestId }];
     },
   } as Descriptor<Extract<Event, { kind: 'mark_soft_deleted' }>>,
+
+  // Recycler (issue #115): per-user budget reclamation. Same row symmetry as
+  // mark_soft_deleted (file_state flips off live; bytes/file_path/nginx_url
+  // cleared so the row no longer pretends to have a playable file) but
+  // `status` is preserved — the card stays in its tier (watched / dismissed
+  // / ready) so the timeline keeps its shape and the restore path (#116)
+  // can put the file back without rewriting history.
+  //
+  // The picker upstream is responsible for the saved-immunity and 48h
+  // skip rules; this descriptor is intentionally permissive on those — if
+  // an event arrives, the row was already deemed eligible.
+  mark_recycled: {
+    sources: ['ready', 'watched', 'dismissed'],
+    target: 'preserve',
+    preFetch: (event) => ({
+      // Capture the pre-UPDATE file_path; the SET clause below clears the
+      // column and SQLite's RETURNING only sees the post-update value, so
+      // without this peek there's nothing for the unlink effect to consume.
+      sql: `SELECT file_path AS pre_file_path FROM requests WHERE request_id = ?`,
+      params: [event.requestId],
+    }),
+    buildSql: (event, now) => ({
+      sql: `UPDATE requests
+              SET file_state      = 'recycled',
+                  recycled_at     = ?,
+                  file_path       = NULL,
+                  nginx_url       = NULL,
+                  file_size_bytes = NULL
+            WHERE request_id = ?
+              AND status IN ('ready', 'watched', 'dismissed')
+              AND file_state = 'live'
+            RETURNING user_id`,
+      params: [now, event.requestId],
+    }),
+    effects: (event, result) => {
+      // Only enqueue when the transition actually fired AND the row carried
+      // a file path. The preFetch row (merged into __sqlResult by runSql)
+      // exposes the pre-update path under `pre_file_path`.
+      const sqlResult = (result as SqlResultCarrier).__sqlResult;
+      const filePath = sqlResult?.['pre_file_path'] as string | null | undefined;
+      if (!result.transitioned || !filePath) return [];
+      return [{ kind: 'enqueue_delete', jobData: { requestId: event.requestId, filePath }, requestId: event.requestId }];
+    },
+  } as Descriptor<Extract<Event, { kind: 'mark_recycled' }>>,
 
   mark_downloaded: {
     sources: ['downloading'],
@@ -664,6 +718,12 @@ export function createRequestsState({ ports }: { ports: Ports }): RequestsState 
   // sync per-verb shims. Resolves the descriptor, builds and runs the SQL,
   // and returns the carrier (with `__sqlResult` stashed for descriptors that
   // need to read RETURNING columns inside `effects(...)`).
+  //
+  // If the descriptor declares a `preFetch` SELECT, it runs inside a
+  // transaction wrapping the UPDATE, and its row's columns are merged into
+  // `__sqlResult` (UPDATE RETURNING columns win on key collision). This is
+  // the seam mark_recycled uses to surface the pre-UPDATE file_path that
+  // the SET clause would otherwise null out before RETURNING sees it.
   function runSql(event: Event): { descriptor: Descriptor<Event>; result: SqlResultCarrier } {
     const now = new Date().toISOString();
     const descriptor = TRANSITIONS[event.kind] as Descriptor<Event>;
@@ -677,11 +737,31 @@ export function createRequestsState({ ports }: { ports: Ports }): RequestsState 
       return { descriptor, result: { transitioned: true, userId: '' } };
     }
 
-    const row = db.prepare(sql).get(...params) as Record<string, unknown> | undefined;
+    // Run preFetch + UPDATE atomically so a concurrent writer can't slip in
+    // a change between the two reads. better-sqlite3 transactions are
+    // synchronous, which matches the dispatcher's existing all-sync DB
+    // contract; if the UPDATE filter rejects the row, the preFetch read is
+    // discarded along with it.
+    let preFetched: Record<string, unknown> | undefined;
+    let row: Record<string, unknown> | undefined;
+    const tx = db.transaction(() => {
+      if (descriptor.preFetch) {
+        const p = descriptor.preFetch(event);
+        if (p) preFetched = db.prepare(p.sql).get(...p.params) as Record<string, unknown> | undefined;
+      }
+      row = db.prepare(sql).get(...params) as Record<string, unknown> | undefined;
+    });
+    tx();
+
     if (row) {
+      // Merge order: preFetch fields first, UPDATE RETURNING columns on top
+      // so a column name that appears in both wins as the post-update value.
+      // The recycler's preFetch deliberately uses a distinct key (pre_file_path)
+      // so its value is never shadowed by a same-named RETURNING column.
+      const merged = preFetched ? { ...preFetched, ...row } : row;
       return {
         descriptor,
-        result: { transitioned: true, userId: row['user_id'] as string, __sqlResult: row },
+        result: { transitioned: true, userId: row['user_id'] as string, __sqlResult: merged },
       };
     }
     return {

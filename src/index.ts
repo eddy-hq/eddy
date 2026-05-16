@@ -14,6 +14,7 @@ import {
 } from './modules/profile-enrichment/index';
 import { startInterestsWorker, stopInterestsWorker } from './modules/interests/searchTermsWorker';
 import { startGuardWorker, stopGuardWorker } from './modules/guard/index';
+import { startRecyclerScheduler, stopRecyclerScheduler } from './modules/recycler/index';
 
 async function start(): Promise<void> {
   logger.info({ env: config.NODE_ENV }, 'Starting Eddy');
@@ -26,6 +27,7 @@ async function start(): Promise<void> {
   startRssPoller();
   startDiscoveryScheduler();
   startProfileEnrichmentScheduler();
+  startRecyclerScheduler();
   startInterestsWorker();
   startGuardWorker();
 
@@ -42,6 +44,7 @@ async function start(): Promise<void> {
     stopRssPoller();
     await stopDiscoveryScheduler();
     await stopProfileEnrichmentScheduler();
+    await stopRecyclerScheduler();
     await stopInterestsWorker();
     await stopGuardWorker();
     server.close(() => logger.info('HTTP server closed'));
