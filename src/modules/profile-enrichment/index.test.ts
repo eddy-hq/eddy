@@ -242,6 +242,29 @@ describe('recomputeBehaviouralSnapshot + recomputeTrustWeights', () => {
     expect(getTrust(PERSON_A)).toBe(0.5);
   });
 
+  it('counts a player-side delete (requests.status=deleted) as a dismiss signal', () => {
+    // Five videos arrived (any source) and the user deleted them from the
+    // player view. The aggregator should treat each as a dismiss against the
+    // attributed person, mirroring how a pre-play swipe-dismiss would count.
+    for (let i = 0; i < 5; i++) {
+      db.prepare(`
+        INSERT INTO requests
+          (request_id, user_id, source, url, youtube_id, youtube_channel_id,
+           status, requested_at, deleted_at, file_state)
+        VALUES (?, ?, ?, ?, ?, ?, 'deleted', ?, ?, 'gone')
+      `).run(
+        `req-del-${i}`, USER_ID, 'share_sheet',
+        `https://www.youtube.com/watch?v=vid-del-${i}`,
+        `vid-del-${i}`, CHANNEL_A,
+        new Date().toISOString(), new Date().toISOString(),
+      );
+    }
+    recomputeBehaviouralSnapshot(USER_ID);
+    recomputeTrustWeights(USER_ID);
+
+    expect(getTrust(PERSON_A)).toBe(0.5);
+  });
+
   it('counts a candidate_pool-only dismiss', () => {
     for (let i = 0; i < 5; i++) {
       insertCandidateDismiss({

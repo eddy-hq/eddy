@@ -54,9 +54,12 @@ export interface RankerCandidate {
   rank: number;
   // Carry-through display fields — never read by the ranker, but
   // surface so the orchestrator can build response payloads from the
-  // verdict without re-querying candidate_pool.
+  // verdict without re-querying candidate_pool. `url` / `externalId`
+  // also feed the auto-create-request step in runDiscoveryForUser.
   whyText?: string | null;
   guardVerdict?: string | null;
+  url?: string;
+  externalId?: string | null;
 }
 
 export interface RankerContext {
