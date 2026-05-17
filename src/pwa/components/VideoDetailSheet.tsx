@@ -493,32 +493,19 @@ function SheetBody({
           )}
 
           {showActions && (
-            <>
-              {confirmDelete && (
-                <p
-                  role="status"
-                  style={{
-                    fontSize: 13, fontWeight: 600,
-                    color: deleteError ? 'var(--dismiss)' : 'var(--text-secondary)',
-                    margin: '0 0 8px',
-                  }}
-                >
-                  {deleteError ? 'Failed — try again' : 'Delete this video?'}
-                </p>
-              )}
-              <ActionGrid
-                isSaved={isSaved}
-                saving={saving}
-                onToggleSave={() => void toggleSave()}
-                confirmDelete={confirmDelete}
-                deletePending={deleteMutation.isPending}
-                onArmDelete={() => setConfirmDelete(true)}
-                onConfirmDelete={() => { setDeleteError(false); deleteMutation.mutate(); }}
-                onCancelDelete={() => { setConfirmDelete(false); setDeleteError(false); }}
-                youtubeWatchUrl={youtubeWatchUrl}
-                shareTitle={title}
-              />
-            </>
+            <ActionGrid
+              isSaved={isSaved}
+              saving={saving}
+              onToggleSave={() => void toggleSave()}
+              confirmDelete={confirmDelete}
+              deletePending={deleteMutation.isPending}
+              deleteError={deleteError}
+              onArmDelete={() => setConfirmDelete(true)}
+              onConfirmDelete={() => { setDeleteError(false); deleteMutation.mutate(); }}
+              onCancelDelete={() => { setConfirmDelete(false); setDeleteError(false); }}
+              youtubeWatchUrl={youtubeWatchUrl}
+              shareTitle={title}
+            />
           )}
 
           <WhyThisVideo
@@ -672,7 +659,7 @@ function ErrorSheet({ message, onClose }: { message: string; onClose: () => void
 
 function ActionGrid({
   isSaved, saving, onToggleSave,
-  confirmDelete, deletePending,
+  confirmDelete, deletePending, deleteError,
   onArmDelete, onConfirmDelete, onCancelDelete,
   youtubeWatchUrl, shareTitle,
 }: {
@@ -681,6 +668,7 @@ function ActionGrid({
   onToggleSave: () => void;
   confirmDelete: boolean;
   deletePending: boolean;
+  deleteError: boolean;
   onArmDelete: () => void;
   onConfirmDelete: () => void;
   onCancelDelete: () => void;
@@ -739,13 +727,17 @@ function ActionGrid({
             a plain-text link below the grid, not a competing tile. */}
         {confirmDelete ? (
           <Tile
-            label={deletePending ? 'Deleting…' : 'Delete'}
+            label={deletePending ? 'Deleting…' : deleteError ? 'Try again' : 'Delete'}
             icon={<Trash2 size={20} strokeWidth={1.8} />}
             filled
             activeColor="var(--dismiss)"
             disabled={deletePending}
             onClick={onConfirmDelete}
-            ariaLabel={deletePending ? 'Deleting' : 'Confirm delete'}
+            ariaLabel={
+              deletePending ? 'Deleting'
+              : deleteError ? 'Delete failed — try again'
+              : 'Confirm delete'
+            }
             style={{ gridColumn: 'span 2' }}
           />
         ) : (
