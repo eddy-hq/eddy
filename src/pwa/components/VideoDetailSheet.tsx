@@ -1,10 +1,11 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { motion, useDragControls, AnimatePresence } from 'framer-motion';
+import { motion, useDragControls } from 'framer-motion';
 import { useQueryClient, useMutation, useQuery } from '@tanstack/react-query';
-import { X, Bookmark, BookmarkCheck, ChevronRight, Trash2 } from 'lucide-react';
+import { X, Bookmark, BookmarkCheck, ChevronRight, Trash2, Share } from 'lucide-react';
 import { readProgress, writeProgress, clearProgress } from '../lib/videoProgress';
 import { useWatchEventTracker, type WatchSource } from '../lib/watchEvents';
+import { canShare, shareVideo } from '../lib/webShare';
 import { useResolvePersonId } from '../hooks/useResolvePersonId';
 import type { CardData } from './Card';
 
@@ -32,6 +33,9 @@ interface RequestDetail {
   channel: string | null;
   rejectionReason: string | null;
   videoUrl: string | null;
+  // Canonical YouTube watch URL stored on the request. Distinct from
+  // `videoUrl` (local nginx stream) — used by the Share tile.
+  youtubeWatchUrl: string | null;
   whyText: string | null;
   source: string;
   requestedAt: string;
@@ -71,6 +75,7 @@ function SheetWithCard({
       youtubeChannelId={card.youtubeChannelId}
       status={card.status}
       videoUrl={card.nginxUrl}
+      youtubeWatchUrl={card.youtubeWatchUrl}
       progress={null}
       rejectionReason={card.rejectionReason}
       whyText={card.whyText}
@@ -120,6 +125,7 @@ function SheetById({
       youtubeChannelId={data?.youtubeChannelId ?? null}
       status={data?.status ?? 'pending'}
       videoUrl={data?.videoUrl ?? null}
+      youtubeWatchUrl={data?.youtubeWatchUrl ?? null}
       progress={data?.progress ?? null}
       rejectionReason={data?.rejectionReason ?? null}
       whyText={data?.whyText ?? null}
@@ -145,6 +151,10 @@ interface BodyProps {
   youtubeChannelId: string | null;
   status: string;
   videoUrl: string | null;
+  // Canonical YouTube watch URL — drives the Share tile. Null/empty when
+  // the row hasn't loaded yet in id-mode, in which case the tile is hidden
+  // for that render.
+  youtubeWatchUrl: string | null;
   progress: number | null;
   rejectionReason: string | null;
   whyText: string | null;
@@ -163,7 +173,8 @@ interface BodyProps {
 function SheetBody({
   requestId, userId,
   title, channel, youtubeId, youtubeChannelId,
-  status, videoUrl, progress, rejectionReason,
+  status, videoUrl, youtubeWatchUrl,
+  progress, rejectionReason,
   whyText, requestSource,
   requestedAt, watchedAt, savedAt,
   source, onClose, enableLayoutId,
@@ -482,51 +493,19 @@ function SheetBody({
           )}
 
           {showActions && (
-            <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', marginBottom: 24 }}>
-              <SaveButton isSaved={isSaved} saving={saving} onToggle={() => void toggleSave()} />
-              {confirmDelete ? (
-                <>
-                  <span style={{ fontSize: 13, color: deleteError ? 'var(--destructive, #e53e3e)' : 'var(--text-secondary)', marginLeft: 4 }}>
-                    {deleteError ? 'Failed — try again' : 'Delete?'}
-                  </span>
-                  <button
-                    onClick={() => { setDeleteError(false); deleteMutation.mutate(); }}
-                    disabled={deleteMutation.isPending}
-                    style={{
-                      fontSize: 13, fontWeight: 600,
-                      color: 'var(--destructive, #e53e3e)',
-                      minHeight: 44, padding: '0 8px',
-                    }}
-                  >
-                    {deleteMutation.isPending ? 'Deleting…' : 'Yes, delete'}
-                  </button>
-                  <button
-                    onClick={() => { setConfirmDelete(false); setDeleteError(false); }}
-                    style={{ fontSize: 13, color: 'var(--text-secondary)', minHeight: 44, padding: '0 8px' }}
-                  >
-                    Cancel
-                  </button>
-                </>
-              ) : (
-                <button
-                  onClick={() => setConfirmDelete(true)}
-                  style={{
-                    display: 'flex', alignItems: 'center', gap: 8,
-                    padding: '11px 16px', borderRadius: 12,
-                    background: 'var(--bg-surface)',
-                    color: 'var(--text-secondary)',
-                    border: '1.5px solid var(--border-subtle)',
-                    fontSize: 14, fontWeight: 600, cursor: 'pointer',
-                    fontFamily: 'inherit',
-                    WebkitTapHighlightColor: 'transparent',
-                    outline: 'none',
-                  }}
-                >
-                  <Trash2 size={16} strokeWidth={2.2} />
-                  Delete
-                </button>
-              )}
-            </div>
+            <ActionGrid
+              isSaved={isSaved}
+              saving={saving}
+              onToggleSave={() => void toggleSave()}
+              confirmDelete={confirmDelete}
+              deleteError={deleteError}
+              deletePending={deleteMutation.isPending}
+              onArmDelete={() => setConfirmDelete(true)}
+              onConfirmDelete={() => { setDeleteError(false); deleteMutation.mutate(); }}
+              onCancelDelete={() => { setConfirmDelete(false); setDeleteError(false); }}
+              youtubeWatchUrl={youtubeWatchUrl}
+              shareTitle={title}
+            />
           )}
 
           <WhyThisVideo
@@ -662,59 +641,189 @@ function ErrorSheet({ message, onClose }: { message: string; onClose: () => void
   );
 }
 
-function SaveButton({
-  isSaved, saving, onToggle,
+// ── ActionGrid — 3-up tile grid (Save / Delete / Share) ─────────────────────
+//
+// Replaces the old inline-pill action row. Shape and tokens lifted from the
+// design prototype `.vp-actions` block; tokens mapped to existing names where
+// possible (`--bg-surface`, `--border-subtle`, `--text-secondary`,
+// `--save`, `--dismiss`) with `--teal` added for the Share affordance.
+//
+// Behaviour preserved verbatim:
+//   - Save: optimistic toggle, `saving` lock, `.on` styling when saved.
+//   - Delete: two-step confirm in-place so the layout doesn't jump — the
+//     Delete tile is replaced by Confirm/Cancel tiles in its grid slot while
+//     armed.
+//   - Share: hidden when `navigator.share` is unavailable OR when no
+//     `youtubeWatchUrl` is on hand (defends against the rare null case).
+
+function ActionGrid({
+  isSaved, saving, onToggleSave,
+  confirmDelete, deleteError, deletePending,
+  onArmDelete, onConfirmDelete, onCancelDelete,
+  youtubeWatchUrl, shareTitle,
 }: {
   isSaved: boolean;
   saving: boolean;
-  onToggle: () => void;
+  onToggleSave: () => void;
+  confirmDelete: boolean;
+  deleteError: boolean;
+  deletePending: boolean;
+  onArmDelete: () => void;
+  onConfirmDelete: () => void;
+  onCancelDelete: () => void;
+  youtubeWatchUrl: string | null;
+  shareTitle: string | null;
 }) {
+  // Bind to live navigator each render — supported flips can happen across
+  // installed-PWA mode changes. Cheap call.
+  const shareFn =
+    typeof navigator !== 'undefined' && typeof navigator.share === 'function'
+      ? navigator.share.bind(navigator)
+      : null;
+  const shareSupported = canShare({ share: shareFn }) && !!youtubeWatchUrl;
+
+  async function handleShare() {
+    if (!youtubeWatchUrl) return;
+    await shareVideo(
+      { url: youtubeWatchUrl, title: shareTitle },
+      { share: shareFn },
+    );
+  }
+
   return (
-    <motion.button
-      onClick={onToggle}
-      disabled={saving}
-      whileTap={{ scale: 0.91 }}
-      transition={{ type: 'spring', stiffness: 500, damping: 30 }}
+    <div
       style={{
-        display: 'flex', alignItems: 'center', gap: 8,
-        padding: '11px 20px', borderRadius: 12,
-        background: isSaved ? 'var(--accent-subtle)' : 'var(--bg-surface)',
-        color: isSaved ? 'var(--accent)' : 'var(--text-secondary)',
-        border: `1.5px solid ${isSaved ? 'var(--accent)' : 'var(--border-subtle)'}`,
-        fontSize: 14, fontWeight: 600, cursor: saving ? 'default' : 'pointer',
-        fontFamily: 'inherit',
-        transition: 'background 200ms ease, color 200ms ease, border-color 200ms ease',
-        opacity: saving ? 0.65 : 1,
-        WebkitTapHighlightColor: 'transparent',
-        outline: 'none',
+        display: 'grid',
+        gridTemplateColumns: '1fr 1fr 1fr',
+        gap: 8,
+        padding: '4px 0 16px',
+        marginBottom: 8,
       }}
     >
-      {/* Icon springs in when state flips */}
-      <motion.span
-        key={isSaved ? 'saved-icon' : 'unsaved-icon'}
-        initial={{ scale: 0.5, rotate: isSaved ? -20 : 10 }}
-        animate={{ scale: 1, rotate: 0 }}
-        transition={{ type: 'spring', stiffness: 500, damping: 14 }}
-        style={{ display: 'flex', alignItems: 'center', lineHeight: 0 }}
-      >
-        {isSaved
-          ? <BookmarkCheck size={16} strokeWidth={2.2} />
-          : <Bookmark size={16} strokeWidth={2.2} />}
-      </motion.span>
+      {/* Save tile */}
+      <Tile
+        label={isSaved ? 'Saved' : 'Save'}
+        icon={isSaved
+          ? <BookmarkCheck size={20} strokeWidth={1.8} />
+          : <Bookmark size={20} strokeWidth={1.8} />}
+        active={isSaved}
+        activeColor="var(--save)"
+        activeBg="rgba(58, 125, 90, 0.08)"
+        disabled={saving}
+        onClick={onToggleSave}
+      />
 
-      {/* Label cross-fades */}
-      <AnimatePresence mode="wait" initial={false}>
-        <motion.span
-          key={isSaved ? 'saved-label' : 'save-label'}
-          initial={{ opacity: 0, y: 5 }}
-          animate={{ opacity: 1, y: 0 }}
-          exit={{ opacity: 0, y: -5 }}
-          transition={{ duration: 0.14, ease: 'easeOut' }}
-          style={{ display: 'block' }}
-        >
-          {isSaved ? 'Saved' : 'Save'}
-        </motion.span>
-      </AnimatePresence>
+      {/* Delete slot — single Delete tile, or two-tile confirm cluster */}
+      {confirmDelete ? (
+        <>
+          <Tile
+            label={deletePending ? 'Deleting…' : (deleteError ? 'Retry' : 'Confirm')}
+            icon={<Trash2 size={20} strokeWidth={1.8} />}
+            active
+            activeColor="var(--dismiss)"
+            activeBg="rgba(184, 84, 80, 0.08)"
+            disabled={deletePending}
+            onClick={onConfirmDelete}
+            ariaLabel={deletePending ? 'Deleting' : 'Confirm delete'}
+          />
+          <Tile
+            label="Cancel"
+            icon={<X size={20} strokeWidth={1.8} />}
+            disabled={deletePending}
+            onClick={onCancelDelete}
+          />
+        </>
+      ) : (
+        <Tile
+          label="Delete"
+          icon={<Trash2 size={20} strokeWidth={1.8} />}
+          onClick={onArmDelete}
+        />
+      )}
+
+      {/* Share tile — hidden entirely when Web Share is unavailable so we
+          don't render a dead control (issue #137 acceptance criterion). The
+          grid's `1fr 1fr 1fr` template leaves a blank cell in that case;
+          acceptable for the no-share fallback and avoids re-flowing Save and
+          Delete into wider tiles. Also hidden while Delete is armed so the
+          two confirm tiles take its slot. */}
+      {shareSupported && !confirmDelete && (
+        <Tile
+          label="Share"
+          icon={<Share size={20} strokeWidth={1.8} />}
+          hoverColor="var(--teal)"
+          onClick={() => { void handleShare(); }}
+        />
+      )}
+    </div>
+  );
+}
+
+// Generic action tile. `active` forces the on-state colour treatment;
+// `hoverColor` overrides the hover/focus border + text colour without
+// changing the resting state (used for Share, which has no on-state).
+function Tile({
+  label, icon, active = false,
+  activeColor, activeBg, hoverColor,
+  disabled = false, onClick, ariaLabel,
+}: {
+  label: string;
+  icon: React.ReactNode;
+  active?: boolean;
+  activeColor?: string;
+  activeBg?: string;
+  hoverColor?: string;
+  disabled?: boolean;
+  onClick: () => void;
+  ariaLabel?: string;
+}) {
+  const [hovered, setHovered] = useState(false);
+  const [pressed, setPressed] = useState(false);
+
+  const showActiveTreatment = active || (hovered && (activeColor || hoverColor));
+  const effectiveColor = showActiveTreatment ? (activeColor ?? hoverColor) : undefined;
+  const effectiveBorder = effectiveColor ?? 'var(--border-subtle)';
+  const effectiveTextColor = effectiveColor ?? 'var(--text-secondary)';
+  const effectiveBg = active && activeBg
+    ? activeBg
+    : pressed ? 'var(--bg-elevated)' : 'var(--bg-surface)';
+
+  return (
+    <motion.button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      whileTap={disabled ? undefined : { scale: 0.96 }}
+      transition={{ type: 'spring', stiffness: 500, damping: 30 }}
+      onPointerEnter={() => setHovered(true)}
+      onPointerLeave={() => { setHovered(false); setPressed(false); }}
+      onPointerDown={() => setPressed(true)}
+      onPointerUp={() => setPressed(false)}
+      aria-label={ariaLabel ?? label}
+      aria-pressed={active || undefined}
+      style={{
+        display: 'flex', flexDirection: 'column',
+        alignItems: 'center', justifyContent: 'center',
+        gap: 4,
+        padding: '10px 6px',
+        background: effectiveBg,
+        border: `1px solid ${effectiveBorder}`,
+        borderRadius: 12,
+        fontFamily: 'inherit',
+        fontSize: 11.5, fontWeight: 600, letterSpacing: '0.01em',
+        color: effectiveTextColor,
+        cursor: disabled ? 'default' : 'pointer',
+        opacity: disabled ? 0.65 : 1,
+        transition: 'background 120ms, border-color 120ms, color 120ms',
+        WebkitTapHighlightColor: 'transparent',
+        outline: 'none',
+        minHeight: 64,
+      }}
+    >
+      <span style={{ display: 'flex', alignItems: 'center', lineHeight: 0 }}>
+        {icon}
+      </span>
+      <span>{label}</span>
     </motion.button>
   );
 }

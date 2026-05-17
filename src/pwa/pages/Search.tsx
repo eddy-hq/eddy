@@ -154,6 +154,7 @@ function toCardData(r: LibraryResult): CardData {
     fileState: r.file_state,
     rejectionReason: r.rejection_reason,
     nginxUrl: r.nginx_url,
+    youtubeWatchUrl: r.url,
     thumbnailUrl: r.thumbnail_url,
     durationSecs: r.duration_secs,
     whyText: r.why_text,

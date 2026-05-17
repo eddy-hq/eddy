@@ -17,6 +17,9 @@ export interface CardData {
   status: string;
   fileState: string;
   nginxUrl: string | null;
+  // Canonical YouTube watch URL stored on the request — for the Web Share
+  // tile in the detail sheet. Distinct from `nginxUrl` (local stream).
+  youtubeWatchUrl: string | null;
   thumbnailUrl: string | null;
   durationSecs: number | null;
   whyText: string | null;

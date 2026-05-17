@@ -23,6 +23,10 @@
   --accent-subtle:  rgba(61, 107, 107, 0.10);
   --save:    #3A7D5A;
   --dismiss: #B85450;
+  /* Provenance token for the Share action tile. Matches --accent today so
+     the player action row stays in palette; kept as a separate name because
+     it's the share-affordance role, not the brand accent. */
+  --teal:    #3D6B6B;
   --border-subtle: rgba(26, 25, 22, 0.08);
   --nav-bg: rgba(250, 250, 248, 0.92);
 
