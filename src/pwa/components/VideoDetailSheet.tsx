@@ -503,7 +503,7 @@ function SheetBody({
                     margin: '0 0 8px',
                   }}
                 >
-                  {deleteError ? 'Failed — try again' : 'Delete?'}
+                  {deleteError ? 'Failed — try again' : 'Delete this video?'}
                 </p>
               )}
               <ActionGrid
@@ -709,75 +709,99 @@ function ActionGrid({
     // the row escapes it with -20px side margins and re-applies the 16px
     // itself — net effect matches the prototype regardless of the
     // surrounding container's padding.
-    <div
-      style={{
-        display: 'grid',
-        gridTemplateColumns: '1fr 1fr 1fr',
-        gap: 8,
-        padding: '4px 16px 16px',
-        margin: '0 -20px 8px',
-      }}
-    >
-      {/* Save tile */}
-      <Tile
-        label={isSaved ? 'Saved' : 'Save'}
-        icon={isSaved
-          ? <BookmarkCheck size={20} strokeWidth={1.8} />
-          : <Bookmark size={20} strokeWidth={1.8} />}
-        active={isSaved}
-        activeColor="var(--save)"
-        activeBg="rgba(58, 125, 90, 0.08)"
-        disabled={saving}
-        onClick={onToggleSave}
-      />
+    <div style={{ margin: '0 -20px 8px' }}>
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: '1fr 1fr 1fr',
+          gap: 8,
+          padding: confirmDelete ? '4px 16px 4px' : '4px 16px 16px',
+        }}
+      >
+        {/* Save tile — dimmed in confirm mode so the row reads as
+            single-purpose: only Delete and Cancel are in play. */}
+        <Tile
+          label={isSaved ? 'Saved' : 'Save'}
+          icon={isSaved
+            ? <BookmarkCheck size={20} strokeWidth={1.8} />
+            : <Bookmark size={20} strokeWidth={1.8} />}
+          active={isSaved}
+          activeColor="var(--save)"
+          activeBg="rgba(58, 125, 90, 0.08)"
+          disabled={saving || confirmDelete}
+          dimmed={confirmDelete}
+          onClick={onToggleSave}
+        />
 
-      {/* Delete slot — single Delete tile, or Yes-delete + Cancel cluster.
-          Copy ("Yes, delete" / "Cancel") matches the original two-step flow;
-          the "Delete?" prompt sits above the grid (rendered by SheetBody). */}
-      {confirmDelete ? (
-        <>
+        {/* Delete slot — armed state is a filled-red destructive tile that
+            spans the Save-adjacent cells (middle + right) so it carries the
+            full visual weight an iOS destructive confirm expects. Cancel is
+            a plain-text link below the grid, not a competing tile. */}
+        {confirmDelete ? (
           <Tile
-            label={deletePending ? 'Deleting…' : 'Yes, delete'}
+            label={deletePending ? 'Deleting…' : 'Delete'}
             icon={<Trash2 size={20} strokeWidth={1.8} />}
-            active
+            filled
             activeColor="var(--dismiss)"
-            activeBg="rgba(184, 84, 80, 0.08)"
             disabled={deletePending}
             onClick={onConfirmDelete}
-            ariaLabel={deletePending ? 'Deleting' : 'Yes, delete'}
+            ariaLabel={deletePending ? 'Deleting' : 'Confirm delete'}
+            style={{ gridColumn: 'span 2' }}
           />
+        ) : (
           <Tile
-            label="Cancel"
-            icon={<X size={20} strokeWidth={1.8} />}
-            disabled={deletePending}
-            onClick={onCancelDelete}
+            label="Delete"
+            icon={<Trash2 size={20} strokeWidth={1.8} />}
+            hoverColor="var(--dismiss)"
+            // Match the prototype's `.dismiss.on` tinted background on press
+            // too (touch devices don't fire hover before tap-release).
+            activeBg="rgba(184, 84, 80, 0.08)"
+            onClick={onArmDelete}
           />
-        </>
-      ) : (
-        <Tile
-          label="Delete"
-          icon={<Trash2 size={20} strokeWidth={1.8} />}
-          hoverColor="var(--dismiss)"
-          // Match the prototype's `.dismiss.on` tinted background on press
-          // too (touch devices don't fire hover before tap-release).
-          activeBg="rgba(184, 84, 80, 0.08)"
-          onClick={onArmDelete}
-        />
-      )}
+        )}
 
-      {/* Share tile — hidden entirely when Web Share is unavailable so we
-          don't render a dead control (issue #137 acceptance criterion). The
-          grid's `1fr 1fr 1fr` template leaves a blank cell in that case;
-          acceptable for the no-share fallback and avoids re-flowing Save and
-          Delete into wider tiles. Also hidden while Delete is armed so the
-          two confirm tiles take its slot. */}
-      {shareSupported && !confirmDelete && (
-        <Tile
-          label="Share"
-          icon={<Share size={20} strokeWidth={1.8} />}
-          hoverColor="var(--teal)"
-          onClick={() => { void handleShare(); }}
-        />
+        {/* Share tile — hidden entirely when Web Share is unavailable so we
+            don't render a dead control (issue #137 acceptance criterion). The
+            grid's `1fr 1fr 1fr` template leaves a blank cell in that case;
+            acceptable for the no-share fallback and avoids re-flowing Save
+            and Delete into wider tiles. Also hidden while Delete is armed —
+            the filled confirm tile spans into its slot. */}
+        {shareSupported && !confirmDelete && (
+          <Tile
+            label="Share"
+            icon={<Share size={20} strokeWidth={1.8} />}
+            hoverColor="var(--teal)"
+            onClick={() => { void handleShare(); }}
+          />
+        )}
+      </div>
+
+      {/* Cancel — plain-text link, iOS HIG: never equal-weight to the
+          destructive action. Quiet, centred, 44px hit area. */}
+      {confirmDelete && (
+        <div style={{ display: 'flex', justifyContent: 'center', padding: '0 16px 12px' }}>
+          <button
+            type="button"
+            onClick={onCancelDelete}
+            disabled={deletePending}
+            style={{
+              background: 'none',
+              border: 'none',
+              padding: '11px 24px',
+              minHeight: 44,
+              fontFamily: 'inherit',
+              fontSize: 14,
+              fontWeight: 500,
+              color: 'var(--text-secondary)',
+              cursor: deletePending ? 'default' : 'pointer',
+              opacity: deletePending ? 0.5 : 1,
+              WebkitTapHighlightColor: 'transparent',
+              outline: 'none',
+            }}
+          >
+            Cancel
+          </button>
+        </div>
       )}
     </div>
   );
@@ -786,46 +810,71 @@ function ActionGrid({
 // Generic action tile. `active` forces the on-state colour treatment;
 // `hoverColor` overrides the hover/focus + press border + text colour
 // without changing the resting state (used for Share and the un-armed
-// Delete tile, which have no on-state). On touch devices `hovered` rarely
-// fires before tap-release, so press is treated equivalently — both should
-// surface the token colour and the tinted background.
+// Delete tile, which have no on-state). `filled` is the iOS destructive-
+// confirm look — solid token-colour fill with white glyphs, used for the
+// armed Delete state. `dimmed` fades the tile and disables interaction
+// without the muted-but-tappable feel of `disabled` alone (used to push
+// Save out of the visual hierarchy while Delete is armed). On touch devices
+// `hovered` rarely fires before tap-release, so press is treated
+// equivalently — both surface the token colour and the tinted background.
 function Tile({
-  label, icon, active = false,
+  label, icon, active = false, filled = false, dimmed = false,
   activeColor, activeBg, hoverColor,
   disabled = false, onClick, ariaLabel,
+  style,
 }: {
   label: string;
   icon: React.ReactNode;
   active?: boolean;
+  filled?: boolean;
+  dimmed?: boolean;
   activeColor?: string;
   activeBg?: string;
   hoverColor?: string;
   disabled?: boolean;
   onClick: () => void;
   ariaLabel?: string;
+  style?: React.CSSProperties;
 }) {
   const [hovered, setHovered] = useState(false);
   const [pressed, setPressed] = useState(false);
 
-  // Token treatment fires on three triggers: explicit `active`, hover, or
-  // press. Press matters for touch — without it the Share tile never turns
-  // teal on tap, and the resting Delete tile never flashes dismiss-red.
-  const interactive = hovered || pressed;
-  const tokenColor = activeColor ?? hoverColor;
-  const showActiveTreatment = active || (interactive && tokenColor);
-  const effectiveColor = showActiveTreatment ? tokenColor : undefined;
-  const effectiveBorder = effectiveColor ?? 'var(--border-subtle)';
-  const effectiveTextColor = effectiveColor ?? 'var(--text-secondary)';
-  // Background priority: `active` + `activeBg` (sticky on-state tint) →
-  // press with a tint colour available (transient tint matching the token) →
-  // press without a tint (neutral elevated) → resting surface.
-  const effectiveBg = active && activeBg
-    ? activeBg
-    : pressed && activeBg
+  // Filled mode overrides the bordered colour-on-press treatment entirely:
+  // background = token, glyphs = white, no separate border colour. Used for
+  // the armed Delete tile so it reads as a primary destructive action, not
+  // just "the Delete tile but red-bordered".
+  let effectiveBg: string;
+  let effectiveBorder: string;
+  let effectiveTextColor: string;
+
+  if (filled && activeColor) {
+    effectiveBg = activeColor;
+    effectiveBorder = activeColor;
+    effectiveTextColor = '#fff';
+  } else {
+    // Token treatment fires on three triggers: explicit `active`, hover, or
+    // press. Press matters for touch — without it the Share tile never
+    // turns teal on tap, and the resting Delete tile never flashes
+    // dismiss-red.
+    const interactive = hovered || pressed;
+    const tokenColor = activeColor ?? hoverColor;
+    const showActiveTreatment = active || (interactive && tokenColor);
+    const effectiveColor = showActiveTreatment ? tokenColor : undefined;
+    effectiveBorder = effectiveColor ?? 'var(--border-subtle)';
+    effectiveTextColor = effectiveColor ?? 'var(--text-secondary)';
+    // Background priority: `active` + `activeBg` (sticky on-state tint) →
+    // press with a tint colour available (transient tint matching the
+    // token) → press without a tint (neutral elevated) → resting surface.
+    effectiveBg = active && activeBg
       ? activeBg
-      : pressed
-        ? 'var(--bg-elevated)'
-        : 'var(--bg-surface)';
+      : pressed && activeBg
+        ? activeBg
+        : pressed
+          ? 'var(--bg-elevated)'
+          : 'var(--bg-surface)';
+  }
+
+  const opacity = dimmed ? 0.4 : disabled ? 0.65 : 1;
 
   return (
     <motion.button
@@ -852,11 +901,12 @@ function Tile({
         fontSize: 11.5, fontWeight: 600, letterSpacing: '0.01em',
         color: effectiveTextColor,
         cursor: disabled ? 'default' : 'pointer',
-        opacity: disabled ? 0.65 : 1,
-        transition: 'background 120ms, border-color 120ms, color 120ms',
+        opacity,
+        transition: 'background 120ms, border-color 120ms, color 120ms, opacity 120ms',
         WebkitTapHighlightColor: 'transparent',
         outline: 'none',
         minHeight: 64,
+        ...style,
       }}
     >
       <span style={{ display: 'flex', alignItems: 'center', lineHeight: 0 }}>
