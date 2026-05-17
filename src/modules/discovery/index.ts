@@ -1,8 +1,10 @@
 import { Worker } from 'bullmq';
+import { v7 as uuidv7 } from 'uuid';
 import { db } from '../../db/client';
 import { logger } from '../../logger';
 import { redis, discoveryQueue } from '../../queue';
 import { evaluateCandidate } from '../guard/index';
+import { getRequestsState } from '../requests';
 import { getAgeBand } from '../users';
 import { refreshCandidatePool, seedBackCatalogCandidates, type UserInterestRow } from './intake';
 import { scoreCandidates } from './scoring';
@@ -92,6 +94,39 @@ export async function runDiscoveryForUser(user: UserRow, options: { force?: bool
   const verdicts = surfaceForToday(user.user_id, isKid);
   const picks = verdicts.filter((v) => v.disposition === 'regular' || v.disposition === 'stretch');
   logger.info({ userId: user.user_id, surfaced: picks.length }, 'Discovery: surfaced for today');
+
+  // Picks land in the feed directly — no separate accept step. Mirror the
+  // historical /discovery/request flow: create a request via the state
+  // machine (inserts a `recommended` row with status=downloading + why_text
+  // and enqueues the download), then flip the candidate_pool row to
+  // 'requested' so the brief day-cap accounting holds.
+  const requestsState = getRequestsState();
+  const markRequested = db.prepare(
+    `UPDATE candidate_pool SET status = 'requested' WHERE candidate_id = ?`,
+  );
+  await Promise.all(picks.map(async (v) => {
+    if (!v.candidate.url) {
+      logger.warn(
+        { userId: user.user_id, candidateId: v.candidate.candidateId },
+        'Discovery: pick has no URL, skipping auto-create',
+      );
+      return;
+    }
+    const requestId = uuidv7();
+    const { settled } = requestsState.apply({
+      kind: 'create_candidate',
+      requestId,
+      input: {
+        url: v.candidate.url,
+        userId: user.user_id,
+        youtubeId: v.candidate.externalId ?? null,
+        title: v.candidate.title,
+        whyText: v.candidate.whyText ?? null,
+      },
+    });
+    await settled;
+    markRequested.run(v.candidate.candidateId);
+  }));
 
   // Verdicts are already in weighted-desc order. Build response payload
   // straight off the picks — no re-query, no recomputation. gemma_score

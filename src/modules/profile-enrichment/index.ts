@@ -35,6 +35,9 @@ export type {
 //   dismissed_count — union of:
 //                       a) watch_events.reason='dismissed' (mid-play bailouts)
 //                       b) candidate_pool.status='dismissed' (pre-play swipes)
+//                       c) requests.status='deleted' (player-side delete —
+//                          strong negative; surfaced for any source, not
+//                          just discovery picks)
 //                     deduplicated on (user_id, person_id, video_id) so a
 //                     candidate dismissed pre-play and never replayed isn't
 //                     counted twice when the same video later appears in
@@ -84,6 +87,19 @@ const AGGREGATE_SQL = `
       AND status = 'dismissed'
       AND person_id IS NOT NULL
       AND external_id IS NOT NULL
+    UNION
+    -- Player-side deletes: requests.status='deleted'. Source-agnostic
+    -- (share-sheet, follow, pick all count) — the act of deleting after
+    -- arrival is the signal, regardless of how the video got into the feed.
+    SELECT DISTINCT po.person_id, r.youtube_id AS video_id
+    FROM requests r
+    INNER JOIN person_outputs po
+      ON po.external_id = r.youtube_channel_id
+     AND po.output_type = 'youtube'
+    WHERE r.user_id = @user_id
+      AND r.status = 'deleted'
+      AND r.youtube_channel_id IS NOT NULL
+      AND r.youtube_id IS NOT NULL
   ),
   dismissed AS (
     SELECT person_id, COUNT(*) AS n

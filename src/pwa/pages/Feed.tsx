@@ -1,8 +1,7 @@
-import React, { useState, useCallback } from 'react';
+import React from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 import { AnimatePresence, motion } from 'framer-motion';
-import { X } from 'lucide-react';
 import { Card, type CardData } from '../components/Card';
 import { CompactCard, type SourceKind } from '../components/CompactCard';
 import { VideoDetailSheet } from '../components/VideoDetailSheet';
@@ -11,54 +10,6 @@ import { AppHeader } from '../components/AppHeader';
 import { useVideoSheet } from '../hooks/useVideoSheet';
 import { useRestorePolling } from '../hooks/useRestorePolling';
 import type { WatchSource } from '../lib/watchEvents';
-
-// ── Discovery API ────────────────────────────────────────────────────────────
-
-interface DiscoveryCandidate {
-  candidateId: string;
-  url: string;
-  externalId: string | null;
-  title: string | null;
-  thumbnailUrl: string | null;
-  publishedAt: string | null;
-  score: number | null;
-  why: string | null;
-  interestId: string | null;
-  sourceType: string;
-}
-
-interface DiscoveryFeedResponse {
-  candidates: DiscoveryCandidate[];
-  coldStart: boolean;
-  balancePrompt: {
-    promptId: string;
-    interestId: string;
-    interestLabel: string;
-    concentration: number;
-  } | null;
-}
-
-async function fetchDiscoveryFeed(userId: string): Promise<DiscoveryFeedResponse> {
-  const res = await fetch(`/discovery/feed?userId=${encodeURIComponent(userId)}`);
-  if (!res.ok) throw new Error('Failed to load discovery feed');
-  return res.json() as Promise<DiscoveryFeedResponse>;
-}
-
-async function dismissCandidate(userId: string, candidateId: string): Promise<void> {
-  await fetch('/discovery/dismiss', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ userId, candidateId }),
-  });
-}
-
-async function requestCandidate(userId: string, candidateId: string): Promise<void> {
-  await fetch('/discovery/request', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ userId, candidateId }),
-  });
-}
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -137,11 +88,7 @@ export function Feed() {
   const [params] = useSearchParams();
   const { selectedCard, selectedSource, onSelect, onClose } = useVideoSheet();
   const user = params.get('userId') ?? params.get('user') ?? '';
-  const queryClient = useQueryClient();
   useRestorePolling();
-
-  const [dismissedIds, setDismissedIds] = useState<Set<string>>(new Set());
-  const [addedIds, setAddedIds] = useState<Set<string>>(new Set());
 
   const { data, isLoading, isError } = useQuery({
     queryKey: ['feed', user],
@@ -149,28 +96,6 @@ export function Feed() {
     enabled: !!user,
     refetchInterval: 10_000,
   });
-
-  const { data: discoveryData } = useQuery({
-    queryKey: ['discovery-feed', user],
-    queryFn: () => fetchDiscoveryFeed(user),
-    enabled: !!user,
-    staleTime: 5 * 60_000,
-  });
-
-  const handleDismiss = useCallback(async (candidateId: string) => {
-    setDismissedIds((prev) => new Set([...prev, candidateId]));
-    await dismissCandidate(user, candidateId).catch(() => {
-      setDismissedIds((prev) => { const next = new Set(prev); next.delete(candidateId); return next; });
-    });
-  }, [user]);
-
-  const handleAdd = useCallback(async (candidateId: string) => {
-    setAddedIds((prev) => new Set([...prev, candidateId]));
-    await requestCandidate(user, candidateId).catch(() => {
-      setAddedIds((prev) => { const next = new Set(prev); next.delete(candidateId); return next; });
-    });
-    void queryClient.invalidateQueries({ queryKey: ['feed', user] });
-  }, [user, queryClient]);
 
   if (!user) return <Empty text="No user selected." />;
   if (isLoading) return <Empty text="Loading…" />;
@@ -180,14 +105,9 @@ export function Feed() {
   const todayDay = allDays.find((d) => d.label === 'Today') ?? null;
   const pastDays = allDays.filter((d) => d !== todayDay && (d.cards.length > 0 || d.sections?.some((s) => s.cards.length)));
 
-  const visibleCandidates = (discoveryData?.candidates ?? []).filter(
-    (c) => !dismissedIds.has(c.candidateId) && !addedIds.has(c.candidateId)
-  );
-  const showDiscovery = !!discoveryData;
-
   const hasAnyTodayContent =
     !!todayDay && ((todayDay.sections?.some((s) => s.cards.length) ?? false) || todayDay.cards.length > 0);
-  const showEmpty = !showDiscovery && !hasAnyTodayContent && pastDays.length === 0;
+  const showEmpty = !hasAnyTodayContent && pastDays.length === 0;
 
   return (
     <div style={{ minHeight: '100dvh', background: 'var(--bg-primary)' }}>
@@ -209,13 +129,8 @@ export function Feed() {
           <>
             <TodayBlock
               todayDay={todayDay}
-              candidates={visibleCandidates}
-              coldStart={discoveryData?.coldStart ?? false}
-              showDiscovery={showDiscovery}
               selectedId={selectedCard?.requestId ?? null}
               onSelect={onSelect}
-              onDismiss={handleDismiss}
-              onAdd={handleAdd}
               userId={user}
             />
             {pastDays.map((day) => (
@@ -250,17 +165,11 @@ export function Feed() {
 // ── Today block — Tier 1 ─────────────────────────────────────────────────────
 
 function TodayBlock({
-  todayDay, candidates, coldStart, showDiscovery,
-  selectedId, onSelect, onDismiss, onAdd, userId,
+  todayDay, selectedId, onSelect, userId,
 }: {
   todayDay: Day | null;
-  candidates: DiscoveryCandidate[];
-  coldStart: boolean;
-  showDiscovery: boolean;
   selectedId: string | null;
   onSelect: (data: CardData, source: WatchSource) => void;
-  onDismiss: (id: string) => void;
-  onAdd: (id: string) => void;
   userId: string;
 }) {
   const today = new Date();
@@ -276,20 +185,12 @@ function TodayBlock({
   const followCards = followSection?.cards ?? [];
   const pickedCards = pickSection?.cards ?? [];
 
-  const totalCount = requestsCards.length + followCards.length + pickedCards.length + candidates.length;
+  const totalCount = requestsCards.length + followCards.length + pickedCards.length;
 
-  // If today has no cards at all and discovery is cold, show nothing (caller handles empty state).
-  if (totalCount === 0 && !showDiscovery) return null;
+  if (totalCount === 0) return null;
 
   // Heavy-follow days swap compact; otherwise hero.
   const followAsCompact = followCards.length > 6;
-
-  // Brief §9a: "why" is tap-to-see only — never rendered inline above the
-  // card. Keep the neutral lead-in when there are picked rows; otherwise
-  // the section header is the only chrome.
-  const firstVoice = (pickedCards.length > 0 || candidates.length > 0)
-    ? 'A few more you might like.'
-    : null;
 
   return (
     <section>
@@ -351,39 +252,18 @@ function TodayBlock({
         </>
       )}
 
-      {(pickedCards.length > 0 || candidates.length > 0) && (
-        <>
-          {firstVoice && <VoiceLine text={firstVoice} />}
-          <CardList>
-            {pickedCards.map((row) => (
-              <Card
-                key={row.request_id}
-                data={toCardData(row)}
-                userId={userId}
-                onSelect={(c) => onSelect(c, 'discovery')}
-                isSelected={selectedId === row.request_id}
-                sourceKind="pick"
-              />
-            ))}
-            <AnimatePresence mode="popLayout">
-              {candidates.map((c) => (
-                <HeroDiscoveryCard key={c.candidateId} candidate={c} onDismiss={onDismiss} onAdd={onAdd} />
-              ))}
-            </AnimatePresence>
-          </CardList>
-        </>
-      )}
-
-      {coldStart && pickedCards.length === 0 && candidates.length === 0 && (
-        <div style={{ padding: '0 16px 18px' }}>
-          <p style={{
-            margin: 0, padding: '12px 14px', borderRadius: 10,
-            background: 'var(--bg-surface)', border: '1px solid var(--border-subtle)',
-            fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.5,
-          }}>
-            Eddy is still figuring out what you like — follow a few people and rate what you watch.
-          </p>
-        </div>
+      {pickedCards.length > 0 && (
+        <AnimatePresence mode="popLayout">
+          {pickedCards.map((row) => (
+            <PickWithVoice
+              key={row.request_id}
+              row={row}
+              userId={userId}
+              selectedId={selectedId}
+              onSelect={onSelect}
+            />
+          ))}
+        </AnimatePresence>
       )}
 
       <EndToday />
@@ -498,6 +378,39 @@ function SectionHeader({ label, count }: { label: string; count: number }) {
   );
 }
 
+// One pick = one voice line (Eddy's why_text in first-person prose) plus
+// its hero card. Picks are not grouped under a "Picked for you" header —
+// the voice line is the introduction. Brief §9a + design/Eddy Feed.html.
+function PickWithVoice({
+  row, userId, selectedId, onSelect,
+}: {
+  row: FeedCard;
+  userId: string;
+  selectedId: string | null;
+  onSelect: (data: CardData, source: WatchSource) => void;
+}) {
+  return (
+    <motion.div
+      layout
+      initial={{ opacity: 0, y: 12 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: -8, scale: 0.97 }}
+      transition={{ duration: 0.3, ease: [0.33, 1, 0.68, 1] }}
+    >
+      {row.why_text && <VoiceLine text={row.why_text} />}
+      <CardList>
+        <Card
+          data={toCardData(row)}
+          userId={userId}
+          onSelect={(c) => onSelect(c, 'discovery')}
+          isSelected={selectedId === row.request_id}
+          sourceKind="pick"
+        />
+      </CardList>
+    </motion.div>
+  );
+}
+
 function VoiceLine({ text }: { text: string }) {
   return (
     <p style={{
@@ -547,135 +460,6 @@ function CompactList({ children }: { children: React.ReactNode }) {
     <div style={{ display: 'flex', flexDirection: 'column', gap: 10, padding: '0 16px' }}>
       {children}
     </div>
-  );
-}
-
-// ── Hero discovery card (tap-to-add, with dismiss) ───────────────────────────
-
-function HeroDiscoveryCard({
-  candidate, onDismiss, onAdd,
-}: {
-  candidate: DiscoveryCandidate;
-  onDismiss: (id: string) => void;
-  onAdd: (id: string) => void;
-}) {
-  const [adding, setAdding] = useState(false);
-
-  async function handleAdd() {
-    if (adding) return;
-    setAdding(true);
-    await onAdd(candidate.candidateId);
-  }
-
-  return (
-    <motion.article
-        layout
-        initial={{ opacity: 0, y: 8 }}
-        animate={{ opacity: 1, y: 0 }}
-        exit={{ opacity: 0, scale: 0.96 }}
-        transition={{ duration: 0.22 }}
-        onClick={handleAdd}
-        style={{
-          position: 'relative',
-          display: 'flex',
-          flexDirection: 'column',
-          borderRadius: 16,
-          overflow: 'hidden',
-          background: 'var(--bg-surface)',
-          boxShadow: 'var(--shadow-card)',
-          border: '1px solid var(--border-subtle)',
-          cursor: adding ? 'default' : 'pointer',
-        }}
-      >
-        {/* Thumbnail */}
-        <div style={{
-          position: 'relative',
-          aspectRatio: '16/9',
-          overflow: 'hidden',
-          background: '#2A2826',
-        }}>
-          {candidate.thumbnailUrl && (
-            <img
-              src={candidate.thumbnailUrl}
-              alt=""
-              loading="lazy"
-              style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }}
-            />
-          )}
-
-          {/* Dismiss */}
-          <button
-            aria-label="Dismiss"
-            onClick={(e) => { e.stopPropagation(); onDismiss(candidate.candidateId); }}
-            style={{
-              position: 'absolute', top: 10, right: 10, zIndex: 3,
-              width: 28, height: 28, borderRadius: '50%',
-              background: 'rgba(0,0,0,0.55)', border: 'none',
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              cursor: 'pointer', color: '#fff',
-              backdropFilter: 'blur(4px)',
-            }}
-          >
-            <X size={14} strokeWidth={2.5} />
-          </button>
-        </div>
-
-        {/* Title + meta */}
-        <div style={{ padding: '12px 14px 14px' }}>
-          <h3 style={{
-            fontFamily: 'var(--font-serif)',
-            fontSize: 19, fontWeight: 500, lineHeight: 1.22,
-            letterSpacing: '-0.008em', margin: '0 0 6px',
-            color: 'var(--text-primary)',
-            display: '-webkit-box',
-            WebkitLineClamp: 2,
-            WebkitBoxOrient: 'vertical',
-            overflow: 'hidden',
-          }}>
-            {candidate.title ?? candidate.url}
-          </h3>
-          <div style={{
-            display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap',
-            fontSize: 11, fontWeight: 500, color: 'var(--text-secondary)',
-            letterSpacing: '0.005em',
-          }}>
-            <span style={{
-              display: 'inline-flex', alignItems: 'center', gap: 5,
-              fontSize: 11, fontWeight: 600, letterSpacing: '0.02em',
-              color: 'var(--save)',
-            }}>
-              <span style={{ width: 5, height: 5, borderRadius: '50%', background: 'var(--save)' }} />
-              Picked
-            </span>
-            <span style={{ color: 'var(--text-tertiary)' }}>·</span>
-            <span>Tap to add</span>
-          </div>
-
-          {candidate.why && (
-            <p style={{
-              margin: '8px 0 0',
-              fontFamily: 'var(--font-serif)', fontStyle: 'italic',
-              fontSize: 13.5, lineHeight: 1.4,
-              color: 'var(--text-secondary)',
-            }}>
-              {candidate.why}
-            </p>
-          )}
-        </div>
-
-        {adding && (
-          <div style={{
-            position: 'absolute', inset: 0, zIndex: 4,
-            background: 'rgba(0,0,0,0.45)',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            backdropFilter: 'blur(2px)',
-          }}>
-            <span style={{ fontSize: 12, fontWeight: 600, color: '#fff', letterSpacing: '0.04em' }}>
-              Adding…
-            </span>
-          </div>
-        )}
-      </motion.article>
   );
 }
 

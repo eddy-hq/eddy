@@ -29,6 +29,8 @@ export function updateCandidatePoolStatus(
 
 interface CandidateRow {
   candidate_id: string;
+  url: string;
+  external_id: string | null;
   title: string | null;
   published_at: string | null;
   connection_score: number | null;
@@ -62,8 +64,8 @@ export function surfaceForToday(userId: string, isKid: boolean): Verdict[] {
   // carry a one-sentence explanation. If Gemma couldn't generate one,
   // the candidate doesn't surface.
   const rows = db.prepare(`
-    SELECT c.candidate_id, c.title, c.published_at, c.connection_score,
-           c.quality_score, c.time_sensitivity, c.interest_id,
+    SELECT c.candidate_id, c.url, c.external_id, c.title, c.published_at,
+           c.connection_score, c.quality_score, c.time_sensitivity, c.interest_id,
            c.why_text, c.guard_verdict,
            COALESCE(ui.rank, 999) AS rank
     FROM candidate_pool c
@@ -91,6 +93,8 @@ export function surfaceForToday(userId: string, isKid: boolean): Verdict[] {
     rank: r.rank,
     whyText: r.why_text,
     guardVerdict: r.guard_verdict,
+    url: r.url,
+    externalId: r.external_id,
   }));
 
   // Carry over today's already-surfaced titles + interest counts so a
