@@ -493,19 +493,32 @@ function SheetBody({
           )}
 
           {showActions && (
-            <ActionGrid
-              isSaved={isSaved}
-              saving={saving}
-              onToggleSave={() => void toggleSave()}
-              confirmDelete={confirmDelete}
-              deleteError={deleteError}
-              deletePending={deleteMutation.isPending}
-              onArmDelete={() => setConfirmDelete(true)}
-              onConfirmDelete={() => { setDeleteError(false); deleteMutation.mutate(); }}
-              onCancelDelete={() => { setConfirmDelete(false); setDeleteError(false); }}
-              youtubeWatchUrl={youtubeWatchUrl}
-              shareTitle={title}
-            />
+            <>
+              {confirmDelete && (
+                <p
+                  role="status"
+                  style={{
+                    fontSize: 13, fontWeight: 600,
+                    color: deleteError ? 'var(--dismiss)' : 'var(--text-secondary)',
+                    margin: '0 0 8px',
+                  }}
+                >
+                  {deleteError ? 'Failed — try again' : 'Delete?'}
+                </p>
+              )}
+              <ActionGrid
+                isSaved={isSaved}
+                saving={saving}
+                onToggleSave={() => void toggleSave()}
+                confirmDelete={confirmDelete}
+                deletePending={deleteMutation.isPending}
+                onArmDelete={() => setConfirmDelete(true)}
+                onConfirmDelete={() => { setDeleteError(false); deleteMutation.mutate(); }}
+                onCancelDelete={() => { setConfirmDelete(false); setDeleteError(false); }}
+                youtubeWatchUrl={youtubeWatchUrl}
+                shareTitle={title}
+              />
+            </>
           )}
 
           <WhyThisVideo
@@ -651,14 +664,15 @@ function ErrorSheet({ message, onClose }: { message: string; onClose: () => void
 // Behaviour preserved verbatim:
 //   - Save: optimistic toggle, `saving` lock, `.on` styling when saved.
 //   - Delete: two-step confirm in-place so the layout doesn't jump — the
-//     Delete tile is replaced by Confirm/Cancel tiles in its grid slot while
-//     armed.
+//     Delete tile is replaced by Yes-delete + Cancel tiles in its grid slot
+//     while armed, with a "Delete?" caption above the row (matching the
+//     original `Delete? · Yes, delete · Cancel` copy from the inline row).
 //   - Share: hidden when `navigator.share` is unavailable OR when no
 //     `youtubeWatchUrl` is on hand (defends against the rare null case).
 
 function ActionGrid({
   isSaved, saving, onToggleSave,
-  confirmDelete, deleteError, deletePending,
+  confirmDelete, deletePending,
   onArmDelete, onConfirmDelete, onCancelDelete,
   youtubeWatchUrl, shareTitle,
 }: {
@@ -666,7 +680,6 @@ function ActionGrid({
   saving: boolean;
   onToggleSave: () => void;
   confirmDelete: boolean;
-  deleteError: boolean;
   deletePending: boolean;
   onArmDelete: () => void;
   onConfirmDelete: () => void;
@@ -713,18 +726,20 @@ function ActionGrid({
         onClick={onToggleSave}
       />
 
-      {/* Delete slot — single Delete tile, or two-tile confirm cluster */}
+      {/* Delete slot — single Delete tile, or Yes-delete + Cancel cluster.
+          Copy ("Yes, delete" / "Cancel") matches the original two-step flow;
+          the "Delete?" prompt sits above the grid (rendered by SheetBody). */}
       {confirmDelete ? (
         <>
           <Tile
-            label={deletePending ? 'Deleting…' : (deleteError ? 'Retry' : 'Confirm')}
+            label={deletePending ? 'Deleting…' : 'Yes, delete'}
             icon={<Trash2 size={20} strokeWidth={1.8} />}
             active
             activeColor="var(--dismiss)"
             activeBg="rgba(184, 84, 80, 0.08)"
             disabled={deletePending}
             onClick={onConfirmDelete}
-            ariaLabel={deletePending ? 'Deleting' : 'Confirm delete'}
+            ariaLabel={deletePending ? 'Deleting' : 'Yes, delete'}
           />
           <Tile
             label="Cancel"
@@ -737,6 +752,7 @@ function ActionGrid({
         <Tile
           label="Delete"
           icon={<Trash2 size={20} strokeWidth={1.8} />}
+          hoverColor="var(--dismiss)"
           onClick={onArmDelete}
         />
       )}
@@ -760,8 +776,11 @@ function ActionGrid({
 }
 
 // Generic action tile. `active` forces the on-state colour treatment;
-// `hoverColor` overrides the hover/focus border + text colour without
-// changing the resting state (used for Share, which has no on-state).
+// `hoverColor` overrides the hover/focus + press border + text colour
+// without changing the resting state (used for Share and the un-armed
+// Delete tile, which have no on-state). On touch devices `hovered` rarely
+// fires before tap-release, so press is treated equivalently — both should
+// surface the token colour and the tinted background.
 function Tile({
   label, icon, active = false,
   activeColor, activeBg, hoverColor,
@@ -780,13 +799,25 @@ function Tile({
   const [hovered, setHovered] = useState(false);
   const [pressed, setPressed] = useState(false);
 
-  const showActiveTreatment = active || (hovered && (activeColor || hoverColor));
-  const effectiveColor = showActiveTreatment ? (activeColor ?? hoverColor) : undefined;
+  // Token treatment fires on three triggers: explicit `active`, hover, or
+  // press. Press matters for touch — without it the Share tile never turns
+  // teal on tap, and the resting Delete tile never flashes dismiss-red.
+  const interactive = hovered || pressed;
+  const tokenColor = activeColor ?? hoverColor;
+  const showActiveTreatment = active || (interactive && tokenColor);
+  const effectiveColor = showActiveTreatment ? tokenColor : undefined;
   const effectiveBorder = effectiveColor ?? 'var(--border-subtle)';
   const effectiveTextColor = effectiveColor ?? 'var(--text-secondary)';
+  // Background priority: `active` + `activeBg` (sticky on-state tint) →
+  // press with a tint colour available (transient tint matching the token) →
+  // press without a tint (neutral elevated) → resting surface.
   const effectiveBg = active && activeBg
     ? activeBg
-    : pressed ? 'var(--bg-elevated)' : 'var(--bg-surface)';
+    : pressed && activeBg
+      ? activeBg
+      : pressed
+        ? 'var(--bg-elevated)'
+        : 'var(--bg-surface)';
 
   return (
     <motion.button
