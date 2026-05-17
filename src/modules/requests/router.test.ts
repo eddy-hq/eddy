@@ -619,10 +619,10 @@ describe('GET /requests (list)', () => {
 
 // ─── Lifecycle POST smoke test ──────────────────────────────────────────────
 //
-// The five lifecycle POSTs (`/:id/watched`, `/save`, `/dismiss`, `/cancel`,
-// `/delete`) are each thin delegates to the state machine, which is fully
-// exercised in state.test.ts. One smoke per branch shape (204 / 404 / 409)
-// is enough to defend the wiring; deeper coverage isn't worth duplicating.
+// The four lifecycle POSTs (`/:id/watched`, `/save`, `/cancel`, `/delete`)
+// are each thin delegates to the state machine, which is fully exercised in
+// state.test.ts. One smoke per branch shape (204 / 404 / 409) is enough to
+// defend the wiring; deeper coverage isn't worth duplicating.
 
 describe('lifecycle POST endpoints (smoke)', () => {
   it('POST /requests/:id/watched returns 204 and applies mark_watched with the path id', async () => {
