@@ -1,6 +1,6 @@
 # Eddy — Implementation Document
 
-**Status:** Phase 5 in progress. Phases 0–4 shipped (feed, guard shadow mode, RSS poller, channel follow, search). Discovery engine, interest picker, balance prompts, channel→interest inference, profile-editing surface (Interests + People), freeform-interest input, person bio/photo capture, and topic→interest schema rename all live; recommendation extraction and "why this?" UI affordance still to come.
+**Status:** Phase 5 in progress. Phases 0–4 shipped (feed, guard shadow mode, RSS poller, channel follow, search). Discovery engine, interest picker, balance prompts, channel→interest inference, profile-editing surface (Interests + People), freeform-interest input, person bio/photo capture, topic→interest schema rename, and "why this?" UI affordance all live; recommendation extraction still to come.
 
 Load-bearing decisions live in `docs/adr/`; prose-form design rationale lives in `docs/design-notes.md`; domain vocabulary lives in `CONTEXT.md`. This document is the spec.
 
@@ -585,7 +585,7 @@ Duration preference is deliberately *not* a Layer 1 input. People watch a wide r
 
 ### "Why this?"
 
-Every item surfaced by discovery (not requests, not direct outputs from people you follow — those are self-explanatory) has a small "why this?" affordance. Tap to see a user-appropriate one-sentence explanation.
+Every item surfaced by discovery (not requests, not direct outputs from people you follow — those are self-explanatory) carries a one-sentence Gemma rationale. It renders inline on the video detail page in a "Why this video" block, and inline on the candidate card before the user adds it (so the rationale is visible at decision time, not buried behind a tap). Earlier drafts of this section specified a tap-to-see sheet; reversed once the full video page existed to host the rationale without crowding the feed.
 
 Where a followed person is involved, the reasoning routes through them wherever possible:
 
