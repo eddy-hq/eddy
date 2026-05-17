@@ -19,10 +19,12 @@ export interface CardData {
   nginxUrl: string | null;
   thumbnailUrl: string | null;
   durationSecs: number | null;
+  whyText: string | null;
   requestedAt: string;
   rejectionReason: string | null;
   watchedAt: string | null;
   savedAt: string | null;
+  source: string;
 }
 
 const STATUS_LABEL: Record<string, string> = {

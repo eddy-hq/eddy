@@ -21,6 +21,7 @@ interface LibraryResult {
   nginx_url: string | null;
   thumbnail_url: string | null;
   duration_secs: number | null;
+  why_text: string | null;
   requested_at: string;
   added_at: string;
   watched_at: string | null;
@@ -145,10 +146,9 @@ async function resolvePerson(userId: string, channelId: string, channelName: str
 function toCardData(r: LibraryResult): CardData {
   return {
     requestId: r.request_id,
-    url: r.url,
     youtubeId: r.youtube_id,
     youtubeChannelId: r.youtube_channel_id,
-    title: r.title,
+    title: r.title ?? r.url,
     channel: r.channel,
     status: r.status,
     fileState: r.file_state,
@@ -156,10 +156,11 @@ function toCardData(r: LibraryResult): CardData {
     nginxUrl: r.nginx_url,
     thumbnailUrl: r.thumbnail_url,
     durationSecs: r.duration_secs,
+    whyText: r.why_text,
     requestedAt: r.requested_at,
-    addedAt: r.added_at,
     watchedAt: r.watched_at,
     savedAt: r.saved_at,
+    source: r.source,
   };
 }
 

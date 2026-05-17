@@ -32,6 +32,8 @@ interface RequestDetail {
   channel: string | null;
   rejectionReason: string | null;
   videoUrl: string | null;
+  whyText: string | null;
+  source: string;
   requestedAt: string;
   watchedAt: string | null;
   savedAt: string | null;
@@ -71,6 +73,8 @@ function SheetWithCard({
       videoUrl={card.nginxUrl}
       progress={null}
       rejectionReason={card.rejectionReason}
+      whyText={card.whyText}
+      requestSource={card.source}
       requestedAt={card.requestedAt}
       watchedAt={card.watchedAt}
       savedAt={card.savedAt}
@@ -118,6 +122,8 @@ function SheetById({
       videoUrl={data?.videoUrl ?? null}
       progress={data?.progress ?? null}
       rejectionReason={data?.rejectionReason ?? null}
+      whyText={data?.whyText ?? null}
+      requestSource={data?.source ?? null}
       requestedAt={data?.requestedAt ?? null}
       watchedAt={data?.watchedAt ?? null}
       savedAt={data?.savedAt ?? null}
@@ -141,6 +147,11 @@ interface BodyProps {
   videoUrl: string | null;
   progress: number | null;
   rejectionReason: string | null;
+  whyText: string | null;
+  // The DB `requests.source` value ('share_sheet' | 'channel_subscription' |
+  // 'recommended'). Drives the "Why this video" pill and templated line.
+  // Distinct from `source: WatchSource` (telemetry) below.
+  requestSource: string | null;
   requestedAt: string | null;
   watchedAt: string | null;
   savedAt: string | null;
@@ -153,6 +164,7 @@ function SheetBody({
   requestId, userId,
   title, channel, youtubeId, youtubeChannelId,
   status, videoUrl, progress, rejectionReason,
+  whyText, requestSource,
   requestedAt, watchedAt, savedAt,
   source, onClose, enableLayoutId,
 }: BodyProps) {
@@ -469,23 +481,8 @@ function SheetBody({
             </div>
           )}
 
-          {youtubeId && (
-            <div style={{
-              padding: '12px 14px', marginBottom: 24,
-              background: 'var(--bg-surface)', borderRadius: 12,
-              border: '1px solid var(--border-subtle)',
-            }}>
-              <p style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.07em', textTransform: 'uppercase', color: 'var(--text-tertiary)', marginBottom: 4 }}>
-                Source
-              </p>
-              <p style={{ fontSize: 13, color: 'var(--text-secondary)', fontWeight: 500 }}>
-                YouTube
-              </p>
-            </div>
-          )}
-
           {showActions && (
-            <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+            <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', marginBottom: 24 }}>
               <SaveButton isSaved={isSaved} saving={saving} onToggle={() => void toggleSave()} />
               {confirmDelete ? (
                 <>
@@ -531,6 +528,12 @@ function SheetBody({
               )}
             </div>
           )}
+
+          <WhyThisVideo
+            requestSource={requestSource}
+            whyText={whyText}
+            channel={channel}
+          />
         </div>
       </motion.div>
     </>
@@ -726,6 +729,88 @@ function Stat({ label, value }: { label: string; value: string }) {
         {value}
       </p>
     </div>
+  );
+}
+
+// ── "Why this video" — inline provenance + editorial line ──────────────────
+//
+// Brief §9a: every discovery-surfaced item carries a one-sentence Gemma
+// rationale. Originally tap-to-see; reversed to inline text once the full
+// video page existed to host it without crowding the feed. `whyText` is the
+// Gemma sentence (only populated for `requestSource === 'recommended'`).
+// For other sources a templated lead-in stands in so the block doesn't read
+// as a discovery-only chrome.
+
+type ProvenanceKind = 'req' | 'follow' | 'pick';
+
+function provenanceKind(source: string | null): ProvenanceKind {
+  if (source === 'share_sheet') return 'req';
+  if (source === 'channel_subscription') return 'follow';
+  return 'pick';
+}
+
+function provenanceLabel(kind: ProvenanceKind, channel: string | null): string {
+  if (kind === 'req') return 'You asked';
+  if (kind === 'follow') return channel ?? 'A channel you follow';
+  return 'Picked';
+}
+
+const PROV_COLOR: Record<ProvenanceKind, string> = {
+  req: 'var(--source-req, #B8863C)',
+  follow: 'var(--source-follow, var(--accent))',
+  pick: 'var(--source-pick, #8C4A6A)',
+};
+
+function WhyThisVideo({
+  requestSource, whyText, channel,
+}: {
+  requestSource: string | null;
+  whyText: string | null;
+  channel: string | null;
+}) {
+  const kind = provenanceKind(requestSource);
+  const label = provenanceLabel(kind, channel);
+
+  const line = whyText
+    ?? (kind === 'req' ? 'You asked for this.'
+      : kind === 'follow' ? `New from ${channel ?? 'a channel you follow'}.`
+      : null);
+
+  if (!line) return null;
+
+  return (
+    <section style={{
+      padding: '14px 14px 12px', marginBottom: 24,
+      background: 'var(--bg-surface)', borderRadius: 12,
+      border: '1px solid var(--border-subtle)',
+    }}>
+      <p style={{
+        fontSize: 10, fontWeight: 700, letterSpacing: '0.08em',
+        textTransform: 'uppercase', color: 'var(--text-tertiary)',
+        marginBottom: 8,
+      }}>
+        Why this video
+      </p>
+      <p style={{
+        display: 'inline-flex', alignItems: 'center', gap: 6,
+        fontSize: 12, fontWeight: 600, letterSpacing: '0.02em',
+        color: PROV_COLOR[kind], marginBottom: 8,
+      }}>
+        <span style={{
+          width: 5, height: 5, borderRadius: '50%',
+          background: PROV_COLOR[kind],
+        }} />
+        {label}
+      </p>
+      <p style={{
+        margin: 0,
+        fontFamily: 'var(--font-serif)', fontStyle: 'italic',
+        fontSize: 14.5, lineHeight: 1.4,
+        color: 'var(--text-secondary)',
+      }}>
+        {line}
+      </p>
+    </section>
   );
 }
 

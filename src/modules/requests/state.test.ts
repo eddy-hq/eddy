@@ -1250,7 +1250,7 @@ describe('create_candidate', () => {
     const { settled } = state.apply({
       kind: 'create_candidate',
       requestId,
-      input: { url: URL, userId: USER_ID, youtubeId: YT_ID, title: TITLE },
+      input: { url: URL, userId: USER_ID, youtubeId: YT_ID, title: TITLE, whyText: null },
     });
     await settled;
 
@@ -1283,7 +1283,7 @@ describe('create_candidate', () => {
     const { settled } = state.apply({
       kind: 'create_candidate',
       requestId,
-      input: { url: URL, userId: USER_ID, youtubeId: null, title: TITLE },
+      input: { url: URL, userId: USER_ID, youtubeId: null, title: TITLE, whyText: null },
     });
     await settled;
 
@@ -1293,6 +1293,21 @@ describe('create_candidate', () => {
     );
   });
 
+  it('persists whyText onto the request so the detail page can render it later', async () => {
+    const requestId = 'req-cc-why';
+    const WHY = 'Because Steve Mould has been on your radar this month.';
+    const { settled } = state.apply({
+      kind: 'create_candidate',
+      requestId,
+      input: { url: URL, userId: USER_ID, youtubeId: YT_ID, title: TITLE, whyText: WHY },
+    });
+    await settled;
+
+    const row = db.prepare('SELECT why_text FROM requests WHERE request_id = ?')
+      .get(requestId) as { why_text: string | null };
+    expect(row.why_text).toBe(WHY);
+  });
+
   it('leaves the row in place and warn-logs when enqueueDownload throws', async () => {
     vi.mocked(fakePorts.enqueueDownload).mockRejectedValueOnce(new Error('redis down'));
 
@@ -1300,7 +1315,7 @@ describe('create_candidate', () => {
     const { settled } = state.apply({
       kind: 'create_candidate',
       requestId,
-      input: { url: URL, userId: USER_ID, youtubeId: YT_ID, title: TITLE },
+      input: { url: URL, userId: USER_ID, youtubeId: YT_ID, title: TITLE, whyText: null },
     });
     await settled;
 
@@ -1489,6 +1504,7 @@ function buildEvent(kind: Event['kind'], requestId: string): Event {
           userId: USER_ID,
           youtubeId: PROP_YT_ID,
           title: PROP_DOWNLOADED_FIELDS.title,
+          whyText: null,
         },
       };
   }

@@ -6,7 +6,6 @@ import { X } from 'lucide-react';
 import { Card, type CardData } from '../components/Card';
 import { CompactCard, type SourceKind } from '../components/CompactCard';
 import { VideoDetailSheet } from '../components/VideoDetailSheet';
-import { WhyThisSheet } from '../components/WhyThisSheet';
 import { BottomNav } from '../components/BottomNav';
 import { AppHeader } from '../components/AppHeader';
 import { useVideoSheet } from '../hooks/useVideoSheet';
@@ -75,6 +74,7 @@ interface FeedCard {
   nginx_url: string | null;
   thumbnail_url: string | null;
   duration_secs: number | null;
+  why_text: string | null;
   rejection_reason: string | null;
   requested_at: string;
   added_at: string;
@@ -115,10 +115,12 @@ function toCardData(row: FeedCard): CardData {
     nginxUrl: row.nginx_url,
     thumbnailUrl: row.thumbnail_url,
     durationSecs: row.duration_secs,
+    whyText: row.why_text,
     requestedAt: row.requested_at,
     rejectionReason: row.rejection_reason,
     watchedAt: row.watched_at,
     savedAt: row.saved_at,
+    source: row.source,
   };
 }
 
@@ -558,7 +560,6 @@ function HeroDiscoveryCard({
   onAdd: (id: string) => void;
 }) {
   const [adding, setAdding] = useState(false);
-  const [whyOpen, setWhyOpen] = useState(false);
 
   async function handleAdd() {
     if (adding) return;
@@ -566,13 +567,8 @@ function HeroDiscoveryCard({
     await onAdd(candidate.candidateId);
   }
 
-  // Hidden by default — brief §9a is explicit on "tap to see". Only render
-  // the affordance when the API actually gave us a sentence to show.
-  const hasWhy = !!candidate.why;
-
   return (
-    <>
-      <motion.article
+    <motion.article
         layout
         initial={{ opacity: 0, y: 8 }}
         animate={{ opacity: 1, y: 0 }}
@@ -653,31 +649,18 @@ function HeroDiscoveryCard({
             </span>
             <span style={{ color: 'var(--text-tertiary)' }}>·</span>
             <span>Tap to add</span>
-            {hasWhy && (
-              <>
-                <span style={{ color: 'var(--text-tertiary)' }}>·</span>
-                <button
-                  type="button"
-                  onClick={(e) => { e.stopPropagation(); setWhyOpen(true); }}
-                  aria-label="Why this?"
-                  aria-haspopup="dialog"
-                  aria-expanded={whyOpen}
-                  style={{
-                    background: 'none', border: 'none', padding: 0,
-                    fontFamily: 'inherit', fontSize: 11, fontWeight: 500,
-                    color: 'var(--text-secondary)',
-                    textDecoration: 'underline',
-                    textDecorationColor: 'var(--border-subtle)',
-                    textUnderlineOffset: 2,
-                    cursor: 'pointer',
-                    WebkitTapHighlightColor: 'transparent',
-                  }}
-                >
-                  Why this?
-                </button>
-              </>
-            )}
           </div>
+
+          {candidate.why && (
+            <p style={{
+              margin: '8px 0 0',
+              fontFamily: 'var(--font-serif)', fontStyle: 'italic',
+              fontSize: 13.5, lineHeight: 1.4,
+              color: 'var(--text-secondary)',
+            }}>
+              {candidate.why}
+            </p>
+          )}
         </div>
 
         {adding && (
@@ -693,13 +676,6 @@ function HeroDiscoveryCard({
           </div>
         )}
       </motion.article>
-
-      <AnimatePresence>
-        {whyOpen && candidate.why && (
-          <WhyThisSheet why={candidate.why} onClose={() => setWhyOpen(false)} />
-        )}
-      </AnimatePresence>
-    </>
   );
 }
 

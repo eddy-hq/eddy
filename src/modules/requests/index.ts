@@ -203,7 +203,7 @@ requestsRouter.get('/feed', (req: Request, res: Response) => {
   const rows = db.prepare(`
     SELECT
       request_id, url, youtube_id, youtube_channel_id, title, channel, status, file_state,
-      rejection_reason, nginx_url, thumbnail_url, duration_secs,
+      rejection_reason, nginx_url, thumbnail_url, duration_secs, why_text,
       requested_at, added_at, watched_at, saved_at, source
     FROM requests
     WHERE user_id = ?
@@ -217,6 +217,7 @@ requestsRouter.get('/feed', (req: Request, res: Response) => {
     title: string | null; channel: string | null; status: string; file_state: string;
     rejection_reason: string | null; nginx_url: string | null;
     thumbnail_url: string | null; duration_secs: number | null;
+    why_text: string | null;
     requested_at: string; added_at: string; watched_at: string | null;
     saved_at: string | null; source: string;
   }>;
@@ -322,13 +323,15 @@ requestsRouter.delete('/:id', async (req: Request, res: Response) => {
 // GET /requests/:id — polled by PWA to check status
 requestsRouter.get('/:id', async (req: Request, res: Response) => {
   const row = db.prepare(
-    'SELECT request_id, user_id, youtube_id, youtube_channel_id, status, title, channel, rejection_reason, nginx_url, requested_at, watched_at, saved_at FROM requests WHERE request_id = ?'
+    'SELECT request_id, user_id, youtube_id, youtube_channel_id, status, title, channel, rejection_reason, nginx_url, why_text, source, requested_at, watched_at, saved_at FROM requests WHERE request_id = ?'
   ).get(req.params['id']) as
     | {
         request_id: string; user_id: string; youtube_id: string | null;
         youtube_channel_id: string | null;
         status: string; title: string | null; channel: string | null;
         rejection_reason: string | null; nginx_url: string | null;
+        why_text: string | null;
+        source: string;
         requested_at: string;
         watched_at: string | null;
         saved_at: string | null;
@@ -358,6 +361,8 @@ requestsRouter.get('/:id', async (req: Request, res: Response) => {
     channel: row.channel,
     rejectionReason: displayRejectionReason(row.rejection_reason),
     videoUrl: row.nginx_url,
+    whyText: row.why_text,
+    source: row.source,
     requestedAt: row.requested_at,
     watchedAt: row.watched_at,
     savedAt: row.saved_at,

@@ -26,7 +26,7 @@ searchRouter.get('/', (req: Request, res: Response) => {
 
   const rows = db.prepare(`
     SELECT r.request_id, r.url, r.youtube_id, r.youtube_channel_id, r.title, r.channel, r.status, r.file_state,
-           r.rejection_reason, r.nginx_url, r.thumbnail_url, r.duration_secs,
+           r.rejection_reason, r.nginx_url, r.thumbnail_url, r.duration_secs, r.why_text,
            r.requested_at, r.added_at, r.watched_at, r.saved_at, r.source
     FROM requests r
     WHERE r.rowid IN (

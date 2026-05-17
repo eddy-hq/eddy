@@ -21,6 +21,7 @@ interface FeedCard {
   nginx_url: string | null;
   thumbnail_url: string | null;
   duration_secs: number | null;
+  why_text: string | null;
   rejection_reason: string | null;
   requested_at: string;
   added_at: string;
@@ -50,10 +51,12 @@ function toCardData(row: FeedCard): CardData {
     nginxUrl: row.nginx_url,
     thumbnailUrl: row.thumbnail_url,
     durationSecs: row.duration_secs,
+    whyText: row.why_text,
     requestedAt: row.requested_at,
     rejectionReason: row.rejection_reason,
     watchedAt: row.watched_at,
     savedAt: row.saved_at,
+    source: row.source,
   };
 }
 

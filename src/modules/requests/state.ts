@@ -152,6 +152,7 @@ export interface CreateFromCandidateInput {
   userId: string;
   youtubeId: string | null;
   title: string | null;
+  whyText: string | null;
 }
 
 // Fields supplied by the worker on a successful restore (issue #116).
@@ -620,15 +621,16 @@ export const TRANSITIONS = {
     target: 'downloading',
     buildSql: (event, now) => ({
       sql: `INSERT INTO requests
-              (request_id, user_id, source, url, youtube_id, title, status, decided_by, decided_at, requested_at)
+              (request_id, user_id, source, url, youtube_id, title, why_text, status, decided_by, decided_at, requested_at)
             VALUES
-              (?, ?, 'recommended', ?, ?, ?, 'downloading', 'auto', ?, ?)`,
+              (?, ?, 'recommended', ?, ?, ?, ?, 'downloading', 'auto', ?, ?)`,
       params: [
         event.requestId,
         event.input.userId,
         event.input.url,
         event.input.youtubeId,
         event.input.title,
+        event.input.whyText,
         now,
         now,
       ],

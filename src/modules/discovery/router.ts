@@ -155,12 +155,13 @@ discoveryRouter.post('/request', async (req: Request, res: Response) => {
   if (!candidateId?.trim()) throw new ValidationError('candidateId required');
 
   const candidate = db.prepare(
-    'SELECT candidate_id, url, external_id, title FROM candidate_pool WHERE candidate_id = ? AND user_id = ?'
+    'SELECT candidate_id, url, external_id, title, why_text FROM candidate_pool WHERE candidate_id = ? AND user_id = ?'
   ).get(candidateId, user.user_id) as {
     candidate_id: string;
     url: string;
     external_id: string | null;
     title: string | null;
+    why_text: string | null;
   } | undefined;
   if (!candidate) throw new NotFoundError(`candidate ${candidateId}`);
 
@@ -173,6 +174,7 @@ discoveryRouter.post('/request', async (req: Request, res: Response) => {
       userId: user.user_id,
       youtubeId: candidate.external_id,
       title: candidate.title,
+      whyText: candidate.why_text,
     },
   });
   await settled;

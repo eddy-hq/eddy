@@ -6,17 +6,20 @@ export interface PersonViewItem {
   title: string | null;
   channel: string | null;
   youtube_id: string | null;
+  youtube_channel_id: string | null;
   url: string;
   status: string;
   file_state: string;
   nginx_url: string | null;
   thumbnail_url: string | null;
   duration_secs: number | null;
+  why_text: string | null;
   rejection_reason: string | null;
   requested_at: string;
   added_at: string;
   watched_at: string | null;
   saved_at: string | null;
+  source: string;
 }
 
 export interface PersonViewPerson {
@@ -86,9 +89,9 @@ export function getPersonView(personId: string, userId: string): PersonView {
 
   const placeholders = IN_LIBRARY_STATUSES.map(() => '?').join(', ');
   const items = db.prepare(`
-    SELECT request_id, title, channel, youtube_id, url, status, file_state,
-           nginx_url, thumbnail_url, duration_secs, rejection_reason,
-           requested_at, added_at, watched_at, saved_at
+    SELECT request_id, title, channel, youtube_id, youtube_channel_id, url, status, file_state,
+           nginx_url, thumbnail_url, duration_secs, why_text, rejection_reason,
+           requested_at, added_at, watched_at, saved_at, source
     FROM requests
     WHERE user_id = ?
       AND channel = ?
