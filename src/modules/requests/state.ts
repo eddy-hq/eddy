@@ -612,18 +612,18 @@ export const TRANSITIONS = {
     }],
   } as Descriptor<Extract<Event, { kind: 'create_channel_poll' }>>,
 
-  // Candidate accept does not set added_at — preserved from the prior inline
-  // INSERT in discovery/router.ts. The feed query orders by added_at DESC,
-  // but recommended cards land in their own section so a NULL there doesn't
-  // disturb share-sheet ordering.
+  // added_at matches the other two creators: the feed query orders by
+  // `added_at DESC LIMIT 200`, so a NULL there pushes the row below every
+  // dated request and out of the cap entirely — the candidate accept then
+  // looks like a silent dismiss in the PWA.
   create_candidate: {
     sources: 'creation',
     target: 'downloading',
     buildSql: (event, now) => ({
       sql: `INSERT INTO requests
-              (request_id, user_id, source, url, youtube_id, title, why_text, status, decided_by, decided_at, requested_at)
+              (request_id, user_id, source, url, youtube_id, title, why_text, status, decided_by, decided_at, requested_at, added_at)
             VALUES
-              (?, ?, 'recommended', ?, ?, ?, ?, 'downloading', 'auto', ?, ?)`,
+              (?, ?, 'recommended', ?, ?, ?, ?, 'downloading', 'auto', ?, ?, ?)`,
       params: [
         event.requestId,
         event.input.userId,
@@ -631,6 +631,7 @@ export const TRANSITIONS = {
         event.input.youtubeId,
         event.input.title,
         event.input.whyText,
+        now,
         now,
         now,
       ],
