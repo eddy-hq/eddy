@@ -1256,12 +1256,13 @@ describe('create_candidate', () => {
 
     const row = db
       .prepare(
-        `SELECT source, url, youtube_id, title, status, decided_by, decided_at, requested_at
+        `SELECT source, url, youtube_id, title, status, decided_by, decided_at, requested_at, added_at
            FROM requests WHERE request_id = ?`,
       )
       .get(requestId) as {
         source: string; url: string; youtube_id: string; title: string;
-        status: string; decided_by: string; decided_at: string; requested_at: string;
+        status: string; decided_by: string; decided_at: string;
+        requested_at: string; added_at: string | null;
       };
     expect(row.source).toBe('recommended');
     expect(row.url).toBe(URL);
@@ -1271,6 +1272,10 @@ describe('create_candidate', () => {
     expect(row.decided_by).toBe('auto');
     expect(new Date(row.decided_at).getTime()).toBeGreaterThanOrEqual(before);
     expect(new Date(row.requested_at).getTime()).toBeGreaterThanOrEqual(before);
+    // Feed query orders by added_at DESC LIMIT 200 — a NULL would push the
+    // row out of the cap and make the accept look like a silent dismiss.
+    expect(row.added_at).not.toBeNull();
+    expect(new Date(row.added_at!).getTime()).toBeGreaterThanOrEqual(before);
 
     expect(fakePorts.enqueueDownload).toHaveBeenCalledWith(
       { requestId, youtubeId: YT_ID, url: URL },
