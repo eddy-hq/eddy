@@ -49,6 +49,7 @@ function toCardData(row: FeedCard): CardData {
     status: row.status,
     fileState: row.file_state,
     nginxUrl: row.nginx_url,
+    youtubeWatchUrl: row.url,
     thumbnailUrl: row.thumbnail_url,
     durationSecs: row.duration_secs,
     whyText: row.why_text,

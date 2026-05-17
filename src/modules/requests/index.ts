@@ -323,10 +323,11 @@ requestsRouter.delete('/:id', async (req: Request, res: Response) => {
 // GET /requests/:id — polled by PWA to check status
 requestsRouter.get('/:id', async (req: Request, res: Response) => {
   const row = db.prepare(
-    'SELECT request_id, user_id, youtube_id, youtube_channel_id, status, title, channel, rejection_reason, nginx_url, why_text, source, requested_at, watched_at, saved_at FROM requests WHERE request_id = ?'
+    'SELECT request_id, user_id, url, youtube_id, youtube_channel_id, status, title, channel, rejection_reason, nginx_url, why_text, source, requested_at, watched_at, saved_at FROM requests WHERE request_id = ?'
   ).get(req.params['id']) as
     | {
-        request_id: string; user_id: string; youtube_id: string | null;
+        request_id: string; user_id: string; url: string;
+        youtube_id: string | null;
         youtube_channel_id: string | null;
         status: string; title: string | null; channel: string | null;
         rejection_reason: string | null; nginx_url: string | null;
@@ -361,6 +362,11 @@ requestsRouter.get('/:id', async (req: Request, res: Response) => {
     channel: row.channel,
     rejectionReason: displayRejectionReason(row.rejection_reason),
     videoUrl: row.nginx_url,
+    // The original YouTube URL as stored on the request. Distinct from
+    // `videoUrl` (the local nginx file URL the player streams from); exposed
+    // for the PWA's Web Share tile so the recipient gets the canonical
+    // YouTube link rather than a household-only nginx path.
+    youtubeWatchUrl: row.url,
     whyText: row.why_text,
     source: row.source,
     requestedAt: row.requested_at,
