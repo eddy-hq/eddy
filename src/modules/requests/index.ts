@@ -517,12 +517,6 @@ requestsRouter.post('/:id/cancel', (req: Request, res: Response) => {
   res.status(204).end();
 });
 
-// POST /requests/:id/dismiss — PWA dismisses a request
-requestsRouter.post('/:id/dismiss', (req: Request, res: Response) => {
-  getRequestsState().apply({ kind: 'mark_dismissed', requestId: req.params['id']! });
-  res.status(204).end();
-});
-
 // GET /requests?userId=... or ?user=... — list requests for a user
 requestsRouter.get('/', (req: Request, res: Response) => {
   const { userId, user: userName } = req.query as { userId?: string; user?: string };

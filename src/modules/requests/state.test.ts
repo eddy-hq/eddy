@@ -171,38 +171,6 @@ describe('mark_watched', () => {
   });
 });
 
-describe('mark_dismissed', () => {
-  it('transitions ready → dismissed and returns the user_id', () => {
-    insertRequest({ request_id: 'req-d1', status: 'ready' });
-
-    const { result } = state.apply({ kind: 'mark_dismissed', requestId: 'req-d1' });
-
-    expect(result).toEqual({ transitioned: true, userId: USER_ID });
-    const row = db
-      .prepare('SELECT status FROM requests WHERE request_id = ?')
-      .get('req-d1') as { status: string };
-    expect(row.status).toBe('dismissed');
-  });
-
-  it('is a no-op on a downloading row and does not change status', () => {
-    insertRequest({ request_id: 'req-d2', status: 'downloading' });
-
-    const { result } = state.apply({ kind: 'mark_dismissed', requestId: 'req-d2' });
-
-    expect(result).toEqual({ transitioned: false, currentStatus: 'downloading' });
-    const row = db
-      .prepare('SELECT status FROM requests WHERE request_id = ?')
-      .get('req-d2') as { status: string };
-    expect(row.status).toBe('downloading');
-  });
-
-  it('returns currentStatus: null for an unknown id', () => {
-    const { result } = state.apply({ kind: 'mark_dismissed', requestId: 'does-not-exist' });
-
-    expect(result).toEqual({ transitioned: false, currentStatus: null });
-  });
-});
-
 describe('mark_cancelled', () => {
   it('transitions downloading → rejected with sentinel reason and cancels the download job + progress key', async () => {
     insertRequest({ request_id: 'req-c1', status: 'downloading' });
@@ -1451,8 +1419,6 @@ const PROP_DOWNLOADED_FIELDS: DownloadedFields = {
 function buildEvent(kind: Event['kind'], requestId: string): Event {
   switch (kind) {
     case 'mark_watched':
-      return { kind, requestId };
-    case 'mark_dismissed':
       return { kind, requestId };
     case 'mark_soft_deleted':
       return { kind, requestId };

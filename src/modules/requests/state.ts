@@ -171,7 +171,6 @@ export interface RestoredFields {
 
 export type Event =
   | { kind: 'mark_watched'; requestId: string }
-  | { kind: 'mark_dismissed'; requestId: string }
   | { kind: 'mark_soft_deleted'; requestId: string }
   | { kind: 'mark_recycled'; requestId: string }
   | { kind: 'mark_restored'; requestId: string; fields: RestoredFields }
@@ -259,18 +258,6 @@ export const TRANSITIONS = {
     }),
     effects: () => [],
   } as Descriptor<Extract<Event, { kind: 'mark_watched' }>>,
-
-  mark_dismissed: {
-    sources: ['pending', 'approved', 'ready', 'rejected', 'failed', 'watched', 'deleted'],
-    target: 'dismissed',
-    buildSql: (event) => ({
-      sql: `UPDATE requests SET status = 'dismissed'
-            WHERE request_id = ? AND status IN ('pending', 'approved', 'ready', 'rejected', 'failed', 'watched', 'deleted')
-            RETURNING user_id`,
-      params: [event.requestId],
-    }),
-    effects: () => [],
-  } as Descriptor<Extract<Event, { kind: 'mark_dismissed' }>>,
 
   mark_soft_deleted: {
     sources: ['ready', 'watched'],
