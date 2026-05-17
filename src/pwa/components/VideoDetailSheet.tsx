@@ -704,13 +704,18 @@ function ActionGrid({
   }
 
   return (
+    // The grid spec is `padding: 4px 16px 16px` measured from the sheet
+    // edge. Our scrolling container already has 20px horizontal padding, so
+    // the row escapes it with -20px side margins and re-applies the 16px
+    // itself — net effect matches the prototype regardless of the
+    // surrounding container's padding.
     <div
       style={{
         display: 'grid',
         gridTemplateColumns: '1fr 1fr 1fr',
         gap: 8,
-        padding: '4px 0 16px',
-        marginBottom: 8,
+        padding: '4px 16px 16px',
+        margin: '0 -20px 8px',
       }}
     >
       {/* Save tile */}
@@ -753,6 +758,9 @@ function ActionGrid({
           label="Delete"
           icon={<Trash2 size={20} strokeWidth={1.8} />}
           hoverColor="var(--dismiss)"
+          // Match the prototype's `.dismiss.on` tinted background on press
+          // too (touch devices don't fire hover before tap-release).
+          activeBg="rgba(184, 84, 80, 0.08)"
           onClick={onArmDelete}
         />
       )}
