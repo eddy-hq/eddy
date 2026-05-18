@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest';
 
+vi.mock('../../config', () => ({ config: {} }));
+
 vi.mock('../../db/client', async () => {
   const { default: Database } = await import('better-sqlite3');
   const memoryDb = new Database(':memory:');

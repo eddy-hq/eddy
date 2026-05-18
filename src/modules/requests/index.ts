@@ -7,6 +7,7 @@ import { config } from '../../config';
 import { downloadQueue, redis } from '../../queue';
 import { getNotifications } from '../notifications';
 import { resolveUserByIdOrName } from '../users';
+import { toPublicMediaUrl } from '../media';
 // State machine lives in `./state` (pure dispatcher) with production wiring in
 // `./state-default` (default ports + `getRequestsState` accessor). The router
 // reaches `apply` via the accessor so the registered (or test-injected) state
@@ -227,6 +228,8 @@ requestsRouter.get('/feed', (req: Request, res: Response) => {
 
   for (const row of rows) {
     row.rejection_reason = displayRejectionReason(row.rejection_reason);
+    row.nginx_url = toPublicMediaUrl(row.nginx_url);
+    row.thumbnail_url = toPublicMediaUrl(row.thumbnail_url);
   }
 
   const dayMap = new Map<string, typeof rows>();
@@ -361,7 +364,7 @@ requestsRouter.get('/:id', async (req: Request, res: Response) => {
     title: row.title,
     channel: row.channel,
     rejectionReason: displayRejectionReason(row.rejection_reason),
-    videoUrl: row.nginx_url,
+    videoUrl: toPublicMediaUrl(row.nginx_url),
     // The original YouTube URL as stored on the request. Distinct from
     // `videoUrl` (the local nginx file URL the player streams from); exposed
     // for the PWA's Web Share tile so the recipient gets the canonical
@@ -545,6 +548,7 @@ requestsRouter.get('/', (req: Request, res: Response) => {
 
   for (const row of rows) {
     row.rejection_reason = displayRejectionReason(row.rejection_reason);
+    row.nginx_url = toPublicMediaUrl(row.nginx_url);
   }
 
   res.json({ requests: rows });

@@ -4,6 +4,7 @@ import { logger } from '../../logger';
 import { ValidationError } from '../../errors';
 import { resolveUserByIdOrName } from '../users';
 import { displayRejectionReason } from '../requests';
+import { toPublicMediaUrl } from '../media';
 import { searchVideosFlat, type SearchVideoFlat } from '../../ytdlp';
 
 export const searchRouter = Router();
@@ -36,10 +37,12 @@ searchRouter.get('/', (req: Request, res: Response) => {
     AND r.status NOT IN ('dismissed')
     ORDER BY r.added_at DESC
     LIMIT 50
-  `).all(matchExpr, uid) as Array<{ rejection_reason: string | null }>;
+  `).all(matchExpr, uid) as Array<{ rejection_reason: string | null; nginx_url: string | null; thumbnail_url: string | null }>;
 
   for (const r of rows) {
     r.rejection_reason = displayRejectionReason(r.rejection_reason);
+    r.nginx_url = toPublicMediaUrl(r.nginx_url);
+    r.thumbnail_url = toPublicMediaUrl(r.thumbnail_url);
   }
 
   res.json({ results: rows, query: q.trim() });

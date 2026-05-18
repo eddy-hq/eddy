@@ -1,5 +1,6 @@
 import { db } from '../../db/client';
 import { NotFoundError } from '../../errors';
+import { toPublicMediaUrl } from '../media';
 
 export interface PersonViewItem {
   request_id: string;
@@ -99,6 +100,11 @@ export function getPersonView(personId: string, userId: string): PersonView {
     ORDER BY added_at DESC
     LIMIT ?
   `).all(userId, personRow.display_name, ...IN_LIBRARY_STATUSES, ITEMS_CAP) as PersonViewItem[];
+
+  for (const item of items) {
+    item.nginx_url = toPublicMediaUrl(item.nginx_url);
+    item.thumbnail_url = toPublicMediaUrl(item.thumbnail_url);
+  }
 
   return {
     person: {

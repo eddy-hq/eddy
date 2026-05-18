@@ -179,6 +179,19 @@ Express :3737  (eddy server, M4, LaunchAgent)
 
 Caddy lives in `~/code/edge` (separate repo). It also fronts the `urmston.org` CF Tunnel apps (pitchside, brain) — a single Caddy with two patterns. See `~/code/edge/README.md`.
 
+### Media paths — same-origin proxy
+
+`/videos/*` and `/thumbs/*` on `eddyhq.app` reverse-proxy to the Ubuntu mediaserver's nginx (canonical LAN URL: `http://<mediaserver-tailnet-ip>/videos|thumbs`). The page is HTTPS, so http:// media URLs would be blocked as mixed content; the proxy keeps everything same-origin. Bytes transit the M4 — acceptable for tailnet-only family use.
+
+The DB still stores the LAN nginx URL on each row (canonical "where the file lives"). The API rewrites it to `https://eddyhq.app/...` at response-serialise time via `toPublicMediaUrl` in `src/modules/media`. Two env vars drive the rewrite:
+
+```
+PUBLIC_VIDEO_BASE_URL=https://eddyhq.app/videos
+PUBLIC_THUMB_BASE_URL=https://eddyhq.app/thumbs
+```
+
+Unset them in dev to keep raw nginx URLs. To change the public scheme/host later, edit these two values — no DB migration.
+
 ### Cert renewal
 
 Caddy renews Let's Encrypt certs automatically (90-day issuance, renewal attempted in the last 30 days). DNS-01 challenge against the `eddyhq.app` Cloudflare zone using `CF_DNS_TOKEN_EDDYHQ_APP` from `~/code/edge/.env`.

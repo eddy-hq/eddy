@@ -43,6 +43,12 @@ const schema = z.object({
   // Thumbnails — generated post-download, served by nginx alongside videos
   THUMB_OUTPUT_PATH: z.string().default('/mnt/ssd/eddy/thumbs'),
   NGINX_THUMB_BASE_URL: z.string().optional(),
+  // Public (HTTPS) replacements for the two NGINX_*_BASE_URL values above.
+  // When set, the API rewrites persisted http://<mediaserver>/... URLs to
+  // these on the way out — keeps the PWA same-origin under HTTPS and avoids
+  // mixed-content blocking. See toPublicMediaUrl in modules/media.
+  PUBLIC_VIDEO_BASE_URL: z.string().optional(),
+  PUBLIC_THUMB_BASE_URL: z.string().optional(),
   // Internal M4 ↔ Ubuntu worker callback
   INTERNAL_HMAC_SECRET: z.string().min(32, 'INTERNAL_HMAC_SECRET must be at least 32 characters'),
   M4_INTERNAL_URL: z.string().optional(), // set on Ubuntu worker; not required on M4
