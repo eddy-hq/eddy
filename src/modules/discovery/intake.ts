@@ -77,14 +77,20 @@ function loadChannelDismissalCounts(userId: string): Map<string, number> {
 
 // Brief §17, issue #149: person-sourced material is the primary discovery
 // signal; interest search is the gap-filler. Counts the live person-sourced
-// supply for this user "this refresh":
+// supply available to fill *this refresh's* slate:
 //
 //   - candidate_pool rows with source_type ∈ {person_backcatalog,
-//     person_recommendation} that haven't been rejected (no dismissed /
-//     guard_rejected). These are the back-catalog seeded immediately above
-//     and any unprocessed person recommendations sitting in the pool.
+//     person_recommendation} that are still eligible candidates — status
+//     ∈ {pending, scored, guard_pending} and created in the last 24h.
+//     Rows in `dismissed` / `guard_rejected` / `requested` / `surfaced`
+//     no longer represent material the slate can draw on for today: the
+//     first two were rejected, the latter two have already been spent
+//     (a `requested` row is on the feed; a `surfaced` row was a previous
+//     refresh's pick). The 24h created_at floor stops historical
+//     `pending` / `scored` rows that lingered past pruning from making
+//     the supply look healthy when nothing fresh arrived this refresh.
 //   - requests with source='channel_subscription' added in the last 24h —
-//     the RSS-poller landings from followed people. Those bypass the
+//     RSS-poller landings from followed people. Those bypass the
 //     candidate pool entirely (poll → requests directly) but they're
 //     person-sourced material on the user's feed, so they count toward
 //     "is the person supply thin?". 24h tracks the daily discovery cadence.
@@ -98,8 +104,9 @@ export function countPersonSourcedForRefresh(userId: string): number {
     SELECT COUNT(*) AS n FROM candidate_pool
     WHERE user_id = ?
       AND source_type IN ('person_backcatalog', 'person_recommendation')
-      AND status NOT IN ('dismissed', 'guard_rejected')
-  `).get(userId) as { n: number };
+      AND status IN ('pending', 'scored', 'guard_pending')
+      AND created_at >= ?
+  `).get(userId, since) as { n: number };
 
   const reqs = db.prepare(`
     SELECT COUNT(*) AS n FROM requests

@@ -582,6 +582,7 @@ describe('countPersonSourcedForRefresh (issue #149)', () => {
     candidateId: string;
     sourceType: 'interest_search' | 'person_backcatalog' | 'person_recommendation';
     status: string;
+    createdAt?: string;
   }): void {
     db.prepare(`
       INSERT INTO candidate_pool
@@ -595,7 +596,7 @@ describe('countPersonSourcedForRefresh (issue #149)', () => {
       `https://www.youtube.com/watch?v=${opts.candidateId}`,
       opts.candidateId,
       opts.status,
-      new Date().toISOString(),
+      opts.createdAt ?? new Date().toISOString(),
     );
   }
 
@@ -637,6 +638,30 @@ describe('countPersonSourcedForRefresh (issue #149)', () => {
     insertPoolRow({ candidateId: 'bc-1', sourceType: 'person_backcatalog', status: 'pending' });
     insertPoolRow({ candidateId: 'bc-2', sourceType: 'person_backcatalog', status: 'dismissed' });
     insertPoolRow({ candidateId: 'bc-3', sourceType: 'person_backcatalog', status: 'guard_rejected' });
+
+    expect(countPersonSourcedForRefresh(USER_ID)).toBe(1);
+  });
+
+  it('excludes spent statuses (requested, surfaced) so historical picks do not look like fresh supply', () => {
+    // Round-1 codex finding: a user who has surfaced/requested enough
+    // person-sourced items in the past would have person_count above the
+    // threshold indefinitely, suppressing interest search even when no
+    // fresh person-sourced material arrived this refresh.
+    insertPoolRow({ candidateId: 'bc-live', sourceType: 'person_backcatalog', status: 'pending' });
+    insertPoolRow({ candidateId: 'bc-spent-req', sourceType: 'person_backcatalog', status: 'requested' });
+    insertPoolRow({ candidateId: 'bc-spent-surf', sourceType: 'person_backcatalog', status: 'surfaced' });
+
+    expect(countPersonSourcedForRefresh(USER_ID)).toBe(1);
+  });
+
+  it('counts only pool rows created within the last 24h', () => {
+    insertPoolRow({ candidateId: 'bc-fresh', sourceType: 'person_backcatalog', status: 'pending' });
+    insertPoolRow({
+      candidateId: 'bc-stale',
+      sourceType: 'person_backcatalog',
+      status: 'pending',
+      createdAt: new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString(),
+    });
 
     expect(countPersonSourcedForRefresh(USER_ID)).toBe(1);
   });
