@@ -11,6 +11,8 @@ Two machines: **M4 Mac Mini** (Tailscale: `mini-steve`) runs the Express server,
 | Express server (`src/index.ts`) | M4 | launchd `com.eddy.server` |
 | Vite dev server | M4 | manual (`npm run dev:pwa`) |
 | Redis | M4 | Homebrew (`brew services`, launchd `homebrew.mxcl.redis`) |
+| Caddy (HTTPS for `eddyhq.app`) | M4 | launchd `com.steveu.edge.caddy` (LaunchDaemon, root) — config in `~/code/edge` |
+| cloudflared | M4 | launchd `com.steveu.edge.cloudflared` — config in `~/code/edge` |
 | Download worker (`dist/workers/download.js`) | Ubuntu | systemd `eddy-worker` |
 | ntfy | Ubuntu | Docker (`eddy-ntfy` container) |
 | nginx | Ubuntu | system service |
@@ -156,6 +158,63 @@ Should report `value="false"`.
 One-shot per Plex install — the pref persists across Plex restarts. Only re-run when rebuilding the mediaserver from scratch or recreating the Eddy Videos library. Leave Movies / TV libraries on Plex defaults; this URL targets section `${PLEX_LIBRARY_SECTION_ID}` only.
 
 ---
+
+## HTTPS for the PWA — `eddyhq.app`
+
+The PWA is served from `https://eddyhq.app/` with a real Let's Encrypt cert so iOS Safari treats it as a secure context (Web Share API, service workers, etc. require this). All traffic stays on the tailnet — the domain resolves publicly to the M4's Tailscale IP (`100.101.51.114`) via a DNS-only (grey-cloud) A record, so off-tailnet clients can't reach the service.
+
+**Why direct TLS, not Cloudflare Tunnel:** the PWA's API calls return kid consumption data (titles, creators, watch times, guard verdicts). [ADR-0004](adr/0004-kids-consumption-never-leaves-m4.md) says that data must not transit a third party. CF Tunnel would terminate TLS at Cloudflare's edge, putting that data in plaintext on their infra. Direct TLS on the M4 keeps it on the tailnet end-to-end.
+
+**Topology:**
+
+```
+browser on tailnet
+   │ HTTPS (Let's Encrypt cert)
+   ▼
+Caddy :443  (LaunchDaemon, root, M4)
+   │ HTTP, loopback
+   ▼
+Express :3737  (eddy server, M4, LaunchAgent)
+```
+
+Caddy lives in `~/code/edge` (separate repo). It also fronts the `urmston.org` CF Tunnel apps (pitchside, brain) — a single Caddy with two patterns. See `~/code/edge/README.md`.
+
+### Cert renewal
+
+Caddy renews Let's Encrypt certs automatically (90-day issuance, renewal attempted in the last 30 days). DNS-01 challenge against the `eddyhq.app` Cloudflare zone using `CF_DNS_TOKEN_EDDYHQ_APP` from `~/code/edge/.env`.
+
+Renewal failures land in `~/data/edge/logs/caddy.err.log`. The watchdog doesn't currently check Caddy or surface renewal errors — TODO if a renewal silently fails in production.
+
+### Verifying after a rebuild
+
+From any tailnet client:
+
+```
+curl -vI https://eddyhq.app          # expect HTTP/2 200 with a valid LE cert
+curl -vI https://www.eddyhq.app      # expect 301 → https://eddyhq.app
+```
+
+Off-tailnet (e.g. from a phone on cell data with Tailscale off):
+
+```
+nslookup eddyhq.app                   # resolves to 100.101.51.114
+curl --max-time 5 https://eddyhq.app  # connection timeout — no public route
+```
+
+### Bouncing Caddy
+
+```
+sudo launchctl kickstart -k system/com.steveu.edge.caddy
+tail -f ~/data/edge/logs/caddy.err.log
+```
+
+### Renewer trap
+
+`brew upgrade caddy` does **not** update the running daemon. The LaunchDaemon points at `~/code/edge/bin/caddy`, a custom build that includes the Cloudflare DNS module (Homebrew Caddy doesn't). To refresh the daemon binary:
+
+```
+cd ~/code/edge && bin/build.sh && sudo launchctl kickstart -k system/com.steveu.edge.caddy
+```
 
 ## API route prefixes
 
