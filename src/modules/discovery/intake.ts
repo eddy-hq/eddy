@@ -75,7 +75,81 @@ function loadChannelDismissalCounts(userId: string): Map<string, number> {
   return map;
 }
 
-export async function refreshCandidatePool(userId: string, userInterests: UserInterestRow[]): Promise<number> {
+// Brief §17, issue #149: person-sourced material is the primary discovery
+// signal; interest search is the gap-filler. Counts the live person-sourced
+// supply for this user "this refresh":
+//
+//   - candidate_pool rows with source_type ∈ {person_backcatalog,
+//     person_recommendation} that haven't been rejected (no dismissed /
+//     guard_rejected). These are the back-catalog seeded immediately above
+//     and any unprocessed person recommendations sitting in the pool.
+//   - requests with source='channel_subscription' added in the last 24h —
+//     the RSS-poller landings from followed people. Those bypass the
+//     candidate pool entirely (poll → requests directly) but they're
+//     person-sourced material on the user's feed, so they count toward
+//     "is the person supply thin?". 24h tracks the daily discovery cadence.
+//
+// Used by refreshCandidatePool to decide skip / partial / full interest
+// search. Exported for tests.
+export function countPersonSourcedForRefresh(userId: string): number {
+  const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+
+  const pool = db.prepare(`
+    SELECT COUNT(*) AS n FROM candidate_pool
+    WHERE user_id = ?
+      AND source_type IN ('person_backcatalog', 'person_recommendation')
+      AND status NOT IN ('dismissed', 'guard_rejected')
+  `).get(userId) as { n: number };
+
+  const reqs = db.prepare(`
+    SELECT COUNT(*) AS n FROM requests
+    WHERE user_id = ?
+      AND source = 'channel_subscription'
+      AND requested_at >= ?
+  `).get(userId, since) as { n: number };
+
+  return pool.n + reqs.n;
+}
+
+export interface RefreshOptions {
+  // Number of person-sourced candidates already populated for this user this
+  // refresh. When the threshold is positive and personSourcedCount meets or
+  // exceeds it, interest search is skipped entirely. When below threshold,
+  // the search runs with a proportionally reduced query budget.
+  personSourcedCount: number;
+  // 0 disables gating (always run at full budget). Otherwise the daily-slate
+  // cap for the user role (adult 15 / kid 5 by default).
+  threshold: number;
+}
+
+// Build the ordered list of (interest, term) pairs the search loop would run
+// at full budget — top 3 interests contribute their first two terms, ranks
+// 4–10 contribute one. Worst-case length is 13 (3×2 + 7×1). Returned as a
+// flat array so a deficit-scaled budget can simply slice the prefix.
+function planInterestQueries(userInterests: UserInterestRow[]): Array<{ interest: UserInterestRow; term: string }> {
+  const plan: Array<{ interest: UserInterestRow; term: string }> = [];
+  const interestsToSearch = userInterests.slice(0, 10);
+  for (const interest of interestsToSearch) {
+    let terms: string[];
+    try {
+      terms = JSON.parse(interest.search_terms) as string[];
+      if (!Array.isArray(terms)) terms = [];
+    } catch {
+      terms = [];
+    }
+    const termCount = interest.rank <= 3 ? 2 : 1;
+    for (const term of terms.slice(0, termCount)) {
+      plan.push({ interest, term });
+    }
+  }
+  return plan;
+}
+
+export async function refreshCandidatePool(
+  userId: string,
+  userInterests: UserInterestRow[],
+  options: RefreshOptions,
+): Promise<number> {
   const now = new Date().toISOString();
   let added = 0;
 
@@ -86,76 +160,103 @@ export async function refreshCandidatePool(userId: string, userInterests: UserIn
     ? loadChannelDismissalCounts(userId)
     : null;
 
-  // Search up to 10 interests so lower-ranked ones can still surprise the
-  // feed. Top 3 get two search terms; ranks 4–10 get one to keep the search
-  // budget bounded (~13 yt-dlp calls/user/day worst case).
-  const interestsToSearch = userInterests.slice(0, 10);
+  // Brief §17 gating (issue #149). Build the full plan, then pick a prefix
+  // sized to the deficit so top-ranked interests always win the reduced
+  // budget. The plan preserves the historical ordering: interest1 t0,
+  // interest1 t1, interest2 t0, interest2 t1, ..., interest10 t0.
+  const fullPlan = planInterestQueries(userInterests);
+  const fullBudget = fullPlan.length;
+  const { personSourcedCount, threshold } = options;
 
-  for (const interest of interestsToSearch) {
-    let terms: string[];
+  let queriesPlanned: number;
+  let action: 'skip' | 'partial' | 'full';
+  if (threshold <= 0) {
+    // Gating disabled — original behaviour, full budget every refresh.
+    queriesPlanned = fullBudget;
+    action = 'full';
+  } else if (personSourcedCount >= threshold) {
+    queriesPlanned = 0;
+    action = 'skip';
+  } else if (personSourcedCount <= 0) {
+    queriesPlanned = fullBudget;
+    action = 'full';
+  } else {
+    // Scale by deficit ratio. A 2-item shortfall against a 15 threshold
+    // should not pull 13 queries — round up so a single missing item still
+    // gets at least one query attempt.
+    const deficit = threshold - personSourcedCount;
+    queriesPlanned = Math.min(fullBudget, Math.ceil((fullBudget * deficit) / threshold));
+    action = 'partial';
+  }
+
+  logger.info(
+    {
+      userId,
+      person_count: personSourcedCount,
+      threshold,
+      action,
+      interest_queries_planned: queriesPlanned,
+    },
+    'Discovery intake: interest-search gating decision',
+  );
+
+  if (queriesPlanned === 0) return 0;
+
+  const plan = fullPlan.slice(0, queriesPlanned);
+
+  for (const { interest, term } of plan) {
+    let results: SearchVideoWithDate[];
     try {
-      terms = JSON.parse(interest.search_terms) as string[];
-      if (!Array.isArray(terms)) terms = [];
-    } catch {
-      terms = [];
+      results = await searchVideosWithDates(term);
+    } catch (err) {
+      logger.warn({ err, searchTerm: term }, 'Discovery: yt-dlp search failed');
+      continue;
     }
 
-    const termCount = interest.rank <= 3 ? 2 : 1;
+    for (const result of results) {
+      if (isDuplicateCandidate(userId, result.videoId)) continue;
+      if (result.durationSecs !== null && result.durationSecs <= SHORTS_MAX_SECS) continue;
+      if (result.liveStatus === 'is_live' || result.liveStatus === 'is_upcoming') continue;
 
-    for (const term of terms.slice(0, termCount)) {
-      let results: SearchVideoWithDate[];
-      try {
-        results = await searchVideosWithDates(term);
-      } catch (err) {
-        logger.warn({ err, searchTerm: term }, 'Discovery: yt-dlp search failed');
-        continue;
-      }
-
-      for (const result of results) {
-        if (isDuplicateCandidate(userId, result.videoId)) continue;
-        if (result.durationSecs !== null && result.durationSecs <= SHORTS_MAX_SECS) continue;
-        if (result.liveStatus === 'is_live' || result.liveStatus === 'is_upcoming') continue;
-
-        // Channel-level dismissal cap: skip candidates from channels the user
-        // has rejected at or above the configured threshold. Channels without
-        // a name (yt-dlp returned empty) bypass the filter — we'd be matching
-        // every empty-channel candidate together otherwise.
-        if (channelDismissals && result.channel) {
-          const dismissCount = channelDismissals.get(result.channel) ?? 0;
-          if (dismissCount >= channelDismissThreshold) {
-            logger.info(
-              {
-                userId,
-                channel: result.channel,
-                videoId: result.videoId,
-                dismissCount,
-                threshold: channelDismissThreshold,
-              },
-              'Discovery intake: filtered candidate from over-dismissed channel',
-            );
-            continue;
-          }
+      // Channel-level dismissal cap: skip candidates from channels the user
+      // has rejected at or above the configured threshold. Channels without
+      // a name (yt-dlp returned empty) bypass the filter — we'd be matching
+      // every empty-channel candidate together otherwise.
+      if (channelDismissals && result.channel) {
+        const dismissCount = channelDismissals.get(result.channel) ?? 0;
+        if (dismissCount >= channelDismissThreshold) {
+          logger.info(
+            {
+              userId,
+              channel: result.channel,
+              videoId: result.videoId,
+              dismissCount,
+              threshold: channelDismissThreshold,
+            },
+            'Discovery intake: filtered candidate from over-dismissed channel',
+          );
+          continue;
         }
-
-        const publishedAt = uploadDateToIso(result.uploadDate);
-        const age = daysSince(publishedAt);
-        if (age !== null && age > FRESHNESS_WINDOW_DAYS) continue;
-
-        db.prepare(`
-          INSERT OR IGNORE INTO candidate_pool
-            (candidate_id, user_id, content_type, source_type, interest_id,
-             url, external_id, title, channel, duration_secs, thumbnail_url,
-             published_at, status, created_at)
-          VALUES
-            (?, ?, 'video', 'interest_search', ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
-        `).run(
-          uuidv7(), userId, interest.interest_id,
-          result.url, result.videoId, result.title,
-          result.channel || null, result.durationSecs,
-          result.thumbnailUrl, publishedAt, now
-        );
-        added++;
       }
+
+      const publishedAt = uploadDateToIso(result.uploadDate);
+      const age = daysSince(publishedAt);
+      if (age !== null && age > FRESHNESS_WINDOW_DAYS) continue;
+
+      db.prepare(`
+        INSERT OR IGNORE INTO candidate_pool
+          (candidate_id, user_id, content_type, source_type, interest_id,
+           url, external_id, title, channel, duration_secs, thumbnail_url,
+           published_at, status, created_at)
+        VALUES
+          (?, ?, 'video', 'interest_search', ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
+      `).run(
+        uuidv7(), userId, interest.interest_id,
+        result.url, result.videoId, result.title,
+        result.channel || null, result.durationSecs,
+        result.thumbnailUrl, publishedAt, now
+      );
+      added++;
     }
   }
 
