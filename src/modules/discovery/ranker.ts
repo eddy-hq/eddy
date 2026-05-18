@@ -22,6 +22,12 @@ export const MIN_WEIGHTED_SCORE = 5;
 // interests in a full slate; the kid feed stays tighter at 1-per-interest.
 const MAX_PER_INTEREST_ADULT = 3;
 const MAX_PER_INTEREST_KID = 1;
+// Per-channel caps stop one creator stacking the slate via multiple
+// interests. Adult = 2 caps a prolific channel below the per-interest
+// ceiling; kid = 1 mirrors the tighter kid policy. In-code constants
+// (issue #148) — revisit before promoting to env config.
+export const MAX_PER_CHANNEL_ADULT = 2;
+export const MAX_PER_CHANNEL_KID = 1;
 const TITLE_SIMILARITY_THRESHOLD = 0.4;
 
 const TITLE_STOPWORDS = new Set([
@@ -40,6 +46,7 @@ export type Disposition =
   | 'low_both'
   | 'low_weight'
   | 'cut_interest_cap'
+  | 'cut_channel_cap'
   | 'cut_dedup'
   | 'cut_stretch_rank';
 
@@ -51,6 +58,10 @@ export interface RankerCandidate {
   qualityScore: number | null;
   timeSensitivity: string | null;
   interestId: string | null;
+  // Channel display name from candidate_pool.channel — used for the
+  // per-channel diversity cap. Null means "channel unknown" and the
+  // cap doesn't apply (treated like a null interestId).
+  channel: string | null;
   rank: number;
   // Carry-through display fields — never read by the ranker, but
   // surface so the orchestrator can build response payloads from the
@@ -67,6 +78,11 @@ export interface RankerContext {
   isKid: boolean;
   prefilledTitles: string[];
   prefilledInterestCounts: Map<string, number>;
+  // Mid-day prefill for the per-channel cap (issue #148). Same shape
+  // as prefilledInterestCounts: keyed by the channel display name
+  // already surfaced today. Optional so callers that haven't migrated
+  // yet behave as if no channels were prefilled.
+  prefilledChannelCounts?: Map<string, number>;
 }
 
 export interface RankerConfig {
@@ -188,22 +204,35 @@ interface SelectedToken {
   candidateId?: string;
 }
 
-type CutReason = 'cut_interest_cap' | 'cut_dedup' | 'cut_stretch_rank';
+type CutReason = 'cut_interest_cap' | 'cut_channel_cap' | 'cut_dedup' | 'cut_stretch_rank';
 
 type PickOutcome =
   | { kind: 'pickable' }
-  | { kind: 'cap' }
+  | { kind: 'cap_interest' }
+  | { kind: 'cap_channel' }
   | { kind: 'dedup'; dedupedAgainst?: string };
 
+// Channel cap is checked before interest cap so that when both apply to
+// the same candidate the channel-cap refusal wins (issue #148 acceptance
+// criterion: "the per-channel cap wins"). Channel diversity matters more
+// than interest diversity — interest re-exposure is easier to recover
+// on the next refresh than a fresh-from-this-channel candidate.
 function attemptPick(
   item: ScoredItem,
   interestCounts: Map<string, number>,
+  channelCounts: Map<string, number>,
   selectedTokens: SelectedToken[],
   maxPerInterest: number,
+  maxPerChannel: number,
 ): PickOutcome {
+  if (item.candidate.channel) {
+    const count = channelCounts.get(item.candidate.channel) ?? 0;
+    if (count >= maxPerChannel) return { kind: 'cap_channel' };
+  }
+
   if (item.candidate.interestId) {
     const count = interestCounts.get(item.candidate.interestId) ?? 0;
-    if (count >= maxPerInterest) return { kind: 'cap' };
+    if (count >= maxPerInterest) return { kind: 'cap_interest' };
   }
 
   if (item.candidate.title) {
@@ -225,6 +254,7 @@ function commit(
   slot: 'regular' | 'stretch',
   picks: Map<string, 'regular' | 'stretch'>,
   interestCounts: Map<string, number>,
+  channelCounts: Map<string, number>,
   selectedTokens: SelectedToken[],
 ): void {
   picks.set(item.candidate.candidateId, slot);
@@ -232,6 +262,12 @@ function commit(
     interestCounts.set(
       item.candidate.interestId,
       (interestCounts.get(item.candidate.interestId) ?? 0) + 1,
+    );
+  }
+  if (item.candidate.channel) {
+    channelCounts.set(
+      item.candidate.channel,
+      (channelCounts.get(item.candidate.channel) ?? 0) + 1,
     );
   }
   if (item.candidate.title) {
@@ -257,6 +293,8 @@ interface RefusalEntry {
 //
 // First refusal per candidate wins — a candidate that hits both
 // interest_cap (regular) and stretch_rank (stretch) gets cut_interest_cap.
+// The channel cap is checked inside attemptPick before the interest cap,
+// so a candidate that would fail both reports cut_channel_cap.
 function allocate(
   scored: ScoredItem[],
   context: RankerContext,
@@ -266,24 +304,28 @@ function allocate(
   const stretchQuota = Math.max(1, Math.floor(cap * 0.2));
   const regularQuota = Math.max(0, cap - stretchQuota);
   const maxPerInterest = context.isKid ? MAX_PER_INTEREST_KID : MAX_PER_INTEREST_ADULT;
+  const maxPerChannel = context.isKid ? MAX_PER_CHANNEL_KID : MAX_PER_CHANNEL_ADULT;
 
   const eligible = scored.filter((s) => s.floorDisposition === null);
   const picks = new Map<string, 'regular' | 'stretch'>();
   const refusals = new Map<string, RefusalEntry>();
   const interestCounts = new Map(context.prefilledInterestCounts);
+  const channelCounts = new Map(context.prefilledChannelCounts ?? []);
   const selectedTokens: SelectedToken[] = context.prefilledTitles
     .filter((t) => t.length > 0)
     .map((t) => ({ tokens: titleTokens(t) }));
 
   let regularPicked = 0;
   for (const item of eligible) {
-    const outcome = attemptPick(item, interestCounts, selectedTokens, maxPerInterest);
+    const outcome = attemptPick(item, interestCounts, channelCounts, selectedTokens, maxPerInterest, maxPerChannel);
     if (outcome.kind === 'pickable') {
       if (regularPicked < regularQuota) {
-        commit(item, 'regular', picks, interestCounts, selectedTokens);
+        commit(item, 'regular', picks, interestCounts, channelCounts, selectedTokens);
         regularPicked++;
       }
-    } else if (outcome.kind === 'cap') {
+    } else if (outcome.kind === 'cap_channel') {
+      refusals.set(item.candidate.candidateId, { reason: 'cut_channel_cap' });
+    } else if (outcome.kind === 'cap_interest') {
       refusals.set(item.candidate.candidateId, { reason: 'cut_interest_cap' });
     } else {
       const entry: RefusalEntry = { reason: 'cut_dedup' };
@@ -303,16 +345,18 @@ function allocate(
       continue;
     }
 
-    const outcome = attemptPick(item, interestCounts, selectedTokens, maxPerInterest);
+    const outcome = attemptPick(item, interestCounts, channelCounts, selectedTokens, maxPerInterest, maxPerChannel);
     if (outcome.kind === 'pickable') {
       if (stretchPicked < stretchQuota) {
-        commit(item, 'stretch', picks, interestCounts, selectedTokens);
+        commit(item, 'stretch', picks, interestCounts, channelCounts, selectedTokens);
         stretchPicked++;
       } else if (!refusals.has(item.candidate.candidateId)) {
         refusals.set(item.candidate.candidateId, { reason: 'cut_stretch_rank' });
       }
     } else if (!refusals.has(item.candidate.candidateId)) {
-      if (outcome.kind === 'cap') {
+      if (outcome.kind === 'cap_channel') {
+        refusals.set(item.candidate.candidateId, { reason: 'cut_channel_cap' });
+      } else if (outcome.kind === 'cap_interest') {
         refusals.set(item.candidate.candidateId, { reason: 'cut_interest_cap' });
       } else {
         const entry: RefusalEntry = { reason: 'cut_dedup' };

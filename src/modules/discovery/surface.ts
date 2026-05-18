@@ -37,6 +37,7 @@ interface CandidateRow {
   quality_score: number | null;
   time_sensitivity: string | null;
   interest_id: string | null;
+  channel: string | null;
   rank: number;
   why_text: string | null;
   guard_verdict: string | null;
@@ -66,7 +67,7 @@ export function surfaceForToday(userId: string, isKid: boolean): Verdict[] {
   const rows = db.prepare(`
     SELECT c.candidate_id, c.url, c.external_id, c.title, c.published_at,
            c.connection_score, c.quality_score, c.time_sensitivity, c.interest_id,
-           c.why_text, c.guard_verdict,
+           c.channel, c.why_text, c.guard_verdict,
            COALESCE(ui.rank, 999) AS rank
     FROM candidate_pool c
     LEFT JOIN user_interests ui
@@ -90,6 +91,7 @@ export function surfaceForToday(userId: string, isKid: boolean): Verdict[] {
     qualityScore: r.quality_score,
     timeSensitivity: r.time_sensitivity,
     interestId: r.interest_id,
+    channel: r.channel,
     rank: r.rank,
     whyText: r.why_text,
     guardVerdict: r.guard_verdict,
@@ -97,24 +99,29 @@ export function surfaceForToday(userId: string, isKid: boolean): Verdict[] {
     externalId: r.external_id,
   }));
 
-  // Carry over today's already-surfaced titles + interest counts so a
-  // mid-day re-run doesn't pile more from the same interest or echo a
-  // similar title.
+  // Carry over today's already-surfaced titles + interest counts + channel
+  // counts so a mid-day re-run doesn't pile more from the same interest or
+  // channel, or echo a similar title.
   const surfacedToday = db.prepare(`
-    SELECT title, interest_id FROM candidate_pool
+    SELECT title, interest_id, channel FROM candidate_pool
     WHERE user_id = ? AND surfaced_date = ?
-  `).all(userId, today) as Array<{ title: string | null; interest_id: string | null }>;
+  `).all(userId, today) as Array<{ title: string | null; interest_id: string | null; channel: string | null }>;
 
   const prefilledTitles = surfacedToday.map((r) => r.title ?? '').filter((t) => t.length > 0);
   const prefilledInterestCounts = new Map<string, number>();
+  const prefilledChannelCounts = new Map<string, number>();
   for (const r of surfacedToday) {
-    if (!r.interest_id) continue;
-    prefilledInterestCounts.set(r.interest_id, (prefilledInterestCounts.get(r.interest_id) ?? 0) + 1);
+    if (r.interest_id) {
+      prefilledInterestCounts.set(r.interest_id, (prefilledInterestCounts.get(r.interest_id) ?? 0) + 1);
+    }
+    if (r.channel) {
+      prefilledChannelCounts.set(r.channel, (prefilledChannelCounts.get(r.channel) ?? 0) + 1);
+    }
   }
 
   const verdicts = rank(
     candidates,
-    { now, isKid, prefilledTitles, prefilledInterestCounts },
+    { now, isKid, prefilledTitles, prefilledInterestCounts, prefilledChannelCounts },
     { cap: remaining },
   );
 

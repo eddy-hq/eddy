@@ -23,17 +23,22 @@ function candidate(overrides: Partial<RankerCandidate> & { candidateId: string }
     qualityScore: overrides.qualityScore ?? 8,
     timeSensitivity: overrides.timeSensitivity ?? 'evergreen',
     interestId: overrides.interestId ?? null,
+    channel: overrides.channel ?? null,
     rank: overrides.rank ?? 5,
   };
 }
 
 function ctx(overrides: Partial<RankerContext> = {}): RankerContext {
-  return {
+  const base: RankerContext = {
     now: overrides.now ?? NOW,
     isKid: overrides.isKid ?? false,
     prefilledTitles: overrides.prefilledTitles ?? [],
     prefilledInterestCounts: overrides.prefilledInterestCounts ?? new Map(),
   };
+  if (overrides.prefilledChannelCounts !== undefined) {
+    base.prefilledChannelCounts = overrides.prefilledChannelCounts;
+  }
+  return base;
 }
 
 function findVerdict(verdicts: Verdict[], id: string): Verdict {
@@ -41,6 +46,244 @@ function findVerdict(verdicts: Verdict[], id: string): Verdict {
   if (!v) throw new Error(`no verdict for ${id}`);
   return v;
 }
+
+describe('rank — per-channel cap (issue #148)', () => {
+  // Adult cap = 2, kid cap = 1. Each test below uses distinct interests
+  // on every candidate so the per-interest cap can't bite — the only
+  // diversity rule under test is the channel cap. Unique title tokens
+  // so dedup doesn't bite either.
+
+  it('cap not reached: 2 candidates from one channel both survive (adult)', () => {
+    const candidates: RankerCandidate[] = [
+      candidate({
+        candidateId: 'a', interestId: 'i1', channel: 'AI Engineer', rank: 5,
+        title: 'alpha unique tokens here',
+        connectionScore: 10, qualityScore: 10,
+      }),
+      candidate({
+        candidateId: 'b', interestId: 'i2', channel: 'AI Engineer', rank: 5,
+        title: 'bravo separate vocabulary',
+        connectionScore: 9, qualityScore: 9,
+      }),
+    ];
+    const verdicts = rank(candidates, ctx(), { cap: 15 });
+    expect(findVerdict(verdicts, 'a').disposition).toBe('regular');
+    expect(findVerdict(verdicts, 'b').disposition).toBe('regular');
+  });
+
+  it('cap exactly reached: 2 from one channel pass, 3rd is cut (adult)', () => {
+    const candidates: RankerCandidate[] = [
+      candidate({
+        candidateId: 'a', interestId: 'i1', channel: 'AI Engineer', rank: 5,
+        title: 'alpha unique tokens here',
+        connectionScore: 10, qualityScore: 10,
+      }),
+      candidate({
+        candidateId: 'b', interestId: 'i2', channel: 'AI Engineer', rank: 5,
+        title: 'bravo separate vocabulary',
+        connectionScore: 9, qualityScore: 9,
+      }),
+      candidate({
+        candidateId: 'c', interestId: 'i3', channel: 'AI Engineer', rank: 5,
+        title: 'charlie another distinct phrase',
+        connectionScore: 8, qualityScore: 8,
+      }),
+    ];
+    const verdicts = rank(candidates, ctx(), { cap: 15 });
+    expect(findVerdict(verdicts, 'a').disposition).toBe('regular');
+    expect(findVerdict(verdicts, 'b').disposition).toBe('regular');
+    expect(findVerdict(verdicts, 'c').disposition).toBe('cut_channel_cap');
+  });
+
+  it('cap exceeded: lower-scoring duplicates drop, higher-scoring keep their slots', () => {
+    // Five candidates on the same channel, distinct interests, distinct
+    // titles, sorted by descending weighted score (controlled via conn/qual).
+    // Adult channel cap = 2 → top two survive, the bottom three are cut.
+    const candidates: RankerCandidate[] = [
+      candidate({
+        candidateId: 'top1', interestId: 'i1', channel: 'Gary Economics', rank: 5,
+        title: 'alpha unique tokens here', connectionScore: 10, qualityScore: 10,
+      }),
+      candidate({
+        candidateId: 'top2', interestId: 'i2', channel: 'Gary Economics', rank: 5,
+        title: 'bravo separate vocabulary', connectionScore: 9, qualityScore: 10,
+      }),
+      candidate({
+        candidateId: 'mid1', interestId: 'i3', channel: 'Gary Economics', rank: 5,
+        title: 'charlie another distinct phrase', connectionScore: 9, qualityScore: 9,
+      }),
+      candidate({
+        candidateId: 'mid2', interestId: 'i4', channel: 'Gary Economics', rank: 5,
+        title: 'delta further unique lexis', connectionScore: 8, qualityScore: 9,
+      }),
+      candidate({
+        candidateId: 'low', interestId: 'i5', channel: 'Gary Economics', rank: 5,
+        title: 'echo additional distinct wording', connectionScore: 8, qualityScore: 8,
+      }),
+    ];
+    const verdicts = rank(candidates, ctx(), { cap: 15 });
+    expect(findVerdict(verdicts, 'top1').disposition).toBe('regular');
+    expect(findVerdict(verdicts, 'top2').disposition).toBe('regular');
+    expect(findVerdict(verdicts, 'mid1').disposition).toBe('cut_channel_cap');
+    expect(findVerdict(verdicts, 'mid2').disposition).toBe('cut_channel_cap');
+    expect(findVerdict(verdicts, 'low').disposition).toBe('cut_channel_cap');
+  });
+
+  it('per-channel cap wins when both channel and interest caps would apply', () => {
+    // Setup: three candidates on the same interest AND same channel.
+    // Adult interest cap = 3 — wouldn't trip yet on the third item.
+    // Adult channel cap = 2 — DOES trip on the third item.
+    // The third item must therefore report cut_channel_cap, not
+    // cut_interest_cap, because the channel cap is checked first.
+    //
+    // Then a fourth candidate shares the SAME interest AND SAME channel:
+    // both caps now apply — channel cap (2) was hit at item 3, interest
+    // cap (3) is hit at item 4. The fourth item still reports
+    // cut_channel_cap because the channel check happens first.
+    const candidates: RankerCandidate[] = [
+      candidate({
+        candidateId: 'a', interestId: 'i1', channel: 'OneCreator', rank: 5,
+        title: 'alpha unique tokens here', connectionScore: 10, qualityScore: 10,
+      }),
+      candidate({
+        candidateId: 'b', interestId: 'i1', channel: 'OneCreator', rank: 5,
+        title: 'bravo separate vocabulary', connectionScore: 9, qualityScore: 10,
+      }),
+      candidate({
+        candidateId: 'c', interestId: 'i1', channel: 'OneCreator', rank: 5,
+        title: 'charlie another distinct phrase', connectionScore: 9, qualityScore: 9,
+      }),
+      candidate({
+        candidateId: 'd', interestId: 'i1', channel: 'OneCreator', rank: 5,
+        title: 'delta further unique lexis', connectionScore: 8, qualityScore: 9,
+      }),
+    ];
+    const verdicts = rank(candidates, ctx(), { cap: 15 });
+    expect(findVerdict(verdicts, 'a').disposition).toBe('regular');
+    expect(findVerdict(verdicts, 'b').disposition).toBe('regular');
+    expect(findVerdict(verdicts, 'c').disposition).toBe('cut_channel_cap');
+    expect(findVerdict(verdicts, 'd').disposition).toBe('cut_channel_cap');
+  });
+
+  it('per-channel cap drops dupes without reordering to fill from other channels', () => {
+    // Channel A has 3 items above any item from channel B. With adult
+    // channel cap = 2, items 1+2 from A take the first two slots and
+    // item 3 from A is dropped — channel B's items still fill the rest
+    // in their own weighted order, not promoted in place of A's drop.
+    const candidates: RankerCandidate[] = [
+      candidate({
+        candidateId: 'a1', interestId: 'i1', channel: 'A', rank: 5,
+        title: 'alpha first unique phrase', connectionScore: 10, qualityScore: 10,
+      }),
+      candidate({
+        candidateId: 'a2', interestId: 'i2', channel: 'A', rank: 5,
+        title: 'bravo second unique phrase', connectionScore: 10, qualityScore: 9,
+      }),
+      candidate({
+        candidateId: 'a3', interestId: 'i3', channel: 'A', rank: 5,
+        title: 'charlie third unique phrase', connectionScore: 9, qualityScore: 9,
+      }),
+      candidate({
+        candidateId: 'b1', interestId: 'i4', channel: 'B', rank: 5,
+        title: 'delta fourth unique phrase', connectionScore: 8, qualityScore: 8,
+      }),
+    ];
+    const verdicts = rank(candidates, ctx(), { cap: 15 });
+    expect(findVerdict(verdicts, 'a1').disposition).toBe('regular');
+    expect(findVerdict(verdicts, 'a2').disposition).toBe('regular');
+    expect(findVerdict(verdicts, 'a3').disposition).toBe('cut_channel_cap');
+    expect(findVerdict(verdicts, 'b1').disposition).toBe('regular');
+  });
+
+  it('kid channel cap = 1: second candidate from same channel is cut', () => {
+    const candidates: RankerCandidate[] = [
+      candidate({
+        candidateId: 'a', interestId: 'i1', channel: 'KidChannel', rank: 5,
+        title: 'alpha unique tokens here', connectionScore: 10, qualityScore: 10,
+      }),
+      candidate({
+        candidateId: 'b', interestId: 'i2', channel: 'KidChannel', rank: 5,
+        title: 'bravo separate vocabulary', connectionScore: 9, qualityScore: 9,
+      }),
+    ];
+    const verdicts = rank(candidates, ctx({ isKid: true }), { cap: 5 });
+    expect(findVerdict(verdicts, 'a').disposition).toBe('regular');
+    expect(findVerdict(verdicts, 'b').disposition).toBe('cut_channel_cap');
+  });
+
+  it('null channel is exempt from the cap', () => {
+    // Three candidates with channel=null and distinct interests: all
+    // should pass — null channel means "channel unknown", which we
+    // treat the same as null interest (no cap applies).
+    const candidates: RankerCandidate[] = [
+      candidate({
+        candidateId: 'a', interestId: 'i1', channel: null, rank: 5,
+        title: 'alpha unique tokens here', connectionScore: 10, qualityScore: 10,
+      }),
+      candidate({
+        candidateId: 'b', interestId: 'i2', channel: null, rank: 5,
+        title: 'bravo separate vocabulary', connectionScore: 9, qualityScore: 9,
+      }),
+      candidate({
+        candidateId: 'c', interestId: 'i3', channel: null, rank: 5,
+        title: 'charlie another distinct phrase', connectionScore: 8, qualityScore: 8,
+      }),
+    ];
+    const verdicts = rank(candidates, ctx(), { cap: 15 });
+    expect(findVerdict(verdicts, 'a').disposition).toBe('regular');
+    expect(findVerdict(verdicts, 'b').disposition).toBe('regular');
+    expect(findVerdict(verdicts, 'c').disposition).toBe('regular');
+  });
+
+  it('prefilledChannelCounts: cap is consumed by earlier-today picks', () => {
+    // Channel "PrefilledChan" already counted twice (adult cap=2 fully
+    // consumed by an earlier call's picks). The new candidate on the
+    // same channel must be cut even though no other candidate from that
+    // channel is in this call's pool.
+    const prefilled = new Map<string, number>([['PrefilledChan', 2]]);
+    const candidates: RankerCandidate[] = [
+      candidate({
+        candidateId: 'new', interestId: 'i1', channel: 'PrefilledChan', rank: 5,
+        title: 'alpha unique tokens here', connectionScore: 10, qualityScore: 10,
+      }),
+    ];
+    const verdicts = rank(
+      candidates,
+      ctx({ prefilledChannelCounts: prefilled }),
+      { cap: 15 },
+    );
+    expect(findVerdict(verdicts, 'new').disposition).toBe('cut_channel_cap');
+  });
+
+  it('per-interest cap still bites independently when channels differ', () => {
+    // Three candidates share interest i1 but each is on a different
+    // channel (so channel cap never trips). The fourth on i1 must hit
+    // the adult per-interest cap (3) and report cut_interest_cap.
+    const candidates: RankerCandidate[] = [
+      candidate({
+        candidateId: 'a', interestId: 'i1', channel: 'ChA', rank: 5,
+        title: 'alpha unique tokens here', connectionScore: 10, qualityScore: 10,
+      }),
+      candidate({
+        candidateId: 'b', interestId: 'i1', channel: 'ChB', rank: 5,
+        title: 'bravo separate vocabulary', connectionScore: 9, qualityScore: 10,
+      }),
+      candidate({
+        candidateId: 'c', interestId: 'i1', channel: 'ChC', rank: 5,
+        title: 'charlie another distinct phrase', connectionScore: 9, qualityScore: 9,
+      }),
+      candidate({
+        candidateId: 'd', interestId: 'i1', channel: 'ChD', rank: 5,
+        title: 'delta further unique lexis', connectionScore: 8, qualityScore: 9,
+      }),
+    ];
+    const verdicts = rank(candidates, ctx(), { cap: 15 });
+    expect(findVerdict(verdicts, 'a').disposition).toBe('regular');
+    expect(findVerdict(verdicts, 'b').disposition).toBe('regular');
+    expect(findVerdict(verdicts, 'c').disposition).toBe('regular');
+    expect(findVerdict(verdicts, 'd').disposition).toBe('cut_interest_cap');
+  });
+});
 
 describe('rank — first-refusal precedence', () => {
   // Brief: refusals from regular pass stick. A candidate that hits BOTH
