@@ -71,6 +71,7 @@ const DISPOSITION_LABEL: Record<Disposition, string> = {
   low_both: 'low both',
   low_weight: 'low weight',
   cut_interest_cap: 'cut · interest cap',
+  cut_channel_cap: 'cut · channel cap',
   cut_dedup: 'cut · dedup',
   cut_stretch_rank: 'cut · stretch rank',
 };
@@ -83,6 +84,7 @@ const DISPOSITION_CLASS: Record<Disposition, string> = {
   low_both: 'low-both',
   low_weight: 'low-weight',
   cut_interest_cap: 'cut-interest-cap',
+  cut_channel_cap: 'cut-channel-cap',
   cut_dedup: 'cut-dedup',
   cut_stretch_rank: 'cut-stretch-rank',
 };
@@ -127,6 +129,7 @@ function buildSection(user: UserRow): Section {
     qualityScore: r.quality_score,
     timeSensitivity: r.time_sensitivity,
     interestId: r.interest_id,
+    channel: r.channel,
     rank: r.rank,
   }));
 
@@ -170,6 +173,7 @@ const css = `
   --slot-regular: #6ba368; --slot-stretch: #d4a85a;
   --slot-low: #c97a4a; --slot-low-both: #b8534a; --slot-cut: #5a5854;
   --slot-cut-interest-cap: #7a4a8a; /* purple — interest-cap rejections */
+  --slot-cut-channel-cap: #8a5a4a;  /* terracotta — channel-cap rejections */
   --slot-cut-dedup: #4a6a8a;        /* blue — title-similarity rejections */
   --slot-cut-stretch-rank: #5a8a5a; /* green-grey — stretch-rank rejections */
   --tag-news: #8a4a4a; --tag-evergreen: #4a8a8a; --tag-standard: #5a5854;
@@ -203,6 +207,7 @@ h2 .muted { color: var(--fg-dim); font-weight: 400; text-transform: none; letter
 .slot-tag.low-both { background: var(--slot-low-both); }
 .slot-tag.low-weight { background: var(--slot-cut); }
 .slot-tag.cut-interest-cap { background: var(--slot-cut-interest-cap); }
+.slot-tag.cut-channel-cap { background: var(--slot-cut-channel-cap); }
 .slot-tag.cut-dedup { background: var(--slot-cut-dedup); }
 .slot-tag.cut-stretch-rank { background: var(--slot-cut-stretch-rank); }
 .actually-surfaced { position: absolute; top: 8px; right: 8px; background: var(--tag-actually-surfaced); color: white; padding: 3px 8px; border-radius: 4px; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }

@@ -74,6 +74,7 @@ const SLOT_LABEL: Record<string, string> = {
   low_both: 'low both',
   low_weight: 'low weight',
   cut_interest_cap: 'cut cap',
+  cut_channel_cap: 'cut chan',
   cut_dedup: 'cut dedup',
   cut_stretch_rank: 'cut rank',
 };
@@ -134,6 +135,7 @@ for (const user of users) {
     qualityScore: r.quality_score,
     timeSensitivity: r.time_sensitivity,
     interestId: r.interest_id,
+    channel: r.channel,
     rank: r.rank,
   }));
 
