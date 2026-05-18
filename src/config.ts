@@ -62,6 +62,12 @@ const schema = z.object({
   // Defaults: 100 GiB per user, 350 GiB across all users.
   USER_STORAGE_QUOTA_BYTES: z.coerce.number().int().positive().default(107_374_182_400),
   GLOBAL_STORAGE_CAP_BYTES: z.coerce.number().int().positive().default(375_809_638_400),
+  // Discovery intake: filter out interest-search candidates from channels the
+  // user has already rejected at or above this count. Counts are derived from
+  // candidate_pool.status='dismissed' (pre-play swipe) and requests.status=
+  // 'deleted' (player delete), aggregated per channel name. Set to 0 to
+  // disable filtering. See issue #147.
+  DISCOVERY_CHANNEL_DISMISS_THRESHOLD: z.coerce.number().int().nonnegative().default(3),
 });
 
 const result = schema.safeParse(process.env);
