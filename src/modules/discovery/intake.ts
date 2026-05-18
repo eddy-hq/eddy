@@ -91,11 +91,16 @@ function loadChannelDismissalCounts(userId: string): Map<string, number> {
 //     stops historical `pending` / `scored` rows that lingered past
 //     pruning from making the supply look healthy when nothing fresh
 //     arrived this refresh.
-//   - requests with source='channel_subscription' added in the last 24h —
-//     RSS-poller landings from followed people. Those bypass the
-//     candidate pool entirely (poll → requests directly) but they're
-//     person-sourced material on the user's feed, so they count toward
-//     "is the person supply thin?". 24h tracks the daily discovery cadence.
+//   - requests with source='channel_subscription' added in the last 24h
+//     that are visible on the feed — RSS-poller landings from followed
+//     people. Those bypass the candidate pool entirely (poll → requests
+//     directly) but they're person-sourced material on the user's feed,
+//     so they count toward "is the person supply thin?". 24h tracks the
+//     daily discovery cadence. The status filter matches the feed query
+//     in modules/requests (status NOT IN dismissed/deleted, and
+//     channel_subscription rows in pending/downloading are still hidden
+//     pending download completion), so we don't count rows the user
+//     can't see.
 //
 // Used by refreshCandidatePool to decide skip / partial / full interest
 // search. Exported for tests.
@@ -115,6 +120,7 @@ export function countPersonSourcedForRefresh(userId: string): number {
     WHERE user_id = ?
       AND source = 'channel_subscription'
       AND requested_at >= ?
+      AND status NOT IN ('dismissed', 'deleted', 'pending', 'downloading')
   `).get(userId, since) as { n: number };
 
   return pool.n + reqs.n;

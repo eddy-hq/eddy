@@ -603,18 +603,20 @@ describe('countPersonSourcedForRefresh (issue #149)', () => {
   function insertRequest(opts: {
     requestId: string;
     source: string;
+    status?: string;
     requestedAt?: string;
   }): void {
     db.prepare(`
       INSERT INTO requests
         (request_id, user_id, source, url, youtube_id, status, requested_at)
-      VALUES (?, ?, ?, ?, ?, 'pending', ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
     `).run(
       opts.requestId,
       USER_ID,
       opts.source,
       `https://www.youtube.com/watch?v=${opts.requestId}`,
       opts.requestId,
+      opts.status ?? 'ready',
       opts.requestedAt ?? new Date().toISOString(),
     );
   }
@@ -684,6 +686,21 @@ describe('countPersonSourcedForRefresh (issue #149)', () => {
     insertRequest({ requestId: 'rss-stale', source: 'channel_subscription', requestedAt: oldIso });
     // Other request sources don't count.
     insertRequest({ requestId: 'share-1', source: 'share_sheet' });
+
+    expect(countPersonSourcedForRefresh(USER_ID)).toBe(1);
+  });
+
+  it('excludes channel_subscription requests not visible on the feed (round-3 codex finding)', () => {
+    // modules/requests hides status IN ('dismissed','deleted') and any
+    // channel_subscription row in 'pending'/'downloading'. Mirror that
+    // filter here — a user with several deleted or still-downloading
+    // followed-channel rows must not have those counted as supply that
+    // can fill today's slate.
+    insertRequest({ requestId: 'rss-ready', source: 'channel_subscription', status: 'ready' });
+    insertRequest({ requestId: 'rss-deleted', source: 'channel_subscription', status: 'deleted' });
+    insertRequest({ requestId: 'rss-dismissed', source: 'channel_subscription', status: 'dismissed' });
+    insertRequest({ requestId: 'rss-downloading', source: 'channel_subscription', status: 'downloading' });
+    insertRequest({ requestId: 'rss-pending', source: 'channel_subscription', status: 'pending' });
 
     expect(countPersonSourcedForRefresh(USER_ID)).toBe(1);
   });
