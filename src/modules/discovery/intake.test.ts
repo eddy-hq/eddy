@@ -1,8 +1,19 @@
 import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest';
 import type { SearchVideoWithDate } from '../../ytdlp';
 
+// Mutable so individual tests can re-tune the threshold without re-mocking.
+// Wrapped in vi.hoisted so the binding is available to vi.mock, which is
+// itself hoisted above the rest of the module.
+const { mockConfig } = vi.hoisted(() => ({
+  mockConfig: {
+    OLLAMA_URL: 'http://localhost:11434',
+    OLLAMA_MODEL: 'gemma4:e4b',
+    DISCOVERY_CHANNEL_DISMISS_THRESHOLD: 3,
+  },
+}));
+
 vi.mock('../../config', () => ({
-  config: { OLLAMA_URL: 'http://localhost:11434', OLLAMA_MODEL: 'gemma4:e4b' },
+  config: mockConfig,
 }));
 
 vi.mock('../../db/client', async () => {
@@ -100,6 +111,7 @@ beforeEach(() => {
   db.exec('DELETE FROM candidate_pool');
   db.exec('DELETE FROM requests');
   mockedSearch.mockReset();
+  mockConfig.DISCOVERY_CHANNEL_DISMISS_THRESHOLD = 3;
 });
 
 describe('refreshCandidatePool — search budget', () => {
@@ -269,5 +281,183 @@ describe('refreshCandidatePool — malformed search_terms', () => {
 
     expect(mockedSearch).not.toHaveBeenCalled();
     expect(added).toBe(0);
+  });
+});
+
+describe('refreshCandidatePool — channel dismissal filter (issue #147)', () => {
+  // Seed `count` distinct dismissed candidate_pool rows for the given channel.
+  function seedDismissedCandidates(channel: string, count: number): void {
+    const insert = db.prepare(`
+      INSERT INTO candidate_pool
+        (candidate_id, user_id, content_type, source_type, url, external_id,
+         channel, status, created_at)
+      VALUES (?, ?, 'video', 'interest_search', ?, ?, ?, 'dismissed', ?)
+    `);
+    const now = new Date().toISOString();
+    for (let i = 0; i < count; i++) {
+      const vid = `dismissed-${channel.replace(/\s+/g, '-')}-${i}`;
+      insert.run(
+        `cand-${vid}`,
+        USER_ID,
+        `https://www.youtube.com/watch?v=${vid}`,
+        vid,
+        channel,
+        now,
+      );
+    }
+  }
+
+  it('below threshold: candidate from the same channel is still enqueued', async () => {
+    seedDismissedCandidates('Quiet Channel', 2); // threshold default is 3
+
+    const interests: UserInterestRow[] = [
+      makeInterest({ interestId: 'i1', rank: 1, searchTerms: JSON.stringify(['term']) }),
+    ];
+
+    mockedSearch.mockResolvedValueOnce([
+      {
+        videoId: 'fresh-vid',
+        title: 'Title',
+        channel: 'Quiet Channel',
+        durationSecs: 600,
+        viewCount: 1000,
+        uploadDate: uploadDateStr(7),
+        thumbnailUrl: 'https://img/fresh.jpg',
+        liveStatus: null,
+        url: 'https://www.youtube.com/watch?v=fresh-vid',
+      },
+    ]);
+    mockedSearch.mockResolvedValue([]);
+
+    const added = await refreshCandidatePool(USER_ID, interests);
+
+    const ids = (db.prepare(
+      "SELECT external_id FROM candidate_pool WHERE source_type = 'interest_search'",
+    ).all() as Array<{ external_id: string }>).map((r) => r.external_id);
+
+    expect(ids).toContain('fresh-vid');
+    expect(added).toBe(1);
+  });
+
+  it('at threshold: candidate from over-dismissed channel is filtered before insert', async () => {
+    seedDismissedCandidates('Noisy Channel', 3); // exactly at default threshold
+
+    const interests: UserInterestRow[] = [
+      makeInterest({ interestId: 'i1', rank: 1, searchTerms: JSON.stringify(['term']) }),
+    ];
+
+    mockedSearch.mockResolvedValueOnce([
+      {
+        videoId: 'noisy-vid',
+        title: 'Title',
+        channel: 'Noisy Channel',
+        durationSecs: 600,
+        viewCount: 1000,
+        uploadDate: uploadDateStr(7),
+        thumbnailUrl: 'https://img/noisy.jpg',
+        liveStatus: null,
+        url: 'https://www.youtube.com/watch?v=noisy-vid',
+      },
+      {
+        videoId: 'other-vid',
+        title: 'Title',
+        channel: 'Other Channel',
+        durationSecs: 600,
+        viewCount: 1000,
+        uploadDate: uploadDateStr(7),
+        thumbnailUrl: 'https://img/other.jpg',
+        liveStatus: null,
+        url: 'https://www.youtube.com/watch?v=other-vid',
+      },
+    ]);
+    mockedSearch.mockResolvedValue([]);
+
+    const added = await refreshCandidatePool(USER_ID, interests);
+
+    const ids = (db.prepare(
+      "SELECT external_id FROM candidate_pool WHERE source_type = 'interest_search'",
+    ).all() as Array<{ external_id: string }>).map((r) => r.external_id);
+
+    expect(ids).not.toContain('noisy-vid');
+    expect(ids).toContain('other-vid');
+    expect(added).toBe(1);
+  });
+
+  it('counts player-side deletes (requests.status=deleted) toward the channel total', async () => {
+    // 2 pre-play dismisses + 1 player-side delete → 3, reaches threshold.
+    seedDismissedCandidates('Mixed Channel', 2);
+    db.prepare(`
+      INSERT INTO requests
+        (request_id, user_id, source, url, youtube_id, channel, status, requested_at)
+      VALUES (?, ?, 'search', ?, ?, ?, 'deleted', ?)
+    `).run(
+      'req-deleted-1',
+      USER_ID,
+      'https://www.youtube.com/watch?v=deleted-vid-1',
+      'deleted-vid-1',
+      'Mixed Channel',
+      new Date().toISOString(),
+    );
+
+    const interests: UserInterestRow[] = [
+      makeInterest({ interestId: 'i1', rank: 1, searchTerms: JSON.stringify(['term']) }),
+    ];
+
+    mockedSearch.mockResolvedValueOnce([
+      {
+        videoId: 'incoming-vid',
+        title: 'Title',
+        channel: 'Mixed Channel',
+        durationSecs: 600,
+        viewCount: 1000,
+        uploadDate: uploadDateStr(7),
+        thumbnailUrl: 'https://img/incoming.jpg',
+        liveStatus: null,
+        url: 'https://www.youtube.com/watch?v=incoming-vid',
+      },
+    ]);
+    mockedSearch.mockResolvedValue([]);
+
+    const added = await refreshCandidatePool(USER_ID, interests);
+
+    const ids = (db.prepare(
+      "SELECT external_id FROM candidate_pool WHERE source_type = 'interest_search'",
+    ).all() as Array<{ external_id: string }>).map((r) => r.external_id);
+
+    expect(ids).not.toContain('incoming-vid');
+    expect(added).toBe(0);
+  });
+
+  it('threshold = 0 disables the filter entirely (no-op even at high counts)', async () => {
+    mockConfig.DISCOVERY_CHANNEL_DISMISS_THRESHOLD = 0;
+    seedDismissedCandidates('Heavily Dismissed', 10);
+
+    const interests: UserInterestRow[] = [
+      makeInterest({ interestId: 'i1', rank: 1, searchTerms: JSON.stringify(['term']) }),
+    ];
+
+    mockedSearch.mockResolvedValueOnce([
+      {
+        videoId: 'still-fresh',
+        title: 'Title',
+        channel: 'Heavily Dismissed',
+        durationSecs: 600,
+        viewCount: 1000,
+        uploadDate: uploadDateStr(7),
+        thumbnailUrl: 'https://img/still.jpg',
+        liveStatus: null,
+        url: 'https://www.youtube.com/watch?v=still-fresh',
+      },
+    ]);
+    mockedSearch.mockResolvedValue([]);
+
+    const added = await refreshCandidatePool(USER_ID, interests);
+
+    const ids = (db.prepare(
+      "SELECT external_id FROM candidate_pool WHERE source_type = 'interest_search'",
+    ).all() as Array<{ external_id: string }>).map((r) => r.external_id);
+
+    expect(ids).toContain('still-fresh');
+    expect(added).toBe(1);
   });
 });
