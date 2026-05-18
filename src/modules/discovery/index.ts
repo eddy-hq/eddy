@@ -2,11 +2,17 @@ import { Worker } from 'bullmq';
 import { v7 as uuidv7 } from 'uuid';
 import { db } from '../../db/client';
 import { logger } from '../../logger';
+import { config } from '../../config';
 import { redis, discoveryQueue } from '../../queue';
 import { evaluateCandidate } from '../guard/index';
 import { getRequestsState } from '../requests';
 import { getAgeBand } from '../users';
-import { refreshCandidatePool, seedBackCatalogCandidates, type UserInterestRow } from './intake';
+import {
+  refreshCandidatePool,
+  seedBackCatalogCandidates,
+  countPersonSourcedForRefresh,
+  type UserInterestRow,
+} from './intake';
 import { scoreCandidates } from './scoring';
 import {
   surfaceForToday,
@@ -60,12 +66,25 @@ export async function runDiscoveryForUser(user: UserRow, options: { force?: bool
     return { userId: user.user_id, skipped: true, skipReason: 'No interests set', interestsChecked: 0, candidatesAdded: 0, surfaced: 0, items: [] };
   }
 
+  // Person-sourced primary, interest search as gap-filler (brief §17, issue
+  // #149). Seed the back catalog first so the count of person-sourced
+  // material reflects what's actually available this refresh; the interest-
+  // search budget is then scaled to the deficit (or skipped entirely when
+  // the person supply already meets the daily slate cap).
   logger.info({ userId: user.user_id, interests: userInterests.length }, 'Discovery: refreshing candidate pool');
-  const interestSearchAdded = await refreshCandidatePool(user.user_id, userInterests);
-  logger.info({ userId: user.user_id, added: interestSearchAdded }, 'Discovery: interest-search candidates added');
 
   const backCatalogAdded = await seedBackCatalogCandidates(user.user_id);
   logger.info({ userId: user.user_id, added: backCatalogAdded }, 'Discovery: back-catalog candidates added');
+
+  const personSourcedCount = countPersonSourcedForRefresh(user.user_id);
+  const threshold = isKid
+    ? config.DISCOVERY_PERSON_SOURCED_THRESHOLD_KID
+    : config.DISCOVERY_PERSON_SOURCED_THRESHOLD_ADULT;
+  const interestSearchAdded = await refreshCandidatePool(user.user_id, userInterests, {
+    personSourcedCount,
+    threshold,
+  });
+  logger.info({ userId: user.user_id, added: interestSearchAdded }, 'Discovery: interest-search candidates added');
 
   const added = interestSearchAdded + backCatalogAdded;
 
