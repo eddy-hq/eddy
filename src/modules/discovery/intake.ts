@@ -81,14 +81,16 @@ function loadChannelDismissalCounts(userId: string): Map<string, number> {
 //
 //   - candidate_pool rows with source_type ∈ {person_backcatalog,
 //     person_recommendation} that are still eligible candidates — status
-//     ∈ {pending, scored, guard_pending} and created in the last 24h.
-//     Rows in `dismissed` / `guard_rejected` / `requested` / `surfaced`
-//     no longer represent material the slate can draw on for today: the
-//     first two were rejected, the latter two have already been spent
-//     (a `requested` row is on the feed; a `surfaced` row was a previous
-//     refresh's pick). The 24h created_at floor stops historical
-//     `pending` / `scored` rows that lingered past pruning from making
-//     the supply look healthy when nothing fresh arrived this refresh.
+//     ∈ {pending, scored} and created in the last 24h. Other statuses
+//     don't count as supply for this slate: `dismissed` / `guard_rejected`
+//     were rejected; `requested` / `surfaced` were already spent (the
+//     first is on the feed, the second was a previous refresh's pick);
+//     `guard_pending` rows are stuck for kid users (surfaceForToday only
+//     reads `status='scored'`, never `guard_pending`) so counting them
+//     overstates the kid's effective supply. The 24h created_at floor
+//     stops historical `pending` / `scored` rows that lingered past
+//     pruning from making the supply look healthy when nothing fresh
+//     arrived this refresh.
 //   - requests with source='channel_subscription' added in the last 24h —
 //     RSS-poller landings from followed people. Those bypass the
 //     candidate pool entirely (poll → requests directly) but they're
@@ -104,7 +106,7 @@ export function countPersonSourcedForRefresh(userId: string): number {
     SELECT COUNT(*) AS n FROM candidate_pool
     WHERE user_id = ?
       AND source_type IN ('person_backcatalog', 'person_recommendation')
-      AND status IN ('pending', 'scored', 'guard_pending')
+      AND status IN ('pending', 'scored')
       AND created_at >= ?
   `).get(userId, since) as { n: number };
 

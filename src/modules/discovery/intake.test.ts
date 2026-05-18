@@ -654,6 +654,17 @@ describe('countPersonSourcedForRefresh (issue #149)', () => {
     expect(countPersonSourcedForRefresh(USER_ID)).toBe(1);
   });
 
+  it('excludes guard_pending rows (kid surface never reads them, so they overstate supply)', () => {
+    // Round-2 codex finding: surfaceForToday for kids reads status='scored'
+    // with guard_verdict ∈ {clear_yes, NULL}. A guard_pending row is stuck
+    // and can't fill the slate, so counting it as supply would suppress
+    // interest search while leaving the kid with nothing to surface.
+    insertPoolRow({ candidateId: 'bc-live', sourceType: 'person_backcatalog', status: 'pending' });
+    insertPoolRow({ candidateId: 'bc-stuck', sourceType: 'person_backcatalog', status: 'guard_pending' });
+
+    expect(countPersonSourcedForRefresh(USER_ID)).toBe(1);
+  });
+
   it('counts only pool rows created within the last 24h', () => {
     insertPoolRow({ candidateId: 'bc-fresh', sourceType: 'person_backcatalog', status: 'pending' });
     insertPoolRow({
