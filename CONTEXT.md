@@ -121,8 +121,16 @@ An in-feed offer — *not* a notification — surfaced when interest engagement 
 _Avoid_: nudge, intervention, suggestion
 
 **Interest**:
-A user-defined topic on the **Profile** with rank order and expertise level. Drives interest search and scoring.
+A topic on the **Profile** that drives interest search and scoring. One primitive, two provenances — see **Declared interest** and **Inferred interest**. Every interest that *originates* a discovery input traces to a human act (a declaration or a **Follow**); watch behaviour weights an interest and surfaces in **Drift**, but never originates one. See [[0008-discovery-inputs-trace-to-a-human-act]].
 _Avoid_: topic (was renamed *to* interest), tag, category
+
+**Declared interest**:
+An **Interest** the user typed (`source = declared`), carrying rank order and expertise level. Forward-looking — the only way to point Eddy at something you don't yet follow or watch. The ranked, draggable list at the top of the Interests editor.
+_Avoid_: explicit interest (use "declared"), manual interest
+
+**Inferred interest**:
+An **Interest** Eddy derived live from the user's **Follows** (`follows → channel_interest_links → interests`), surfaced in the profile's "Eddy noticed" band as a proposal with **Keep** / **Remove**. *Inert until kept* — it does not feed search or scoring vocabulary until **Keep** promotes it to a **Declared interest**. Derived, never auto-written; backward-looking by nature.
+_Avoid_: auto-interest, suggested interest, observed interest (in code — "inferred" is canonical)
 
 **Profile**:
 A user's four-layer model — explicit interests + followed people + hard exclusions (Layer 1), behavioural signals (Layer 2), per-person trust (Layer 3), Gemma-inferred affinities (Layer 4).
