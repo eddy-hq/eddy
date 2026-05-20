@@ -573,7 +573,7 @@ Eddy proactively finds content worth surfacing. Small number of genuinely good p
 
 ### Profile: four layers
 
-**Layer 1 — Explicit.** Interests in user-defined rank order with per-interest expertise level, followed people (Section 4a), hard exclusions (kids' invisible to them).
+**Layer 1 — Explicit.** Interests in user-defined rank order with per-interest expertise level, followed people (Section 4a), hard exclusions (kids' invisible to them). Interests have two provenances — *declared* (the user typed them) and *inferred* (derived from followed people). Inferred interests are proposals, inert until the user keeps one, at which point it becomes an explicit interest. The governing principle (ADR-0008): every discovery input traces to a human act — a declaration or a follow — never to watch behaviour alone. Watch behaviour weights existing interests and surfaces in Drift, but never originates one.
 
 Duration preference is deliberately *not* a Layer 1 input. People watch a wide range of lengths for different reasons; asking them to pick "short / medium / long" produces a knob that's easy to mis-set and hard to update. If a duration pattern shows up in real engagement, it surfaces through Drift as observation, not configuration.
 
@@ -601,7 +601,7 @@ v1 (Phase 5):
 
 - **New outputs from people you follow** — their YouTube uploads, Substack posts, podcast appearances, book releases. Strongest signal.
 - **Recommendations from people you follow** — Gemma detects pointers in their text output (book mentions, linked essays), surfaces as candidates with recommender attribution.
-- **Interest search** — daily `ytsearch20:'interest keywords'` for top-ranked interests. Used when person-sourced candidates are thin.
+- **Interest search** — daily `ytsearch20:'interest keywords'` for top-ranked interests (declared, or inferred-then-kept). Used when person-sourced candidates are thin. Only interests specific enough to yield good queries generate a search; broad interests serve as scoring vocabulary but produce no `ytsearch` (search-seed is decoupled from scoring-vocabulary).
 - **Related-people expansion** — from engaged items, identify adjacent people (guests, collaborators, frequently-mentioned). Candidates for suggesting new follows, not for direct surfacing without confirmation.
 - **Podcast discovery** — episode-level scoring across a curated per-user podcast list (Section 7).
 
@@ -676,21 +676,25 @@ Adults see everything about their own profile. Parents see full detail of kid pr
 
 First 3-4 weeks, behavioural signal is thin. "Picked for you" shows *"Eddy is still figuring out what you like — tell it more"* with a prompt to follow people and rate. Aligns with Drift's "Getting to know you" baseline.
 
+There is no mandatory gate. An empty "Picked for you" is a valid state — a user with no follows and no declared interests is carried by the request flow until follows accumulate and inferred proposals appear. Following someone is the cheapest path into discovery; declaring an interest is the forward-looking one. Neither is required to proceed.
+
 ### Interests
 
 Interests are named subjects with a set of yt-dlp search strings. The `search_terms` JSON array is what does the work — `ytsearch20:'minecraft redstone tutorial'` runs daily as a gap-filler when person-sourced candidates are thin. The label is the only display field (an emoji column was tried and dropped — it added noise without helping recognition).
 
-**Creation is freeform.** No taxonomy to pick from. User types an interest; one Gemma call generates the `search_terms` array. Specificity is the input quality knob — *"minecraft redstone"* generates better search terms than *"minecraft"*; *"olympic distance triathlon training"* beats *"fitness"*. The input affordance prompts for it: *"Add an interest. Be specific."*
+An interest plays two independent roles: **scoring vocabulary** (the connection axis reads every interest's label and expertise) and **search seed** (only interests with `search_terms` generate `ytsearch` queries). The roles are decoupled — a broad interest ("AI", "Running") stays as vocabulary but generates no query, because `ytsearch20:'AI'` is noise. Search-term generation returns an empty array for interests too broad to search well.
 
-**Onboarding:** Same freeform input, used in a setup flow. Kid setup is parent-driven, so the parent types the kid's interests; adults seed their own. New interests append to the end of the rank order; expertise defaults to `comfortable`. Minimum to proceed: ≥1 interest and ≥1 followed person. Without both, discovery has nothing to work with.
+**Declared interests are freeform.** No taxonomy to pick from. User types an interest; one Gemma call generates the `search_terms` array (empty if too broad). Specificity is the input quality knob — *"minecraft redstone"* generates better search terms than *"minecraft"*; *"olympic distance triathlon training"* beats *"fitness"*. The input affordance prompts for it: *"Add an interest. Be specific."* Declaration is the only forward-looking input — the way to point Eddy at something you don't yet follow or watch.
 
-**Channel → interest inference (Phase 5):** When a user subscribes to a channel, Gemma reads the channel description and recent titles and suggests 1–2 existing interests to link to it. This is a mapping from `channel_id` to existing `interest_id` — not interest creation. Behavioural weight flows from there naturally.
+**Inferred interests are derived, not declared.** When a user follows a person, Gemma links that person's channel(s) to existing interests (`channel_id → interest_id`; reads channel description and recent titles). Those links, joined against the user's follows, *derive* a set of inferred interests live — not stored, not auto-applied. They surface in the profile as proposals (see Profile editing). They are **inert until kept**: an inferred interest does not feed search or scoring until the user keeps it, at which point it is promoted to a declared interest. Following a person already gives you that person's outputs; keeping the inferred interest is the separate human act that asks Eddy to hunt the broader topic. Inference only ever proposes interests already in the shared vocabulary — generating *new* vocabulary from channel content (the specificity lever) is deferred (ADR-0008).
+
+**Onboarding:** No mandatory gate (see Cold start). Kid setup is parent-driven — the parent can import the kid's follows and type a declared interest or two; adults seed their own. New declared interests append to the end of the rank order; expertise defaults to `comfortable`. A user who declares nothing and follows no one is carried by the request flow until follows accumulate.
 
 ### Profile editing
 
 The explicit profile (Layer 1) is editable on a single page. Two sections, no tabs:
 
-- **Interests** — draggable ordered list of interest chips. Each chip shows label and a small expertise indicator (beginner / comfortable / deep). Tap a chip → bottom sheet with remove and expertise selector. Plus-button at the end of the list adds an interest via the freeform input flow.
+- **Interests** — two zones. On top, the **declared** interests: a draggable ordered list of chips. Each chip shows label and a small expertise indicator (beginner / comfortable / deep). Tap a chip → bottom sheet with remove and expertise selector. Plus-button at the end adds a declared interest via the freeform input flow. Below, only when non-empty, an **"Eddy noticed"** band of inferred-interest proposals, ordered by signal strength, each with explicit **Keep** and **Remove**. Inferred interests have no rank and are never interleaved into the declared list (they have no rank to interleave by). **Keep** promotes the proposal into the declared list at the next rank; **Remove** suppresses it (it stops being proposed; it does not unfollow anyone). The data flow inverts here: Eddy reflects back what your follows imply, and you decide what to keep — declaration is no longer a blank form you must fill before starting.
 - **People** — links into the people management surface (Section 4a).
 
 The Profile page is the only surface for editing interests — there is no separate `/interests` PWA route. The API routes under `/interests/*` stay as the contract for the PWA and any future client.
@@ -704,8 +708,9 @@ The Profile page is the only surface for editing interests — there is no separ
 **Kid vs adult asymmetry.**
 
 - Reordering and expertise changes are free for kids — they reshape ranking within already-approved interests, no new content fetched.
-- Removing an interest is free.
+- Removing an interest is free. Removing an inferred proposal (suppressing it) is also free — it fetches nothing.
 - **Adding** a new interest for a kid routes through the guard as a request_type distinct from content requests, so the eval set stays clean and per-type metrics stay meaningful. Clear-yes adds it; uncertain escalates to parent; clear-no rejects with reason + appeal.
+- **Keeping an inferred interest is an add** — for a kid it routes through the same guard path as a declared add. The proposal being derived from an already-followed person does not bypass the guard; promotion to an explicit, topic-hunting interest is the gated act.
 - Hard exclusions remain parent-managed and invisible to kids.
 
 Layers 2–4 are not editable. Drift (Section 10) is where observations from those layers surface; Gemma never writes to the explicit profile directly.
