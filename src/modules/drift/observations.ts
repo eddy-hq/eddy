@@ -61,11 +61,40 @@ interface InterestSignalRow {
   dismissedCount: number;
 }
 
+// [start, end) UTC ISO bounds for an ISO week label ("2026-W15"). Drift is a
+// weekly mirror, so the disagreement read is scoped to the same week the
+// observation is filed under — otherwise a one-off threshold crossing would
+// re-report "this week you skipped …" every week forever. The window runs
+// Monday 00:00:00 UTC to the next Monday 00:00:00 UTC.
+export function isoWeekRange(week: string): { start: string; end: string } {
+  const match = /^(\d{4})-W(\d{2})$/.exec(week);
+  if (!match) throw new Error(`Invalid ISO week label: ${week}`);
+  const year = Number(match[1]);
+  const weekNo = Number(match[2]);
+
+  // ISO week 1 contains the year's first Thursday; equivalently, the Monday of
+  // week 1 is the Monday on or before Jan 4th. Start from Jan 4th, step back to
+  // its Monday, then add (weekNo - 1) weeks.
+  const jan4 = new Date(Date.UTC(year, 0, 4));
+  const jan4Dow = jan4.getUTCDay() === 0 ? 7 : jan4.getUTCDay();
+  const week1Monday = new Date(jan4);
+  week1Monday.setUTCDate(jan4.getUTCDate() - (jan4Dow - 1));
+
+  const start = new Date(week1Monday);
+  start.setUTCDate(week1Monday.getUTCDate() + (weekNo - 1) * 7);
+  const end = new Date(start);
+  end.setUTCDate(start.getUTCDate() + 7);
+
+  return { start: start.toISOString(), end: end.toISOString() };
+}
+
 // Returns declared interests for the user with their behavioural watched /
-// dismissed counts. Only declared interests (user_interests rows) are
-// considered — an inferred-but-unkept interest has no declared row and so
-// can't produce a disagreement.
-export function readDeclaredInterestSignal(userId: string): InterestSignalRow[] {
+// dismissed counts within the given ISO week. Only declared interests
+// (user_interests rows) are considered — an inferred-but-unkept interest has
+// no declared row and so can't produce a disagreement. The week window keeps
+// the read aligned with the "this week" framing of the observation copy.
+export function readDeclaredInterestSignal(userId: string, week: string): InterestSignalRow[] {
+  const { start, end } = isoWeekRange(week);
   return db.prepare(`
     WITH watched AS (
       -- Join watch_events to the candidate directly via the denormalised
@@ -78,6 +107,7 @@ export function readDeclaredInterestSignal(userId: string): InterestSignalRow[] 
       INNER JOIN candidate_pool cp ON cp.user_id = we.user_id
                                   AND cp.external_id = we.video_id
       WHERE we.user_id = @user_id
+        AND we.started_at >= @week_start AND we.started_at < @week_end
         AND cp.interest_id IS NOT NULL
         AND (
           we.reason = 'ended'
@@ -88,11 +118,14 @@ export function readDeclaredInterestSignal(userId: string): InterestSignalRow[] 
     ),
     dismissed AS (
       SELECT interest_id, COUNT(*) AS n FROM (
-        -- Pre-play swipe-dismisses
+        -- Pre-play swipe-dismisses. candidate_pool has no dismissed_at, so we
+        -- window on created_at — a candidate is created and swiped within the
+        -- same surfacing cycle, so created_at is a sound week anchor.
         SELECT cp.candidate_id, cp.interest_id
         FROM candidate_pool cp
         WHERE cp.user_id = @user_id
           AND cp.status = 'dismissed'
+          AND cp.created_at >= @week_start AND cp.created_at < @week_end
           AND cp.interest_id IS NOT NULL
         UNION
         -- Mid-play bailouts, attributed via the candidate's interest tag.
@@ -103,6 +136,7 @@ export function readDeclaredInterestSignal(userId: string): InterestSignalRow[] 
         INNER JOIN candidate_pool cp ON cp.user_id = we.user_id
                                     AND cp.external_id = we.video_id
         WHERE we.user_id = @user_id
+          AND we.started_at >= @week_start AND we.started_at < @week_end
           AND we.reason = 'dismissed'
           AND cp.interest_id IS NOT NULL
       )
@@ -121,11 +155,13 @@ export function readDeclaredInterestSignal(userId: string): InterestSignalRow[] 
     user_id: userId,
     watched_ratio: WATCHED_RATIO,
     watched_floor: WATCHED_TIME_FLOOR_S,
+    week_start: start,
+    week_end: end,
   }) as InterestSignalRow[];
 }
 
-export function buildDisagreementObservations(userId: string): DriftObservation[] {
-  const rows = readDeclaredInterestSignal(userId);
+export function buildDisagreementObservations(userId: string, week: string = isoWeek()): DriftObservation[] {
+  const rows = readDeclaredInterestSignal(userId, week);
   const out: DriftObservation[] = [];
 
   for (const row of rows) {
@@ -236,9 +272,9 @@ export function isoWeek(date: Date = new Date()): string {
   return `${d.getUTCFullYear()}-W${String(weekNo).padStart(2, '0')}`;
 }
 
-export function computeDriftObservations(userId: string): DriftObservation[] {
+export function computeDriftObservations(userId: string, week: string = isoWeek()): DriftObservation[] {
   return [
-    ...buildDisagreementObservations(userId),
+    ...buildDisagreementObservations(userId, week),
     ...buildDepthObservations(userId),
   ];
 }
@@ -309,7 +345,7 @@ export function generateDriftObservations(
   userId: string,
   week: string = isoWeek(),
 ): PersistDriftResult {
-  const observations = computeDriftObservations(userId);
+  const observations = computeDriftObservations(userId, week);
   const result = persistDriftObservations(userId, observations, week);
   logger.info(
     { userId, week, observationCount: result.observationCount },

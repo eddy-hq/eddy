@@ -34,6 +34,7 @@ import {
   computeDriftObservations,
   generateDriftObservations,
   isoWeek,
+  isoWeekRange,
   persistDriftObservations,
   readDriftObservations,
 } from './observations';
@@ -64,7 +65,9 @@ function seedInterestInteraction(opts: {
   videoId: string;
   status?: string;
   watchReason?: 'ended' | 'dismissed';
+  at?: string;
 }): void {
+  const at = opts.at ?? nowIso();
   const candidateId = `cand-${opts.videoId}`;
   db.prepare(`
     INSERT INTO candidate_pool
@@ -74,7 +77,7 @@ function seedInterestInteraction(opts: {
   `).run(
     candidateId, USER, opts.interestId,
     `https://www.youtube.com/watch?v=${opts.videoId}`,
-    opts.videoId, opts.status ?? 'scored', nowIso(),
+    opts.videoId, opts.status ?? 'scored', at,
   );
 
   if (!opts.watchReason) return;
@@ -87,7 +90,7 @@ function seedInterestInteraction(opts: {
   `).run(
     requestId, USER,
     `https://www.youtube.com/watch?v=${opts.videoId}`,
-    opts.videoId, `Title ${opts.videoId}`, nowIso(),
+    opts.videoId, `Title ${opts.videoId}`, at,
   );
 
   const ended = opts.watchReason === 'ended';
@@ -98,7 +101,7 @@ function seedInterestInteraction(opts: {
     VALUES (?, ?, ?, ?, 'discovery', ?, ?, ?, ?, ?)
   `).run(
     `evt-${opts.videoId}`, USER, requestId, opts.videoId,
-    nowIso(), nowIso(),
+    at, at,
     ended ? 600 : 10, 600, opts.watchReason,
   );
 }
@@ -166,6 +169,25 @@ describe('isoWeek', () => {
   });
 });
 
+describe('isoWeekRange', () => {
+  it('returns the Monday→next-Monday UTC bounds for a week label', () => {
+    const { start, end } = isoWeekRange('2026-W15');
+    // 2026-W15 runs Mon 2026-04-06 to Mon 2026-04-13 (exclusive).
+    expect(start).toBe('2026-04-06T00:00:00.000Z');
+    expect(end).toBe('2026-04-13T00:00:00.000Z');
+  });
+
+  it('round-trips with isoWeek for an in-week date', () => {
+    const date = new Date(Date.UTC(2026, 3, 8, 12));
+    const { start, end } = isoWeekRange(isoWeek(date));
+    expect(date.toISOString() >= start && date.toISOString() < end).toBe(true);
+  });
+
+  it('rejects a malformed week label', () => {
+    expect(() => isoWeekRange('2026-15')).toThrowError();
+  });
+});
+
 describe('buildDisagreementObservations', () => {
   it('flags a declared interest the user consistently skips', () => {
     declareInterest(INTEREST_ECON, 1);
@@ -211,6 +233,21 @@ describe('buildDisagreementObservations', () => {
     }
     expect(DISAGREEMENT_DISMISS_RATIO).toBeLessThanOrEqual(0.83);
     expect(buildDisagreementObservations(USER)).toHaveLength(1);
+  });
+
+  it('only counts interactions inside the requested week (no stale re-fire)', () => {
+    declareInterest(INTEREST_ECON, 1);
+    // Heavy skipping in 2026-W15, none in 2026-W16.
+    const inW15 = new Date(Date.UTC(2026, 3, 8, 12)).toISOString();
+    seedInterestInteraction({ interestId: INTEREST_ECON, videoId: 'e-w1', watchReason: 'ended', at: inW15 });
+    for (let i = 0; i < 6; i++) {
+      seedInterestInteraction({ interestId: INTEREST_ECON, videoId: `e-d${i}`, status: 'dismissed', at: inW15 });
+    }
+
+    // The skipping week reports the disagreement.
+    expect(buildDisagreementObservations(USER, '2026-W15')).toHaveLength(1);
+    // The following week, with no new interactions, does not re-report it.
+    expect(buildDisagreementObservations(USER, '2026-W16')).toHaveLength(0);
   });
 
   it('still counts watch signal after the backing request is hard-deleted', () => {
@@ -296,10 +333,12 @@ describe('no profile mutation', () => {
   });
 
   it('generateDriftObservations persists to drift without mutating the profile', () => {
+    // Seed interactions inside ISO week 2026-W15 (mid-week Wednesday).
+    const inW15 = new Date(Date.UTC(2026, 3, 8, 12)).toISOString();
     declareInterest(INTEREST_ECON, 1);
-    seedInterestInteraction({ interestId: INTEREST_ECON, videoId: 'e-w1', watchReason: 'ended' });
+    seedInterestInteraction({ interestId: INTEREST_ECON, videoId: 'e-w1', watchReason: 'ended', at: inW15 });
     for (let i = 0; i < 6; i++) {
-      seedInterestInteraction({ interestId: INTEREST_ECON, videoId: `e-d${i}`, status: 'dismissed' });
+      seedInterestInteraction({ interestId: INTEREST_ECON, videoId: `e-d${i}`, status: 'dismissed', at: inW15 });
     }
     insertAffinity({ statement: 'Prefers long-form deep dives.', confidence: 0.8 });
 

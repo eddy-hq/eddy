@@ -8,6 +8,7 @@ export {
   readDeclaredInterestSignal,
   readActiveAffinityStatements,
   isoWeek,
+  isoWeekRange,
   DISAGREEMENT_MIN_INTERACTIONS,
   DISAGREEMENT_DISMISS_RATIO,
   DEPTH_OBSERVATION_MAX,
