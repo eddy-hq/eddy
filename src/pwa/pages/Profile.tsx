@@ -2,23 +2,25 @@ import React, { useEffect, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { AnimatePresence, motion, Reorder, useDragControls } from 'framer-motion';
-import { ChevronLeft, Plus, Trash2, X } from 'lucide-react';
+import { Check, ChevronLeft, Plus, Trash2, X } from 'lucide-react';
 import { BottomNav } from '../components/BottomNav';
 import { AvatarTab } from '../components/AvatarTab';
+import {
+  dropProposal,
+  promoteProposal,
+  shouldShowBand,
+  type Expertise,
+  type InferredInterest,
+  type MyInterest,
+} from '../lib/inferredInterests';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
-type Expertise = 'beginner' | 'comfortable' | 'deep';
 type TabKey = 'avatar' | 'interests' | 'people';
 
-interface MyInterest {
-  interestId: string;
-  label: string;
-  rank: number;
-  expertise: Expertise;
-}
-
 interface MineResponse { interests: MyInterest[] }
+
+interface InferredResponse { inferred: InferredInterest[] }
 
 interface FollowedPerson {
   person_id: string;
@@ -79,6 +81,30 @@ async function fetchFollowing(userId: string): Promise<FollowingResponse> {
   const res = await fetch(`/people/following?userId=${encodeURIComponent(userId)}`);
   if (!res.ok) throw new Error('Failed to load people');
   return res.json() as Promise<FollowingResponse>;
+}
+
+async function fetchInferred(userId: string): Promise<InferredResponse> {
+  const res = await fetch(`/interests/inferred?userId=${encodeURIComponent(userId)}`);
+  if (!res.ok) throw new Error('Failed to load suggestions');
+  return res.json() as Promise<InferredResponse>;
+}
+
+async function keepInferred(userId: string, interestId: string): Promise<void> {
+  const res = await fetch('/interests/inferred/keep', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ userId, interestId }),
+  });
+  if (!res.ok) throw new Error('Keep failed');
+}
+
+async function removeInferred(userId: string, interestId: string): Promise<void> {
+  const res = await fetch('/interests/inferred', {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ userId, interestId }),
+  });
+  if (!res.ok) throw new Error('Remove failed');
 }
 
 // ── Page ─────────────────────────────────────────────────────────────────────
@@ -240,6 +266,41 @@ function InterestsTab({ userId }: { userId: string }) {
     },
   });
 
+  // "Eddy noticed" band — inferred-interest proposals (ADR-0008). Inert until
+  // Kept; rendered only when non-empty.
+  const { data: inferredData } = useQuery({
+    queryKey: ['inferred-interests', userId],
+    queryFn: () => fetchInferred(userId),
+    enabled: !!userId,
+  });
+  const inferred = inferredData?.inferred ?? [];
+
+  const keepInferredMutation = useMutation({
+    mutationFn: (interestId: string) => keepInferred(userId, interestId),
+    onSuccess: (_data, interestId) => {
+      // Optimistically promote into the declared list (appended at next rank)
+      // and drop from the band, then revalidate both from the server.
+      setOrder((prev) => promoteProposal(prev, inferred, interestId));
+      queryClient.setQueryData<InferredResponse>(
+        ['inferred-interests', userId],
+        (prev) => (prev ? { inferred: dropProposal(prev.inferred, interestId) } : prev),
+      );
+      void queryClient.invalidateQueries({ queryKey: ['my-interests', userId] });
+      void queryClient.invalidateQueries({ queryKey: ['inferred-interests', userId] });
+    },
+  });
+
+  const removeInferredMutation = useMutation({
+    mutationFn: (interestId: string) => removeInferred(userId, interestId),
+    onSuccess: (_data, interestId) => {
+      queryClient.setQueryData<InferredResponse>(
+        ['inferred-interests', userId],
+        (prev) => (prev ? { inferred: dropProposal(prev.inferred, interestId) } : prev),
+      );
+      void queryClient.invalidateQueries({ queryKey: ['inferred-interests', userId] });
+    },
+  });
+
   const activeInterest = order.find((i) => i.interestId === activeId) ?? null;
 
   return (
@@ -267,6 +328,16 @@ function InterestsTab({ userId }: { userId: string }) {
         )}
       </Section>
 
+      {shouldShowBand(inferred) && (
+        <NoticedBand
+          proposals={inferred}
+          onKeep={(id) => keepInferredMutation.mutate(id)}
+          onRemove={(id) => removeInferredMutation.mutate(id)}
+          keepPendingId={keepInferredMutation.isPending ? keepInferredMutation.variables : null}
+          removePendingId={removeInferredMutation.isPending ? removeInferredMutation.variables : null}
+        />
+      )}
+
       <AnimatePresence>
         {activeInterest && (
           <InterestSheet
@@ -281,6 +352,106 @@ function InterestsTab({ userId }: { userId: string }) {
         )}
       </AnimatePresence>
     </>
+  );
+}
+
+// ── "Eddy noticed" band ──────────────────────────────────────────────────────
+
+// Inferred-interest proposals derived from who the user follows (ADR-0008).
+// No rank, never interleaved into the declared list. Keep promotes to declared;
+// Remove suppresses (no unfollow). Rendered only when proposals exist.
+function NoticedBand({
+  proposals, onKeep, onRemove, keepPendingId, removePendingId,
+}: {
+  proposals: InferredInterest[];
+  onKeep: (interestId: string) => void;
+  onRemove: (interestId: string) => void;
+  keepPendingId: string | null;
+  removePendingId: string | null;
+}) {
+  return (
+    <Section
+      title="Eddy noticed"
+      hint="Suggestions from the people you follow. Keep one to add it to your interests, or remove it."
+    >
+      <ul style={{
+        listStyle: 'none', margin: 0, padding: '4px 14px 0',
+        display: 'flex', flexDirection: 'column', gap: 8,
+      }}>
+        <AnimatePresence initial={false}>
+          {proposals.map((p) => {
+            const keeping = keepPendingId === p.interestId;
+            const removing = removePendingId === p.interestId;
+            const busy = keeping || removing;
+            return (
+              <motion.li
+                key={p.interestId}
+                layout
+                initial={{ opacity: 0, y: -4 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, height: 0, marginTop: 0 }}
+                transition={{ duration: 0.2 }}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 8,
+                  background: 'var(--bg-surface)',
+                  border: '1px solid var(--border-subtle)',
+                  borderRadius: 12,
+                  padding: '8px 10px 8px 14px',
+                  overflow: 'hidden',
+                }}
+              >
+                <span style={{
+                  flex: 1, minWidth: 0,
+                  fontSize: 15, fontWeight: 500, letterSpacing: '-0.003em',
+                  color: 'var(--text-primary)',
+                  overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                }}>
+                  {p.label}
+                </span>
+
+                <button
+                  onClick={() => onKeep(p.interestId)}
+                  disabled={busy}
+                  aria-label={`Keep ${p.label}`}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 6,
+                    padding: '8px 12px', borderRadius: 8,
+                    background: 'var(--accent-subtle)', border: '1.5px solid var(--accent)',
+                    color: 'var(--accent)', fontFamily: 'inherit',
+                    fontSize: 13, fontWeight: 600,
+                    cursor: busy ? 'default' : 'pointer',
+                    opacity: busy ? 0.6 : 1,
+                    flexShrink: 0,
+                    WebkitTapHighlightColor: 'transparent',
+                  }}
+                >
+                  <Check size={15} strokeWidth={2.4} />
+                  Keep
+                </button>
+
+                <button
+                  onClick={() => onRemove(p.interestId)}
+                  disabled={busy}
+                  aria-label={`Remove ${p.label}`}
+                  style={{
+                    width: 36, height: 36, borderRadius: 8,
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    background: 'none', border: '1.5px solid var(--border-subtle)',
+                    color: 'var(--text-tertiary)',
+                    cursor: busy ? 'default' : 'pointer',
+                    opacity: busy ? 0.6 : 1,
+                    flexShrink: 0,
+                    WebkitTapHighlightColor: 'transparent',
+                  }}
+                >
+                  <X size={16} strokeWidth={2.2} />
+                </button>
+              </motion.li>
+            );
+          })}
+        </AnimatePresence>
+      </ul>
+    </Section>
   );
 }
 
