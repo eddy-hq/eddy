@@ -191,10 +191,10 @@ describe('isoWeekRange', () => {
 describe('buildDisagreementObservations', () => {
   it('flags a declared interest the user consistently skips', () => {
     declareInterest(INTEREST_ECON, 1);
-    // 1 watched, 6 dismissed → ratio 0.86 over 7 interactions.
+    // 1 watched, 6 mid-play bailouts → ratio 0.86 over 7 interactions.
     seedInterestInteraction({ interestId: INTEREST_ECON, videoId: 'e-w1', watchReason: 'ended' });
     for (let i = 0; i < 6; i++) {
-      seedInterestInteraction({ interestId: INTEREST_ECON, videoId: `e-d${i}`, status: 'dismissed' });
+      seedInterestInteraction({ interestId: INTEREST_ECON, videoId: `e-d${i}`, watchReason: 'dismissed' });
     }
 
     const obs = buildDisagreementObservations(USER);
@@ -209,7 +209,7 @@ describe('buildDisagreementObservations', () => {
     for (let i = 0; i < 6; i++) {
       seedInterestInteraction({ interestId: INTEREST_ROBO, videoId: `r-w${i}`, watchReason: 'ended' });
     }
-    seedInterestInteraction({ interestId: INTEREST_ROBO, videoId: 'r-d0', status: 'dismissed' });
+    seedInterestInteraction({ interestId: INTEREST_ROBO, videoId: 'r-d0', watchReason: 'dismissed' });
 
     expect(buildDisagreementObservations(USER)).toHaveLength(0);
   });
@@ -219,7 +219,7 @@ describe('buildDisagreementObservations', () => {
     // 4 dismissals, 0 watched → ratio 1.0 but only 4 interactions (< floor).
     expect(DISAGREEMENT_MIN_INTERACTIONS).toBeGreaterThan(4);
     for (let i = 0; i < 4; i++) {
-      seedInterestInteraction({ interestId: INTEREST_ECON, videoId: `e-d${i}`, status: 'dismissed' });
+      seedInterestInteraction({ interestId: INTEREST_ECON, videoId: `e-d${i}`, watchReason: 'dismissed' });
     }
     expect(buildDisagreementObservations(USER)).toHaveLength(0);
   });
@@ -235,13 +235,24 @@ describe('buildDisagreementObservations', () => {
     expect(buildDisagreementObservations(USER)).toHaveLength(1);
   });
 
+  it('does not count pre-play swipe-dismisses (no reliable dismissal timestamp)', () => {
+    declareInterest(INTEREST_ECON, 1);
+    seedInterestInteraction({ interestId: INTEREST_ECON, videoId: 'e-w1', watchReason: 'ended' });
+    // 6 pre-play swipe-dismisses — excluded from the weekly signal, so the
+    // ratio stays at 0 dismissals and no disagreement fires.
+    for (let i = 0; i < 6; i++) {
+      seedInterestInteraction({ interestId: INTEREST_ECON, videoId: `e-d${i}`, status: 'dismissed' });
+    }
+    expect(buildDisagreementObservations(USER)).toHaveLength(0);
+  });
+
   it('only counts interactions inside the requested week (no stale re-fire)', () => {
     declareInterest(INTEREST_ECON, 1);
     // Heavy skipping in 2026-W15, none in 2026-W16.
     const inW15 = new Date(Date.UTC(2026, 3, 8, 12)).toISOString();
     seedInterestInteraction({ interestId: INTEREST_ECON, videoId: 'e-w1', watchReason: 'ended', at: inW15 });
     for (let i = 0; i < 6; i++) {
-      seedInterestInteraction({ interestId: INTEREST_ECON, videoId: `e-d${i}`, status: 'dismissed', at: inW15 });
+      seedInterestInteraction({ interestId: INTEREST_ECON, videoId: `e-d${i}`, watchReason: 'dismissed', at: inW15 });
     }
 
     // The skipping week reports the disagreement.
@@ -265,8 +276,9 @@ describe('buildDisagreementObservations', () => {
   it('ignores interests the user has not declared (no user_interests row)', () => {
     // Heavy skipping but never declared → not in the explicit profile, so no
     // disagreement (an inferred-but-unkept interest can't disagree).
+    seedInterestInteraction({ interestId: INTEREST_ECON, videoId: 'e-w1', watchReason: 'ended' });
     for (let i = 0; i < 6; i++) {
-      seedInterestInteraction({ interestId: INTEREST_ECON, videoId: `e-d${i}`, status: 'dismissed' });
+      seedInterestInteraction({ interestId: INTEREST_ECON, videoId: `e-d${i}`, watchReason: 'dismissed' });
     }
     expect(buildDisagreementObservations(USER)).toHaveLength(0);
   });
@@ -306,9 +318,21 @@ describe('observational phrasing', () => {
     declareInterest(INTEREST_ECON, 1);
     seedInterestInteraction({ interestId: INTEREST_ECON, videoId: 'e-w1', watchReason: 'ended' });
     for (let i = 0; i < 6; i++) {
-      seedInterestInteraction({ interestId: INTEREST_ECON, videoId: `e-d${i}`, status: 'dismissed' });
+      seedInterestInteraction({ interestId: INTEREST_ECON, videoId: `e-d${i}`, watchReason: 'dismissed' });
     }
     const obs = buildDisagreementObservations(USER);
+    expect(obs[0]?.text).not.toMatch(EVALUATIVE);
+  });
+
+  it('drops a depth-matching affinity statement that carries advice', () => {
+    insertAffinity({ statement: 'You should try more long-form explainers.', confidence: 0.9 });
+    expect(buildDepthObservations(USER)).toHaveLength(0);
+  });
+
+  it('keeps a depth statement that only describes a pattern', () => {
+    insertAffinity({ statement: 'Tends toward long-form technical explainers.', confidence: 0.9 });
+    const obs = buildDepthObservations(USER);
+    expect(obs).toHaveLength(1);
     expect(obs[0]?.text).not.toMatch(EVALUATIVE);
   });
 });
@@ -318,7 +342,7 @@ describe('no profile mutation', () => {
     declareInterest(INTEREST_ECON, 1);
     seedInterestInteraction({ interestId: INTEREST_ECON, videoId: 'e-w1', watchReason: 'ended' });
     for (let i = 0; i < 6; i++) {
-      seedInterestInteraction({ interestId: INTEREST_ECON, videoId: `e-d${i}`, status: 'dismissed' });
+      seedInterestInteraction({ interestId: INTEREST_ECON, videoId: `e-d${i}`, watchReason: 'dismissed' });
     }
     insertAffinity({ statement: 'Tends toward long-form technical explainers.', confidence: 0.8 });
 
@@ -338,7 +362,7 @@ describe('no profile mutation', () => {
     declareInterest(INTEREST_ECON, 1);
     seedInterestInteraction({ interestId: INTEREST_ECON, videoId: 'e-w1', watchReason: 'ended', at: inW15 });
     for (let i = 0; i < 6; i++) {
-      seedInterestInteraction({ interestId: INTEREST_ECON, videoId: `e-d${i}`, status: 'dismissed', at: inW15 });
+      seedInterestInteraction({ interestId: INTEREST_ECON, videoId: `e-d${i}`, watchReason: 'dismissed', at: inW15 });
     }
     insertAffinity({ statement: 'Prefers long-form deep dives.', confidence: 0.8 });
 
