@@ -254,6 +254,9 @@ function InterestsTab({ userId }: { userId: string }) {
     mutationFn: (interestId: string) => removeInterest(userId, interestId),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['my-interests', userId] });
+      // A removed declared interest may now re-derive as an inferred proposal
+      // (the /inferred view excludes declared interests), so revalidate the band.
+      void queryClient.invalidateQueries({ queryKey: ['inferred-interests', userId] });
       setActiveId(null);
     },
   });
@@ -262,6 +265,9 @@ function InterestsTab({ userId }: { userId: string }) {
     mutationFn: (label: string) => addInterest(userId, label),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['my-interests', userId] });
+      // A newly declared interest is excluded from the /inferred view, so a
+      // matching proposal must drop out of the band — revalidate it.
+      void queryClient.invalidateQueries({ queryKey: ['inferred-interests', userId] });
       setIsAdding(false);
     },
   });
@@ -434,17 +440,19 @@ function NoticedBand({
                   disabled={busy}
                   aria-label={`Remove ${p.label}`}
                   style={{
-                    width: 36, height: 36, borderRadius: 8,
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    display: 'flex', alignItems: 'center', gap: 6,
+                    padding: '8px 12px', borderRadius: 8,
                     background: 'none', border: '1.5px solid var(--border-subtle)',
-                    color: 'var(--text-tertiary)',
+                    color: 'var(--text-secondary)', fontFamily: 'inherit',
+                    fontSize: 13, fontWeight: 600,
                     cursor: busy ? 'default' : 'pointer',
                     opacity: busy ? 0.6 : 1,
                     flexShrink: 0,
                     WebkitTapHighlightColor: 'transparent',
                   }}
                 >
-                  <X size={16} strokeWidth={2.2} />
+                  <X size={15} strokeWidth={2.2} />
+                  Remove
                 </button>
               </motion.li>
             );
