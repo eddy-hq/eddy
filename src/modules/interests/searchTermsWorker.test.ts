@@ -97,3 +97,55 @@ describe('processGenerateSearchTerms — kid-interest chain', () => {
     expect(guardAdd).not.toHaveBeenCalled();
   });
 });
+
+describe('processGenerateSearchTerms — specificity (ADR-0008)', () => {
+  it('persists [] for a too-broad label and does not throw', async () => {
+    // Gemma judges "AI" too broad and returns an empty array.
+    vi.mocked(ollamaGenerate).mockResolvedValue('[]');
+    await processGenerateSearchTerms({
+      interestId: 'ai', label: 'AI',
+      userId: 'user-parent', isUserAdded: true, isKid: false,
+    });
+
+    const updateCall = mockRun.mock.calls.find((c) => c[1] === 'ai');
+    expect(updateCall).toBeDefined();
+    expect(updateCall?.[0]).toBe('[]');
+  });
+
+  it('persists generated terms for a specific label', async () => {
+    vi.mocked(ollamaGenerate).mockResolvedValue(
+      '["trail running shoe reviews","ultramarathon training plan","running cadence drills","zone 2 running"]'
+    );
+    await processGenerateSearchTerms({
+      interestId: 'trail_running', label: 'Trail running shoe reviews',
+      userId: 'user-parent', isUserAdded: true, isKid: false,
+    });
+
+    const updateCall = mockRun.mock.calls.find((c) => c[1] === 'trail_running');
+    expect(updateCall).toBeDefined();
+    expect(JSON.parse(updateCall?.[0] as string)).toEqual([
+      'trail running shoe reviews',
+      'ultramarathon training plan',
+      'running cadence drills',
+      'zone 2 running',
+    ]);
+  });
+
+  it('still runs the kid-interest guard chain for a broad kid-authored interest', async () => {
+    // A broad label gets empty search terms but the kid guard eval must still
+    // fire against the raw label — the guard judges the interest, not its
+    // searchability.
+    vi.mocked(ollamaGenerate).mockResolvedValue('[]');
+    await processGenerateSearchTerms({
+      interestId: 'ai', label: 'AI',
+      userId: 'user-kid', isUserAdded: true, isKid: true,
+    });
+
+    expect(guardAdd).toHaveBeenCalledTimes(1);
+    expect(guardAdd).toHaveBeenCalledWith('kid-interest-eval', {
+      userId: 'user-kid',
+      interestId: 'ai',
+      rawLabel: 'AI',
+    });
+  });
+});

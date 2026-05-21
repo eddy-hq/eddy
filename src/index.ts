@@ -13,6 +13,7 @@ import {
   stopProfileEnrichmentScheduler,
 } from './modules/profile-enrichment/index';
 import { startInterestsWorker, stopInterestsWorker } from './modules/interests/searchTermsWorker';
+import { reconcilePendingSearchTerms } from './modules/interests';
 import { startGuardWorker, stopGuardWorker } from './modules/guard/index';
 import { startRecyclerScheduler, stopRecyclerScheduler } from './modules/recycler/index';
 
@@ -30,6 +31,11 @@ async function start(): Promise<void> {
   startRecyclerScheduler();
   startInterestsWorker();
   startGuardWorker();
+
+  // Re-run specificity-aware search-term generation over any interests the
+  // latest migration reset to the pending sentinel (issue #157 / ADR-0008).
+  // Enqueued after the worker is up so the jobs have a consumer.
+  reconcilePendingSearchTerms();
 
   const server = app.listen(config.PORT, () => {
     logger.info(
