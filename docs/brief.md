@@ -676,13 +676,15 @@ Adults see everything about their own profile. Parents see full detail of kid pr
 
 First 3-4 weeks, behavioural signal is thin. "Picked for you" shows *"Eddy is still figuring out what you like — tell it more"* with a prompt to follow people and rate. Aligns with Drift's "Getting to know you" baseline.
 
+There is no mandatory gate. An empty "Picked for you" is itself a valid state — a user with no follows and no declared interests is carried by the request flow until follows accumulate. Following someone is the cheapest path into discovery; declaring an interest is the forward-looking one. Neither is required to proceed.
+
 ### Interests
 
 Interests are named subjects with a set of yt-dlp search strings. The `search_terms` JSON array is what does the work — `ytsearch20:'minecraft redstone tutorial'` runs daily as a gap-filler when person-sourced candidates are thin. The label is the only display field (an emoji column was tried and dropped — it added noise without helping recognition).
 
 **Creation is freeform.** No taxonomy to pick from. User types an interest; one Gemma call generates the `search_terms` array. Specificity is the input quality knob — *"minecraft redstone"* generates better search terms than *"minecraft"*; *"olympic distance triathlon training"* beats *"fitness"*. The input affordance prompts for it: *"Add an interest. Be specific."*
 
-**Onboarding:** Same freeform input, used in a setup flow. Kid setup is parent-driven, so the parent types the kid's interests; adults seed their own. New interests append to the end of the rank order; expertise defaults to `comfortable`. Minimum to proceed: ≥1 interest and ≥1 followed person. Without both, discovery has nothing to work with.
+**Onboarding:** No mandatory gate. The same freeform input is used in a setup flow that *invites* interests and follows but never *requires* them. Kid setup is parent-driven, so the parent types the kid's interests; adults seed their own. New interests append to the end of the rank order; expertise defaults to `comfortable`. A user who declares nothing and follows no one is not blocked — an empty "Picked for you" is a valid cold state (see Cold start), carried by the request flow until follows accumulate. Following someone is the cheapest path into discovery; declaring an interest is the forward-looking one. Neither is required to proceed.
 
 **Channel → interest inference (Phase 5):** When a user subscribes to a channel, Gemma reads the channel description and recent titles and suggests 1–2 existing interests to link to it. This is a mapping from `channel_id` to existing `interest_id` — not interest creation. Behavioural weight flows from there naturally.
 
