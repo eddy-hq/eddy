@@ -5,6 +5,7 @@ import { redis, profileEnrichmentQueue } from '../../queue';
 import { WATCHED_RATIO, WATCHED_TIME_FLOOR_S } from '../watch-events';
 import { computeTrustWeight, TRUST_DEFAULT } from './util';
 import { regenerateAffinities } from './affinities';
+import { generateDriftObservations } from '../drift';
 
 export { computeTrustWeight, TRUST_COLD_START_FLOOR, TRUST_DEFAULT, TRUST_BASELINE } from './util';
 export {
@@ -242,6 +243,22 @@ async function runAffinityRegeneration(): Promise<void> {
       }
     } catch (err) {
       logger.error({ err, userId: user.user_id }, 'Affinity regeneration: user run failed');
+    }
+
+    // Drift observations ride the same weekly cadence: depth observations read
+    // whatever affinities are active, and disagreement is a deterministic
+    // weekly behavioural read. Run in its own try so a thrown affinity pass
+    // above (Gemma error) doesn't suppress the deterministic disagreement
+    // observation for the user. The depth observation simply reads the prior
+    // active affinities if regeneration failed this week.
+    try {
+      const drift = generateDriftObservations(user.user_id);
+      logger.info(
+        { userId: user.user_id, observationCount: drift.observationCount },
+        'Drift observations: user complete'
+      );
+    } catch (err) {
+      logger.error({ err, userId: user.user_id }, 'Drift observations: user run failed');
     }
   }
 
