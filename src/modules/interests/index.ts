@@ -4,6 +4,7 @@ import { ollamaGenerate, parseOllamaJson } from '../../ollama';
 
 export { interestsRouter, removeUserInterest } from './router';
 export { normalizeUserAddedInterest, type NormalizedUserInterest } from './normalize';
+export { reconcilePendingSearchTerms, SEARCH_TERMS_PENDING } from './reconcile';
 
 interface InterestRow {
   id: string;

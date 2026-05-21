@@ -291,6 +291,40 @@ describe('refreshCandidatePool — malformed search_terms', () => {
     expect(mockedSearch).not.toHaveBeenCalled();
     expect(added).toBe(0);
   });
+
+  it('skips an interest with empty search_terms (broad/vocabulary-only, ADR-0008)', async () => {
+    // A too-broad interest persisted as '[]' by the specificity-aware worker
+    // serves as scoring vocabulary but must never generate a ytsearch query.
+    const interests: UserInterestRow[] = [
+      makeInterest({ interestId: 'i1', rank: 1, searchTerms: '[]' }),
+      makeInterest({ interestId: 'i2', rank: 2, searchTerms: JSON.stringify(['ok-term']) }),
+    ];
+
+    mockedSearch.mockResolvedValueOnce([searchResult({ videoId: 'ok-vid' })]);
+    mockedSearch.mockResolvedValue([]);
+
+    const added = await refreshCandidatePool(USER_ID, interests, FULL_RUN);
+
+    expect(mockedSearch).toHaveBeenCalledTimes(1);
+    expect(mockedSearch.mock.calls[0]?.[0]).toBe('ok-term');
+    expect(added).toBe(1);
+  });
+
+  it('skips an interest still on the reconcile sentinel (pending regeneration, issue #157)', async () => {
+    // Migration 033 resets existing rows to this sentinel; until the startup
+    // reconcile re-runs generation the row must read as no-terms, never as a
+    // literal query string.
+    const interests: UserInterestRow[] = [
+      makeInterest({ interestId: 'i1', rank: 1, searchTerms: '__pending_specificity__' }),
+    ];
+
+    mockedSearch.mockResolvedValue([]);
+
+    const added = await refreshCandidatePool(USER_ID, interests, FULL_RUN);
+
+    expect(mockedSearch).not.toHaveBeenCalled();
+    expect(added).toBe(0);
+  });
 });
 
 describe('refreshCandidatePool — channel dismissal filter (issue #147)', () => {
