@@ -39,6 +39,23 @@ export interface DiscoveryRunResult {
 // Top-N scored candidates re-checked through the guard for kid users.
 const KID_GUARD_RECHECK_LIMIT = 30;
 
+// The connection-axis vocabulary that feeds scoring. Per ADR-0008, this is
+// built from DECLARED interests only — stored `user_interests` rows. Inferred
+// interests (live-derived from follows, see interests/inferred.ts) are inert
+// proposals and MUST NOT reach scoring until the user Keeps one, at which point
+// it is already a declared `user_interests` row here. This selection is the
+// boundary the regression tests pin: it reads `user_interests` and nothing
+// from the inference path.
+export function selectDeclaredInterests(userId: string): UserInterestRow[] {
+  return db.prepare(`
+    SELECT ut.interest_id, t.label, ut.rank, ut.expertise, t.search_terms
+    FROM user_interests ut
+    INNER JOIN interests t ON t.id = ut.interest_id
+    WHERE ut.user_id = ?
+    ORDER BY ut.rank ASC
+  `).all(userId) as UserInterestRow[];
+}
+
 export async function runDiscoveryForUser(user: UserRow, options: { force?: boolean } = {}): Promise<DiscoveryRunResult> {
   const today = new Date().toISOString().slice(0, 10);
   const isKid = user.role === 'kid';
@@ -53,13 +70,7 @@ export async function runDiscoveryForUser(user: UserRow, options: { force?: bool
     return { userId: user.user_id, skipped: true, skipReason: 'Already at daily cap (use --force to override)', interestsChecked: 0, candidatesAdded: 0, surfaced: 0, items: [] };
   }
 
-  const userInterests = db.prepare(`
-    SELECT ut.interest_id, t.label, ut.rank, ut.expertise, t.search_terms
-    FROM user_interests ut
-    INNER JOIN interests t ON t.id = ut.interest_id
-    WHERE ut.user_id = ?
-    ORDER BY ut.rank ASC
-  `).all(user.user_id) as UserInterestRow[];
+  const userInterests = selectDeclaredInterests(user.user_id);
 
   if (userInterests.length === 0) {
     logger.info({ userId: user.user_id }, 'Discovery: user has no interests, skipping');
