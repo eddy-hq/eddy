@@ -3,6 +3,7 @@ import { db } from '../../db/client';
 import { ValidationError, NotFoundError } from '../../errors';
 import { resolveUserById } from '../users';
 import { normalizeUserAddedInterest } from './normalize';
+import { getInferredInterests } from './inferred';
 
 interface InterestRow {
   id: string;
@@ -115,6 +116,14 @@ interestsRouter.get('/mine', (req: Request, res: Response) => {
       expertise: r.expertise,
     })),
   });
+});
+
+// Inferred-interest proposals derived live from the user's follows (ADR-0008),
+// minus already-declared and Removed interests. Read-only and inert — these do
+// not feed discovery until Kept (slice #4).
+interestsRouter.get('/inferred', (req: Request, res: Response) => {
+  const user = resolveUserById(req.query['userId']);
+  res.json({ interests: getInferredInterests(user.user_id) });
 });
 
 interestsRouter.post('/reorder', (req: Request, res: Response) => {
