@@ -3,6 +3,7 @@ import { db } from '../../db/client';
 import { ValidationError, NotFoundError } from '../../errors';
 import { resolveUserById } from '../users';
 import { normalizeUserAddedInterest } from './normalize';
+import { getInferredInterests, suppressInferredInterest, keepInferredInterest } from './inferred';
 
 interface InterestRow {
   id: string;
@@ -172,4 +173,35 @@ interestsRouter.post('/user-add', (req: Request, res: Response) => {
 
   const result = normalizeUserAddedInterest(user.user_id, label);
   res.json(result);
+});
+
+// Inferred interests (#156, ADR-0008): live-derived proposals from who the
+// user follows, minus declared and Removed. Inert until Kept.
+interestsRouter.get('/inferred', (req: Request, res: Response) => {
+  const user = resolveUserById(req.query['userId']);
+  res.json({ inferred: getInferredInterests(user.user_id) });
+});
+
+// Keep promotes a proposal to a declared interest (the human act). For a kid
+// this routes through the guard eval chain inside keepInferredInterest.
+interestsRouter.post('/inferred/keep', (req: Request, res: Response) => {
+  const { userId, interestId } = req.body as { userId?: string; interestId?: string };
+  const user = resolveUserById(userId);
+  if (!interestId?.trim()) throw new ValidationError('interestId required');
+
+  const interest = db.prepare('SELECT id FROM interests WHERE id = ?').get(interestId) as { id: string } | undefined;
+  if (!interest) throw new NotFoundError(`interest ${interestId}`);
+
+  const result = keepInferredInterest(user.user_id, interestId);
+  res.json({ ...result, kept: true });
+});
+
+// Remove suppresses a proposal so it is never re-derived. Does NOT unfollow.
+interestsRouter.delete('/inferred', (req: Request, res: Response) => {
+  const { userId, interestId } = req.body as { userId?: string; interestId?: string };
+  const user = resolveUserById(userId);
+  if (!interestId?.trim()) throw new ValidationError('interestId required');
+
+  suppressInferredInterest(user.user_id, interestId);
+  res.json({ interestId, suppressed: true });
 });
