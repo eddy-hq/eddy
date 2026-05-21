@@ -38,21 +38,23 @@ export interface DriftSummary {
 // skips. Per ADR-0008 the interest's runtime weight already drops via
 // behavioural signal; Drift just tells the human — it never deletes the row.
 //
-// Interest-level signal is derived deterministically (no Gemma) from
-// watch_events, which carry an accurate per-play timestamp (started_at) so the
-// counts can be windowed to the Drift week:
+// Interest-level signal is derived deterministically (no Gemma) and windowed
+// to the Drift week:
 //   watched   — watch_events that cross the watched threshold, joined to the
-//               candidate that carried the interest tag.
-//   dismissed — mid-play bailouts (watch_events.reason='dismissed'), via the
-//               interest tag on candidate_pool.
+//               candidate that carried the interest tag (windowed on the
+//               accurate per-play started_at).
+//   dismissed — mid-play bailouts (watch_events.reason='dismissed', windowed
+//               on started_at) plus pre-play swipe-dismisses
+//               (candidate_pool.status='dismissed', windowed on surfaced_at).
 //
-// Pre-play swipe-dismisses (candidate_pool.status='dismissed') are deliberately
-// NOT counted: candidate_pool has no dismissed_at, only created_at, and a
-// candidate can sit scored in the pool for days before it is surfaced and
-// swiped. Windowing those on created_at would misattribute the dismissal to
-// the wrong week (dropping or stale-reporting signal), so for a weekly
-// observation we rely only on the timestamped watch_events signal. Adding a
-// dismissed_at column to recover this is a schema change out of scope here.
+// candidate_pool has no dismissed_at column (adding one is a schema change out
+// of scope here). created_at is the pool-entry time and can be days/weeks
+// before the candidate is surfaced and swiped, so windowing pre-play dismisses
+// on created_at would misattribute them to the wrong week. surfaced_at is the
+// right anchor: a candidate can only be swiped after it is surfaced, and the
+// swipe happens in the same viewing session, so surfaced_at is within the same
+// week as the dismissal. Pre-play dismisses with no surfaced_at can't be
+// attributed to a week and are left out.
 
 // Below this many total interactions the ratio is anecdotal — one bad week
 // shouldn't read as a standing disagreement. Mirrors the spirit of the trust
@@ -126,21 +128,32 @@ export function readDeclaredInterestSignal(userId: string, week: string): Intere
       GROUP BY cp.interest_id
     ),
     dismissed AS (
-      -- Mid-play bailouts only (watch_events.reason='dismissed'), attributed
-      -- via the candidate's interest tag. Same direct video_id join as the
-      -- watched CTE so a deleted request doesn't erase the dismissal signal,
-      -- and windowed on the accurate per-play started_at. Pre-play swipes are
-      -- excluded — see the readDeclaredInterestSignal header for why.
-      SELECT cp.interest_id AS interest_id,
-             COUNT(DISTINCT we.event_id) AS n
-      FROM watch_events we
-      INNER JOIN candidate_pool cp ON cp.user_id = we.user_id
-                                  AND cp.external_id = we.video_id
-      WHERE we.user_id = @user_id
-        AND we.started_at >= @week_start AND we.started_at < @week_end
-        AND we.reason = 'dismissed'
-        AND cp.interest_id IS NOT NULL
-      GROUP BY cp.interest_id
+      SELECT interest_id, COUNT(*) AS n FROM (
+        -- Pre-play swipe-dismisses, windowed on surfaced_at (the swipe happens
+        -- in the same session the candidate was surfaced). Only surfaced
+        -- candidates can be swiped, so a NULL surfaced_at is filtered out by
+        -- the range comparison.
+        SELECT cp.candidate_id, cp.interest_id
+        FROM candidate_pool cp
+        WHERE cp.user_id = @user_id
+          AND cp.status = 'dismissed'
+          AND cp.surfaced_at >= @week_start AND cp.surfaced_at < @week_end
+          AND cp.interest_id IS NOT NULL
+        UNION
+        -- Mid-play bailouts (watch_events.reason='dismissed'), attributed via
+        -- the candidate's interest tag. Same direct video_id join as the
+        -- watched CTE so a deleted request doesn't erase the signal, windowed
+        -- on the accurate per-play started_at.
+        SELECT DISTINCT cp.candidate_id, cp.interest_id
+        FROM watch_events we
+        INNER JOIN candidate_pool cp ON cp.user_id = we.user_id
+                                    AND cp.external_id = we.video_id
+        WHERE we.user_id = @user_id
+          AND we.started_at >= @week_start AND we.started_at < @week_end
+          AND we.reason = 'dismissed'
+          AND cp.interest_id IS NOT NULL
+      )
+      GROUP BY interest_id
     )
     SELECT i.id                   AS interestId,
            i.label                AS label,

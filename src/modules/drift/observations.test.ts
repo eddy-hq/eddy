@@ -59,25 +59,35 @@ function declareInterest(interestId: string, rank: number): void {
 
 // Inserts a candidate tagged with an interest plus, optionally, a backing
 // request + watch event so the same video reads as watched or mid-play
-// dismissed. `status='dismissed'` models a pre-play swipe.
+// dismissed. `status='dismissed'` models a pre-play swipe — surfaced_at is set
+// to the swipe time (the candidate must have been surfaced to be swiped),
+// unless `notSurfaced` is set to model a never-surfaced candidate.
+//
+// `createdAt` defaults to `at` but can be set independently to model a
+// candidate that entered the pool well before it was surfaced/swiped.
 function seedInterestInteraction(opts: {
   interestId: string;
   videoId: string;
   status?: string;
   watchReason?: 'ended' | 'dismissed';
   at?: string;
+  createdAt?: string;
+  notSurfaced?: boolean;
 }): void {
   const at = opts.at ?? nowIso();
+  const createdAt = opts.createdAt ?? at;
   const candidateId = `cand-${opts.videoId}`;
+  // Pre-play swipe-dismisses carry a surfaced_at; everything else leaves it null.
+  const surfacedAt = opts.status === 'dismissed' && !opts.notSurfaced ? at : null;
   db.prepare(`
     INSERT INTO candidate_pool
       (candidate_id, user_id, content_type, source_type, interest_id,
-       url, external_id, status, created_at)
-    VALUES (?, ?, 'video', 'interest_search', ?, ?, ?, ?, ?)
+       url, external_id, status, created_at, surfaced_at)
+    VALUES (?, ?, 'video', 'interest_search', ?, ?, ?, ?, ?, ?)
   `).run(
     candidateId, USER, opts.interestId,
     `https://www.youtube.com/watch?v=${opts.videoId}`,
-    opts.videoId, opts.status ?? 'scored', at,
+    opts.videoId, opts.status ?? 'scored', createdAt, surfacedAt,
   );
 
   if (!opts.watchReason) return;
@@ -235,13 +245,39 @@ describe('buildDisagreementObservations', () => {
     expect(buildDisagreementObservations(USER)).toHaveLength(1);
   });
 
-  it('does not count pre-play swipe-dismisses (no reliable dismissal timestamp)', () => {
+  it('counts pre-play swipe-dismisses surfaced within the week', () => {
     declareInterest(INTEREST_ECON, 1);
     seedInterestInteraction({ interestId: INTEREST_ECON, videoId: 'e-w1', watchReason: 'ended' });
-    // 6 pre-play swipe-dismisses — excluded from the weekly signal, so the
-    // ratio stays at 0 dismissals and no disagreement fires.
+    // 6 pre-play swipe-dismisses (surfaced this week) → 6/7 over the ratio.
     for (let i = 0; i < 6; i++) {
       seedInterestInteraction({ interestId: INTEREST_ECON, videoId: `e-d${i}`, status: 'dismissed' });
+    }
+    expect(buildDisagreementObservations(USER)).toHaveLength(1);
+  });
+
+  it('windows pre-play swipes on surfaced_at, not created_at', () => {
+    declareInterest(INTEREST_ECON, 1);
+    const inW15 = new Date(Date.UTC(2026, 3, 8, 12)).toISOString();
+    const earlierW10 = new Date(Date.UTC(2026, 2, 4, 12)).toISOString();
+    seedInterestInteraction({ interestId: INTEREST_ECON, videoId: 'e-w1', watchReason: 'ended', at: inW15 });
+    // Candidates created weeks earlier (W10) but surfaced + swiped in W15.
+    for (let i = 0; i < 6; i++) {
+      seedInterestInteraction({
+        interestId: INTEREST_ECON, videoId: `e-d${i}`, status: 'dismissed',
+        at: inW15, createdAt: earlierW10,
+      });
+    }
+    // Attributed to the surfacing week (W15), not the creation week (W10).
+    expect(buildDisagreementObservations(USER, '2026-W15')).toHaveLength(1);
+    expect(buildDisagreementObservations(USER, '2026-W10')).toHaveLength(0);
+  });
+
+  it('excludes pre-play dismisses that were never surfaced', () => {
+    declareInterest(INTEREST_ECON, 1);
+    seedInterestInteraction({ interestId: INTEREST_ECON, videoId: 'e-w1', watchReason: 'ended' });
+    // 6 dismisses with no surfaced_at — can't be attributed to a week.
+    for (let i = 0; i < 6; i++) {
+      seedInterestInteraction({ interestId: INTEREST_ECON, videoId: `e-d${i}`, status: 'dismissed', notSurfaced: true });
     }
     expect(buildDisagreementObservations(USER)).toHaveLength(0);
   });

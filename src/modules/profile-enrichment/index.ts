@@ -241,23 +241,24 @@ async function runAffinityRegeneration(): Promise<void> {
           'Affinity regeneration: user complete'
         );
       }
-
-      // Drift observations ride the same weekly cadence: depth observations
-      // read the affinities just regenerated above, and disagreement is a
-      // weekly behavioural read. A skipped affinity run (e.g. too few events)
-      // still gets a disagreement pass — the two observation types are
-      // independent. Failure here must not abort the affinity loop.
-      try {
-        const drift = generateDriftObservations(user.user_id);
-        logger.info(
-          { userId: user.user_id, observationCount: drift.observationCount },
-          'Drift observations: user complete'
-        );
-      } catch (err) {
-        logger.error({ err, userId: user.user_id }, 'Drift observations: user run failed');
-      }
     } catch (err) {
       logger.error({ err, userId: user.user_id }, 'Affinity regeneration: user run failed');
+    }
+
+    // Drift observations ride the same weekly cadence: depth observations read
+    // whatever affinities are active, and disagreement is a deterministic
+    // weekly behavioural read. Run in its own try so a thrown affinity pass
+    // above (Gemma error) doesn't suppress the deterministic disagreement
+    // observation for the user. The depth observation simply reads the prior
+    // active affinities if regeneration failed this week.
+    try {
+      const drift = generateDriftObservations(user.user_id);
+      logger.info(
+        { userId: user.user_id, observationCount: drift.observationCount },
+        'Drift observations: user complete'
+      );
+    } catch (err) {
+      logger.error({ err, userId: user.user_id }, 'Drift observations: user run failed');
     }
   }
 
