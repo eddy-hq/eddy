@@ -4,6 +4,13 @@ import { ollamaGenerate, parseOllamaJson } from '../../ollama';
 
 export { interestsRouter, removeUserInterest } from './router';
 export { normalizeUserAddedInterest, type NormalizedUserInterest } from './normalize';
+export {
+  getInferredInterests,
+  suppressInferredInterest,
+  keepInferredInterest,
+  type InferredInterest,
+  type KeptInterest,
+} from './inferred';
 
 interface InterestRow {
   id: string;
