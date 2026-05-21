@@ -213,6 +213,18 @@ describe('buildDisagreementObservations', () => {
     expect(buildDisagreementObservations(USER)).toHaveLength(1);
   });
 
+  it('still counts watch signal after the backing request is hard-deleted', () => {
+    declareInterest(INTEREST_ECON, 1);
+    seedInterestInteraction({ interestId: INTEREST_ECON, videoId: 'e-w1', watchReason: 'ended' });
+    for (let i = 0; i < 5; i++) {
+      seedInterestInteraction({ interestId: INTEREST_ECON, videoId: `e-m${i}`, watchReason: 'dismissed' });
+    }
+    // watch_events.video_id is denormalised so signal survives request delete.
+    db.exec('DELETE FROM requests');
+    // 5 mid-play bailouts vs 1 watched → still over the ratio.
+    expect(buildDisagreementObservations(USER)).toHaveLength(1);
+  });
+
   it('ignores interests the user has not declared (no user_interests row)', () => {
     // Heavy skipping but never declared → not in the explicit profile, so no
     // disagreement (an inferred-but-unkept interest can't disagree).

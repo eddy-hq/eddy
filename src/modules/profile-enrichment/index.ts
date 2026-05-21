@@ -5,6 +5,7 @@ import { redis, profileEnrichmentQueue } from '../../queue';
 import { WATCHED_RATIO, WATCHED_TIME_FLOOR_S } from '../watch-events';
 import { computeTrustWeight, TRUST_DEFAULT } from './util';
 import { regenerateAffinities } from './affinities';
+import { generateDriftObservations } from '../drift';
 
 export { computeTrustWeight, TRUST_COLD_START_FLOOR, TRUST_DEFAULT, TRUST_BASELINE } from './util';
 export {
@@ -239,6 +240,21 @@ async function runAffinityRegeneration(): Promise<void> {
           },
           'Affinity regeneration: user complete'
         );
+      }
+
+      // Drift observations ride the same weekly cadence: depth observations
+      // read the affinities just regenerated above, and disagreement is a
+      // weekly behavioural read. A skipped affinity run (e.g. too few events)
+      // still gets a disagreement pass — the two observation types are
+      // independent. Failure here must not abort the affinity loop.
+      try {
+        const drift = generateDriftObservations(user.user_id);
+        logger.info(
+          { userId: user.user_id, observationCount: drift.observationCount },
+          'Drift observations: user complete'
+        );
+      } catch (err) {
+        logger.error({ err, userId: user.user_id }, 'Drift observations: user run failed');
       }
     } catch (err) {
       logger.error({ err, userId: user.user_id }, 'Affinity regeneration: user run failed');

@@ -68,12 +68,15 @@ interface InterestSignalRow {
 export function readDeclaredInterestSignal(userId: string): InterestSignalRow[] {
   return db.prepare(`
     WITH watched AS (
+      -- Join watch_events to the candidate directly via the denormalised
+      -- video_id (== candidate_pool.external_id). watch_events.video_id is
+      -- kept specifically so behavioural signal survives request hard-delete
+      -- (migration 021); routing through requests would drop it.
       SELECT cp.interest_id AS interest_id,
              COUNT(DISTINCT we.event_id) AS n
       FROM watch_events we
-      INNER JOIN requests r        ON r.request_id = we.request_id
       INNER JOIN candidate_pool cp ON cp.user_id = we.user_id
-                                  AND cp.external_id = r.youtube_id
+                                  AND cp.external_id = we.video_id
       WHERE we.user_id = @user_id
         AND cp.interest_id IS NOT NULL
         AND (
@@ -92,12 +95,13 @@ export function readDeclaredInterestSignal(userId: string): InterestSignalRow[] 
           AND cp.status = 'dismissed'
           AND cp.interest_id IS NOT NULL
         UNION
-        -- Mid-play bailouts, attributed via the candidate's interest tag
+        -- Mid-play bailouts, attributed via the candidate's interest tag.
+        -- Same direct video_id join as the watched CTE so a deleted request
+        -- doesn't erase the dismissal signal.
         SELECT DISTINCT cp.candidate_id, cp.interest_id
         FROM watch_events we
-        INNER JOIN requests r        ON r.request_id = we.request_id
         INNER JOIN candidate_pool cp ON cp.user_id = we.user_id
-                                    AND cp.external_id = r.youtube_id
+                                    AND cp.external_id = we.video_id
         WHERE we.user_id = @user_id
           AND we.reason = 'dismissed'
           AND cp.interest_id IS NOT NULL
