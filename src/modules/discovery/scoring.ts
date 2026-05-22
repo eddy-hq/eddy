@@ -200,6 +200,16 @@ export async function scoreCandidates(userId: string, userInterests: UserInteres
   // JOIN to surface the seeding interest's label + the user's expertise level
   // for that interest, so Gemma can name the connection specifically rather
   // than guess from a list of interests.
+  // Score in bucket-priority order, not raw created_at DESC (ADR-0009). The
+  // discovery job polls subscriptions first, then seeds back-catalogue, then
+  // runs a full interest-search budget — so on a busy run the high-volume
+  // interest-search rows have the newest created_at and would push the
+  // (older) subscription + back-catalogue rows outside the 100-row scoring
+  // window. Those follow-provenance candidates are exactly what fills the
+  // reserved floors and the "subscriptions through the pool" guarantee, so
+  // they must score first: subscription → back-catalogue → delighter, newest
+  // first within each. The LIMIT then bites on the over-supplied delighter
+  // bucket (which only needs to fill a floor of 2), never on the follows.
   const pending = db.prepare(`
     SELECT c.candidate_id, c.external_id, c.title, c.url, c.thumbnail_url,
            c.published_at, c.source_type, c.interest_id, c.person_id,
@@ -213,7 +223,13 @@ export async function scoreCandidates(userId: string, userInterests: UserInteres
       ON ui.user_id = c.user_id AND ui.interest_id = c.interest_id
     LEFT JOIN people p ON p.person_id = c.person_id
     WHERE c.user_id = ? AND c.status = 'pending'
-    ORDER BY c.created_at DESC
+    ORDER BY
+      CASE c.source_type
+        WHEN 'subscription' THEN 0
+        WHEN 'person_backcatalog' THEN 1
+        ELSE 2
+      END ASC,
+      c.created_at DESC
     LIMIT 100
   `).all(userId) as CandidateRow[];
 
