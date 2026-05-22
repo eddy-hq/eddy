@@ -209,4 +209,32 @@ describe('scoreCandidates bucket-priority ordering (ADR-0009)', () => {
     expect(posBc).toBeGreaterThan(posSub);
     expect(posDl1).toBeGreaterThan(posBc);
   });
+
+  it('per-bucket scoring window: a back-catalogue row still scores when subscriptions overflow', async () => {
+    // 60 pending subscriptions (> the per-bucket window of 50) plus a single
+    // back-catalogue row. A global LIMIT would let the subscriptions bury the
+    // back-cat row, leaving it unscored and unable to fill its reserved floor.
+    // The per-bucket window must still pull the back-cat row into scoring.
+    for (let i = 0; i < 60; i++) {
+      insertCandidate({ candidate_id: `flood-sub-${i}`, source_type: 'subscription', person_id: PERSON_TRUSTED });
+    }
+    insertCandidate({ candidate_id: 'lonely-bc', source_type: 'person_backcatalog', person_id: PERSON_TRUSTED });
+
+    // Echo a score for every item the prompt carries, so each batch resolves.
+    vi.mocked(ollamaGenerate).mockImplementation(async (prompt: string) => {
+      const count = (prompt.match(/^\d+\. "/gm) ?? []).length;
+      const entries = Array.from({ length: count }, (_, idx) =>
+        `{"index":${idx + 1},"connection":7,"quality":7,"time_sensitivity":"standard","why":"ok"}`,
+      ).join(',');
+      return `[${entries}]`;
+    });
+
+    await scoreCandidates(USER_ID, INTERESTS);
+
+    const bc = db.prepare(
+      "SELECT status, connection_score FROM candidate_pool WHERE candidate_id = 'lonely-bc'",
+    ).get() as { status: string; connection_score: number | null };
+    expect(bc.status).toBe('scored');
+    expect(bc.connection_score).not.toBeNull();
+  });
 });

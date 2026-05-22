@@ -500,4 +500,16 @@ describe('readScoredCandidatesByBucket — kid guard recheck covers every bucket
     // Both map to the delighter bucket, so top-1 returns only the higher-scored.
     expect(rows.map((r) => r.candidate_id)).toEqual(['is-1']);
   });
+
+  it('excludes already-guarded rows so they cannot consume the recheck window', () => {
+    // A high-raw-score subscription already cleared by an earlier run, plus a
+    // newer un-guarded subscription. With perBucketLimit=1, returning the
+    // already-cleared row would starve the NULL one (which kid surfacing now
+    // needs guarded). The recheck must skip non-NULL verdicts.
+    insertCandidate({ candidateId: 'sub-cleared', sourceType: 'subscription', gemmaScore: 100, guardVerdict: 'clear_yes' });
+    insertCandidate({ candidateId: 'sub-needs-guard', sourceType: 'subscription', gemmaScore: 50, guardVerdict: null });
+
+    const rows = readScoredCandidatesByBucket(KID_USER_ID, 1);
+    expect(rows.map((r) => r.candidate_id)).toEqual(['sub-needs-guard']);
+  });
 });

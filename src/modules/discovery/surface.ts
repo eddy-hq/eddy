@@ -7,14 +7,21 @@ export interface ScoredCandidateForGuard {
   url: string;
 }
 
-// Kid guard recheck candidates, the top `perBucketLimit` scored rows in EACH
-// composition bucket (ADR-0009). A flat top-N by gemma_score starves a kid's
-// reserved back-catalogue / delighter floors on a flood day: if the top N are
-// all subscriptions, the lower-raw-score candidates that would fill those
-// floors stay un-rechecked and (since kid surfacing requires clear_yes) can't
-// surface even when supply exists. Bucketing the recheck guarantees each
-// floor's strongest candidates are guarded, so a thin slate reflects genuine
-// supply or guard rejections — never an artefact of the recheck window.
+// Kid guard recheck candidates, the top `perBucketLimit` UN-rechecked scored
+// rows in EACH composition bucket (ADR-0009).
+//
+// Two windowing hazards this guards against:
+//   1. A flat top-N by gemma_score starves a kid's reserved back-catalogue /
+//      delighter floors on a flood day: if the top N are all subscriptions,
+//      the lower-raw-score candidates that would fill those floors stay
+//      un-rechecked and (since kid surfacing requires clear_yes) can't surface
+//      even when supply exists. Bucketing the recheck fixes that.
+//   2. Already-guarded rows (guard_verdict NOT NULL — e.g. a previously
+//      cleared-but-cut candidate) would otherwise consume the per-bucket
+//      recheck window every run, starving newer NULL candidates that genuinely
+//      need a pass. So the recheck targets only `guard_verdict IS NULL` rows —
+//      the ones that have never been guarded. Cleared/rejected rows keep their
+//      verdict and need no re-pass.
 //
 // Buckets here mirror ranker.bucketFor: subscription / person_backcatalog /
 // everything-else (delighter). `perBucketLimit` is sized comfortably above the
@@ -27,11 +34,6 @@ export function readScoredCandidatesByBucket(
   const row = db.prepare(`
     WITH ranked AS (
       SELECT candidate_id, title, url,
-             CASE
-               WHEN source_type = 'subscription' THEN 'subscription'
-               WHEN source_type = 'person_backcatalog' THEN 'person_backcatalog'
-               ELSE 'delighter'
-             END AS bucket,
              ROW_NUMBER() OVER (
                PARTITION BY CASE
                  WHEN source_type = 'subscription' THEN 'subscription'
@@ -41,7 +43,7 @@ export function readScoredCandidatesByBucket(
                ORDER BY gemma_score DESC
              ) AS rn
       FROM candidate_pool
-      WHERE user_id = ? AND status = 'scored'
+      WHERE user_id = ? AND status = 'scored' AND guard_verdict IS NULL
     )
     SELECT candidate_id, title, url FROM ranked WHERE rn <= ?
   `);
