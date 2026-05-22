@@ -79,9 +79,10 @@ beforeEach(() => {
 
 function insertCandidate(opts: {
   candidate_id: string;
-  source_type: 'person_backcatalog' | 'interest_search';
+  source_type: 'subscription' | 'person_backcatalog' | 'interest_search';
   person_id: string | null;
   interest_id?: string | null;
+  createdAt?: string;
 }): void {
   db.prepare(`
     INSERT INTO candidate_pool
@@ -97,7 +98,7 @@ function insertCandidate(opts: {
     `Title for ${opts.candidate_id}`,
     'channel',
     600,
-    new Date().toISOString(),
+    opts.createdAt ?? new Date().toISOString(),
   );
 }
 
@@ -175,5 +176,65 @@ describe('scoreCandidates trust multiplier', () => {
     const row = readScored('pers-unknown');
     expect(row.connection_score).toBe(5);
     expect(row.quality_score).toBe(5);
+  });
+});
+
+describe('scoreCandidates bucket-priority ordering (ADR-0009)', () => {
+  it('scores subscription → back-catalogue → delighter, even when delighters are newer', async () => {
+    // A subscription + back-catalogue row created earlier, then a flood of
+    // newer interest-search rows. A raw created_at DESC order would put the
+    // delighters first and (under a tight limit) starve the follows. The
+    // bucket-priority order must put the follow-provenance rows first.
+    const older = new Date(Date.now() - 60_000).toISOString();
+    const newer = new Date().toISOString();
+    insertCandidate({ candidate_id: 'sub-1', source_type: 'subscription', person_id: PERSON_TRUSTED, createdAt: older });
+    insertCandidate({ candidate_id: 'bc-1', source_type: 'person_backcatalog', person_id: PERSON_TRUSTED, createdAt: older });
+    insertCandidate({ candidate_id: 'dl-1', source_type: 'interest_search', person_id: null, createdAt: newer });
+    insertCandidate({ candidate_id: 'dl-2', source_type: 'interest_search', person_id: null, createdAt: newer });
+
+    // Capture the prompt so we can read the order candidates were presented in.
+    // One batch (< BATCH=10), so a single prompt carries all four in order.
+    let capturedPrompt = '';
+    vi.mocked(ollamaGenerate).mockImplementationOnce(async (prompt: string) => {
+      capturedPrompt = prompt;
+      return '[{"index":1,"connection":7,"quality":7,"time_sensitivity":"standard","why":"a"},{"index":2,"connection":7,"quality":7,"time_sensitivity":"standard","why":"b"},{"index":3,"connection":7,"quality":7,"time_sensitivity":"standard","why":"c"},{"index":4,"connection":7,"quality":7,"time_sensitivity":"standard","why":"d"}]';
+    });
+
+    await scoreCandidates(USER_ID, INTERESTS);
+
+    const posSub = capturedPrompt.indexOf('Title for sub-1');
+    const posBc = capturedPrompt.indexOf('Title for bc-1');
+    const posDl1 = capturedPrompt.indexOf('Title for dl-1');
+    expect(posSub).toBeGreaterThanOrEqual(0);
+    expect(posBc).toBeGreaterThan(posSub);
+    expect(posDl1).toBeGreaterThan(posBc);
+  });
+
+  it('per-bucket scoring window: a back-catalogue row still scores when subscriptions overflow', async () => {
+    // 60 pending subscriptions (> the per-bucket window of 50) plus a single
+    // back-catalogue row. A global LIMIT would let the subscriptions bury the
+    // back-cat row, leaving it unscored and unable to fill its reserved floor.
+    // The per-bucket window must still pull the back-cat row into scoring.
+    for (let i = 0; i < 60; i++) {
+      insertCandidate({ candidate_id: `flood-sub-${i}`, source_type: 'subscription', person_id: PERSON_TRUSTED });
+    }
+    insertCandidate({ candidate_id: 'lonely-bc', source_type: 'person_backcatalog', person_id: PERSON_TRUSTED });
+
+    // Echo a score for every item the prompt carries, so each batch resolves.
+    vi.mocked(ollamaGenerate).mockImplementation(async (prompt: string) => {
+      const count = (prompt.match(/^\d+\. "/gm) ?? []).length;
+      const entries = Array.from({ length: count }, (_, idx) =>
+        `{"index":${idx + 1},"connection":7,"quality":7,"time_sensitivity":"standard","why":"ok"}`,
+      ).join(',');
+      return `[${entries}]`;
+    });
+
+    await scoreCandidates(USER_ID, INTERESTS);
+
+    const bc = db.prepare(
+      "SELECT status, connection_score FROM candidate_pool WHERE candidate_id = 'lonely-bc'",
+    ).get() as { status: string; connection_score: number | null };
+    expect(bc.status).toBe('scored');
+    expect(bc.connection_score).not.toBeNull();
   });
 });

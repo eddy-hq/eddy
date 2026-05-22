@@ -6,17 +6,18 @@ import { config } from '../../config';
 import { redis, discoveryQueue } from '../../queue';
 import { evaluateCandidate } from '../guard/index';
 import { getRequestsState } from '../requests';
+import { runRssPollPass } from '../people';
 import { getAgeBand } from '../users';
 import {
   refreshCandidatePool,
   seedBackCatalogCandidates,
-  countPersonSourcedForRefresh,
   type UserInterestRow,
 } from './intake';
 import { scoreCandidates } from './scoring';
+import { bucketFor, isPicked } from './ranker';
 import {
   surfaceForToday,
-  readScoredCandidates,
+  readScoredCandidatesByBucket,
   updateCandidatePoolStatus,
 } from './surface';
 
@@ -24,6 +25,9 @@ interface UserRow {
   user_id: string;
   role: string;
   age_gate: number;
+  // Per-user slate size (ADR-0009). Null falls back to
+  // config.DEFAULT_DAILY_PICK_CAP.
+  daily_pick_cap: number | null;
 }
 
 export interface DiscoveryRunResult {
@@ -36,8 +40,14 @@ export interface DiscoveryRunResult {
   items: Array<{ title: string | null; score: number | null; why: string | null; guardVerdict: string | null }>;
 }
 
-// Top-N scored candidates re-checked through the guard for kid users.
-const KID_GUARD_RECHECK_LIMIT = 30;
+// Per-bucket recheck depth for the kid guard (ADR-0009). The recheck runs over
+// the top-N scored rows in EACH composition bucket, not the top-N overall — a
+// flat top-N starves a kid's reserved back-catalogue / delighter floors on a
+// subscription flood day (those candidates stay un-rechecked, and kid
+// surfacing requires clear_yes). 12 sits comfortably above the largest bucket
+// quota (subscription = cap − 6 with the default cap of 15 → 9) so guard
+// rejections don't exhaust the rechecked set before a floor fills.
+const KID_GUARD_RECHECK_PER_BUCKET = 12;
 
 // The connection-axis vocabulary that feeds scoring. Per ADR-0008, this is
 // built from DECLARED interests only — stored `user_interests` rows. Inferred
@@ -59,7 +69,9 @@ export function selectDeclaredInterests(userId: string): UserInterestRow[] {
 export async function runDiscoveryForUser(user: UserRow, options: { force?: boolean } = {}): Promise<DiscoveryRunResult> {
   const today = new Date().toISOString().slice(0, 10);
   const isKid = user.role === 'kid';
-  const cap = isKid ? 5 : 15;
+  // Role-blind slate size (ADR-0009): per-user cap, falling back to the global
+  // default. The only kid/adult difference is the guard recheck below.
+  const cap = user.daily_pick_cap ?? config.DEFAULT_DAILY_PICK_CAP;
 
   const existing = db.prepare(`
     SELECT COUNT(*) AS n FROM candidate_pool WHERE user_id = ? AND surfaced_date = ?
@@ -72,29 +84,38 @@ export async function runDiscoveryForUser(user: UserRow, options: { force?: bool
 
   const userInterests = selectDeclaredInterests(user.user_id);
 
-  if (userInterests.length === 0) {
-    logger.info({ userId: user.user_id }, 'Discovery: user has no interests, skipping');
-    return { userId: user.user_id, skipped: true, skipReason: 'No interests set', interestsChecked: 0, candidatesAdded: 0, surfaced: 0, items: [] };
+  // A user with no declared interests can still have follows, and follows now
+  // route through the scored pool (ADR-0009) — so only skip when there is
+  // genuinely nothing to source: no interests AND no follows. A follow-only
+  // user proceeds; interest search just contributes nothing to the delighter
+  // bucket, and subscription + back-catalogue candidates still flow.
+  const followCount = (db.prepare(
+    'SELECT COUNT(*) AS n FROM followed_people WHERE user_id = ?',
+  ).get(user.user_id) as { n: number }).n;
+
+  if (userInterests.length === 0 && followCount === 0) {
+    logger.info({ userId: user.user_id }, 'Discovery: user has no interests and no follows, skipping');
+    return { userId: user.user_id, skipped: true, skipReason: 'No interests or follows set', interestsChecked: 0, candidatesAdded: 0, surfaced: 0, items: [] };
   }
 
-  // Person-sourced primary, interest search as gap-filler (brief §17, issue
-  // #149). Seed the back catalog first so the count of person-sourced
-  // material reflects what's actually available this refresh; the interest-
-  // search budget is then scaled to the deficit (or skipped entirely when
-  // the person supply already meets the daily slate cap).
+  // One scored pool composed into reserved slots (ADR-0009). The RSS poll runs
+  // once at the job level (runDiscovery), before the per-user loop and before
+  // any skip — see the spec/reality fix there. By the time this per-user
+  // composition runs, this run's subscription candidates are already in the
+  // pool. Order here: seed back catalogue → interest search. The back-catalogue
+  // seeder dedups via isDuplicateCandidate (pool + requests), not seen_videos,
+  // so the poll-first ordering doesn't starve it of a new follow's recent
+  // uploads.
   logger.info({ userId: user.user_id, interests: userInterests.length }, 'Discovery: refreshing candidate pool');
 
+  // Back-catalogue seeder mines the rest of each followed channel.
   const backCatalogAdded = await seedBackCatalogCandidates(user.user_id);
   logger.info({ userId: user.user_id, added: backCatalogAdded }, 'Discovery: back-catalog candidates added');
 
-  const personSourcedCount = countPersonSourcedForRefresh(user.user_id);
-  const threshold = isKid
-    ? config.DISCOVERY_PERSON_SOURCED_THRESHOLD_KID
-    : config.DISCOVERY_PERSON_SOURCED_THRESHOLD_ADULT;
-  const interestSearchAdded = await refreshCandidatePool(user.user_id, userInterests, {
-    personSourcedCount,
-    threshold,
-  });
+  // Interest search runs unconditionally at full budget to supply the
+  // delighter bucket — the #149 gate (skip discovery when person supply is
+  // sufficient) is gone (ADR-0009).
+  const interestSearchAdded = await refreshCandidatePool(user.user_id, userInterests);
   logger.info({ userId: user.user_id, added: interestSearchAdded }, 'Discovery: interest-search candidates added');
 
   const added = interestSearchAdded + backCatalogAdded;
@@ -103,7 +124,10 @@ export async function runDiscoveryForUser(user: UserRow, options: { force?: bool
 
   if (isKid) {
     const ageBand = getAgeBand(user.user_id);
-    const scored = readScoredCandidates(user.user_id, KID_GUARD_RECHECK_LIMIT);
+    // Scale the per-bucket recheck depth with the cap so a large per-user cap
+    // (subscription quota = cap − 6) can't outrun the rechecked set.
+    const perBucket = Math.max(KID_GUARD_RECHECK_PER_BUCKET, cap);
+    const scored = readScoredCandidatesByBucket(user.user_id, perBucket);
     for (const c of scored) {
       const verdict = await evaluateCandidate({
         candidateId: c.candidate_id,
@@ -121,15 +145,17 @@ export async function runDiscoveryForUser(user: UserRow, options: { force?: bool
     }
   }
 
-  const verdicts = surfaceForToday(user.user_id, isKid);
-  const picks = verdicts.filter((v) => v.disposition === 'regular' || v.disposition === 'stretch');
+  const verdicts = surfaceForToday(user.user_id, isKid, cap);
+  const picks = verdicts.filter((v) => isPicked(v.disposition));
   logger.info({ userId: user.user_id, surfaced: picks.length }, 'Discovery: surfaced for today');
 
-  // Picks land in the feed directly — no separate accept step. Mirror the
-  // historical /discovery/request flow: create a request via the state
-  // machine (inserts a `recommended` row with status=downloading + why_text
-  // and enqueues the download), then flip the candidate_pool row to
-  // 'requested' so the brief day-cap accounting holds.
+  // Picks land in the feed directly — no separate accept step. Create a
+  // request via the state machine (inserts a row with status=downloading +
+  // why_text and enqueues the download), then flip the candidate_pool row to
+  // 'requested' so the day-cap accounting holds. Request provenance is mapped
+  // from the candidate's source_type (ADR-0009): subscription / back-catalogue
+  // → 'channel_subscription' (follow pill); delighter → 'recommended' (pick
+  // pill).
   const requestsState = getRequestsState();
   const markRequested = db.prepare(
     `UPDATE candidate_pool SET status = 'requested' WHERE candidate_id = ?`,
@@ -142,6 +168,9 @@ export async function runDiscoveryForUser(user: UserRow, options: { force?: bool
       );
       return;
     }
+    const requestSource = bucketFor(v.candidate.sourceType) === 'delighter'
+      ? 'recommended'
+      : 'channel_subscription';
     const requestId = uuidv7();
     const { settled } = requestsState.apply({
       kind: 'create_candidate',
@@ -152,6 +181,7 @@ export async function runDiscoveryForUser(user: UserRow, options: { force?: bool
         youtubeId: v.candidate.externalId ?? null,
         title: v.candidate.title,
         whyText: v.candidate.whyText ?? null,
+        source: requestSource,
       },
     });
     await settled;
@@ -202,8 +232,18 @@ export function pruneStalePool(): void {
 async function runDiscovery(): Promise<void> {
   logger.info('Discovery job started');
 
+  // RSS poll is the job's first awaited step (ADR-0009) — once, channel-wide,
+  // before the per-user loop and before any per-user skip. The poll advances
+  // `seen_videos` and seeds subscription candidates regardless of whether any
+  // individual user is later skipped (already-at-cap / no interests), so a
+  // skipped user can't cause RSS uploads to backlog. The retired setInterval
+  // poller's daily cadence now rides on the discovery schedule.
+  await runRssPollPass().catch((err: unknown) => {
+    logger.error({ err }, 'Discovery: RSS poll pass failed');
+  });
+
   const users = db.prepare(
-    "SELECT user_id, role, age_gate FROM users WHERE role IN ('kid', 'parent')"
+    "SELECT user_id, role, age_gate, daily_pick_cap FROM users WHERE role IN ('kid', 'parent')"
   ).all() as UserRow[];
 
   for (const user of users) {

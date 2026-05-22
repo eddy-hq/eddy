@@ -176,22 +176,23 @@ function TodayBlock({
   const today = new Date();
   const formattedDate = today.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
 
-  // Sections from server come as requests/channels/recommended. Falls back to flat cards.
+  // Two stretches (ADR-0009): "You asked" (share-sheet requests) then a
+  // unified Today stream mixing follow + pick cards, each carrying its own
+  // provenance pill. Server sends `requests` + `today` sections; fall back to
+  // splitting flat cards by source for older payloads.
   const sections = todayDay?.sections ?? [];
   const reqSection = sections.find((s) => s.id === 'requests');
-  const followSection = sections.find((s) => s.id === 'channels');
-  const pickSection = sections.find((s) => s.id === 'recommended');
+  const todaySection = sections.find((s) => s.id === 'today');
 
-  const requestsCards = reqSection?.cards ?? [];
-  const followCards = followSection?.cards ?? [];
-  const pickedCards = pickSection?.cards ?? [];
+  const flatCards = todayDay?.cards ?? [];
+  const requestsCards = reqSection?.cards
+    ?? flatCards.filter((c) => c.source === 'share_sheet');
+  const todayCards = todaySection?.cards
+    ?? flatCards.filter((c) => c.source === 'channel_subscription' || c.source === 'recommended');
 
-  const totalCount = requestsCards.length + followCards.length + pickedCards.length;
+  const totalCount = requestsCards.length + todayCards.length;
 
   if (totalCount === 0) return null;
-
-  // Heavy-follow days swap compact; otherwise hero.
-  const followAsCompact = followCards.length > 6;
 
   return (
     <section>
@@ -217,58 +218,62 @@ function TodayBlock({
         </>
       )}
 
-      {followCards.length > 0 && (
+      {todayCards.length > 0 && (
         <>
-          <SectionHeader label="From people you follow" count={followCards.length} />
-          {followAsCompact ? (
-            <CompactList>
-              <AnimatePresence mode="popLayout">
-                {followCards.map((row) => (
-                  <CompactCard
-                    key={row.request_id}
-                    data={toCardData(row)}
-                    userId={userId}
-                    sourceKind="follow"
-                    onSelect={(c) => onSelect(c, 'feed')}
-                  />
-                ))}
-              </AnimatePresence>
-            </CompactList>
-          ) : (
-            <CardList>
-              <AnimatePresence mode="popLayout">
-                {followCards.map((row) => (
-                  <Card
-                    key={row.request_id}
-                    data={toCardData(row)}
-                    userId={userId}
-                    onSelect={(c) => onSelect(c, 'feed')}
-                    isSelected={selectedId === row.request_id}
-                    sourceKind="follow"
-                  />
-                ))}
-              </AnimatePresence>
-            </CardList>
-          )}
+          <SectionHeader label="Today" count={todayCards.length} />
+          <AnimatePresence mode="popLayout">
+            {todayCards.map((row) => (
+              <TodayStreamCard
+                key={row.request_id}
+                row={row}
+                userId={userId}
+                selectedId={selectedId}
+                onSelect={onSelect}
+              />
+            ))}
+          </AnimatePresence>
         </>
-      )}
-
-      {pickedCards.length > 0 && (
-        <AnimatePresence mode="popLayout">
-          {pickedCards.map((row) => (
-            <PickWithVoice
-              key={row.request_id}
-              row={row}
-              userId={userId}
-              selectedId={selectedId}
-              onSelect={onSelect}
-            />
-          ))}
-        </AnimatePresence>
       )}
 
       <EndToday />
     </section>
+  );
+}
+
+// One card in the unified Today stream. Picks keep their Eddy voice line
+// (why_text) as their introduction — the always-hero treatment is dropped
+// (ADR-0009). Follow cards render as a normal card. Both carry a provenance
+// pill via `sourceKind` so the source is legible without a section header.
+function TodayStreamCard({
+  row, userId, selectedId, onSelect,
+}: {
+  row: FeedCard;
+  userId: string;
+  selectedId: string | null;
+  onSelect: (data: CardData, source: WatchSource) => void;
+}) {
+  const kind = sourceKind(row.source);
+  const isPick = kind === 'pick';
+  const watchSource: WatchSource = isPick ? 'discovery' : 'feed';
+  return (
+    <motion.div
+      layout
+      initial={{ opacity: 0, y: 12 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: -8, scale: 0.97 }}
+      transition={{ duration: 0.3, ease: [0.33, 1, 0.68, 1] }}
+    >
+      {isPick && row.why_text && <VoiceLine text={row.why_text} />}
+      <CardList>
+        <Card
+          data={toCardData(row)}
+          userId={userId}
+          onSelect={(c) => onSelect(c, watchSource)}
+          isSelected={selectedId === row.request_id}
+          sourceKind={kind}
+        />
+      </CardList>
+    </motion.div>
   );
 }
 
@@ -379,38 +384,6 @@ function SectionHeader({ label, count }: { label: string; count: number }) {
   );
 }
 
-// One pick = one voice line (Eddy's why_text in first-person prose) plus
-// its hero card. Picks are not grouped under a "Picked for you" header —
-// the voice line is the introduction. Brief §9a + design/Eddy Feed.html.
-function PickWithVoice({
-  row, userId, selectedId, onSelect,
-}: {
-  row: FeedCard;
-  userId: string;
-  selectedId: string | null;
-  onSelect: (data: CardData, source: WatchSource) => void;
-}) {
-  return (
-    <motion.div
-      layout
-      initial={{ opacity: 0, y: 12 }}
-      animate={{ opacity: 1, y: 0 }}
-      exit={{ opacity: 0, y: -8, scale: 0.97 }}
-      transition={{ duration: 0.3, ease: [0.33, 1, 0.68, 1] }}
-    >
-      {row.why_text && <VoiceLine text={row.why_text} />}
-      <CardList>
-        <Card
-          data={toCardData(row)}
-          userId={userId}
-          onSelect={(c) => onSelect(c, 'discovery')}
-          isSelected={selectedId === row.request_id}
-          sourceKind="pick"
-        />
-      </CardList>
-    </motion.div>
-  );
-}
 
 function VoiceLine({ text }: { text: string }) {
   return (

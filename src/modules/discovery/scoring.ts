@@ -14,6 +14,13 @@ export type { TimeSensitivity };
 // the profile-enrichment scheduler module just to read a single fallback.
 const TRUST_DEFAULT = 1.0;
 
+// Per-bucket scoring window (ADR-0009). The newest N pending rows in each
+// composition bucket reach scoring per run, so no single over-supplied bucket
+// can starve another's reserved floor. Sized generously above any bucket quota
+// (subscription = cap − 6) while keeping the worst-case Gemma batch count
+// bounded (3 buckets × 50 = 150 candidates ≈ 15 batches of 10).
+const SCORING_PER_BUCKET = 50;
+
 interface CandidateRow {
   candidate_id: string;
   external_id: string | null;
@@ -200,22 +207,52 @@ export async function scoreCandidates(userId: string, userInterests: UserInteres
   // JOIN to surface the seeding interest's label + the user's expertise level
   // for that interest, so Gemma can name the connection specifically rather
   // than guess from a list of interests.
+  // Bucket-aware scoring window (ADR-0009). The discovery job polls
+  // subscriptions first, then seeds back-catalogue, then runs a full
+  // interest-search budget — so the pending pool can be dominated by any one
+  // bucket. A single global LIMIT (even bucket-ORDERED) starves the other
+  // buckets when one overflows it: e.g. >100 pending subscriptions would leave
+  // back-catalogue and delighter unscored, starving their reserved floors;
+  // conversely a delighter flood would bury the follows. So the window is
+  // per-bucket — the newest `SCORING_PER_BUCKET` pending rows in each of
+  // subscription / back-catalogue / delighter — guaranteeing every bucket's
+  // freshest candidates reach scoring regardless of the others' volume.
   const pending = db.prepare(`
-    SELECT c.candidate_id, c.external_id, c.title, c.url, c.thumbnail_url,
-           c.published_at, c.source_type, c.interest_id, c.person_id,
-           c.channel, c.duration_secs,
-           i.label AS interest_label,
-           ui.expertise AS interest_expertise,
-           p.display_name AS person_name
-    FROM candidate_pool c
-    LEFT JOIN interests i ON i.id = c.interest_id
-    LEFT JOIN user_interests ui
-      ON ui.user_id = c.user_id AND ui.interest_id = c.interest_id
-    LEFT JOIN people p ON p.person_id = c.person_id
-    WHERE c.user_id = ? AND c.status = 'pending'
-    ORDER BY c.created_at DESC
-    LIMIT 100
-  `).all(userId) as CandidateRow[];
+    WITH ranked AS (
+      SELECT c.candidate_id, c.external_id, c.title, c.url, c.thumbnail_url,
+             c.published_at, c.source_type, c.interest_id, c.person_id,
+             c.channel, c.duration_secs,
+             i.label AS interest_label,
+             ui.expertise AS interest_expertise,
+             p.display_name AS person_name,
+             ROW_NUMBER() OVER (
+               PARTITION BY CASE
+                 WHEN c.source_type = 'subscription' THEN 'subscription'
+                 WHEN c.source_type = 'person_backcatalog' THEN 'person_backcatalog'
+                 ELSE 'delighter'
+               END
+               ORDER BY c.created_at DESC
+             ) AS rn
+      FROM candidate_pool c
+      LEFT JOIN interests i ON i.id = c.interest_id
+      LEFT JOIN user_interests ui
+        ON ui.user_id = c.user_id AND ui.interest_id = c.interest_id
+      LEFT JOIN people p ON p.person_id = c.person_id
+      WHERE c.user_id = ? AND c.status = 'pending'
+    )
+    SELECT candidate_id, external_id, title, url, thumbnail_url,
+           published_at, source_type, interest_id, person_id,
+           channel, duration_secs, interest_label, interest_expertise, person_name
+    FROM ranked
+    WHERE rn <= ?
+    ORDER BY
+      CASE source_type
+        WHEN 'subscription' THEN 0
+        WHEN 'person_backcatalog' THEN 1
+        ELSE 2
+      END ASC,
+      published_at DESC
+  `).all(userId, SCORING_PER_BUCKET) as CandidateRow[];
 
   if (pending.length === 0) return;
 

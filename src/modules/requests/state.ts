@@ -153,6 +153,11 @@ export interface CreateFromCandidateInput {
   youtubeId: string | null;
   title: string | null;
   whyText: string | null;
+  // Request provenance (ADR-0009). Subscription / back-catalogue picks land
+  // as 'channel_subscription' (→ follow pill); delighter picks as
+  // 'recommended' (→ pick pill). Defaults to 'recommended' so existing
+  // callers keep the historical recommended provenance.
+  source?: 'recommended' | 'channel_subscription';
 }
 
 // Fields supplied by the worker on a successful restore (issue #116).
@@ -607,13 +612,17 @@ export const TRANSITIONS = {
     sources: 'creation',
     target: 'downloading',
     buildSql: (event, now) => ({
+      // `source` is parameterised (ADR-0009): subscription / back-catalogue
+      // picks carry 'channel_subscription' provenance, delighter picks
+      // 'recommended'. Defaults to 'recommended' for callers that omit it.
       sql: `INSERT INTO requests
               (request_id, user_id, source, url, youtube_id, title, why_text, status, decided_by, decided_at, requested_at, added_at)
             VALUES
-              (?, ?, 'recommended', ?, ?, ?, ?, 'downloading', 'auto', ?, ?, ?)`,
+              (?, ?, ?, ?, ?, ?, ?, 'downloading', 'auto', ?, ?, ?)`,
       params: [
         event.requestId,
         event.input.userId,
+        event.input.source ?? 'recommended',
         event.input.url,
         event.input.youtubeId,
         event.input.title,

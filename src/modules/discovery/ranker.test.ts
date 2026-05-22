@@ -1,12 +1,18 @@
 import { describe, it, expect } from 'vitest';
 import {
   rank,
+  bucketFor,
+  isPicked,
   freshnessMultiplier,
   rankWeight,
   titleTokens,
   jaccardSimilarity,
   normalizeSensitivity,
   clampScore,
+  BACK_CATALOG_QUOTA,
+  DELIGHTER_QUOTA,
+  MAX_PER_INTEREST,
+  MAX_PER_CHANNEL,
   type RankerCandidate,
   type RankerContext,
   type Verdict,
@@ -14,6 +20,8 @@ import {
 
 const NOW = new Date('2026-04-25T12:00:00.000Z');
 
+// Default candidate is a delighter (interest_search) unless sourceType is
+// overridden — most diversity-cap tests don't care about the bucket.
 function candidate(overrides: Partial<RankerCandidate> & { candidateId: string }): RankerCandidate {
   return {
     candidateId: overrides.candidateId,
@@ -22,6 +30,7 @@ function candidate(overrides: Partial<RankerCandidate> & { candidateId: string }
     connectionScore: overrides.connectionScore ?? 8,
     qualityScore: overrides.qualityScore ?? 8,
     timeSensitivity: overrides.timeSensitivity ?? 'evergreen',
+    sourceType: overrides.sourceType ?? 'interest_search',
     interestId: overrides.interestId ?? null,
     channel: overrides.channel ?? null,
     rank: overrides.rank ?? 5,
@@ -31,12 +40,14 @@ function candidate(overrides: Partial<RankerCandidate> & { candidateId: string }
 function ctx(overrides: Partial<RankerContext> = {}): RankerContext {
   const base: RankerContext = {
     now: overrides.now ?? NOW,
-    isKid: overrides.isKid ?? false,
     prefilledTitles: overrides.prefilledTitles ?? [],
     prefilledInterestCounts: overrides.prefilledInterestCounts ?? new Map(),
   };
   if (overrides.prefilledChannelCounts !== undefined) {
     base.prefilledChannelCounts = overrides.prefilledChannelCounts;
+  }
+  if (overrides.prefilledBucketCounts !== undefined) {
+    base.prefilledBucketCounts = overrides.prefilledBucketCounts;
   }
   return base;
 }
@@ -47,432 +58,430 @@ function findVerdict(verdicts: Verdict[], id: string): Verdict {
   return v;
 }
 
-describe('rank — per-channel cap (issue #148)', () => {
-  // Adult cap = 2, kid cap = 1. Each test below uses distinct interests
-  // on every candidate so the per-interest cap can't bite — the only
-  // diversity rule under test is the channel cap. Unique title tokens
-  // so dedup doesn't bite either.
+// Distinct, non-overlapping title tokens so similarity dedup never bites
+// between siblings in count-based tests.
+const TITLE_TOKEN_BANK = [
+  'alpha', 'bravo', 'charlie', 'delta', 'echo', 'foxtrot', 'golf', 'hotel',
+  'india', 'juliet', 'kilo', 'lima', 'mike', 'november', 'oscar', 'papa',
+  'quebec', 'romeo', 'sierra', 'tango', 'uniform', 'victor', 'whiskey', 'xray',
+  'yankee', 'zulu', 'apple', 'banana', 'cherry', 'date',
+];
 
-  it('cap not reached: 2 candidates from one channel both survive (adult)', () => {
-    const candidates: RankerCandidate[] = [
-      candidate({
-        candidateId: 'a', interestId: 'i1', channel: 'AI Engineer', rank: 5,
-        title: 'alpha unique tokens here',
-        connectionScore: 10, qualityScore: 10,
-      }),
-      candidate({
-        candidateId: 'b', interestId: 'i2', channel: 'AI Engineer', rank: 5,
-        title: 'bravo separate vocabulary',
-        connectionScore: 9, qualityScore: 9,
-      }),
-    ];
-    const verdicts = rank(candidates, ctx(), { cap: 15 });
-    expect(findVerdict(verdicts, 'a').disposition).toBe('regular');
-    expect(findVerdict(verdicts, 'b').disposition).toBe('regular');
-  });
+function uniqueTitle(i: number): string {
+  return TITLE_TOKEN_BANK[i] ?? `unique${i}`;
+}
 
-  it('cap exactly reached: 2 from one channel pass, 3rd is cut (adult)', () => {
-    const candidates: RankerCandidate[] = [
-      candidate({
-        candidateId: 'a', interestId: 'i1', channel: 'AI Engineer', rank: 5,
-        title: 'alpha unique tokens here',
-        connectionScore: 10, qualityScore: 10,
-      }),
-      candidate({
-        candidateId: 'b', interestId: 'i2', channel: 'AI Engineer', rank: 5,
-        title: 'bravo separate vocabulary',
-        connectionScore: 9, qualityScore: 9,
-      }),
-      candidate({
-        candidateId: 'c', interestId: 'i3', channel: 'AI Engineer', rank: 5,
-        title: 'charlie another distinct phrase',
-        connectionScore: 8, qualityScore: 8,
-      }),
-    ];
-    const verdicts = rank(candidates, ctx(), { cap: 15 });
-    expect(findVerdict(verdicts, 'a').disposition).toBe('regular');
-    expect(findVerdict(verdicts, 'b').disposition).toBe('regular');
-    expect(findVerdict(verdicts, 'c').disposition).toBe('cut_channel_cap');
-  });
-
-  it('cap exceeded: lower-scoring duplicates drop, higher-scoring keep their slots', () => {
-    // Five candidates on the same channel, distinct interests, distinct
-    // titles, sorted by descending weighted score (controlled via conn/qual).
-    // Adult channel cap = 2 → top two survive, the bottom three are cut.
-    const candidates: RankerCandidate[] = [
-      candidate({
-        candidateId: 'top1', interestId: 'i1', channel: 'Gary Economics', rank: 5,
-        title: 'alpha unique tokens here', connectionScore: 10, qualityScore: 10,
-      }),
-      candidate({
-        candidateId: 'top2', interestId: 'i2', channel: 'Gary Economics', rank: 5,
-        title: 'bravo separate vocabulary', connectionScore: 9, qualityScore: 10,
-      }),
-      candidate({
-        candidateId: 'mid1', interestId: 'i3', channel: 'Gary Economics', rank: 5,
-        title: 'charlie another distinct phrase', connectionScore: 9, qualityScore: 9,
-      }),
-      candidate({
-        candidateId: 'mid2', interestId: 'i4', channel: 'Gary Economics', rank: 5,
-        title: 'delta further unique lexis', connectionScore: 8, qualityScore: 9,
-      }),
-      candidate({
-        candidateId: 'low', interestId: 'i5', channel: 'Gary Economics', rank: 5,
-        title: 'echo additional distinct wording', connectionScore: 8, qualityScore: 8,
-      }),
-    ];
-    const verdicts = rank(candidates, ctx(), { cap: 15 });
-    expect(findVerdict(verdicts, 'top1').disposition).toBe('regular');
-    expect(findVerdict(verdicts, 'top2').disposition).toBe('regular');
-    expect(findVerdict(verdicts, 'mid1').disposition).toBe('cut_channel_cap');
-    expect(findVerdict(verdicts, 'mid2').disposition).toBe('cut_channel_cap');
-    expect(findVerdict(verdicts, 'low').disposition).toBe('cut_channel_cap');
-  });
-
-  it('per-channel cap wins when both channel and interest caps would apply', () => {
-    // Setup: three candidates on the same interest AND same channel.
-    // Adult interest cap = 3 — wouldn't trip yet on the third item.
-    // Adult channel cap = 2 — DOES trip on the third item.
-    // The third item must therefore report cut_channel_cap, not
-    // cut_interest_cap, because the channel cap is checked first.
-    //
-    // Then a fourth candidate shares the SAME interest AND SAME channel:
-    // both caps now apply — channel cap (2) was hit at item 3, interest
-    // cap (3) is hit at item 4. The fourth item still reports
-    // cut_channel_cap because the channel check happens first.
-    const candidates: RankerCandidate[] = [
-      candidate({
-        candidateId: 'a', interestId: 'i1', channel: 'OneCreator', rank: 5,
-        title: 'alpha unique tokens here', connectionScore: 10, qualityScore: 10,
-      }),
-      candidate({
-        candidateId: 'b', interestId: 'i1', channel: 'OneCreator', rank: 5,
-        title: 'bravo separate vocabulary', connectionScore: 9, qualityScore: 10,
-      }),
-      candidate({
-        candidateId: 'c', interestId: 'i1', channel: 'OneCreator', rank: 5,
-        title: 'charlie another distinct phrase', connectionScore: 9, qualityScore: 9,
-      }),
-      candidate({
-        candidateId: 'd', interestId: 'i1', channel: 'OneCreator', rank: 5,
-        title: 'delta further unique lexis', connectionScore: 8, qualityScore: 9,
-      }),
-    ];
-    const verdicts = rank(candidates, ctx(), { cap: 15 });
-    expect(findVerdict(verdicts, 'a').disposition).toBe('regular');
-    expect(findVerdict(verdicts, 'b').disposition).toBe('regular');
-    expect(findVerdict(verdicts, 'c').disposition).toBe('cut_channel_cap');
-    expect(findVerdict(verdicts, 'd').disposition).toBe('cut_channel_cap');
-  });
-
-  it('per-channel cap drops dupes without reordering to fill from other channels', () => {
-    // Channel A has 3 items above any item from channel B. With adult
-    // channel cap = 2, items 1+2 from A take the first two slots and
-    // item 3 from A is dropped — channel B's items still fill the rest
-    // in their own weighted order, not promoted in place of A's drop.
-    const candidates: RankerCandidate[] = [
-      candidate({
-        candidateId: 'a1', interestId: 'i1', channel: 'A', rank: 5,
-        title: 'alpha first unique phrase', connectionScore: 10, qualityScore: 10,
-      }),
-      candidate({
-        candidateId: 'a2', interestId: 'i2', channel: 'A', rank: 5,
-        title: 'bravo second unique phrase', connectionScore: 10, qualityScore: 9,
-      }),
-      candidate({
-        candidateId: 'a3', interestId: 'i3', channel: 'A', rank: 5,
-        title: 'charlie third unique phrase', connectionScore: 9, qualityScore: 9,
-      }),
-      candidate({
-        candidateId: 'b1', interestId: 'i4', channel: 'B', rank: 5,
-        title: 'delta fourth unique phrase', connectionScore: 8, qualityScore: 8,
-      }),
-    ];
-    const verdicts = rank(candidates, ctx(), { cap: 15 });
-    expect(findVerdict(verdicts, 'a1').disposition).toBe('regular');
-    expect(findVerdict(verdicts, 'a2').disposition).toBe('regular');
-    expect(findVerdict(verdicts, 'a3').disposition).toBe('cut_channel_cap');
-    expect(findVerdict(verdicts, 'b1').disposition).toBe('regular');
-  });
-
-  it('kid channel cap = 1: second candidate from same channel is cut', () => {
-    const candidates: RankerCandidate[] = [
-      candidate({
-        candidateId: 'a', interestId: 'i1', channel: 'KidChannel', rank: 5,
-        title: 'alpha unique tokens here', connectionScore: 10, qualityScore: 10,
-      }),
-      candidate({
-        candidateId: 'b', interestId: 'i2', channel: 'KidChannel', rank: 5,
-        title: 'bravo separate vocabulary', connectionScore: 9, qualityScore: 9,
-      }),
-    ];
-    const verdicts = rank(candidates, ctx({ isKid: true }), { cap: 5 });
-    expect(findVerdict(verdicts, 'a').disposition).toBe('regular');
-    expect(findVerdict(verdicts, 'b').disposition).toBe('cut_channel_cap');
-  });
-
-  it('null channel is exempt from the cap', () => {
-    // Three candidates with channel=null and distinct interests: all
-    // should pass — null channel means "channel unknown", which we
-    // treat the same as null interest (no cap applies).
-    const candidates: RankerCandidate[] = [
-      candidate({
-        candidateId: 'a', interestId: 'i1', channel: null, rank: 5,
-        title: 'alpha unique tokens here', connectionScore: 10, qualityScore: 10,
-      }),
-      candidate({
-        candidateId: 'b', interestId: 'i2', channel: null, rank: 5,
-        title: 'bravo separate vocabulary', connectionScore: 9, qualityScore: 9,
-      }),
-      candidate({
-        candidateId: 'c', interestId: 'i3', channel: null, rank: 5,
-        title: 'charlie another distinct phrase', connectionScore: 8, qualityScore: 8,
-      }),
-    ];
-    const verdicts = rank(candidates, ctx(), { cap: 15 });
-    expect(findVerdict(verdicts, 'a').disposition).toBe('regular');
-    expect(findVerdict(verdicts, 'b').disposition).toBe('regular');
-    expect(findVerdict(verdicts, 'c').disposition).toBe('regular');
-  });
-
-  it('prefilledChannelCounts: cap is consumed by earlier-today picks', () => {
-    // Channel "PrefilledChan" already counted twice (adult cap=2 fully
-    // consumed by an earlier call's picks). The new candidate on the
-    // same channel must be cut even though no other candidate from that
-    // channel is in this call's pool.
-    const prefilled = new Map<string, number>([['PrefilledChan', 2]]);
-    const candidates: RankerCandidate[] = [
-      candidate({
-        candidateId: 'new', interestId: 'i1', channel: 'PrefilledChan', rank: 5,
-        title: 'alpha unique tokens here', connectionScore: 10, qualityScore: 10,
-      }),
-    ];
-    const verdicts = rank(
-      candidates,
-      ctx({ prefilledChannelCounts: prefilled }),
-      { cap: 15 },
-    );
-    expect(findVerdict(verdicts, 'new').disposition).toBe('cut_channel_cap');
-  });
-
-  it('per-interest cap still bites independently when channels differ', () => {
-    // Three candidates share interest i1 but each is on a different
-    // channel (so channel cap never trips). The fourth on i1 must hit
-    // the adult per-interest cap (3) and report cut_interest_cap.
-    const candidates: RankerCandidate[] = [
-      candidate({
-        candidateId: 'a', interestId: 'i1', channel: 'ChA', rank: 5,
-        title: 'alpha unique tokens here', connectionScore: 10, qualityScore: 10,
-      }),
-      candidate({
-        candidateId: 'b', interestId: 'i1', channel: 'ChB', rank: 5,
-        title: 'bravo separate vocabulary', connectionScore: 9, qualityScore: 10,
-      }),
-      candidate({
-        candidateId: 'c', interestId: 'i1', channel: 'ChC', rank: 5,
-        title: 'charlie another distinct phrase', connectionScore: 9, qualityScore: 9,
-      }),
-      candidate({
-        candidateId: 'd', interestId: 'i1', channel: 'ChD', rank: 5,
-        title: 'delta further unique lexis', connectionScore: 8, qualityScore: 9,
-      }),
-    ];
-    const verdicts = rank(candidates, ctx(), { cap: 15 });
-    expect(findVerdict(verdicts, 'a').disposition).toBe('regular');
-    expect(findVerdict(verdicts, 'b').disposition).toBe('regular');
-    expect(findVerdict(verdicts, 'c').disposition).toBe('regular');
-    expect(findVerdict(verdicts, 'd').disposition).toBe('cut_interest_cap');
+describe('bucketFor', () => {
+  it('maps source_type to bucket; null/unknown → delighter', () => {
+    expect(bucketFor('subscription')).toBe('subscription');
+    expect(bucketFor('person_backcatalog')).toBe('back_catalog');
+    expect(bucketFor('interest_search')).toBe('delighter');
+    expect(bucketFor(null)).toBe('delighter');
+    expect(bucketFor('something_else')).toBe('delighter');
   });
 });
 
-describe('rank — first-refusal precedence', () => {
-  // Brief: refusals from regular pass stick. A candidate that hits BOTH
-  // interest_cap (regular) and stretch_rank (stretch) gets the regular-
-  // pass reason.
-  it('cut_interest_cap wins over cut_stretch_rank when both apply', () => {
-    const candidates: RankerCandidate[] = [
-      // Three i1 items consume the adult cap of 3 first.
-      candidate({ candidateId: 'a', interestId: 'i1', rank: 1, title: 'alpha solo run' }),
-      candidate({ candidateId: 'b', interestId: 'i1', rank: 1, title: 'bravo cycle pace' }),
-      candidate({ candidateId: 'c', interestId: 'i1', rank: 1, title: 'charlie hill repeats' }),
-      // Item X: same i1 interest (cap full) AND rank 1 (would fail stretch).
-      // Lower scores so it sorts last and is reached after the cap fills.
-      candidate({
-        candidateId: 'x', interestId: 'i1', rank: 1,
-        title: 'xerox solo desk',
-        connectionScore: 7, qualityScore: 6,
-      }),
-    ];
-    const verdicts = rank(candidates, ctx(), { cap: 5 });
-    expect(findVerdict(verdicts, 'a').disposition).toBe('regular');
-    expect(findVerdict(verdicts, 'b').disposition).toBe('regular');
-    expect(findVerdict(verdicts, 'c').disposition).toBe('regular');
-    expect(findVerdict(verdicts, 'x').disposition).toBe('cut_interest_cap');
+describe('isPicked', () => {
+  it('only the three bucket dispositions count as picks', () => {
+    expect(isPicked('subscription')).toBe(true);
+    expect(isPicked('back_catalog')).toBe(true);
+    expect(isPicked('delighter')).toBe(true);
+    expect(isPicked('cut_quota')).toBe(false);
+    expect(isPicked('cut_channel_cap')).toBe(false);
+    expect(isPicked('low_conn')).toBe(false);
   });
 });
 
-describe('rank — cut_dedup carries dedupedAgainst', () => {
-  it("loser's verdict points at the higher-weighted winner", () => {
-    const candidates: RankerCandidate[] = [
-      candidate({
-        candidateId: 'winner', interestId: 'i1', rank: 5,
-        title: 'pasta from scratch tutorial',
-        connectionScore: 10, qualityScore: 10,
-      }),
-      candidate({
-        candidateId: 'loser', interestId: 'i2', rank: 5,
-        title: 'tutorial pasta scratch made',
-        connectionScore: 8, qualityScore: 8,
-      }),
-      candidate({
-        candidateId: 'unrelated', interestId: 'i3', rank: 5,
-        title: 'cycling cadence drills',
-      }),
-    ];
-    const verdicts = rank(candidates, ctx(), { cap: 5 });
-    expect(findVerdict(verdicts, 'winner').disposition).toBe('regular');
-    const loser = findVerdict(verdicts, 'loser');
-    expect(loser.disposition).toBe('cut_dedup');
-    expect(loser.dedupedAgainst).toBe('winner');
-    expect(findVerdict(verdicts, 'unrelated').disposition).toBe('regular');
-  });
-});
-
-describe('rank — mid-day prefill round-trip', () => {
-  it('second call honours interest caps and title dedup seeded from first picks', () => {
-    const pool: RankerCandidate[] = [
-      candidate({
-        candidateId: 'a', interestId: 'i1', rank: 1,
-        title: 'morning routine essentials',
-        connectionScore: 10, qualityScore: 10,
-      }),
-      candidate({
-        candidateId: 'b', interestId: 'i2', rank: 2,
-        title: 'pasta from scratch tutorial',
-        connectionScore: 9, qualityScore: 9,
-      }),
-    ];
-
-    const first = rank(pool, ctx(), { cap: 5 });
-    const firstPicks = first.filter((v) => v.disposition === 'regular' || v.disposition === 'stretch');
-    expect(firstPicks.map((v) => v.candidate.candidateId).sort()).toEqual(['a', 'b']);
-
-    const prefilledTitles = firstPicks.map((v) => v.candidate.title ?? '').filter((t) => t.length > 0);
-    const prefilledInterestCounts = new Map<string, number>();
-    for (const v of firstPicks) {
-      if (!v.candidate.interestId) continue;
-      prefilledInterestCounts.set(
-        v.candidate.interestId,
-        (prefilledInterestCounts.get(v.candidate.interestId) ?? 0) + 1,
-      );
-    }
-
-    // Second-call pool: one item shares i1 (1 prefilled, adult max=3, so
-    // room for two more), one item shares i2 (also room), one item is
-    // title-similar to the first call's pasta pick, one item is fresh and
-    // distinct.
-    const secondPool: RankerCandidate[] = [
-      candidate({
-        candidateId: 'c', interestId: 'i1', rank: 1,
-        title: 'morning sunrise breath drill', // similar to "morning routine essentials"
-        connectionScore: 10, qualityScore: 10,
-      }),
-      candidate({
-        candidateId: 'd', interestId: 'i2', rank: 2,
-        title: 'tutorial pasta scratch made fresh', // similar to "pasta from scratch tutorial"
-        connectionScore: 9, qualityScore: 9,
-      }),
-      candidate({
-        candidateId: 'e', interestId: 'i3', rank: 1,
-        title: 'cycling cadence drills',
-        connectionScore: 9, qualityScore: 9,
-      }),
-    ];
-
-    const second = rank(
-      secondPool,
-      ctx({ prefilledTitles, prefilledInterestCounts }),
-      { cap: 5 },
-    );
-
-    // 'c' has same interest as a prefilled pick — but adult cap=3, so the
-    // interest cap doesn't bite yet. Title-dedup against "morning routine
-    // essentials" might bite though. Let's check: c shares 'morning' which
-    // is one of the few non-stopwords in 'morning routine essentials'.
-    // Tokens of a: 'morning', 'routine', 'essentials' (3 tokens)
-    // Tokens of c: 'morning', 'sunrise', 'breath', 'drill' (4 tokens)
-    // Intersection: 'morning' (1). Union: 6. Jaccard: 1/6 = 0.166. < 0.4.
-    // So c is NOT deduped — expected pickable.
-    expect(findVerdict(second, 'c').disposition).toBe('regular');
-
-    // 'd' is title-similar to "pasta from scratch tutorial":
-    // Tokens of b: 'pasta', 'scratch', 'tutorial'
-    // Tokens of d: 'tutorial', 'pasta', 'scratch', 'made', 'fresh'
-    // Intersection: 3, union: 5, Jaccard: 0.6 > 0.4 → cut_dedup.
-    expect(findVerdict(second, 'd').disposition).toBe('cut_dedup');
-
-    // 'e' has neither cap nor dedup conflict.
-    expect(findVerdict(second, 'e').disposition).toBe('regular');
-  });
-});
-
-describe('rank — weighted floor catches old news', () => {
-  // Brief §9a: a 2-year-old "news" item still scoring conn 9 / qual 6 has
-  // weighted ≈ 9 × 6 × 0.05 (news >90d) × 1 = 2.7, well under MIN_WEIGHTED
-  // _SCORE = 5. The floor is what stops the per-interest cap forcing in
-  // weak picks just because nothing better exists for that interest.
-  it('marks an old news item with passing axes as low_weight', () => {
-    const twoYearsAgo = '2024-04-25T12:00:00.000Z';
-    const candidates: RankerCandidate[] = [
-      candidate({
-        candidateId: 'old-news',
-        publishedAt: twoYearsAgo,
-        timeSensitivity: 'news',
-        connectionScore: 9,
-        qualityScore: 6,
-        rank: 1,
-        interestId: 'i1',
-      }),
-    ];
-    const verdicts = rank(candidates, ctx(), { cap: 5 });
-    const v = findVerdict(verdicts, 'old-news');
-    expect(v.disposition).toBe('low_weight');
-    expect(v.weighted).toBeCloseTo(9 * 6 * 0.05 * 1, 5);
-  });
-});
-
-describe('rank — stretch-quota math at boundaries', () => {
-  // Each candidate has a unique interest and rank > 3 so neither the cap
-  // nor the stretch-rank gate blocks anyone — only the quota math limits
-  // total picks. cap=15 → 12 regular + 3 stretch; cap=5 → 4+1; cap=2 → 1+1.
-  // Distinct, non-overlapping title tokens so similarity dedup never bites
-  // between siblings — only the slot quota math should limit picks.
-  const TITLE_TOKEN_BANK = [
-    'alpha', 'bravo', 'charlie', 'delta', 'echo', 'foxtrot', 'golf', 'hotel',
-    'india', 'juliet', 'kilo', 'lima', 'mike', 'november', 'oscar', 'papa',
-    'quebec', 'romeo', 'sierra', 'tango',
-  ];
-  function pool(n: number): RankerCandidate[] {
+describe('rank — three-bucket floors (ADR-0009)', () => {
+  // Build a bucket of distinct-channel, distinct-interest, distinct-title
+  // candidates so only the bucket quota bounds picks. Each is high-scoring.
+  function bucket(prefix: string, sourceType: string, n: number): RankerCandidate[] {
     return Array.from({ length: n }, (_, i) => candidate({
-      candidateId: `c${i}`,
-      interestId: `i${i}`,
-      rank: 10,
-      title: TITLE_TOKEN_BANK[i] ?? `unique${i}`,
+      candidateId: `${prefix}${i}`,
+      sourceType,
+      interestId: `${prefix}-i${i}`,
+      channel: `${prefix}-chan${i}`,
+      title: `${prefix}${i} ` + uniqueTitle(i),
+      rank: 5,
+      connectionScore: 10,
+      qualityScore: 10,
+    }));
+  }
+
+  it('back-catalogue fills exactly its floor of 4 when supply is ample', () => {
+    const verdicts = rank(bucket('bc', 'person_backcatalog', 10), ctx(), { cap: 15 });
+    const picked = verdicts.filter((v) => v.disposition === 'back_catalog');
+    expect(picked).toHaveLength(BACK_CATALOG_QUOTA);
+    // The 5th+ back-catalogue items are cut for quota, not a cap.
+    const cut = verdicts.filter((v) => v.disposition === 'cut_quota');
+    expect(cut).toHaveLength(10 - BACK_CATALOG_QUOTA);
+  });
+
+  it('delighter fills exactly its floor of 2 when supply is ample', () => {
+    const verdicts = rank(bucket('dl', 'interest_search', 10), ctx(), { cap: 15 });
+    const picked = verdicts.filter((v) => v.disposition === 'delighter');
+    expect(picked).toHaveLength(DELIGHTER_QUOTA);
+    expect(verdicts.filter((v) => v.disposition === 'cut_quota')).toHaveLength(10 - DELIGHTER_QUOTA);
+  });
+
+  it('subscription fills cap − 6 when supply is ample', () => {
+    const cap = 15;
+    const verdicts = rank(bucket('sub', 'subscription', 20), ctx(), { cap });
+    const picked = verdicts.filter((v) => v.disposition === 'subscription');
+    expect(picked).toHaveLength(cap - 6); // 9
+  });
+
+  it('a full slate composes subscription cap−6 + back-cat 4 + delighter 2', () => {
+    const cap = 15;
+    const candidates = [
+      ...bucket('sub', 'subscription', 20),
+      ...bucket('bc', 'person_backcatalog', 10),
+      ...bucket('dl', 'interest_search', 10),
+    ];
+    const verdicts = rank(candidates, ctx(), { cap });
+    expect(verdicts.filter((v) => v.disposition === 'subscription')).toHaveLength(cap - 6);
+    expect(verdicts.filter((v) => v.disposition === 'back_catalog')).toHaveLength(BACK_CATALOG_QUOTA);
+    expect(verdicts.filter((v) => v.disposition === 'delighter')).toHaveLength(DELIGHTER_QUOTA);
+    expect(verdicts.filter((v) => isPicked(v.disposition))).toHaveLength(cap);
+  });
+});
+
+describe('rank — flood day: floors hold, spare is NOT soaked', () => {
+  function bucket(prefix: string, sourceType: string, n: number): RankerCandidate[] {
+    return Array.from({ length: n }, (_, i) => candidate({
+      candidateId: `${prefix}${i}`,
+      sourceType,
+      interestId: `${prefix}-i${i}`,
+      channel: `${prefix}-chan${i}`,
+      title: `${prefix}${i} ` + uniqueTitle(i),
+      rank: 5,
+      connectionScore: 10,
+      qualityScore: 10,
+    }));
+  }
+
+  it('subscription supply > cap−6 does not eat into back-cat / delighter floors', () => {
+    const cap = 15;
+    // 30 subscriptions flood the day; back-cat and delighter each have exactly
+    // their floor worth of supply.
+    const candidates = [
+      ...bucket('sub', 'subscription', 30),
+      ...bucket('bc', 'person_backcatalog', BACK_CATALOG_QUOTA),
+      ...bucket('dl', 'interest_search', DELIGHTER_QUOTA),
+    ];
+    const verdicts = rank(candidates, ctx(), { cap });
+    // Subscriptions are capped at cap−6 even though 30 are available.
+    expect(verdicts.filter((v) => v.disposition === 'subscription')).toHaveLength(cap - 6);
+    // Floors still fully filled — not soaked away by the subscription flood.
+    expect(verdicts.filter((v) => v.disposition === 'back_catalog')).toHaveLength(BACK_CATALOG_QUOTA);
+    expect(verdicts.filter((v) => v.disposition === 'delighter')).toHaveLength(DELIGHTER_QUOTA);
+    // The excess subscriptions are cut for quota.
+    expect(verdicts.filter((v) => v.disposition === 'cut_quota')).toHaveLength(30 - (cap - 6));
+  });
+
+  it('a thin back-cat bucket yields a short slate; spare is NOT reallocated to subscription', () => {
+    const cap = 15;
+    // Plenty of subscriptions, but only 1 back-cat and 0 delighters.
+    const candidates = [
+      ...bucket('sub', 'subscription', 30),
+      ...bucket('bc', 'person_backcatalog', 1),
+    ];
+    const verdicts = rank(candidates, ctx(), { cap });
+    // Subscription still capped at cap−6 — the unused back-cat/delighter slots
+    // are NOT handed to subscriptions.
+    expect(verdicts.filter((v) => v.disposition === 'subscription')).toHaveLength(cap - 6);
+    expect(verdicts.filter((v) => v.disposition === 'back_catalog')).toHaveLength(1);
+    expect(verdicts.filter((v) => v.disposition === 'delighter')).toHaveLength(0);
+    // Total slate is short: 9 + 1 + 0 = 10, not the full cap of 15.
+    expect(verdicts.filter((v) => isPicked(v.disposition))).toHaveLength((cap - 6) + 1);
+  });
+});
+
+describe('rank — cap arithmetic and short slates', () => {
+  function bucket(prefix: string, sourceType: string, n: number): RankerCandidate[] {
+    return Array.from({ length: n }, (_, i) => candidate({
+      candidateId: `${prefix}${i}`,
+      sourceType,
+      interestId: `${prefix}-i${i}`,
+      channel: `${prefix}-chan${i}`,
+      title: `${prefix}${i} ` + uniqueTitle(i),
+      rank: 5,
       connectionScore: 10,
       qualityScore: 10,
     }));
   }
 
   it.each([
-    { cap: 15, regular: 12, stretch: 3 },
-    { cap: 5, regular: 4, stretch: 1 },
-    { cap: 2, regular: 1, stretch: 1 },
-  ])('cap=$cap → $regular regular + $stretch stretch', ({ cap, regular, stretch }) => {
-    const verdicts = rank(pool(20), ctx(), { cap });
-    const regulars = verdicts.filter((v) => v.disposition === 'regular').length;
-    const stretches = verdicts.filter((v) => v.disposition === 'stretch').length;
-    expect(regulars).toBe(regular);
-    expect(stretches).toBe(stretch);
+    { cap: 15, sub: 9 },
+    { cap: 10, sub: 4 },
+    { cap: 8, sub: 2 },
+    { cap: 6, sub: 0 },
+    { cap: 5, sub: 0 }, // cap below reserved → subscription clamped to 0
+  ])('cap=$cap → subscription quota $sub (cap−6 clamped at 0)', ({ cap, sub }) => {
+    const verdicts = rank(bucket('sub', 'subscription', 30), ctx(), { cap });
+    expect(verdicts.filter((v) => v.disposition === 'subscription')).toHaveLength(sub);
+  });
+
+  it('an empty pool yields an empty (valid) slate', () => {
+    const verdicts = rank([], ctx(), { cap: 15 });
+    expect(verdicts).toHaveLength(0);
+  });
+
+  it.each([
+    { cap: 5, total: 5, bc: 4, dl: 1, sub: 0 },
+    { cap: 4, total: 4, bc: 4, dl: 0, sub: 0 },
+    { cap: 3, total: 3, bc: 3, dl: 0, sub: 0 },
+    { cap: 1, total: 1, bc: 1, dl: 0, sub: 0 },
+  ])('a cap below 6 never overshoots: cap=$cap → $total total picks', ({ cap, total, bc, dl, sub }) => {
+    // Degenerate small caps are reachable (the column is only validated
+    // positive). The fixed buckets must clamp so the slate never exceeds cap;
+    // back-catalogue keeps priority, then delighter, then subscription.
+    const candidates = [
+      ...bucket('sub', 'subscription', 10),
+      ...bucket('bc', 'person_backcatalog', 10),
+      ...bucket('dl', 'interest_search', 10),
+    ];
+    const verdicts = rank(candidates, ctx(), { cap });
+    expect(verdicts.filter((v) => v.disposition === 'back_catalog')).toHaveLength(bc);
+    expect(verdicts.filter((v) => v.disposition === 'delighter')).toHaveLength(dl);
+    expect(verdicts.filter((v) => v.disposition === 'subscription')).toHaveLength(sub);
+    expect(verdicts.filter((v) => isPicked(v.disposition))).toHaveLength(total);
+  });
+});
+
+describe('rank — per-channel cap (global, all buckets incl. subscriptions)', () => {
+  it('cap exactly reached: 2 from one channel pass, 3rd is cut (delighter)', () => {
+    const candidates: RankerCandidate[] = [
+      candidate({ candidateId: 'a', interestId: 'i1', channel: 'Chan', rank: 5, title: 'alpha unique here', connectionScore: 10, qualityScore: 10 }),
+      candidate({ candidateId: 'b', interestId: 'i2', channel: 'Chan', rank: 5, title: 'bravo separate words', connectionScore: 9, qualityScore: 9 }),
+      candidate({ candidateId: 'c', interestId: 'i3', channel: 'Chan', rank: 5, title: 'charlie distinct phrase', connectionScore: 8, qualityScore: 8 }),
+    ];
+    const verdicts = rank(candidates, ctx(), { cap: 15 });
+    expect(findVerdict(verdicts, 'a').disposition).toBe('delighter');
+    expect(findVerdict(verdicts, 'b').disposition).toBe('delighter');
+    expect(findVerdict(verdicts, 'c').disposition).toBe('cut_channel_cap');
+  });
+
+  it('per-channel cap applies to subscriptions: 3rd from one channel is cut', () => {
+    // Subscriptions skip the interest cap but NOT the channel cap (ADR-0009).
+    const candidates: RankerCandidate[] = [
+      candidate({ candidateId: 'a', sourceType: 'subscription', interestId: 'i1', channel: 'SubChan', rank: 5, title: 'alpha unique here', connectionScore: 10, qualityScore: 10 }),
+      candidate({ candidateId: 'b', sourceType: 'subscription', interestId: 'i2', channel: 'SubChan', rank: 5, title: 'bravo separate words', connectionScore: 9, qualityScore: 9 }),
+      candidate({ candidateId: 'c', sourceType: 'subscription', interestId: 'i3', channel: 'SubChan', rank: 5, title: 'charlie distinct phrase', connectionScore: 8, qualityScore: 8 }),
+    ];
+    const verdicts = rank(candidates, ctx(), { cap: 15 });
+    expect(findVerdict(verdicts, 'a').disposition).toBe('subscription');
+    expect(findVerdict(verdicts, 'b').disposition).toBe('subscription');
+    expect(findVerdict(verdicts, 'c').disposition).toBe('cut_channel_cap');
+  });
+
+  it('per-channel cap wins when both channel and interest caps would apply', () => {
+    // Three delighters on the same interest AND same channel. Channel cap (2)
+    // trips at item 3; interest cap (3) hasn't yet. Channel check is first.
+    const candidates: RankerCandidate[] = [
+      candidate({ candidateId: 'a', interestId: 'i1', channel: 'One', rank: 5, title: 'alpha unique here', connectionScore: 10, qualityScore: 10 }),
+      candidate({ candidateId: 'b', interestId: 'i1', channel: 'One', rank: 5, title: 'bravo separate words', connectionScore: 9, qualityScore: 10 }),
+      candidate({ candidateId: 'c', interestId: 'i1', channel: 'One', rank: 5, title: 'charlie distinct phrase', connectionScore: 9, qualityScore: 9 }),
+    ];
+    const verdicts = rank(candidates, ctx(), { cap: 15 });
+    expect(findVerdict(verdicts, 'c').disposition).toBe('cut_channel_cap');
+  });
+
+  it('cap unified at 2 for everyone (no kid split)', () => {
+    expect(MAX_PER_CHANNEL).toBe(2);
+    expect(MAX_PER_INTEREST).toBe(3);
+  });
+
+  it('prefilledChannelCounts: cap is consumed by earlier-today picks', () => {
+    const prefilled = new Map<string, number>([['PrefilledChan', 2]]);
+    const candidates: RankerCandidate[] = [
+      candidate({ candidateId: 'new', interestId: 'i1', channel: 'PrefilledChan', rank: 5, title: 'alpha unique here', connectionScore: 10, qualityScore: 10 }),
+    ];
+    const verdicts = rank(candidates, ctx({ prefilledChannelCounts: prefilled }), { cap: 15 });
+    expect(findVerdict(verdicts, 'new').disposition).toBe('cut_channel_cap');
+  });
+
+  it('null channel is exempt from the cap (subscriptions, ample quota)', () => {
+    // Subscriptions so the bucket quota (cap−6=9) doesn't bound these three.
+    const candidates: RankerCandidate[] = [
+      candidate({ candidateId: 'a', sourceType: 'subscription', interestId: 'i1', channel: null, rank: 5, title: 'alpha unique here', connectionScore: 10, qualityScore: 10 }),
+      candidate({ candidateId: 'b', sourceType: 'subscription', interestId: 'i2', channel: null, rank: 5, title: 'bravo separate words', connectionScore: 9, qualityScore: 9 }),
+      candidate({ candidateId: 'c', sourceType: 'subscription', interestId: 'i3', channel: null, rank: 5, title: 'charlie distinct phrase', connectionScore: 8, qualityScore: 8 }),
+    ];
+    const verdicts = rank(candidates, ctx(), { cap: 15 });
+    expect(findVerdict(verdicts, 'a').disposition).toBe('subscription');
+    expect(findVerdict(verdicts, 'b').disposition).toBe('subscription');
+    expect(findVerdict(verdicts, 'c').disposition).toBe('subscription');
+  });
+});
+
+describe('rank — per-interest cap (back-cat + delighter only, NOT subscriptions)', () => {
+  it('per-interest cap bites on back-catalogue when channels differ', () => {
+    // Four back-catalogue items share interest i1 on different channels
+    // (channel cap never trips). Back-cat quota is 4, so the quota doesn't
+    // cut first — the 4th hits the per-interest cap of 3.
+    const candidates: RankerCandidate[] = [
+      candidate({ candidateId: 'a', sourceType: 'person_backcatalog', interestId: 'i1', channel: 'ChA', rank: 5, title: 'alpha unique here', connectionScore: 10, qualityScore: 10 }),
+      candidate({ candidateId: 'b', sourceType: 'person_backcatalog', interestId: 'i1', channel: 'ChB', rank: 5, title: 'bravo separate words', connectionScore: 9, qualityScore: 10 }),
+      candidate({ candidateId: 'c', sourceType: 'person_backcatalog', interestId: 'i1', channel: 'ChC', rank: 5, title: 'charlie distinct phrase', connectionScore: 9, qualityScore: 9 }),
+      candidate({ candidateId: 'd', sourceType: 'person_backcatalog', interestId: 'i1', channel: 'ChD', rank: 5, title: 'delta further lexis', connectionScore: 8, qualityScore: 9 }),
+    ];
+    const verdicts = rank(candidates, ctx(), { cap: 15 });
+    expect(findVerdict(verdicts, 'a').disposition).toBe('back_catalog');
+    expect(findVerdict(verdicts, 'b').disposition).toBe('back_catalog');
+    expect(findVerdict(verdicts, 'c').disposition).toBe('back_catalog');
+    expect(findVerdict(verdicts, 'd').disposition).toBe('cut_interest_cap');
+  });
+
+  it('per-interest cap does NOT bite on subscriptions sharing one interest', () => {
+    // Five subscriptions all on interest i1 but distinct channels: the
+    // per-interest cap must NOT suppress them (ADR-0009). Only the
+    // subscription bucket quota (cap−6) bounds them.
+    const candidates: RankerCandidate[] = Array.from({ length: 5 }, (_, i) => candidate({
+      candidateId: `s${i}`,
+      sourceType: 'subscription',
+      interestId: 'i1', // all the same inferred interest
+      channel: `SubCh${i}`, // distinct channels
+      rank: 5,
+      title: uniqueTitle(i) + ' sub',
+      connectionScore: 10,
+      qualityScore: 10,
+    }));
+    const verdicts = rank(candidates, ctx(), { cap: 15 });
+    // All 5 surface as subscriptions (cap−6 = 9 ≥ 5), none cut for interest cap.
+    expect(verdicts.filter((v) => v.disposition === 'subscription')).toHaveLength(5);
+    expect(verdicts.filter((v) => v.disposition === 'cut_interest_cap')).toHaveLength(0);
+  });
+
+  it('subscriptions do NOT consume the per-interest budget of back-cat siblings', () => {
+    // Two subscriptions on interest i1 (exempt) plus three back-cat on i1.
+    // The back-cat bucket should get its full per-interest allowance of 3 —
+    // the subscriptions must not have eaten into it.
+    const candidates: RankerCandidate[] = [
+      candidate({ candidateId: 'sub1', sourceType: 'subscription', interestId: 'i1', channel: 'SA', rank: 5, title: 'alpha sub', connectionScore: 10, qualityScore: 10 }),
+      candidate({ candidateId: 'sub2', sourceType: 'subscription', interestId: 'i1', channel: 'SB', rank: 5, title: 'bravo sub', connectionScore: 10, qualityScore: 10 }),
+      candidate({ candidateId: 'bc1', sourceType: 'person_backcatalog', interestId: 'i1', channel: 'BA', rank: 5, title: 'charlie bc', connectionScore: 9, qualityScore: 9 }),
+      candidate({ candidateId: 'bc2', sourceType: 'person_backcatalog', interestId: 'i1', channel: 'BB', rank: 5, title: 'delta bc', connectionScore: 9, qualityScore: 9 }),
+      candidate({ candidateId: 'bc3', sourceType: 'person_backcatalog', interestId: 'i1', channel: 'BC', rank: 5, title: 'echo bc', connectionScore: 9, qualityScore: 9 }),
+    ];
+    const verdicts = rank(candidates, ctx(), { cap: 15 });
+    expect(findVerdict(verdicts, 'bc1').disposition).toBe('back_catalog');
+    expect(findVerdict(verdicts, 'bc2').disposition).toBe('back_catalog');
+    expect(findVerdict(verdicts, 'bc3').disposition).toBe('back_catalog');
+  });
+});
+
+describe('rank — rankWeight forced 1.0 for subscription + back-catalogue', () => {
+  // A low-ranked interest (rank 9 → rankWeight ≈ 0.33) on a delighter is
+  // heavily down-weighted; the same scores as a subscription/back-cat are NOT.
+  // publishedAt is 1 day before NOW → evergreen freshness (days ≤ 1) = 1.4.
+  const FRESH_1D_EVERGREEN = 1.4;
+
+  it('subscription weighted score ignores interest rank', () => {
+    const c = candidate({
+      candidateId: 'sub', sourceType: 'subscription', interestId: 'i1', rank: 9,
+      connectionScore: 8, qualityScore: 8, timeSensitivity: 'evergreen',
+      publishedAt: '2026-04-24T12:00:00.000Z',
+    });
+    const v = findVerdict(rank([c], ctx(), { cap: 15 }), 'sub');
+    // weighted = 8 × 8 × 1.4 × 1.0 (forced) — rankWeight(9) NOT applied.
+    expect(v.weighted).toBeCloseTo(8 * 8 * FRESH_1D_EVERGREEN * 1.0, 5);
+  });
+
+  it('back-catalogue weighted score ignores interest rank', () => {
+    const c = candidate({
+      candidateId: 'bc', sourceType: 'person_backcatalog', interestId: 'i1', rank: 9,
+      connectionScore: 8, qualityScore: 8, timeSensitivity: 'evergreen',
+      publishedAt: '2026-04-24T12:00:00.000Z',
+    });
+    const v = findVerdict(rank([c], ctx(), { cap: 15 }), 'bc');
+    expect(v.weighted).toBeCloseTo(8 * 8 * FRESH_1D_EVERGREEN * 1.0, 5);
+  });
+
+  it('delighter keeps rankWeight(interest_rank)', () => {
+    const c = candidate({
+      candidateId: 'dl', sourceType: 'interest_search', interestId: 'i1', rank: 9,
+      connectionScore: 8, qualityScore: 8, timeSensitivity: 'evergreen',
+      publishedAt: '2026-04-24T12:00:00.000Z',
+    });
+    const v = findVerdict(rank([c], ctx(), { cap: 15 }), 'dl');
+    // weighted = 8 × 8 × 1.4 × rankWeight(9).
+    expect(v.weighted).toBeCloseTo(8 * 8 * FRESH_1D_EVERGREEN * rankWeight(9), 5);
+  });
+
+  it('a low-rank subscription outranks a low-rank delighter with identical axes', () => {
+    const sub = candidate({ candidateId: 'sub', sourceType: 'subscription', interestId: 'i1', channel: 'CA', rank: 9, connectionScore: 8, qualityScore: 8, title: 'alpha sub' });
+    const dl = candidate({ candidateId: 'dl', sourceType: 'interest_search', interestId: 'i2', channel: 'CB', rank: 9, connectionScore: 8, qualityScore: 8, title: 'bravo dl' });
+    const verdicts = rank([dl, sub], ctx(), { cap: 15 });
+    // Ordering is weighted-desc — the subscription (weight 1.0) sorts above the
+    // delighter (weight ≈ 0.33).
+    expect(verdicts[0]?.candidate.candidateId).toBe('sub');
+    expect(verdicts[1]?.candidate.candidateId).toBe('dl');
+  });
+});
+
+describe('rank — title dedup is global across buckets', () => {
+  it("a back-cat title-similar to a higher-weighted subscription is cut_dedup", () => {
+    const sub = candidate({
+      candidateId: 'sub', sourceType: 'subscription', interestId: 'i1', channel: 'CA', rank: 5,
+      title: 'pasta from scratch tutorial', connectionScore: 10, qualityScore: 10,
+    });
+    const bc = candidate({
+      candidateId: 'bc', sourceType: 'person_backcatalog', interestId: 'i2', channel: 'CB', rank: 5,
+      title: 'tutorial pasta scratch made', connectionScore: 8, qualityScore: 8,
+    });
+    const verdicts = rank([sub, bc], ctx(), { cap: 15 });
+    expect(findVerdict(verdicts, 'sub').disposition).toBe('subscription');
+    const loser = findVerdict(verdicts, 'bc');
+    expect(loser.disposition).toBe('cut_dedup');
+    expect(loser.dedupedAgainst).toBe('sub');
+  });
+});
+
+describe('rank — mid-day bucket prefill', () => {
+  it('a prefilled subscription count tops up only to the remaining quota', () => {
+    // cap 15 → subscription quota 9. With 9 already surfaced, no more fit.
+    const prefilledBucketCounts = new Map([['subscription' as const, 9]]);
+    const candidates = Array.from({ length: 5 }, (_, i) => candidate({
+      candidateId: `s${i}`, sourceType: 'subscription', interestId: `i${i}`,
+      channel: `Ch${i}`, rank: 5, title: uniqueTitle(i) + ' sub', connectionScore: 10, qualityScore: 10,
+    }));
+    const verdicts = rank(candidates, ctx({ prefilledBucketCounts }), { cap: 15 });
+    expect(verdicts.filter((v) => v.disposition === 'subscription')).toHaveLength(0);
+    expect(verdicts.filter((v) => v.disposition === 'cut_quota')).toHaveLength(5);
+  });
+
+  it('a partial prefill leaves room for the remainder of the quota', () => {
+    // cap 15 → back-cat quota 4. With 3 prefilled, exactly 1 more fits.
+    const prefilledBucketCounts = new Map([['back_catalog' as const, 3]]);
+    const candidates = Array.from({ length: 5 }, (_, i) => candidate({
+      candidateId: `b${i}`, sourceType: 'person_backcatalog', interestId: `i${i}`,
+      channel: `Ch${i}`, rank: 5, title: uniqueTitle(i) + ' bc', connectionScore: 10, qualityScore: 10,
+    }));
+    const verdicts = rank(candidates, ctx({ prefilledBucketCounts }), { cap: 15 });
+    expect(verdicts.filter((v) => v.disposition === 'back_catalog')).toHaveLength(1);
+  });
+});
+
+describe('rank — score floors', () => {
+  it('marks an old news item with passing axes as low_weight', () => {
+    const twoYearsAgo = '2024-04-25T12:00:00.000Z';
+    const candidates: RankerCandidate[] = [
+      candidate({
+        candidateId: 'old-news', sourceType: 'interest_search',
+        publishedAt: twoYearsAgo, timeSensitivity: 'news',
+        connectionScore: 9, qualityScore: 6, rank: 1, interestId: 'i1',
+      }),
+    ];
+    const verdicts = rank(candidates, ctx(), { cap: 15 });
+    const v = findVerdict(verdicts, 'old-news');
+    expect(v.disposition).toBe('low_weight');
+    expect(v.weighted).toBeCloseTo(9 * 6 * 0.05 * 1, 5);
+  });
+
+  it('low connection → low_conn before any bucket allocation', () => {
+    const c = candidate({ candidateId: 'lc', sourceType: 'subscription', connectionScore: 3, qualityScore: 9 });
+    expect(findVerdict(rank([c], ctx(), { cap: 15 }), 'lc').disposition).toBe('low_conn');
   });
 });
 

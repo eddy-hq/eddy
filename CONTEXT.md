@@ -49,7 +49,7 @@ The reverse-chronological timeline of every **Card** offered to this user. Ancho
 _Avoid_: timeline (in product copy — it's the same thing but "feed" is canonical), stream, history
 
 **Today**:
-The top of the **Feed** — today's three short stretches in fixed order: *You asked → From people you follow → Picked for you*.
+The top of the **Feed** — today's two stretches: *You asked* (share-sheet requests), then a unified *Today* stream that mixes **Follow** (subscription + back-catalogue) and **Pick** cards in one composed set, each carrying its own **Provenance** pill. See [[0009-subscriptions-and-discovery-compose-one-slotted-slate]].
 _Avoid_: home, today's feed, daily
 
 **Provenance**:
@@ -109,7 +109,7 @@ The per-user table (`candidate_pool`) of scored candidates the daily discovery e
 _Avoid_: queue (overloaded with BullMQ), inbox
 
 **Pick**:
-A **Card** Eddy surfaced via discovery (not requested, not from a follow's new output). Capped at ~3/day per kid, always rendered as **hero**. Each pick has a "why this?" affordance.
+A **Card** Eddy surfaced via discovery beyond the user's **Follows** (not requested, not new or back-catalogue output from a followed **Person**) — the **Delighter**. It occupies a reserved, floored slot in the composed daily slate and carries *pick* **Provenance**. Renders in the unified *Today* stream introduced by its **Eddy voice line** (its "why this?"), not as a separate always-hero block. See [[0009-subscriptions-and-discovery-compose-one-slotted-slate]].
 _Avoid_: recommendation (overloaded), suggestion
 
 **Delighter**:

@@ -75,72 +75,13 @@ function loadChannelDismissalCounts(userId: string): Map<string, number> {
   return map;
 }
 
-// Brief §17, issue #149: person-sourced material is the primary discovery
-// signal; interest search is the gap-filler. Counts the live person-sourced
-// supply available to fill *this refresh's* slate:
+// Build the ordered list of (interest, term) pairs the search loop runs:
+// top 3 interests contribute their first two terms, ranks 4–10 contribute
+// one. Worst-case length is 13 (3×2 + 7×1).
 //
-//   - candidate_pool rows with source_type ∈ {person_backcatalog,
-//     person_recommendation} that are still eligible candidates — status
-//     ∈ {pending, scored} and created in the last 24h. Other statuses
-//     don't count as supply for this slate: `dismissed` / `guard_rejected`
-//     were rejected; `requested` / `surfaced` were already spent (the
-//     first is on the feed, the second was a previous refresh's pick);
-//     `guard_pending` rows are stuck for kid users (surfaceForToday only
-//     reads `status='scored'`, never `guard_pending`) so counting them
-//     overstates the kid's effective supply. The 24h created_at floor
-//     stops historical `pending` / `scored` rows that lingered past
-//     pruning from making the supply look healthy when nothing fresh
-//     arrived this refresh.
-//   - requests with source='channel_subscription' added in the last 24h
-//     that are visible on the feed — RSS-poller landings from followed
-//     people. Those bypass the candidate pool entirely (poll → requests
-//     directly) but they're person-sourced material on the user's feed,
-//     so they count toward "is the person supply thin?". 24h tracks the
-//     daily discovery cadence. The status filter matches the feed query
-//     in modules/requests (status NOT IN dismissed/deleted, and
-//     channel_subscription rows in pending/downloading are still hidden
-//     pending download completion), so we don't count rows the user
-//     can't see.
-//
-// Used by refreshCandidatePool to decide skip / partial / full interest
-// search. Exported for tests.
-export function countPersonSourcedForRefresh(userId: string): number {
-  const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-
-  const pool = db.prepare(`
-    SELECT COUNT(*) AS n FROM candidate_pool
-    WHERE user_id = ?
-      AND source_type IN ('person_backcatalog', 'person_recommendation')
-      AND status IN ('pending', 'scored')
-      AND created_at >= ?
-  `).get(userId, since) as { n: number };
-
-  const reqs = db.prepare(`
-    SELECT COUNT(*) AS n FROM requests
-    WHERE user_id = ?
-      AND source = 'channel_subscription'
-      AND requested_at >= ?
-      AND status NOT IN ('dismissed', 'deleted', 'pending', 'downloading')
-  `).get(userId, since) as { n: number };
-
-  return pool.n + reqs.n;
-}
-
-export interface RefreshOptions {
-  // Number of person-sourced candidates already populated for this user this
-  // refresh. When the threshold is positive and personSourcedCount meets or
-  // exceeds it, interest search is skipped entirely. When below threshold,
-  // the search runs with a proportionally reduced query budget.
-  personSourcedCount: number;
-  // 0 disables gating (always run at full budget). Otherwise the daily-slate
-  // cap for the user role (adult 15 / kid 5 by default).
-  threshold: number;
-}
-
-// Build the ordered list of (interest, term) pairs the search loop would run
-// at full budget — top 3 interests contribute their first two terms, ranks
-// 4–10 contribute one. Worst-case length is 13 (3×2 + 7×1). Returned as a
-// flat array so a deficit-scaled budget can simply slice the prefix.
+// ADR-0009: interest search no longer gates on person-sourced supply — it
+// always runs at full budget to fill the delighter bucket. The #149 gate
+// (skip / partial / full based on a person-sourced count) is gone.
 function planInterestQueries(userInterests: UserInterestRow[]): Array<{ interest: UserInterestRow; term: string }> {
   const plan: Array<{ interest: UserInterestRow; term: string }> = [];
   const interestsToSearch = userInterests.slice(0, 10);
@@ -160,10 +101,11 @@ function planInterestQueries(userInterests: UserInterestRow[]): Array<{ interest
   return plan;
 }
 
+// Interest search supplies the delighter bucket (ADR-0009). Always runs at
+// full budget — no person-sourced gating.
 export async function refreshCandidatePool(
   userId: string,
   userInterests: UserInterestRow[],
-  options: RefreshOptions,
 ): Promise<number> {
   const now = new Date().toISOString();
   let added = 0;
@@ -175,49 +117,14 @@ export async function refreshCandidatePool(
     ? loadChannelDismissalCounts(userId)
     : null;
 
-  // Brief §17 gating (issue #149). Build the full plan, then pick a prefix
-  // sized to the deficit so top-ranked interests always win the reduced
-  // budget. The plan preserves the historical ordering: interest1 t0,
-  // interest1 t1, interest2 t0, interest2 t1, ..., interest10 t0.
-  const fullPlan = planInterestQueries(userInterests);
-  const fullBudget = fullPlan.length;
-  const { personSourcedCount, threshold } = options;
-
-  let queriesPlanned: number;
-  let action: 'skip' | 'partial' | 'full';
-  if (threshold <= 0) {
-    // Gating disabled — original behaviour, full budget every refresh.
-    queriesPlanned = fullBudget;
-    action = 'full';
-  } else if (personSourcedCount >= threshold) {
-    queriesPlanned = 0;
-    action = 'skip';
-  } else if (personSourcedCount <= 0) {
-    queriesPlanned = fullBudget;
-    action = 'full';
-  } else {
-    // Scale by deficit ratio. A 2-item shortfall against a 15 threshold
-    // should not pull 13 queries — round up so a single missing item still
-    // gets at least one query attempt.
-    const deficit = threshold - personSourcedCount;
-    queriesPlanned = Math.min(fullBudget, Math.ceil((fullBudget * deficit) / threshold));
-    action = 'partial';
-  }
+  const plan = planInterestQueries(userInterests);
 
   logger.info(
-    {
-      userId,
-      person_count: personSourcedCount,
-      threshold,
-      action,
-      interest_queries_planned: queriesPlanned,
-    },
-    'Discovery intake: interest-search gating decision',
+    { userId, interest_queries_planned: plan.length },
+    'Discovery intake: interest-search budget',
   );
 
-  if (queriesPlanned === 0) return 0;
-
-  const plan = fullPlan.slice(0, queriesPlanned);
+  if (plan.length === 0) return 0;
 
   for (const { interest, term } of plan) {
     let results: SearchVideoWithDate[];
@@ -280,18 +187,18 @@ export async function refreshCandidatePool(
 
 // ── Back-catalog seeder ───────────────────────────────────────────────────────
 //
-// Followed-channel uploads from the moment of follow forward arrive via the
-// RSS poller (modules/people) and land directly in `requests` under the
-// "From people you follow" feed section. That path never reaches the
-// candidate pool, so the back catalog of a creator a kid just started
-// following is invisible to discovery unless we deliberately mine it.
+// New followed-channel uploads now enter the candidate pool as
+// `source_type = 'subscription'` via the RSS poller (modules/people, ADR-0009),
+// so they run through scoring + guard + composition like everything else. The
+// back catalogue of a creator a kid just started following is still invisible
+// to discovery unless we deliberately mine it.
 //
 // `seedBackCatalogCandidates` does that: pulls a flat playlist for each
-// followed YouTube output, removes anything already touched by RSS or
-// already a candidate/request, samples a small budget per channel, and
-// inserts those into the candidate pool with `source_type =
-// 'person_backcatalog'`. From there they run through the same scoring,
-// guard, and surfacing pipeline as interest-search candidates — they
+// followed YouTube output, removes anything already a candidate/request
+// (isDuplicateCandidate — NOT seen_videos, see the filter below), samples a
+// small budget per channel, and inserts those into the candidate pool with
+// `source_type = 'person_backcatalog'`. From there they run through the same
+// scoring, guard, and surfacing pipeline as interest-search candidates — they
 // earn their place on score, not on source.
 
 interface FollowedYoutubeOutput {
@@ -342,14 +249,14 @@ export async function seedBackCatalogCandidates(userId: string): Promise<number>
     }
     if (playlist.length === 0) continue;
 
-    const seenIds = new Set(
-      (db.prepare(
-        'SELECT video_id FROM seen_videos WHERE channel_id = ?'
-      ).all(output.channel_id) as Array<{ video_id: string }>).map((r) => r.video_id)
-    );
-
+    // Dedup against the pool + requests (isDuplicateCandidate), NOT seen_videos
+    // (ADR-0009). The discovery job polls first, and the poller writes every
+    // RSS-window video into seen_videos as its "new upload" ledger — so
+    // excluding seen_videos here would starve the back catalogue of a new
+    // follow's recent uploads (exactly the ones a kid most wants to see).
+    // isDuplicateCandidate still stops a video the poller turned into a
+    // subscription candidate this run from being re-added as back-catalogue.
     const eligible = playlist.filter((v) => {
-      if (seenIds.has(v.videoId)) return false;
       if (v.durationSecs !== null && v.durationSecs <= SHORTS_MAX_SECS) return false;
       if (v.liveStatus === 'is_live' || v.liveStatus === 'is_upcoming') return false;
       if (isDuplicateCandidate(userId, v.videoId)) return false;
