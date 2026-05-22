@@ -112,6 +112,10 @@ _Avoid_: queue (overloaded with BullMQ), inbox
 A **Card** Eddy surfaced via discovery (not requested, not from a follow's new output). Capped at ~3/day per kid, always rendered as **hero**. Each pick has a "why this?" affordance.
 _Avoid_: recommendation (overloaded), suggestion
 
+**Delighter**:
+A **Pick** sourced from discovery *beyond* the user's **Follows** — content Eddy went looking for, not new or back-catalog output from a followed **Person**. Occupies a reserved, floored slot in the daily slate so exploration is never crowded out by follow content. In the base model it is filled by declared-**Interest** search (`source_type = 'interest_search'`); "delighter" names the slot's *purpose* — a genuine serendipity signal (a separate, later issue) is what will make the content live up to the name. Carries *pick* **Provenance** (vs *follow* for subscription and back-catalog cards). See [[0009-subscriptions-and-discovery-compose-one-slotted-slate]].
+_Avoid_: left-field, random, suggestion
+
 **Scarcity**:
 The design constraint that finishing **Today** is a valid state — daily caps are firm, surplus carries forward but never inflates a single day. The opposite of infinite scroll.
 _Avoid_: limit, cap (those are mechanisms, not the principle)
