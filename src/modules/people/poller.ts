@@ -1,19 +1,24 @@
-// RSS poller for followed channels. Owns the 6-hour poll loop, per-channel
-// dedup, first-poll confirmation flow, and short filtering. Deep-imports
-// `getRequestsState` from `../requests/state-default` (a one-way edge now
-// that `./registry` was extracted to break the requests↔people cycle) to
-// keep the poller's module graph free of the requests HTTP router. The
-// accessor still pulls in BullMQ/ntfy transitively — `state-default.ts` is
-// the production-wiring surface; the pure state machine lives in `./state.ts`.
+// RSS poller for followed channels. Owns per-channel dedup, the first-poll
+// confirmation flow, and short filtering.
+//
+// ADR-0009: new follow uploads now enter the Candidate pool as
+// `source_type = 'subscription'` (not the `requests` download path) so they
+// run through the same scoring → guard → composition pipeline as everything
+// else. The poll is a prerequisite step of the daily discovery job
+// (`runRssPollPass`), not a standalone `setInterval` loop — that drift-prone
+// 6-hour timer (re-anchored on every server restart) is retired.
+//
+// `seen_videos` stays purely the poller's "new upload" ledger: every windowed
+// video is recorded so the next poll knows what's new. The back-catalogue
+// seeder no longer dedups against it (it uses isDuplicateCandidate instead),
+// so poll-first doesn't starve the back catalogue of a new follow's recent
+// uploads.
 import { v7 as uuidv7 } from 'uuid';
 import { db } from '../../db/client';
 import { logger } from '../../logger';
 import { SHORTS_MAX_SECS } from '../content';
-import { getRequestsState } from '../requests/state-default';
 import { videoDuration } from '../../ytdlp';
 import { applyChannelInfoToPerson } from './registry';
-
-const RSS_POLL_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
 // ── RSS parsing ───────────────────────────────────────────────────────────────
 
@@ -149,42 +154,72 @@ export async function pollChannel(output: OutputRow): Promise<void> {
       continue;
     }
 
-    // On first poll: skip downloading all but the single most recent video
+    // On first poll: seed only the single most recent (non-short) video as a
+    // confirmation candidate; the rest stay marked seen but create no
+    // candidate (the back-catalogue seeder mines those).
     if (isFirstPoll && !firstUnseen) continue;
     firstUnseen = false;
 
     const url = `https://www.youtube.com/watch?v=${video.videoId}`;
 
+    // The channel's inferred interest (from inferChannelInterests at follow
+    // time) gives the candidate an interest_id so scoring can name the
+    // connection and the per-interest cap engages for follow-provenance
+    // back-catalogue / delighter siblings. Mirrors seedBackCatalogCandidates.
+    const interestRow = db.prepare(`
+      SELECT interest_id FROM channel_interest_links
+      WHERE channel_id = ? ORDER BY confidence DESC LIMIT 1
+    `).get(output.channel_id) as { interest_id: string } | undefined;
+    const interestId = interestRow?.interest_id ?? null;
+
     for (const follower of followers) {
-      const exists = db.prepare(
-        'SELECT 1 FROM requests WHERE user_id = ? AND youtube_id = ?'
+      // Dedup against both the pool and requests: a video already a candidate
+      // (e.g. seeded by the back catalogue) or already requested for this user
+      // must not spawn a second subscription candidate.
+      const inPool = db.prepare(
+        'SELECT 1 FROM candidate_pool WHERE user_id = ? AND external_id = ? LIMIT 1'
       ).get(follower.user_id, video.videoId);
-      if (exists) continue;
+      if (inPool) continue;
+      const inRequests = db.prepare(
+        'SELECT 1 FROM requests WHERE user_id = ? AND youtube_id = ? LIMIT 1'
+      ).get(follower.user_id, video.videoId);
+      if (inRequests) continue;
 
-      const requestId = uuidv7();
-      const { settled } = getRequestsState().apply({
-        kind: 'create_channel_poll',
-        requestId,
-        input: {
-          url,
-          userId: follower.user_id,
-          youtubeId: video.videoId,
-          youtubeChannelId: output.channel_id,
-          title: video.title,
-          channel: output.channel_name,
-        },
-      });
-      await settled;
+      const candidateId = uuidv7();
+      db.prepare(`
+        INSERT OR IGNORE INTO candidate_pool
+          (candidate_id, user_id, content_type, source_type, person_id, interest_id,
+           url, external_id, title, channel, duration_secs, thumbnail_url,
+           published_at, status, created_at)
+        VALUES
+          (?, ?, 'video', 'subscription', ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
+      `).run(
+        candidateId, follower.user_id, output.person_id, interestId,
+        url, video.videoId, video.title || null,
+        output.channel_name, duration,
+        video.thumbnailUrl, video.publishedAt, nowIso(),
+      );
 
-      logger.info({ requestId, videoId: video.videoId, userId: follower.user_id }, 'Channel subscription request created');
+      logger.info(
+        { candidateId, videoId: video.videoId, userId: follower.user_id },
+        'Subscription candidate created',
+      );
     }
   }
 
   db.prepare('UPDATE person_outputs SET last_polled = ? WHERE output_id = ?')
-    .run(new Date().toISOString(), output.output_id);
+    .run(nowIso(), output.output_id);
 }
 
-async function runRssPoll(): Promise<void> {
+function nowIso(): string {
+  return new Date().toISOString();
+}
+
+// Full poll pass over every active, followed YouTube channel. The daily
+// discovery job awaits this as its first step (ADR-0009) so subscription
+// candidates are in the pool before composition runs. Per-channel failures
+// are logged and skipped — one flaky RSS feed must not abort the pass.
+export async function runRssPollPass(): Promise<void> {
   const outputs = db.prepare(`
     SELECT DISTINCT po.output_id, po.external_id AS channel_id, po.person_id,
                     p.display_name AS channel_name
@@ -196,7 +231,7 @@ async function runRssPoll(): Promise<void> {
 
   if (outputs.length === 0) return;
 
-  logger.info({ count: outputs.length }, 'RSS poll starting');
+  logger.info({ count: outputs.length }, 'RSS poll pass starting');
 
   for (const output of outputs) {
     await pollChannel(output).catch((err: unknown) => {
@@ -204,29 +239,5 @@ async function runRssPoll(): Promise<void> {
     });
   }
 
-  logger.info({ count: outputs.length }, 'RSS poll complete');
-}
-
-let pollerTimer: ReturnType<typeof setInterval> | null = null;
-
-export function startRssPoller(): void {
-  if (pollerTimer) return;
-  logger.info({ intervalHours: 6 }, 'RSS poller started');
-  pollerTimer = setInterval(() => {
-    void runRssPoll().catch((err: unknown) => {
-      logger.error({ err }, 'RSS poll cycle failed');
-    });
-  }, RSS_POLL_INTERVAL_MS);
-  setTimeout(() => {
-    void runRssPoll().catch((err: unknown) => {
-      logger.error({ err }, 'RSS poll startup run failed');
-    });
-  }, 60_000);
-}
-
-export function stopRssPoller(): void {
-  if (pollerTimer) {
-    clearInterval(pollerTimer);
-    pollerTimer = null;
-  }
+  logger.info({ count: outputs.length }, 'RSS poll pass complete');
 }

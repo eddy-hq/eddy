@@ -45,19 +45,15 @@ import { db } from '../../db/client';
 import { runMigrations } from '../../db/migrate';
 import {
   refreshCandidatePool,
-  countPersonSourcedForRefresh,
+  seedBackCatalogCandidates,
   type UserInterestRow,
 } from './intake';
-import { searchVideosWithDates } from '../../ytdlp';
+import { searchVideosWithDates, flatPlaylistChannel } from '../../ytdlp';
 
 const USER_ID = '11111111-1111-7111-8111-111111111111';
 
 const mockedSearch = vi.mocked(searchVideosWithDates);
-
-// Tests that aren't exercising the gating use threshold=0, which preserves
-// the historical full-budget behaviour (issue #149). The dedicated gating
-// suite below sets threshold>0 explicitly.
-const FULL_RUN = { personSourcedCount: 0, threshold: 0 } as const;
+const mockedPlaylist = vi.mocked(flatPlaylistChannel);
 
 function uploadDateStr(daysAgo: number): string {
   // yt-dlp upload_date is YYYYMMDD.
@@ -136,7 +132,7 @@ describe('refreshCandidatePool — search budget', () => {
 
     mockedSearch.mockResolvedValue([]);
 
-    return refreshCandidatePool(USER_ID, interests, FULL_RUN).then(() => {
+    return refreshCandidatePool(USER_ID, interests).then(() => {
       // Expected: ranks 1..3 → 2 calls each = 6; ranks 4..10 → 1 each = 7;
       // ranks 11..12 skipped (interestsToSearch.slice(0, 10)). Total 13.
       expect(mockedSearch).toHaveBeenCalledTimes(13);
@@ -173,7 +169,7 @@ describe('refreshCandidatePool — freshness window', () => {
     ]);
     mockedSearch.mockResolvedValue([]);
 
-    const added = await refreshCandidatePool(USER_ID, interests, FULL_RUN);
+    const added = await refreshCandidatePool(USER_ID, interests);
 
     const rows = db.prepare(
       'SELECT external_id FROM candidate_pool ORDER BY external_id',
@@ -211,7 +207,7 @@ describe('refreshCandidatePool — dedup', () => {
     ]);
     mockedSearch.mockResolvedValue([]);
 
-    const added = await refreshCandidatePool(USER_ID, interests, FULL_RUN);
+    const added = await refreshCandidatePool(USER_ID, interests);
 
     const rows = db.prepare(
       "SELECT external_id FROM candidate_pool WHERE source_type = 'interest_search'",
@@ -246,7 +242,7 @@ describe('refreshCandidatePool — dedup', () => {
     ]);
     mockedSearch.mockResolvedValue([]);
 
-    const added = await refreshCandidatePool(USER_ID, interests, FULL_RUN);
+    const added = await refreshCandidatePool(USER_ID, interests);
 
     const ids = (db.prepare(
       'SELECT external_id FROM candidate_pool',
@@ -270,7 +266,7 @@ describe('refreshCandidatePool — malformed search_terms', () => {
     ]);
     mockedSearch.mockResolvedValue([]);
 
-    const added = await refreshCandidatePool(USER_ID, interests, FULL_RUN);
+    const added = await refreshCandidatePool(USER_ID, interests);
 
     // Only i2's single 'ok-term' call happens (rank 2 ≤ 3 but only one
     // term in the array).
@@ -286,7 +282,7 @@ describe('refreshCandidatePool — malformed search_terms', () => {
 
     mockedSearch.mockResolvedValue([]);
 
-    const added = await refreshCandidatePool(USER_ID, interests, FULL_RUN);
+    const added = await refreshCandidatePool(USER_ID, interests);
 
     expect(mockedSearch).not.toHaveBeenCalled();
     expect(added).toBe(0);
@@ -303,7 +299,7 @@ describe('refreshCandidatePool — malformed search_terms', () => {
     mockedSearch.mockResolvedValueOnce([searchResult({ videoId: 'ok-vid' })]);
     mockedSearch.mockResolvedValue([]);
 
-    const added = await refreshCandidatePool(USER_ID, interests, FULL_RUN);
+    const added = await refreshCandidatePool(USER_ID, interests);
 
     expect(mockedSearch).toHaveBeenCalledTimes(1);
     expect(mockedSearch.mock.calls[0]?.[0]).toBe('ok-term');
@@ -320,7 +316,7 @@ describe('refreshCandidatePool — malformed search_terms', () => {
 
     mockedSearch.mockResolvedValue([]);
 
-    const added = await refreshCandidatePool(USER_ID, interests, FULL_RUN);
+    const added = await refreshCandidatePool(USER_ID, interests);
 
     expect(mockedSearch).not.toHaveBeenCalled();
     expect(added).toBe(0);
@@ -372,7 +368,7 @@ describe('refreshCandidatePool — channel dismissal filter (issue #147)', () =>
     ]);
     mockedSearch.mockResolvedValue([]);
 
-    const added = await refreshCandidatePool(USER_ID, interests, FULL_RUN);
+    const added = await refreshCandidatePool(USER_ID, interests);
 
     const ids = (db.prepare(
       "SELECT external_id FROM candidate_pool WHERE source_type = 'interest_search'",
@@ -415,7 +411,7 @@ describe('refreshCandidatePool — channel dismissal filter (issue #147)', () =>
     ]);
     mockedSearch.mockResolvedValue([]);
 
-    const added = await refreshCandidatePool(USER_ID, interests, FULL_RUN);
+    const added = await refreshCandidatePool(USER_ID, interests);
 
     const ids = (db.prepare(
       "SELECT external_id FROM candidate_pool WHERE source_type = 'interest_search'",
@@ -461,7 +457,7 @@ describe('refreshCandidatePool — channel dismissal filter (issue #147)', () =>
     ]);
     mockedSearch.mockResolvedValue([]);
 
-    const added = await refreshCandidatePool(USER_ID, interests, FULL_RUN);
+    const added = await refreshCandidatePool(USER_ID, interests);
 
     const ids = (db.prepare(
       "SELECT external_id FROM candidate_pool WHERE source_type = 'interest_search'",
@@ -494,7 +490,7 @@ describe('refreshCandidatePool — channel dismissal filter (issue #147)', () =>
     ]);
     mockedSearch.mockResolvedValue([]);
 
-    const added = await refreshCandidatePool(USER_ID, interests, FULL_RUN);
+    const added = await refreshCandidatePool(USER_ID, interests);
 
     const ids = (db.prepare(
       "SELECT external_id FROM candidate_pool WHERE source_type = 'interest_search'",
@@ -505,16 +501,13 @@ describe('refreshCandidatePool — channel dismissal filter (issue #147)', () =>
   });
 });
 
-// ── issue #149: interest search demoted to gap-filler ────────────────────────
+// ── ADR-0009: interest search no longer gates on person-sourced supply ───────
 //
-// Brief §17 says person-sourced material is the primary discovery signal and
-// interest search only runs when person-sourced candidates are thin. These
-// tests exercise the skip / full / partial decisions through the public
-// refreshCandidatePool entry point, asserting on the yt-dlp call count
-// rather than internal state — the contract the rest of the system cares
-// about is "how many search queries did we run today?".
+// The #149 gate (skip / partial / full based on a person-sourced count) is
+// removed. refreshCandidatePool now always runs at full budget to fill the
+// delighter bucket. countPersonSourcedForRefresh and RefreshOptions are gone.
 
-describe('refreshCandidatePool — person-sourced gating (issue #149)', () => {
+describe('refreshCandidatePool — gate removed, always full budget (ADR-0009)', () => {
   function buildInterests(count: number): UserInterestRow[] {
     const interests: UserInterestRow[] = [];
     for (let i = 1; i <= count; i++) {
@@ -527,222 +520,144 @@ describe('refreshCandidatePool — person-sourced gating (issue #149)', () => {
     return interests;
   }
 
-  it('person-sourced count meets threshold → zero yt-dlp interest calls', async () => {
+  it('runs the full 13-query budget even with ample person-sourced supply present', async () => {
+    // Seed plenty of live person_backcatalog candidates — under the old gate
+    // this would have skipped interest search entirely. It must now run in full.
+    const insert = db.prepare(`
+      INSERT INTO candidate_pool
+        (candidate_id, user_id, content_type, source_type, url, external_id, status, created_at)
+      VALUES (?, ?, 'video', 'person_backcatalog', ?, ?, 'pending', ?)
+    `);
+    const now = new Date().toISOString();
+    for (let i = 0; i < 30; i++) {
+      insert.run(`pc-${i}`, USER_ID, `https://www.youtube.com/watch?v=pc-${i}`, `pc-${i}`, now);
+    }
+
     const interests = buildInterests(10);
     mockedSearch.mockResolvedValue([]);
 
-    const added = await refreshCandidatePool(USER_ID, interests, {
-      personSourcedCount: 5,
-      threshold: 5,
-    });
+    await refreshCandidatePool(USER_ID, interests);
 
-    expect(mockedSearch).not.toHaveBeenCalled();
-    expect(added).toBe(0);
-  });
-
-  it('person-sourced count exceeds threshold → zero yt-dlp interest calls', async () => {
-    const interests = buildInterests(10);
-    mockedSearch.mockResolvedValue([]);
-
-    await refreshCandidatePool(USER_ID, interests, {
-      personSourcedCount: 20,
-      threshold: 15,
-    });
-
-    expect(mockedSearch).not.toHaveBeenCalled();
-  });
-
-  it('person-sourced count is zero → full search budget (13 calls)', async () => {
-    const interests = buildInterests(10);
-    mockedSearch.mockResolvedValue([]);
-
-    await refreshCandidatePool(USER_ID, interests, {
-      personSourcedCount: 0,
-      threshold: 15,
-    });
-
-    // Full budget mirrors the historical behaviour: top-3 × 2 + ranks 4–10 × 1.
+    // Full budget mirrors the historical full run: top-3 × 2 + ranks 4–10 × 1.
     expect(mockedSearch).toHaveBeenCalledTimes(13);
   });
 
-  it('person-sourced count is half the threshold → partial budget, top-rank prefix', async () => {
+  it('runs the full budget on an empty pool too', async () => {
     const interests = buildInterests(10);
     mockedSearch.mockResolvedValue([]);
 
-    // Half-deficit against an adult threshold: ceil(13 * 8 / 15) = 7.
-    await refreshCandidatePool(USER_ID, interests, {
-      personSourcedCount: 7,
-      threshold: 15,
-    });
-
-    expect(mockedSearch).toHaveBeenCalledTimes(7);
-
-    const calledTerms = mockedSearch.mock.calls.map((c) => c[0]);
-    // Plan ordering puts top-3 interests' two terms first (6 queries),
-    // then rank 4's first term — exactly 7 with this budget.
-    expect(calledTerms).toEqual(['t1a', 't1b', 't2a', 't2b', 't3a', 't3b', 't4a']);
-    expect(calledTerms).not.toContain('t5a');
-  });
-
-  it('small shortfall (2-of-15) gets a small budget, not the full 13', async () => {
-    // Issue #149 acceptance: "don't pull 13 queries to fill a 2-item shortfall".
-    const interests = buildInterests(10);
-    mockedSearch.mockResolvedValue([]);
-
-    // ceil(13 * 2 / 15) = 2.
-    await refreshCandidatePool(USER_ID, interests, {
-      personSourcedCount: 13,
-      threshold: 15,
-    });
-
-    expect(mockedSearch).toHaveBeenCalledTimes(2);
-  });
-
-  it('threshold = 0 disables gating: full budget even with plenty of person sources', async () => {
-    const interests = buildInterests(10);
-    mockedSearch.mockResolvedValue([]);
-
-    await refreshCandidatePool(USER_ID, interests, {
-      personSourcedCount: 9999,
-      threshold: 0,
-    });
+    await refreshCandidatePool(USER_ID, interests);
 
     expect(mockedSearch).toHaveBeenCalledTimes(13);
   });
 });
 
-describe('countPersonSourcedForRefresh (issue #149)', () => {
-  function insertPoolRow(opts: {
-    candidateId: string;
-    sourceType: 'interest_search' | 'person_backcatalog' | 'person_recommendation';
-    status: string;
-    createdAt?: string;
-  }): void {
-    db.prepare(`
-      INSERT INTO candidate_pool
-        (candidate_id, user_id, content_type, source_type, url, external_id,
-         status, created_at)
-      VALUES (?, ?, 'video', ?, ?, ?, ?, ?)
-    `).run(
-      opts.candidateId,
-      USER_ID,
-      opts.sourceType,
-      `https://www.youtube.com/watch?v=${opts.candidateId}`,
-      opts.candidateId,
-      opts.status,
-      opts.createdAt ?? new Date().toISOString(),
-    );
+// ── ADR-0009: back-catalogue dedup switch (seen_videos → isDuplicateCandidate)
+//
+// The discovery job polls subscriptions first, and the poller writes every
+// RSS-window video into seen_videos. The back-catalogue seeder must therefore
+// dedup against the pool + requests (isDuplicateCandidate), NOT seen_videos —
+// otherwise poll-first would starve the back catalogue of a new follow's
+// recent uploads.
+
+describe('seedBackCatalogCandidates — dedup switch to isDuplicateCandidate', () => {
+  const PERSON_ID = 'person-bc-1';
+  const CHANNEL_ID = 'UCbackcatchannel1xxxxxx';
+
+  function setupFollowedChannel(): void {
+    db.prepare(
+      `INSERT OR REPLACE INTO people (person_id, display_name, created_at) VALUES (?, ?, ?)`,
+    ).run(PERSON_ID, 'Back-cat Creator', new Date().toISOString());
+    db.prepare(
+      `INSERT OR REPLACE INTO person_outputs
+         (output_id, person_id, output_type, external_id, active, last_polled)
+       VALUES (?, ?, 'youtube', ?, 1, NULL)`,
+    ).run('output-bc-1', PERSON_ID, CHANNEL_ID);
+    db.prepare(
+      `INSERT OR REPLACE INTO followed_people
+         (user_id, person_id, trust_weight, followed_at, followed_via)
+       VALUES (?, ?, 1.0, ?, 'manual')`,
+    ).run(USER_ID, PERSON_ID, new Date().toISOString());
   }
 
-  function insertRequest(opts: {
-    requestId: string;
-    source: string;
-    status?: string;
-    requestedAt?: string;
-  }): void {
+  beforeEach(() => {
+    db.exec('DELETE FROM seen_videos');
+    db.exec('DELETE FROM followed_people');
+    db.exec('DELETE FROM person_outputs');
+    db.exec('DELETE FROM people');
+    db.exec('DELETE FROM channel_interest_links');
+    mockedPlaylist.mockReset();
+  });
+
+  it('does NOT exclude a video merely present in seen_videos (poll-first ledger)', async () => {
+    setupFollowedChannel();
+    // The poller marked this video seen but did NOT create a candidate for it
+    // (e.g. it was a first-poll catch-up item). The back-catalogue seeder must
+    // still be free to mine it.
+    db.prepare(
+      `INSERT INTO seen_videos (channel_id, video_id, seen_at) VALUES (?, ?, ?)`,
+    ).run(CHANNEL_ID, 'seen-but-not-candidate', new Date().toISOString());
+
+    mockedPlaylist.mockResolvedValue([
+      { videoId: 'seen-but-not-candidate', title: 'Seen yet mineable', durationSecs: 600, liveStatus: null },
+    ]);
+
+    const added = await seedBackCatalogCandidates(USER_ID);
+
+    expect(added).toBe(1);
+    const row = db.prepare(
+      "SELECT source_type FROM candidate_pool WHERE external_id = ?",
+    ).get('seen-but-not-candidate') as { source_type: string } | undefined;
+    expect(row?.source_type).toBe('person_backcatalog');
+  });
+
+  it('DOES exclude a video already a candidate in the pool (isDuplicateCandidate)', async () => {
+    setupFollowedChannel();
+    // The poller turned this video into a subscription candidate this run —
+    // it must not be re-added as a back-catalogue candidate.
+    db.prepare(`
+      INSERT INTO candidate_pool
+        (candidate_id, user_id, content_type, source_type, url, external_id, status, created_at)
+      VALUES (?, ?, 'video', 'subscription', ?, ?, 'pending', ?)
+    `).run(
+      'existing-sub', USER_ID,
+      'https://www.youtube.com/watch?v=already-candidate', 'already-candidate',
+      new Date().toISOString(),
+    );
+
+    mockedPlaylist.mockResolvedValue([
+      { videoId: 'already-candidate', title: 'Already a candidate', durationSecs: 600, liveStatus: null },
+      { videoId: 'genuinely-new', title: 'Genuinely new back-cat', durationSecs: 600, liveStatus: null },
+    ]);
+
+    const added = await seedBackCatalogCandidates(USER_ID);
+
+    // Only the genuinely-new video is added; the existing candidate is skipped.
+    expect(added).toBe(1);
+    const ids = (db.prepare(
+      "SELECT external_id FROM candidate_pool WHERE source_type = 'person_backcatalog'",
+    ).all() as Array<{ external_id: string }>).map((r) => r.external_id);
+    expect(ids).toEqual(['genuinely-new']);
+  });
+
+  it('DOES exclude a video already requested for the user', async () => {
+    setupFollowedChannel();
     db.prepare(`
       INSERT INTO requests
         (request_id, user_id, source, url, youtube_id, status, requested_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, 'channel_subscription', ?, ?, 'ready', ?)
     `).run(
-      opts.requestId,
-      USER_ID,
-      opts.source,
-      `https://www.youtube.com/watch?v=${opts.requestId}`,
-      opts.requestId,
-      opts.status ?? 'ready',
-      opts.requestedAt ?? new Date().toISOString(),
+      'req-existing', USER_ID,
+      'https://www.youtube.com/watch?v=already-requested', 'already-requested',
+      new Date().toISOString(),
     );
-  }
 
-  it('counts person_backcatalog and person_recommendation pool rows', () => {
-    insertPoolRow({ candidateId: 'bc-1', sourceType: 'person_backcatalog', status: 'pending' });
-    insertPoolRow({ candidateId: 'bc-2', sourceType: 'person_backcatalog', status: 'scored' });
-    insertPoolRow({ candidateId: 'pr-1', sourceType: 'person_recommendation', status: 'pending' });
+    mockedPlaylist.mockResolvedValue([
+      { videoId: 'already-requested', title: 'Already requested', durationSecs: 600, liveStatus: null },
+    ]);
 
-    expect(countPersonSourcedForRefresh(USER_ID)).toBe(3);
-  });
+    const added = await seedBackCatalogCandidates(USER_ID);
 
-  it('excludes interest_search pool rows', () => {
-    insertPoolRow({ candidateId: 'is-1', sourceType: 'interest_search', status: 'pending' });
-    insertPoolRow({ candidateId: 'bc-1', sourceType: 'person_backcatalog', status: 'pending' });
-
-    expect(countPersonSourcedForRefresh(USER_ID)).toBe(1);
-  });
-
-  it('excludes dismissed and guard_rejected pool rows', () => {
-    insertPoolRow({ candidateId: 'bc-1', sourceType: 'person_backcatalog', status: 'pending' });
-    insertPoolRow({ candidateId: 'bc-2', sourceType: 'person_backcatalog', status: 'dismissed' });
-    insertPoolRow({ candidateId: 'bc-3', sourceType: 'person_backcatalog', status: 'guard_rejected' });
-
-    expect(countPersonSourcedForRefresh(USER_ID)).toBe(1);
-  });
-
-  it('excludes spent statuses (requested, surfaced) so historical picks do not look like fresh supply', () => {
-    // Round-1 codex finding: a user who has surfaced/requested enough
-    // person-sourced items in the past would have person_count above the
-    // threshold indefinitely, suppressing interest search even when no
-    // fresh person-sourced material arrived this refresh.
-    insertPoolRow({ candidateId: 'bc-live', sourceType: 'person_backcatalog', status: 'pending' });
-    insertPoolRow({ candidateId: 'bc-spent-req', sourceType: 'person_backcatalog', status: 'requested' });
-    insertPoolRow({ candidateId: 'bc-spent-surf', sourceType: 'person_backcatalog', status: 'surfaced' });
-
-    expect(countPersonSourcedForRefresh(USER_ID)).toBe(1);
-  });
-
-  it('excludes guard_pending rows (kid surface never reads them, so they overstate supply)', () => {
-    // Round-2 codex finding: surfaceForToday for kids reads status='scored'
-    // with guard_verdict ∈ {clear_yes, NULL}. A guard_pending row is stuck
-    // and can't fill the slate, so counting it as supply would suppress
-    // interest search while leaving the kid with nothing to surface.
-    insertPoolRow({ candidateId: 'bc-live', sourceType: 'person_backcatalog', status: 'pending' });
-    insertPoolRow({ candidateId: 'bc-stuck', sourceType: 'person_backcatalog', status: 'guard_pending' });
-
-    expect(countPersonSourcedForRefresh(USER_ID)).toBe(1);
-  });
-
-  it('counts only pool rows created within the last 24h', () => {
-    insertPoolRow({ candidateId: 'bc-fresh', sourceType: 'person_backcatalog', status: 'pending' });
-    insertPoolRow({
-      candidateId: 'bc-stale',
-      sourceType: 'person_backcatalog',
-      status: 'pending',
-      createdAt: new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString(),
-    });
-
-    expect(countPersonSourcedForRefresh(USER_ID)).toBe(1);
-  });
-
-  it('counts channel_subscription requests within 24h', () => {
-    insertRequest({ requestId: 'rss-fresh', source: 'channel_subscription' });
-    // Two days ago — outside the 24h window.
-    const oldIso = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
-    insertRequest({ requestId: 'rss-stale', source: 'channel_subscription', requestedAt: oldIso });
-    // Other request sources don't count.
-    insertRequest({ requestId: 'share-1', source: 'share_sheet' });
-
-    expect(countPersonSourcedForRefresh(USER_ID)).toBe(1);
-  });
-
-  it('excludes channel_subscription requests not visible on the feed (round-3 codex finding)', () => {
-    // modules/requests hides status IN ('dismissed','deleted') and any
-    // channel_subscription row in 'pending'/'downloading'. Mirror that
-    // filter here — a user with several deleted or still-downloading
-    // followed-channel rows must not have those counted as supply that
-    // can fill today's slate.
-    insertRequest({ requestId: 'rss-ready', source: 'channel_subscription', status: 'ready' });
-    insertRequest({ requestId: 'rss-deleted', source: 'channel_subscription', status: 'deleted' });
-    insertRequest({ requestId: 'rss-dismissed', source: 'channel_subscription', status: 'dismissed' });
-    insertRequest({ requestId: 'rss-downloading', source: 'channel_subscription', status: 'downloading' });
-    insertRequest({ requestId: 'rss-pending', source: 'channel_subscription', status: 'pending' });
-
-    expect(countPersonSourcedForRefresh(USER_ID)).toBe(1);
-  });
-
-  it('returns zero when nothing is person-sourced', () => {
-    insertPoolRow({ candidateId: 'is-1', sourceType: 'interest_search', status: 'pending' });
-    insertRequest({ requestId: 'share-1', source: 'share_sheet' });
-
-    expect(countPersonSourcedForRefresh(USER_ID)).toBe(0);
+    expect(added).toBe(0);
   });
 });

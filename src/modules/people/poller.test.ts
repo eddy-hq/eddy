@@ -1,11 +1,9 @@
 import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest';
 
-// `:memory:` SQLite is the test fixture, mirroring the pattern in
-// `requests/state.test.ts`. Real ports (queue, ntfy, registry, yt-dlp) are
-// either mocked at module level (`videoDuration`, `applyChannelInfoToPerson`,
-// `fetch`) or wired through a fake `Ports` object registered into the
-// requests state — so assertions hit on-disk DB rows for `requests` /
-// `seen_videos` / `person_outputs` while side-effect calls land on spies.
+// `:memory:` SQLite is the test fixture. The poller now writes directly to
+// `candidate_pool` (ADR-0009) — no requests state machine, no BullMQ — so the
+// only real ports are `videoDuration`, `applyChannelInfoToPerson`, and
+// `fetch`, all mocked at module level. Assertions hit on-disk DB rows.
 vi.mock('../../db/client', async () => {
   const { default: Database } = await import('better-sqlite3');
   const memoryDb = new Database(':memory:');
@@ -30,31 +28,11 @@ vi.mock('./registry', () => ({
   applyChannelInfoToPerson: vi.fn(),
 }));
 
-// `state-default` statically imports queue (BullMQ + Redis) and
-// notifications (ntfy) at module load. We replace both with no-op fakes so
-// the test never opens a Redis socket; the state machine itself goes
-// through the `Ports` seam wired below.
-vi.mock('../../queue', () => ({
-  redis: { del: vi.fn().mockResolvedValue(1) },
-  downloadQueue: { add: vi.fn().mockResolvedValue(undefined), getJob: vi.fn().mockResolvedValue(null) },
-  deleteQueue: { add: vi.fn().mockResolvedValue(undefined) },
-}));
-
-vi.mock('../notifications', () => ({
-  getNotifications: () => ({ notify: vi.fn().mockResolvedValue(undefined) }),
-}));
-
 import { db } from '../../db/client';
 import { logger } from '../../logger';
 import { runMigrations } from '../../db/migrate';
 import { videoDuration } from '../../ytdlp';
 import { applyChannelInfoToPerson } from './registry';
-import {
-  createRequestsState,
-  type Ports,
-  type RequestsState,
-} from '../requests/state';
-import { registerDefaultRequestsState } from '../requests/state-default';
 import { pollChannel, parseYoutubeRss, type OutputRow } from './poller';
 
 // `parseYoutubeRss` is exported (purely so tests can pin its three observable
@@ -74,21 +52,6 @@ const OUTPUT: OutputRow = {
   person_id: PERSON_ID,
   channel_name: CHANNEL_NAME,
 };
-
-function makeFakePorts(): Ports {
-  return {
-    notifyVideoReady: vi.fn().mockResolvedValue(undefined),
-    enqueueDownload: vi.fn().mockResolvedValue(undefined),
-    enqueueDelete: vi.fn().mockResolvedValue(undefined),
-    cancelDownloadJob: vi.fn().mockResolvedValue(undefined),
-    redisDel: vi.fn().mockResolvedValue(1),
-    ensurePerson: vi.fn().mockReturnValue({ personId: PERSON_ID, created: false }),
-    applyChannelInfo: vi.fn().mockResolvedValue(undefined),
-  };
-}
-
-let fakePorts: Ports;
-let state: RequestsState;
 
 function rssXml(opts: {
   channelName?: string;
@@ -179,6 +142,15 @@ function insertSeenVideo(videoId: string): void {
   ).run(CHANNEL_ID, videoId, new Date().toISOString());
 }
 
+// Subscription candidates for the channel's followers, by user.
+function subscriptionCandidates(userId: string): Array<{ external_id: string; source_type: string }> {
+  return db
+    .prepare(
+      "SELECT external_id, source_type FROM candidate_pool WHERE user_id = ? AND source_type = 'subscription'",
+    )
+    .all(userId) as Array<{ external_id: string; source_type: string }>;
+}
+
 beforeAll(() => {
   runMigrations();
   insertUser(USER_ID_A, 'Boy1');
@@ -186,18 +158,16 @@ beforeAll(() => {
 });
 
 beforeEach(() => {
+  db.exec('DELETE FROM candidate_pool');
   db.exec('DELETE FROM requests');
   db.exec('DELETE FROM seen_videos');
   db.exec('DELETE FROM followed_people');
   db.exec('DELETE FROM person_outputs');
   db.exec('DELETE FROM people');
+  db.exec('DELETE FROM channel_interest_links');
 
   insertPerson();
   insertPersonOutput();
-
-  fakePorts = makeFakePorts();
-  state = createRequestsState({ ports: fakePorts });
-  registerDefaultRequestsState(state);
 
   vi.mocked(videoDuration).mockReset();
   vi.mocked(applyChannelInfoToPerson).mockReset();
@@ -287,7 +257,7 @@ describe('parseYoutubeRss', () => {
 // ─── pollChannel: first-poll confirmation ───────────────────────────────────
 
 describe('pollChannel first-poll confirmation', () => {
-  it('with empty seen_videos + 5 entries (latest non-short) → 1 request, 5 seen_videos rows', async () => {
+  it('with empty seen_videos + 5 entries (latest non-short) → 1 subscription candidate, 5 seen_videos rows', async () => {
     insertFollower(USER_ID_A);
     const xml = rssXml({
       entries: [
@@ -303,11 +273,9 @@ describe('pollChannel first-poll confirmation', () => {
 
     await pollChannel(OUTPUT);
 
-    const requests = db
-      .prepare('SELECT youtube_id FROM requests WHERE user_id = ?')
-      .all(USER_ID_A) as Array<{ youtube_id: string }>;
-    expect(requests).toHaveLength(1);
-    expect(requests[0]?.youtube_id).toBe('aaa11111111');
+    const candidates = subscriptionCandidates(USER_ID_A);
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]?.external_id).toBe('aaa11111111');
 
     const seen = db
       .prepare('SELECT video_id FROM seen_videos WHERE channel_id = ?')
@@ -315,7 +283,7 @@ describe('pollChannel first-poll confirmation', () => {
     expect(seen).toHaveLength(5);
   });
 
-  it('latest entry is a short → skipped before the confirmation slot is consumed; next non-short becomes the first download', async () => {
+  it('latest entry is a short → skipped before the confirmation slot is consumed; next non-short becomes the candidate', async () => {
     insertFollower(USER_ID_A);
     const xml = rssXml({
       entries: [
@@ -325,7 +293,6 @@ describe('pollChannel first-poll confirmation', () => {
       ],
     });
     mockFetchOk(xml);
-    // First entry is a short (duration ≤ SHORTS_MAX_SECS), rest are long.
     vi.mocked(videoDuration).mockImplementation(async (id: string) => {
       if (id === 'shortvid001') return 30;
       return 600;
@@ -333,14 +300,12 @@ describe('pollChannel first-poll confirmation', () => {
 
     await pollChannel(OUTPUT);
 
-    const requests = db
-      .prepare('SELECT youtube_id FROM requests WHERE user_id = ?')
-      .all(USER_ID_A) as Array<{ youtube_id: string }>;
-    expect(requests).toHaveLength(1);
-    expect(requests[0]?.youtube_id).toBe('longvid0001');
+    const candidates = subscriptionCandidates(USER_ID_A);
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]?.external_id).toBe('longvid0001');
 
     // All three videos are marked seen — the short to suppress re-evaluation,
-    // the queued one as the confirmation, and the older one as part of the
+    // the candidate one as the confirmation, and the older one as part of the
     // first-poll catch-up.
     const seen = db
       .prepare('SELECT video_id FROM seen_videos WHERE channel_id = ?')
@@ -350,7 +315,7 @@ describe('pollChannel first-poll confirmation', () => {
     );
   });
 
-  it('videoDuration throwing → entry is not classified as a short and proceeds (better to download a short than drop a creator)', async () => {
+  it('videoDuration throwing → entry is not classified as a short and becomes a candidate (better to keep a creator than drop them)', async () => {
     insertFollower(USER_ID_A);
     const xml = rssXml({
       entries: [{ videoId: 'flakyvid001', title: 'Flaky metadata' }],
@@ -360,18 +325,74 @@ describe('pollChannel first-poll confirmation', () => {
 
     await pollChannel(OUTPUT);
 
-    const requests = db
-      .prepare('SELECT youtube_id FROM requests WHERE user_id = ?')
-      .all(USER_ID_A) as Array<{ youtube_id: string }>;
-    expect(requests).toHaveLength(1);
-    expect(requests[0]?.youtube_id).toBe('flakyvid001');
+    const candidates = subscriptionCandidates(USER_ID_A);
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]?.external_id).toBe('flakyvid001');
+  });
+
+  it('the seeded candidate carries person_id, channel, thumbnail and published_at for scoring', async () => {
+    insertFollower(USER_ID_A);
+    const xml = rssXml({
+      entries: [
+        {
+          videoId: 'fullmeta001',
+          title: 'Rich metadata upload',
+          publishedAt: '2026-05-02T10:00:00+00:00',
+          thumbnailUrl: 'https://i.ytimg.com/vi/fullmeta001/hq.jpg',
+        },
+      ],
+    });
+    mockFetchOk(xml);
+    vi.mocked(videoDuration).mockResolvedValue(720);
+
+    await pollChannel(OUTPUT);
+
+    const row = db
+      .prepare(
+        `SELECT person_id, channel, duration_secs, thumbnail_url, published_at, title, status
+         FROM candidate_pool WHERE user_id = ? AND external_id = ?`,
+      )
+      .get(USER_ID_A, 'fullmeta001') as {
+        person_id: string | null; channel: string | null; duration_secs: number | null;
+        thumbnail_url: string | null; published_at: string | null; title: string | null; status: string;
+      };
+    expect(row.person_id).toBe(PERSON_ID);
+    expect(row.channel).toBe(CHANNEL_NAME);
+    expect(row.duration_secs).toBe(720);
+    expect(row.thumbnail_url).toBe('https://i.ytimg.com/vi/fullmeta001/hq.jpg');
+    expect(row.published_at).toBe('2026-05-02T10:00:00+00:00');
+    expect(row.title).toBe('Rich metadata upload');
+    expect(row.status).toBe('pending');
+  });
+
+  it('carries the channel interest_id when channel_interest_links has one', async () => {
+    insertFollower(USER_ID_A);
+    // Seed an interest + a channel→interest link so the candidate inherits it.
+    db.prepare(
+      "INSERT INTO interests (id, label, search_terms, category, source) VALUES (?, ?, '[]', 'tech', 'seed')",
+    ).run('interest-x', 'robotics');
+    db.prepare(
+      `INSERT INTO channel_interest_links (channel_id, interest_id, confidence, inferred_at)
+       VALUES (?, ?, 0.9, ?)`,
+    ).run(CHANNEL_ID, 'interest-x', new Date().toISOString());
+
+    const xml = rssXml({ entries: [{ videoId: 'linkedvid01', title: 'Linked' }] });
+    mockFetchOk(xml);
+    vi.mocked(videoDuration).mockResolvedValue(600);
+
+    await pollChannel(OUTPUT);
+
+    const row = db
+      .prepare('SELECT interest_id FROM candidate_pool WHERE external_id = ?')
+      .get('linkedvid01') as { interest_id: string | null };
+    expect(row.interest_id).toBe('interest-x');
   });
 });
 
 // ─── pollChannel: steady state ──────────────────────────────────────────────
 
 describe('pollChannel steady state', () => {
-  it('1 new entry against existing seen_videos → 1 request per follower, both marked seen', async () => {
+  it('1 new entry against existing seen_videos → 1 subscription candidate per follower, both marked seen', async () => {
     insertFollower(USER_ID_A);
     insertFollower(USER_ID_B);
     // Seed prior seen entries so the channel is past first-poll.
@@ -389,12 +410,12 @@ describe('pollChannel steady state', () => {
 
     await pollChannel(OUTPUT);
 
-    const requests = db
-      .prepare('SELECT user_id, youtube_id FROM requests ORDER BY user_id')
-      .all() as Array<{ user_id: string; youtube_id: string }>;
-    expect(requests).toHaveLength(2);
-    expect(requests.map((r) => r.user_id).sort()).toEqual([USER_ID_A, USER_ID_B].sort());
-    expect(requests.every((r) => r.youtube_id === 'brandnew001')).toBe(true);
+    const candidates = db
+      .prepare("SELECT user_id, external_id FROM candidate_pool WHERE source_type = 'subscription' ORDER BY user_id")
+      .all() as Array<{ user_id: string; external_id: string }>;
+    expect(candidates).toHaveLength(2);
+    expect(candidates.map((r) => r.user_id).sort()).toEqual([USER_ID_A, USER_ID_B].sort());
+    expect(candidates.every((r) => r.external_id === 'brandnew001')).toBe(true);
 
     const seen = db
       .prepare('SELECT video_id FROM seen_videos WHERE channel_id = ?')
@@ -404,43 +425,66 @@ describe('pollChannel steady state', () => {
     );
   });
 
-  it('per-user dedup: a follower who already has a requests row for the same youtube_id does not get a second one', async () => {
+  it('per-user dedup: a follower who already has a candidate for the same video does not get a second one', async () => {
     insertFollower(USER_ID_A);
     insertFollower(USER_ID_B);
     insertSeenVideo('priorvid001');
 
-    // USER_ID_A already has a request for the new video — should be skipped.
-    db.prepare(
-      `INSERT INTO requests
-         (request_id, user_id, source, url, youtube_id, status, requested_at, added_at)
-       VALUES (?, ?, 'share_sheet', ?, ?, 'ready', ?, ?)`,
-    ).run(
-      'req-existing-a',
-      USER_ID_A,
-      'https://www.youtube.com/watch?v=dupvid00001',
-      'dupvid00001',
-      new Date().toISOString(),
+    // USER_ID_A already has a candidate (e.g. back-catalogue) for the new video.
+    db.prepare(`
+      INSERT INTO candidate_pool
+        (candidate_id, user_id, content_type, source_type, url, external_id, status, created_at)
+      VALUES (?, ?, 'video', 'person_backcatalog', ?, ?, 'pending', ?)
+    `).run(
+      'cand-existing-a', USER_ID_A,
+      'https://www.youtube.com/watch?v=dupvid00001', 'dupvid00001',
       new Date().toISOString(),
     );
 
     const xml = rssXml({
-      entries: [{ videoId: 'dupvid00001', title: 'Already requested by A' }],
+      entries: [{ videoId: 'dupvid00001', title: 'Already a candidate for A' }],
     });
     mockFetchOk(xml);
     vi.mocked(videoDuration).mockResolvedValue(600);
 
     await pollChannel(OUTPUT);
 
-    const requests = db
-      .prepare('SELECT user_id, youtube_id FROM requests WHERE youtube_id = ?')
-      .all('dupvid00001') as Array<{ user_id: string; youtube_id: string }>;
-    expect(requests).toHaveLength(2);
-    // Exactly one row per user — A's existing 'ready' row is preserved, B
-    // gets the new channel_subscription row.
-    expect(requests.map((r) => r.user_id).sort()).toEqual([USER_ID_A, USER_ID_B].sort());
+    const rows = db
+      .prepare('SELECT user_id, source_type FROM candidate_pool WHERE external_id = ? ORDER BY user_id')
+      .all('dupvid00001') as Array<{ user_id: string; source_type: string }>;
+    expect(rows).toHaveLength(2);
+    // A keeps its single back-catalogue row; B gets the new subscription row.
+    expect(rows.map((r) => r.user_id).sort()).toEqual([USER_ID_A, USER_ID_B].sort());
+    const a = rows.find((r) => r.user_id === USER_ID_A);
+    const b = rows.find((r) => r.user_id === USER_ID_B);
+    expect(a?.source_type).toBe('person_backcatalog');
+    expect(b?.source_type).toBe('subscription');
   });
 
-  it('no followers → early return; no seen_videos writes, no requests writes, last_polled untouched', async () => {
+  it('per-user dedup against requests: a follower with an existing request does not get a candidate', async () => {
+    insertFollower(USER_ID_A);
+    insertSeenVideo('priorvid001');
+    db.prepare(`
+      INSERT INTO requests
+        (request_id, user_id, source, url, youtube_id, status, requested_at)
+      VALUES (?, ?, 'share_sheet', ?, ?, 'ready', ?)
+    `).run(
+      'req-existing-a', USER_ID_A,
+      'https://www.youtube.com/watch?v=reqdup00001', 'reqdup00001',
+      new Date().toISOString(),
+    );
+
+    const xml = rssXml({ entries: [{ videoId: 'reqdup00001', title: 'Already requested by A' }] });
+    mockFetchOk(xml);
+    vi.mocked(videoDuration).mockResolvedValue(600);
+
+    await pollChannel(OUTPUT);
+
+    const candidates = subscriptionCandidates(USER_ID_A);
+    expect(candidates).toHaveLength(0);
+  });
+
+  it('no followers → early return; no seen_videos writes, no candidate writes, last_polled untouched', async () => {
     const xml = rssXml({
       entries: [{ videoId: 'orphanvid01', title: 'No-one is following' }],
     });
@@ -450,7 +494,7 @@ describe('pollChannel steady state', () => {
     await pollChannel(OUTPUT);
 
     expect(
-      db.prepare('SELECT COUNT(*) AS c FROM requests').get() as { c: number },
+      db.prepare('SELECT COUNT(*) AS c FROM candidate_pool').get() as { c: number },
     ).toEqual({ c: 0 });
     expect(
       db.prepare('SELECT COUNT(*) AS c FROM seen_videos').get() as { c: number },
@@ -490,7 +534,7 @@ describe('pollChannel failure modes', () => {
     await pollChannel(OUTPUT);
 
     expect(
-      db.prepare('SELECT COUNT(*) AS c FROM requests').get() as { c: number },
+      db.prepare('SELECT COUNT(*) AS c FROM candidate_pool').get() as { c: number },
     ).toEqual({ c: 0 });
     expect(
       db.prepare('SELECT COUNT(*) AS c FROM seen_videos').get() as { c: number },
@@ -512,7 +556,7 @@ describe('pollChannel failure modes', () => {
     await pollChannel(OUTPUT);
 
     expect(
-      db.prepare('SELECT COUNT(*) AS c FROM requests').get() as { c: number },
+      db.prepare('SELECT COUNT(*) AS c FROM candidate_pool').get() as { c: number },
     ).toEqual({ c: 0 });
     expect(
       db.prepare('SELECT COUNT(*) AS c FROM seen_videos').get() as { c: number },
@@ -542,12 +586,10 @@ describe('pollChannel failure modes', () => {
     // Let the rejected fire-and-forget settle.
     await new Promise((resolve) => setImmediate(resolve));
 
-    // Poll still produced the channel-subscription request.
-    const requests = db
-      .prepare('SELECT youtube_id FROM requests WHERE user_id = ?')
-      .all(USER_ID_A) as Array<{ youtube_id: string }>;
-    expect(requests).toHaveLength(1);
-    expect(requests[0]?.youtube_id).toBe('normalvid01');
+    // Poll still produced the subscription candidate.
+    const candidates = subscriptionCandidates(USER_ID_A);
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]?.external_id).toBe('normalvid01');
 
     expect(vi.mocked(logger.debug)).toHaveBeenCalled();
     const lastDebug = vi.mocked(logger.debug).mock.calls.at(-1);

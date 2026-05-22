@@ -8,11 +8,15 @@
  * the disposition each item would receive. Does NOT write surfaced_date.
  */
 import 'dotenv/config';
+import { config } from '../config';
 import { runMigrations } from '../db/migrate';
 import { seedUsers } from '../db/seed';
 import { db } from '../db/client';
 import {
   rank,
+  isPicked,
+  BACK_CATALOG_QUOTA,
+  DELIGHTER_QUOTA,
   MIN_CONNECTION_SCORE,
   MIN_QUALITY_SCORE,
   type RankerCandidate,
@@ -23,13 +27,13 @@ seedUsers();
 
 const targetArg = process.argv[2] ?? null;
 
-interface UserRow { user_id: string; role: string; age_gate: number; display_name: string; }
+interface UserRow { user_id: string; role: string; age_gate: number; display_name: string; daily_pick_cap: number | null; }
 
 const users = (targetArg
   ? db.prepare(
-      'SELECT user_id, role, age_gate, display_name FROM users WHERE user_id = ? OR lower(display_name) = lower(?)'
+      'SELECT user_id, role, age_gate, display_name, daily_pick_cap FROM users WHERE user_id = ? OR lower(display_name) = lower(?)'
     ).all(targetArg, targetArg)
-  : db.prepare("SELECT user_id, role, age_gate, display_name FROM users WHERE role IN ('kid','parent')").all()
+  : db.prepare("SELECT user_id, role, age_gate, display_name, daily_pick_cap FROM users WHERE role IN ('kid','parent')").all()
 ) as UserRow[];
 
 if (users.length === 0) {
@@ -67,8 +71,9 @@ function ageLabel(iso: string | null): string {
 }
 
 const SLOT_LABEL: Record<string, string> = {
-  regular: 'regular',
-  stretch: 'stretch',
+  subscription: 'subscript',
+  back_catalog: 'backcat',
+  delighter: 'delighter',
   low_conn: 'low conn',
   low_qual: 'low qual',
   low_both: 'low both',
@@ -76,14 +81,14 @@ const SLOT_LABEL: Record<string, string> = {
   cut_interest_cap: 'cut cap',
   cut_channel_cap: 'cut chan',
   cut_dedup: 'cut dedup',
-  cut_stretch_rank: 'cut rank',
+  cut_quota: 'cut quota',
 };
 
 for (const user of users) {
   console.log(`\n── ${user.display_name} (${user.role}) ──────────────────────`);
 
   const isKid = user.role === 'kid';
-  const cap = isKid ? 5 : 15;
+  const cap = user.daily_pick_cap ?? config.DEFAULT_DAILY_PICK_CAP;
 
   const today = new Date().toISOString().slice(0, 10);
   const alreadySurfaced = (db.prepare(`
@@ -91,17 +96,13 @@ for (const user of users) {
     WHERE user_id = ? AND surfaced_date = ?
   `).get(user.user_id, today) as { n: number }).n;
 
-  const remaining = Math.max(0, cap - alreadySurfaced);
-  // Dry-run: when the user is already at cap, fall back to the full cap
-  // so the preview still shows what would have been picked. Quotas must
-  // be computed from the same value passed to rank() — otherwise the
-  // header lies about the split (e.g. remaining=2 prints 0+2 when the
-  // ranker is actually doing 1+1).
-  const rankCap = remaining || cap;
-  const stretchQuota = Math.max(1, Math.floor(rankCap * 0.2));
-  const regularQuota = Math.max(0, rankCap - stretchQuota);
+  // Dry-run: always use the full cap so the preview shows the composed
+  // slate regardless of what already surfaced today. Bucket quotas
+  // (ADR-0009): subscription = cap − 6, back-catalogue 4, delighter 2.
+  const rankCap = cap;
+  const subscriptionQuota = Math.max(0, rankCap - BACK_CATALOG_QUOTA - DELIGHTER_QUOTA);
 
-  console.log(`  Cap ${cap} · already surfaced today ${alreadySurfaced} · remaining ${remaining} (regular ${regularQuota} + stretch ${stretchQuota})`);
+  console.log(`  Cap ${cap} · already surfaced today ${alreadySurfaced} (subscription ${subscriptionQuota} + back-catalogue ${BACK_CATALOG_QUOTA} + delighter ${DELIGHTER_QUOTA})`);
   console.log(`  Floors: connection ≥ ${MIN_CONNECTION_SCORE} · quality ≥ ${MIN_QUALITY_SCORE}`);
 
   const guardClause = isKid
@@ -134,6 +135,7 @@ for (const user of users) {
     connectionScore: r.connection_score,
     qualityScore: r.quality_score,
     timeSensitivity: r.time_sensitivity,
+    sourceType: r.source_type,
     interestId: r.interest_id,
     channel: r.channel,
     rank: r.rank,
@@ -141,7 +143,7 @@ for (const user of users) {
 
   const verdicts = rank(
     candidates,
-    { now: new Date(), isKid, prefilledTitles: [], prefilledInterestCounts: new Map() },
+    { now: new Date(), prefilledTitles: [], prefilledInterestCounts: new Map() },
     { cap: rankCap },
   );
 
@@ -149,6 +151,7 @@ for (const user of users) {
 
   // Compress source_type for column width.
   const sourceLabel = (s: string): string => {
+    if (s === 'subscription') return 'subscript';
     if (s === 'person_backcatalog') return 'backcat';
     if (s === 'interest_search') return 'interest';
     if (s === 'person_recommendation') return 'rec';
@@ -176,7 +179,7 @@ for (const user of users) {
     if (row.why_text) console.log(`        why → ${trunc(row.why_text, 110)}`);
   }
 
-  const picks = verdicts.filter((v) => v.disposition === 'regular' || v.disposition === 'stretch').length;
+  const picks = verdicts.filter((v) => isPicked(v.disposition)).length;
   const rejected = verdicts.filter((v) => v.disposition.startsWith('low_')).length;
   const cuts = verdicts.filter((v) => v.disposition.startsWith('cut_')).length;
   console.log(`\n  Eligible: ${verdicts.length - rejected} · rejected by floor: ${rejected} · cut: ${cuts} · would surface: ${picks} of ${rankCap} slot(s).`);

@@ -1,7 +1,8 @@
 import { db } from '../../db/client';
-import { rank, type RankerCandidate, type Verdict, type Disposition } from './ranker';
+import { config } from '../../config';
+import { rank, isPicked, type RankerCandidate, type Verdict, type Disposition } from './ranker';
 
-interface UserRow { user_id: string; role: string; age_gate: number; display_name: string; }
+interface UserRow { user_id: string; role: string; age_gate: number; display_name: string; daily_pick_cap: number | null; }
 
 interface CandidateRow {
   candidate_id: string;
@@ -15,6 +16,7 @@ interface CandidateRow {
   connection_score: number | null;
   quality_score: number | null;
   time_sensitivity: string | null;
+  source_type: string | null;
   why_text: string | null;
   guard_verdict: string | null;
   interest_id: string | null;
@@ -64,8 +66,9 @@ function escapeHtml(s: string): string {
 }
 
 const DISPOSITION_LABEL: Record<Disposition, string> = {
-  regular: 'regular',
-  stretch: 'stretch',
+  subscription: 'subscription',
+  back_catalog: 'back-catalogue',
+  delighter: 'delighter',
   low_conn: 'low conn',
   low_qual: 'low qual',
   low_both: 'low both',
@@ -73,12 +76,13 @@ const DISPOSITION_LABEL: Record<Disposition, string> = {
   cut_interest_cap: 'cut · interest cap',
   cut_channel_cap: 'cut · channel cap',
   cut_dedup: 'cut · dedup',
-  cut_stretch_rank: 'cut · stretch rank',
+  cut_quota: 'cut · bucket quota',
 };
 
 const DISPOSITION_CLASS: Record<Disposition, string> = {
-  regular: 'regular',
-  stretch: 'stretch',
+  subscription: 'subscription',
+  back_catalog: 'back-catalog',
+  delighter: 'delighter',
   low_conn: 'low',
   low_qual: 'low',
   low_both: 'low-both',
@@ -86,12 +90,12 @@ const DISPOSITION_CLASS: Record<Disposition, string> = {
   cut_interest_cap: 'cut-interest-cap',
   cut_channel_cap: 'cut-channel-cap',
   cut_dedup: 'cut-dedup',
-  cut_stretch_rank: 'cut-stretch-rank',
+  cut_quota: 'cut-quota',
 };
 
 function buildSection(user: UserRow): Section {
   const isKid = user.role === 'kid';
-  const cap = isKid ? 5 : 15;
+  const cap = user.daily_pick_cap ?? config.DEFAULT_DAILY_PICK_CAP;
 
   const guardClause = isKid
     ? "AND (c.guard_verdict = 'clear_yes' OR c.guard_verdict IS NULL)"
@@ -103,7 +107,7 @@ function buildSection(user: UserRow): Section {
     SELECT c.candidate_id, c.external_id, c.url, c.title, c.channel,
            c.thumbnail_url, c.published_at, c.duration_secs,
            c.connection_score, c.quality_score, c.time_sensitivity,
-           c.why_text, c.guard_verdict,
+           c.source_type, c.why_text, c.guard_verdict,
            c.interest_id, i.label AS interest_label,
            COALESCE(ui.rank, 999) AS rank
     FROM candidate_pool c
@@ -128,6 +132,7 @@ function buildSection(user: UserRow): Section {
     connectionScore: r.connection_score,
     qualityScore: r.quality_score,
     timeSensitivity: r.time_sensitivity,
+    sourceType: r.source_type,
     interestId: r.interest_id,
     channel: r.channel,
     rank: r.rank,
@@ -136,7 +141,7 @@ function buildSection(user: UserRow): Section {
   // Preview always simulates a clean run — no prefill.
   const verdicts = rank(
     candidates,
-    { now: new Date(), isKid, prefilledTitles: [], prefilledInterestCounts: new Map() },
+    { now: new Date(), prefilledTitles: [], prefilledInterestCounts: new Map() },
     { cap },
   );
 
@@ -147,8 +152,8 @@ function buildSection(user: UserRow): Section {
     return { row, verdict: v };
   });
 
-  const selected = cards.filter((c) => c.verdict.disposition === 'regular' || c.verdict.disposition === 'stretch');
-  const rest = cards.filter((c) => c.verdict.disposition !== 'regular' && c.verdict.disposition !== 'stretch');
+  const selected = cards.filter((c) => isPicked(c.verdict.disposition));
+  const rest = cards.filter((c) => !isPicked(c.verdict.disposition));
   const rejected = cards.filter((c) => c.verdict.disposition.startsWith('low_')).length;
 
   return {
@@ -170,12 +175,12 @@ const css = `
   --bg: #1a1916; --bg-card: #222220; --bg-elevated: #2a2926;
   --fg: #e8e6e0; --fg-muted: #888580; --fg-dim: #5a5854;
   --border: #353330; --accent: #d4a85a;
-  --slot-regular: #6ba368; --slot-stretch: #d4a85a;
+  --slot-subscription: #6ba368; --slot-back-catalog: #5a8a9a; --slot-delighter: #d4a85a;
   --slot-low: #c97a4a; --slot-low-both: #b8534a; --slot-cut: #5a5854;
   --slot-cut-interest-cap: #7a4a8a; /* purple — interest-cap rejections */
   --slot-cut-channel-cap: #8a5a4a;  /* terracotta — channel-cap rejections */
   --slot-cut-dedup: #4a6a8a;        /* blue — title-similarity rejections */
-  --slot-cut-stretch-rank: #5a8a5a; /* green-grey — stretch-rank rejections */
+  --slot-cut-quota: #5a8a5a;        /* green-grey — bucket-quota rejections */
   --tag-news: #8a4a4a; --tag-evergreen: #4a8a8a; --tag-standard: #5a5854;
   --tag-actually-surfaced: #5a8a9a;
 }
@@ -192,8 +197,8 @@ h2 .muted { color: var(--fg-dim); font-weight: 400; text-transform: none; letter
 .toolbar a.active { background: var(--accent); color: var(--bg); font-weight: 600; }
 .section { margin-bottom: 40px; }
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 16px; }
-.grid.selected .card { border: 2px solid var(--slot-regular); }
-.grid.selected .card.stretch-card { border-color: var(--slot-stretch); }
+.grid.selected .card { border: 2px solid var(--slot-subscription); }
+.grid.selected .card.delighter-card { border-color: var(--slot-delighter); }
 .card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; display: flex; flex-direction: column; transition: transform 0.1s; position: relative; }
 .card:hover { transform: translateY(-2px); }
 .thumb-wrap { position: relative; aspect-ratio: 16/9; background: #000; }
@@ -201,15 +206,16 @@ h2 .muted { color: var(--fg-dim); font-weight: 400; text-transform: none; letter
 .thumb-fallback { display: flex; align-items: center; justify-content: center; height: 100%; color: var(--fg-dim); font-size: 12px; }
 .duration { position: absolute; bottom: 8px; right: 8px; background: rgba(0,0,0,0.85); color: white; padding: 2px 6px; border-radius: 4px; font-size: 11px; font-weight: 500; }
 .slot-tag { position: absolute; top: 8px; left: 8px; background: var(--slot-cut); color: white; padding: 3px 8px; border-radius: 4px; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
-.slot-tag.regular { background: var(--slot-regular); }
-.slot-tag.stretch { background: var(--slot-stretch); color: #1a1916; }
+.slot-tag.subscription { background: var(--slot-subscription); }
+.slot-tag.back-catalog { background: var(--slot-back-catalog); }
+.slot-tag.delighter { background: var(--slot-delighter); color: #1a1916; }
 .slot-tag.low { background: var(--slot-low); }
 .slot-tag.low-both { background: var(--slot-low-both); }
 .slot-tag.low-weight { background: var(--slot-cut); }
 .slot-tag.cut-interest-cap { background: var(--slot-cut-interest-cap); }
 .slot-tag.cut-channel-cap { background: var(--slot-cut-channel-cap); }
 .slot-tag.cut-dedup { background: var(--slot-cut-dedup); }
-.slot-tag.cut-stretch-rank { background: var(--slot-cut-stretch-rank); }
+.slot-tag.cut-quota { background: var(--slot-cut-quota); }
 .actually-surfaced { position: absolute; top: 8px; right: 8px; background: var(--tag-actually-surfaced); color: white; padding: 3px 8px; border-radius: 4px; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
 .body { padding: 14px 16px 16px; flex: 1; display: flex; flex-direction: column; }
 .title { font-size: 14px; font-weight: 600; line-height: 1.35; margin-bottom: 6px; color: var(--fg); }
@@ -249,7 +255,7 @@ function cardHtml(card: Card, dedupPartnerTitle: (id: string) => string | null):
     : `<div class="thumb-fallback">no thumbnail</div>`;
   const dur = durationLabel(r.duration_secs);
 
-  const stretchCardClass = v.disposition === 'stretch' ? ' stretch-card' : '';
+  const stretchCardClass = v.disposition === 'delighter' ? ' delighter-card' : '';
 
   const dedupBlock = v.disposition === 'cut_dedup' && v.dedupedAgainst
     ? (() => {
@@ -285,7 +291,7 @@ function cardHtml(card: Card, dedupPartnerTitle: (id: string) => string | null):
 
 export function renderPreviewHtml(targetArg: string | null): string {
   const allUsers = db.prepare(
-    "SELECT user_id, role, age_gate, display_name FROM users WHERE role IN ('kid','parent') ORDER BY role, display_name"
+    "SELECT user_id, role, age_gate, display_name, daily_pick_cap FROM users WHERE role IN ('kid','parent') ORDER BY role, display_name"
   ).all() as UserRow[];
 
   const users = targetArg

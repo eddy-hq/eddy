@@ -13,5 +13,5 @@ export type {
   PersonViewSupport,
   SupportKind,
 } from './personView';
-export { startRssPoller, stopRssPoller } from './poller';
+export { runRssPollPass } from './poller';
 export { peopleRouter } from './router';

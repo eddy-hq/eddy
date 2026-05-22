@@ -1,5 +1,5 @@
 import { db } from '../../db/client';
-import { rank, type RankerCandidate, type Verdict } from './ranker';
+import { rank, isPicked, bucketFor, type Bucket, type RankerCandidate, type Verdict } from './ranker';
 
 export interface ScoredCandidateForGuard {
   candidate_id: string;
@@ -36,6 +36,7 @@ interface CandidateRow {
   connection_score: number | null;
   quality_score: number | null;
   time_sensitivity: string | null;
+  source_type: string | null;
   interest_id: string | null;
   channel: string | null;
   rank: number;
@@ -43,10 +44,14 @@ interface CandidateRow {
   guard_verdict: string | null;
 }
 
-export function surfaceForToday(userId: string, isKid: boolean): Verdict[] {
+// Per-user slate size (ADR-0009). The numbers are role-blind — the only
+// kid/adult difference is the guard recheck upstream — so the cap is read
+// from the user's `daily_pick_cap`, falling back to the global default when
+// the column is null. `isKid` still threads through purely for the kid guard
+// filter on the candidate SELECT.
+export function surfaceForToday(userId: string, isKid: boolean, cap: number): Verdict[] {
   const now = new Date();
   const today = now.toISOString().slice(0, 10);
-  const cap = isKid ? 5 : 15;
 
   const alreadySurfaced = db.prepare(`
     SELECT COUNT(*) AS n FROM candidate_pool
@@ -54,7 +59,9 @@ export function surfaceForToday(userId: string, isKid: boolean): Verdict[] {
   `).get(userId, today) as { n: number };
   if (alreadySurfaced.n >= cap) return [];
 
-  const remaining = cap - alreadySurfaced.n;
+  // The ranker is handed the full per-user cap; the mid-day top-up is bounded
+  // by prefilledBucketCounts (per-bucket spend already on today's slate)
+  // rather than a scalar `remaining`, so each bucket tops up to its own quota.
   const eligibleGuard = isKid ? "AND (c.guard_verdict = 'clear_yes' OR c.guard_verdict IS NULL)" : '';
 
   // Data-shape SQL only: status, surfaced_date, kid guard, history
@@ -66,7 +73,8 @@ export function surfaceForToday(userId: string, isKid: boolean): Verdict[] {
   // the candidate doesn't surface.
   const rows = db.prepare(`
     SELECT c.candidate_id, c.url, c.external_id, c.title, c.published_at,
-           c.connection_score, c.quality_score, c.time_sensitivity, c.interest_id,
+           c.connection_score, c.quality_score, c.time_sensitivity,
+           c.source_type, c.interest_id,
            c.channel, c.why_text, c.guard_verdict,
            COALESCE(ui.rank, 999) AS rank
     FROM candidate_pool c
@@ -90,6 +98,7 @@ export function surfaceForToday(userId: string, isKid: boolean): Verdict[] {
     connectionScore: r.connection_score,
     qualityScore: r.quality_score,
     timeSensitivity: r.time_sensitivity,
+    sourceType: r.source_type,
     interestId: r.interest_id,
     channel: r.channel,
     rank: r.rank,
@@ -100,18 +109,28 @@ export function surfaceForToday(userId: string, isKid: boolean): Verdict[] {
   }));
 
   // Carry over today's already-surfaced titles + interest counts + channel
-  // counts so a mid-day re-run doesn't pile more from the same interest or
-  // channel, or echo a similar title.
+  // counts + per-bucket counts so a mid-day re-run doesn't pile more from the
+  // same interest, channel, or bucket, or echo a similar title.
   const surfacedToday = db.prepare(`
-    SELECT title, interest_id, channel FROM candidate_pool
+    SELECT title, source_type, interest_id, channel FROM candidate_pool
     WHERE user_id = ? AND surfaced_date = ?
-  `).all(userId, today) as Array<{ title: string | null; interest_id: string | null; channel: string | null }>;
+  `).all(userId, today) as Array<{
+    title: string | null; source_type: string | null;
+    interest_id: string | null; channel: string | null;
+  }>;
 
   const prefilledTitles = surfacedToday.map((r) => r.title ?? '').filter((t) => t.length > 0);
   const prefilledInterestCounts = new Map<string, number>();
   const prefilledChannelCounts = new Map<string, number>();
+  const prefilledBucketCounts = new Map<Bucket, number>();
   for (const r of surfacedToday) {
-    if (r.interest_id) {
+    const bucket = bucketFor(r.source_type);
+    prefilledBucketCounts.set(bucket, (prefilledBucketCounts.get(bucket) ?? 0) + 1);
+    // Subscriptions are exempt from the per-interest cap (ADR-0009), so don't
+    // prefill an interest count from a subscription pick — that would let an
+    // earlier subscription suppress a later back-catalogue/delighter on the
+    // same inferred interest.
+    if (bucket !== 'subscription' && r.interest_id) {
       prefilledInterestCounts.set(r.interest_id, (prefilledInterestCounts.get(r.interest_id) ?? 0) + 1);
     }
     if (r.channel) {
@@ -121,8 +140,8 @@ export function surfaceForToday(userId: string, isKid: boolean): Verdict[] {
 
   const verdicts = rank(
     candidates,
-    { now, isKid, prefilledTitles, prefilledInterestCounts, prefilledChannelCounts },
-    { cap: remaining },
+    { now, prefilledTitles, prefilledInterestCounts, prefilledChannelCounts, prefilledBucketCounts },
+    { cap },
   );
 
   const nowIso = now.toISOString();
@@ -131,7 +150,7 @@ export function surfaceForToday(userId: string, isKid: boolean): Verdict[] {
     WHERE candidate_id = ?
   `);
   for (const v of verdicts) {
-    if (v.disposition === 'regular' || v.disposition === 'stretch') {
+    if (isPicked(v.disposition)) {
       writeStmt.run(today, nowIso, v.candidate.candidateId);
     }
   }

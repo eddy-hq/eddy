@@ -6,14 +6,15 @@ import { config } from '../../config';
 import { redis, discoveryQueue } from '../../queue';
 import { evaluateCandidate } from '../guard/index';
 import { getRequestsState } from '../requests';
+import { runRssPollPass } from '../people';
 import { getAgeBand } from '../users';
 import {
   refreshCandidatePool,
   seedBackCatalogCandidates,
-  countPersonSourcedForRefresh,
   type UserInterestRow,
 } from './intake';
 import { scoreCandidates } from './scoring';
+import { bucketFor, isPicked } from './ranker';
 import {
   surfaceForToday,
   readScoredCandidates,
@@ -24,6 +25,9 @@ interface UserRow {
   user_id: string;
   role: string;
   age_gate: number;
+  // Per-user slate size (ADR-0009). Null falls back to
+  // config.DEFAULT_DAILY_PICK_CAP.
+  daily_pick_cap: number | null;
 }
 
 export interface DiscoveryRunResult {
@@ -59,7 +63,9 @@ export function selectDeclaredInterests(userId: string): UserInterestRow[] {
 export async function runDiscoveryForUser(user: UserRow, options: { force?: boolean } = {}): Promise<DiscoveryRunResult> {
   const today = new Date().toISOString().slice(0, 10);
   const isKid = user.role === 'kid';
-  const cap = isKid ? 5 : 15;
+  // Role-blind slate size (ADR-0009): per-user cap, falling back to the global
+  // default. The only kid/adult difference is the guard recheck below.
+  const cap = user.daily_pick_cap ?? config.DEFAULT_DAILY_PICK_CAP;
 
   const existing = db.prepare(`
     SELECT COUNT(*) AS n FROM candidate_pool WHERE user_id = ? AND surfaced_date = ?
@@ -77,24 +83,26 @@ export async function runDiscoveryForUser(user: UserRow, options: { force?: bool
     return { userId: user.user_id, skipped: true, skipReason: 'No interests set', interestsChecked: 0, candidatesAdded: 0, surfaced: 0, items: [] };
   }
 
-  // Person-sourced primary, interest search as gap-filler (brief §17, issue
-  // #149). Seed the back catalog first so the count of person-sourced
-  // material reflects what's actually available this refresh; the interest-
-  // search budget is then scaled to the deficit (or skipped entirely when
-  // the person supply already meets the daily slate cap).
+  // One scored pool composed into reserved slots (ADR-0009). Order is fixed
+  // by the spec/reality fix: poll subscriptions first → seed back catalogue →
+  // interest search. The poller writes every windowed video into seen_videos,
+  // but the back-catalogue seeder dedups via isDuplicateCandidate (pool +
+  // requests), not seen_videos, so polling first doesn't starve the back
+  // catalogue of a new follow's recent uploads.
   logger.info({ userId: user.user_id, interests: userInterests.length }, 'Discovery: refreshing candidate pool');
 
+  // Step 1: poll followed channels so subscription candidates are in the pool
+  // before composition. Awaited — composition must see them this run.
+  await runRssPollPass();
+
+  // Step 2: back-catalogue seeder mines the rest of each followed channel.
   const backCatalogAdded = await seedBackCatalogCandidates(user.user_id);
   logger.info({ userId: user.user_id, added: backCatalogAdded }, 'Discovery: back-catalog candidates added');
 
-  const personSourcedCount = countPersonSourcedForRefresh(user.user_id);
-  const threshold = isKid
-    ? config.DISCOVERY_PERSON_SOURCED_THRESHOLD_KID
-    : config.DISCOVERY_PERSON_SOURCED_THRESHOLD_ADULT;
-  const interestSearchAdded = await refreshCandidatePool(user.user_id, userInterests, {
-    personSourcedCount,
-    threshold,
-  });
+  // Step 3: interest search runs unconditionally at full budget to supply the
+  // delighter bucket — the #149 gate (skip discovery when person supply is
+  // sufficient) is gone (ADR-0009).
+  const interestSearchAdded = await refreshCandidatePool(user.user_id, userInterests);
   logger.info({ userId: user.user_id, added: interestSearchAdded }, 'Discovery: interest-search candidates added');
 
   const added = interestSearchAdded + backCatalogAdded;
@@ -121,15 +129,17 @@ export async function runDiscoveryForUser(user: UserRow, options: { force?: bool
     }
   }
 
-  const verdicts = surfaceForToday(user.user_id, isKid);
-  const picks = verdicts.filter((v) => v.disposition === 'regular' || v.disposition === 'stretch');
+  const verdicts = surfaceForToday(user.user_id, isKid, cap);
+  const picks = verdicts.filter((v) => isPicked(v.disposition));
   logger.info({ userId: user.user_id, surfaced: picks.length }, 'Discovery: surfaced for today');
 
-  // Picks land in the feed directly — no separate accept step. Mirror the
-  // historical /discovery/request flow: create a request via the state
-  // machine (inserts a `recommended` row with status=downloading + why_text
-  // and enqueues the download), then flip the candidate_pool row to
-  // 'requested' so the brief day-cap accounting holds.
+  // Picks land in the feed directly — no separate accept step. Create a
+  // request via the state machine (inserts a row with status=downloading +
+  // why_text and enqueues the download), then flip the candidate_pool row to
+  // 'requested' so the day-cap accounting holds. Request provenance is mapped
+  // from the candidate's source_type (ADR-0009): subscription / back-catalogue
+  // → 'channel_subscription' (follow pill); delighter → 'recommended' (pick
+  // pill).
   const requestsState = getRequestsState();
   const markRequested = db.prepare(
     `UPDATE candidate_pool SET status = 'requested' WHERE candidate_id = ?`,
@@ -142,6 +152,9 @@ export async function runDiscoveryForUser(user: UserRow, options: { force?: bool
       );
       return;
     }
+    const requestSource = bucketFor(v.candidate.sourceType) === 'delighter'
+      ? 'recommended'
+      : 'channel_subscription';
     const requestId = uuidv7();
     const { settled } = requestsState.apply({
       kind: 'create_candidate',
@@ -152,6 +165,7 @@ export async function runDiscoveryForUser(user: UserRow, options: { force?: bool
         youtubeId: v.candidate.externalId ?? null,
         title: v.candidate.title,
         whyText: v.candidate.whyText ?? null,
+        source: requestSource,
       },
     });
     await settled;
@@ -203,7 +217,7 @@ async function runDiscovery(): Promise<void> {
   logger.info('Discovery job started');
 
   const users = db.prepare(
-    "SELECT user_id, role, age_gate FROM users WHERE role IN ('kid', 'parent')"
+    "SELECT user_id, role, age_gate, daily_pick_cap FROM users WHERE role IN ('kid', 'parent')"
   ).all() as UserRow[];
 
   for (const user of users) {

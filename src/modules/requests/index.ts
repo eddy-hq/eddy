@@ -250,12 +250,21 @@ requestsRouter.get('/feed', (req: Request, res: Response) => {
   const days = Array.from(dayMap.entries()).map(([date, cards]) => {
     const base = { date, label: dayLabel(date), cards };
     if (date !== todayStr) return base;
+    // Today collapses to two stretches (ADR-0009): "You asked" (share-sheet
+    // requests) and a unified "Today" stream mixing follow (subscription /
+    // back-catalogue) and pick (recommended) cards. Each card carries its own
+    // provenance pill client-side from `source`, so the stream needs no
+    // per-source header. Order is the feed's added_at DESC (preserved from the
+    // outer query) — see the PR note on weighted-desc being deferred.
     return {
       ...base,
       sections: [
-        { id: 'requests', label: 'My requests', cards: cards.filter((c) => c.source === 'share_sheet') },
-        { id: 'channels', label: 'From people you follow', cards: cards.filter((c) => c.source === 'channel_subscription') },
-        { id: 'recommended', label: 'Picked for you', cards: cards.filter((c) => c.source === 'recommended') },
+        { id: 'requests', label: 'You asked', cards: cards.filter((c) => c.source === 'share_sheet') },
+        {
+          id: 'today',
+          label: 'Today',
+          cards: cards.filter((c) => c.source === 'channel_subscription' || c.source === 'recommended'),
+        },
       ],
     };
   });

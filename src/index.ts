@@ -6,7 +6,6 @@ import { seedUsers } from './db/seed';
 import { app } from './server';
 import { closeQueues } from './queue';
 import { startWatchdog, stopWatchdog } from './modules/watchdog';
-import { startRssPoller, stopRssPoller } from './modules/people/index';
 import { startDiscoveryScheduler, stopDiscoveryScheduler } from './modules/discovery/index';
 import {
   startProfileEnrichmentScheduler,
@@ -25,7 +24,6 @@ async function start(): Promise<void> {
   logger.info('Database ready');
 
   startWatchdog();
-  startRssPoller();
   startDiscoveryScheduler();
   startProfileEnrichmentScheduler();
   startRecyclerScheduler();
@@ -47,7 +45,6 @@ async function start(): Promise<void> {
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'Shutting down');
     stopWatchdog();
-    stopRssPoller();
     await stopDiscoveryScheduler();
     await stopProfileEnrichmentScheduler();
     await stopRecyclerScheduler();

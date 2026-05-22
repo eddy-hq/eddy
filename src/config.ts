@@ -68,16 +68,12 @@ const schema = z.object({
   // 'deleted' (player delete), aggregated per channel name. Set to 0 to
   // disable filtering. See issue #147.
   DISCOVERY_CHANNEL_DISMISS_THRESHOLD: z.coerce.number().int().nonnegative().default(3),
-  // Discovery intake: brief §17 says person-sourced candidates are the
-  // primary signal and interest search is the gap-filler. When the count of
-  // person-sourced material already in the pool for this refresh reaches the
-  // threshold, the unconditional yt-dlp interest search is skipped; when it's
-  // below, the query budget is scaled to fill only the deficit. Defaults
-  // match the existing daily slate caps (adult 15 / kid 5). Set to 0 to
-  // disable the gating and always run interest search at full budget.
-  // See issue #149.
-  DISCOVERY_PERSON_SOURCED_THRESHOLD_ADULT: z.coerce.number().int().nonnegative().default(15),
-  DISCOVERY_PERSON_SOURCED_THRESHOLD_KID: z.coerce.number().int().nonnegative().default(5),
+  // Discovery slate size (ADR-0009). Role-blind default for the per-user
+  // `daily_pick_cap` column: the daily slate is composed into reserved slots
+  // up to this ceiling (subscription = cap − 6, back-catalogue 4, delighter
+  // 2). The migration backfills existing users to this value; a user whose
+  // column is null falls back to this default at compose time.
+  DEFAULT_DAILY_PICK_CAP: z.coerce.number().int().positive().default(15),
 });
 
 const result = schema.safeParse(process.env);

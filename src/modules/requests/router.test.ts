@@ -404,7 +404,7 @@ describe('GET /requests/feed', () => {
     return d.toISOString();
   }
 
-  it('groups today into sections (requests / channels / recommended) and prior days into bare cards', async () => {
+  it('groups today into two sections (You asked / unified Today) and prior days into bare cards', async () => {
     insertRequestRow({
       request_id: 'today-share',
       status: 'ready',
@@ -456,16 +456,21 @@ describe('GET /requests/feed', () => {
     // "Mon 7 Apr"-style: short weekday, numeric day, short month.
     expect(older!.label).toMatch(/^[A-Z][a-z]{2} \d{1,2} [A-Z][a-z]{2}$/);
 
-    // Today carries `sections` for the share_sheet / channel_subscription /
-    // recommended split; prior days don't.
+    // Today collapses to two sections (ADR-0009): "You asked" (share_sheet)
+    // and a unified "Today" mixing channel_subscription + recommended; prior
+    // days carry no sections.
     expect(today!.sections).toBeDefined();
     expect(yesterday!.sections).toBeUndefined();
     expect(older!.sections).toBeUndefined();
 
     const sectionsById = new Map(today!.sections!.map((s) => [s.id, s]));
+    expect(today!.sections!.map((s) => s.id)).toEqual(['requests', 'today']);
     expect(sectionsById.get('requests')!.cards.map((c) => c.request_id)).toEqual(['today-share']);
-    expect(sectionsById.get('channels')!.cards.map((c) => c.request_id)).toEqual(['today-channel']);
-    expect(sectionsById.get('recommended')!.cards.map((c) => c.request_id)).toEqual([
+    // The unified Today stream carries both follow + pick rows, ordered by the
+    // feed's added_at DESC (today-channel at 10:00 before today-recommended at
+    // 08:00).
+    expect(sectionsById.get('today')!.cards.map((c) => c.request_id)).toEqual([
+      'today-channel',
       'today-recommended',
     ]);
 

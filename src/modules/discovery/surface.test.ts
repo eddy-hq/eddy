@@ -33,6 +33,10 @@ import { db } from '../../db/client';
 import { runMigrations } from '../../db/migrate';
 import { surfaceForToday } from './surface';
 
+// Role-blind default cap (ADR-0009). surfaceForToday now takes the per-user
+// cap as a third argument; tests pass it explicitly.
+const CAP = 15;
+
 const KID_USER_ID = '11111111-1111-7111-8111-111111111111';
 const ADULT_USER_ID = '22222222-2222-7222-8222-222222222222';
 const INTEREST_ID = '33333333-3333-7333-8333-333333333333';
@@ -163,7 +167,7 @@ describe('surfaceForToday — kid-safety filter (eligibleGuard)', () => {
     insertCandidate({ candidateId: 'cand-no', guardVerdict: 'clear_no' });
     insertCandidate({ candidateId: 'cand-yes', guardVerdict: 'clear_yes' });
 
-    const verdicts = surfaceForToday(KID_USER_ID, true);
+    const verdicts = surfaceForToday(KID_USER_ID, true, CAP);
 
     const ids = verdicts.map((v) => v.candidate.candidateId);
     expect(ids).not.toContain('cand-no');
@@ -174,7 +178,7 @@ describe('surfaceForToday — kid-safety filter (eligibleGuard)', () => {
     insertCandidate({ candidateId: 'cand-uncertain', guardVerdict: 'uncertain' });
     insertCandidate({ candidateId: 'cand-yes', guardVerdict: 'clear_yes' });
 
-    const verdicts = surfaceForToday(KID_USER_ID, true);
+    const verdicts = surfaceForToday(KID_USER_ID, true, CAP);
 
     const ids = verdicts.map((v) => v.candidate.candidateId);
     expect(ids).not.toContain('cand-uncertain');
@@ -187,7 +191,7 @@ describe('surfaceForToday — kid-safety filter (eligibleGuard)', () => {
     insertCandidate({ candidateId: 'cand-no', guardVerdict: 'clear_no' });
     insertCandidate({ candidateId: 'cand-unc', guardVerdict: 'uncertain' });
 
-    const verdicts = surfaceForToday(KID_USER_ID, true);
+    const verdicts = surfaceForToday(KID_USER_ID, true, CAP);
     const ids = verdicts.map((v) => v.candidate.candidateId);
 
     expect(ids).toEqual(expect.arrayContaining(['cand-null', 'cand-yes']));
@@ -201,7 +205,7 @@ describe('surfaceForToday — kid-safety filter (eligibleGuard)', () => {
     insertCandidate({ candidateId: 'a-no', userId: ADULT_USER_ID, guardVerdict: 'clear_no' });
     insertCandidate({ candidateId: 'a-unc', userId: ADULT_USER_ID, guardVerdict: 'uncertain' });
 
-    const verdicts = surfaceForToday(ADULT_USER_ID, false);
+    const verdicts = surfaceForToday(ADULT_USER_ID, false, CAP);
     const ids = verdicts.map((v) => v.candidate.candidateId).sort();
 
     expect(ids).toEqual(['a-no', 'a-null', 'a-unc', 'a-yes']);
@@ -209,7 +213,7 @@ describe('surfaceForToday — kid-safety filter (eligibleGuard)', () => {
 });
 
 describe('surfaceForToday — per-day cap', () => {
-  it('returns [] and writes nothing when 5 already surfaced today for a kid', () => {
+  it('returns [] and writes nothing when the cap is already filled today', () => {
     for (let i = 0; i < 5; i++) {
       insertCandidate({
         candidateId: `already-${i}`,
@@ -221,7 +225,8 @@ describe('surfaceForToday — per-day cap', () => {
     // A fresh candidate that *would* be eligible if the cap weren't full.
     insertCandidate({ candidateId: 'fresh', guardVerdict: 'clear_yes' });
 
-    const verdicts = surfaceForToday(KID_USER_ID, true);
+    // cap=5, already 5 surfaced → nothing more surfaces.
+    const verdicts = surfaceForToday(KID_USER_ID, true, 5);
 
     expect(verdicts).toEqual([]);
     const fresh = db.prepare(
@@ -231,49 +236,58 @@ describe('surfaceForToday — per-day cap', () => {
     expect(fresh.surfaced_date).toBeNull();
   });
 
-  it('surfaces at most one new candidate when 4 already surfaced for a kid', () => {
-    // Pre-surface 4 items on distinct interests so they don't consume the
-    // kid per-interest cap (1) for fresh items below. interestId left null
-    // on the prefill rows — they still consume the daily-cap slot via the
-    // surfaced_date count.
-    for (let i = 0; i < 4; i++) {
+  it('the delighter bucket caps fresh interest-search picks at its quota of 2', () => {
+    // All candidates here are interest_search (delighter bucket, quota 2).
+    // Five fresh delighters on distinct interests + channels → exactly 2 are
+    // surfaced; the rest are cut for bucket quota. This is the floor-as-ceiling
+    // behaviour (ADR-0009), not a per-interest cap.
+    for (let i = 1; i <= 5; i++) {
       insertCandidate({
-        candidateId: `already-${i}`,
+        candidateId: `fresh-${i}`,
         guardVerdict: 'clear_yes',
-        status: 'surfaced',
-        surfacedDate: todayIso(),
-        title: `Already surfaced item ${i}`,
-        interestId: null,
+        title: `${['Aardvark', 'Bagpipe', 'Crystal', 'Dolphin', 'Echo'][i - 1]} explainer ${i}`,
+        interestId: [INTEREST_ID, INTEREST_ID_2, INTEREST_ID_3, INTEREST_ID_4, INTEREST_ID_5][i - 1],
+        connectionScore: 9, qualityScore: 9,
       });
     }
-    // Three fresh items, each on a distinct ranked interest. With cap=5
-    // and 4 already used, remaining=1: the ranker is called with cap=1,
-    // so stretchQuota=1 and regularQuota=0. Stretch picks require rank>3,
-    // so the fresh items use ranks 4, 5, 6 — distinct interests so the
-    // kid per-interest cap (1) doesn't shrink the pool further.
-    insertCandidate({
-      candidateId: 'fresh-1', guardVerdict: 'clear_yes',
-      title: 'Aardvark biology basics', interestId: INTEREST_ID_4,
-      connectionScore: 9, qualityScore: 9,
-    });
-    insertCandidate({
-      candidateId: 'fresh-2', guardVerdict: 'clear_yes',
-      title: 'Bagpipe maintenance guide', interestId: INTEREST_ID_5,
-      connectionScore: 9, qualityScore: 9,
-    });
-    insertCandidate({
-      candidateId: 'fresh-3', guardVerdict: 'clear_yes',
-      title: 'Crystallography for amateurs', interestId: INTEREST_ID_6,
-      connectionScore: 9, qualityScore: 9,
-    });
 
-    surfaceForToday(KID_USER_ID, true);
+    surfaceForToday(KID_USER_ID, true, CAP);
 
     const surfacedToday = db.prepare(
       "SELECT candidate_id FROM candidate_pool WHERE surfaced_date = ? AND status = 'surfaced'",
     ).all(todayIso()) as Array<{ candidate_id: string }>;
-    expect(surfacedToday).toHaveLength(5);
-    const freshSurfaced = surfacedToday.filter((r) => r.candidate_id.startsWith('fresh-'));
+    // Delighter quota is 2 — only two surface even with cap 15, because there
+    // is no subscription / back-catalogue supply to fill the rest of the slate.
+    expect(surfacedToday).toHaveLength(2);
+  });
+
+  it('a prefilled delighter bucket leaves room for the remainder of the quota', () => {
+    // One delighter already surfaced today (interest_search) → delighter
+    // bucket prefilled at 1, quota 2, so exactly one more fresh delighter fits.
+    insertCandidate({
+      candidateId: 'already-delighter',
+      guardVerdict: 'clear_yes',
+      status: 'surfaced',
+      surfacedDate: todayIso(),
+      title: 'Already surfaced delighter',
+      interestId: INTEREST_ID,
+    });
+    insertCandidate({
+      candidateId: 'fresh-1', guardVerdict: 'clear_yes',
+      title: 'Bagpipe maintenance guide', interestId: INTEREST_ID_2,
+      connectionScore: 9, qualityScore: 9,
+    });
+    insertCandidate({
+      candidateId: 'fresh-2', guardVerdict: 'clear_yes',
+      title: 'Crystallography for amateurs', interestId: INTEREST_ID_3,
+      connectionScore: 9, qualityScore: 9,
+    });
+
+    surfaceForToday(KID_USER_ID, true, CAP);
+
+    const freshSurfaced = db.prepare(
+      "SELECT candidate_id FROM candidate_pool WHERE surfaced_date = ? AND status = 'surfaced' AND candidate_id LIKE 'fresh-%'",
+    ).all(todayIso()) as Array<{ candidate_id: string }>;
     expect(freshSurfaced).toHaveLength(1);
   });
 });
@@ -307,7 +321,7 @@ describe('surfaceForToday — mid-day re-run carry-over', () => {
       interestId: INTEREST_ID_2,
     });
 
-    surfaceForToday(KID_USER_ID, true);
+    surfaceForToday(KID_USER_ID, true, CAP);
 
     const nearDup = db.prepare(
       'SELECT status FROM candidate_pool WHERE candidate_id = ?',
@@ -322,13 +336,13 @@ describe('surfaceForToday — mid-day re-run carry-over', () => {
     expect(distinct.status).toBe('surfaced');
   });
 
-  it("writes status='surfaced', surfaced_date, surfaced_at only for regular/stretch verdicts", () => {
-    // pickable: high-scoring item on a fresh interest — gets surfaced.
+  it("writes status='surfaced' only for picked verdicts; floor + quota losers stay 'scored'", () => {
+    // pickable: high-scoring delighter — wins one of the two delighter slots.
     insertCandidate({
       candidateId: 'pickable',
       guardVerdict: 'clear_yes',
       title: 'Alpha pickable item',
-      connectionScore: 9, qualityScore: 9,
+      connectionScore: 10, qualityScore: 10,
       interestId: INTEREST_ID_2,
     });
     // low-qual: hits the hard quality floor (< MIN_QUALITY_SCORE = 5).
@@ -339,24 +353,28 @@ describe('surfaceForToday — mid-day re-run carry-over', () => {
       connectionScore: 9, qualityScore: 2,
       interestId: INTEREST_ID_3,
     });
-    // Pre-surface one item on INTEREST_ID so cap (1 for kid) is full.
+    // Pre-surface one delighter today so the delighter bucket (quota 2) has
+    // exactly one slot left — `pickable` (highest weight) takes it, and the
+    // lower-weighted quota-blocked candidate below can't fit.
     insertCandidate({
-      candidateId: 'already-on-interest',
+      candidateId: 'already-1',
       guardVerdict: 'clear_yes',
       status: 'surfaced',
       surfacedDate: todayIso(),
-      title: 'Charlie filler title',
+      title: 'Charlie filler one',
       interestId: INTEREST_ID,
     });
+    // quota-blocked: a fresh delighter that loses the last delighter slot to
+    // `pickable` (lower weighted score) — cut for bucket quota, stays 'scored'.
     insertCandidate({
       candidateId: 'cap-blocked',
       guardVerdict: 'clear_yes',
-      title: 'Delta capped out candidate',
-      interestId: INTEREST_ID,
-      connectionScore: 9, qualityScore: 9,
+      title: 'Delta quota-blocked candidate',
+      interestId: INTEREST_ID_5,
+      connectionScore: 8, qualityScore: 8,
     });
 
-    surfaceForToday(KID_USER_ID, true);
+    surfaceForToday(KID_USER_ID, true, CAP);
 
     const rows = db.prepare(
       'SELECT candidate_id, status, surfaced_date, surfaced_at FROM candidate_pool ORDER BY candidate_id',
@@ -386,7 +404,7 @@ describe('surfaceForToday — why_text required (brief §9a)', () => {
     insertCandidate({ candidateId: 'cand-no-why', guardVerdict: 'clear_yes', whyText: null });
     insertCandidate({ candidateId: 'cand-with-why', guardVerdict: 'clear_yes' });
 
-    const verdicts = surfaceForToday(KID_USER_ID, true);
+    const verdicts = surfaceForToday(KID_USER_ID, true, CAP);
 
     const ids = verdicts.map((v) => v.candidate.candidateId);
     expect(ids).not.toContain('cand-no-why');
@@ -404,7 +422,7 @@ describe('surfaceForToday — why_text required (brief §9a)', () => {
     insertCandidate({ candidateId: 'a-no-why', userId: ADULT_USER_ID, guardVerdict: 'clear_yes', whyText: null });
     insertCandidate({ candidateId: 'a-with-why', userId: ADULT_USER_ID, guardVerdict: 'clear_yes' });
 
-    const verdicts = surfaceForToday(ADULT_USER_ID, false);
+    const verdicts = surfaceForToday(ADULT_USER_ID, false, CAP);
     const ids = verdicts.map((v) => v.candidate.candidateId);
 
     expect(ids).not.toContain('a-no-why');
@@ -418,7 +436,7 @@ describe('surfaceForToday — already-requested exclusion', () => {
     insertCandidate({ candidateId: 'fresh', guardVerdict: 'clear_yes', externalId: 'yt-bbb' });
     insertRequest(KID_USER_ID, 'yt-aaa');
 
-    const verdicts = surfaceForToday(KID_USER_ID, true);
+    const verdicts = surfaceForToday(KID_USER_ID, true, CAP);
     const ids = verdicts.map((v) => v.candidate.candidateId);
 
     expect(ids).not.toContain('requested');
@@ -431,7 +449,7 @@ describe('surfaceForToday — already-requested exclusion', () => {
     // exclude it from this user's surface.
     insertRequest(ADULT_USER_ID, 'yt-shared');
 
-    const verdicts = surfaceForToday(KID_USER_ID, true);
+    const verdicts = surfaceForToday(KID_USER_ID, true, CAP);
     const ids = verdicts.map((v) => v.candidate.candidateId);
 
     expect(ids).toContain('mine');

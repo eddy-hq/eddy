@@ -22,13 +22,13 @@ const args = process.argv.slice(2);
 const force = args.includes('--force');
 const targetArg = args.find((a) => !a.startsWith('--')) ?? null;
 
-interface UserRow { user_id: string; role: string; age_gate: number; display_name: string; }
+interface UserRow { user_id: string; role: string; age_gate: number; display_name: string; daily_pick_cap: number | null; }
 
 const users = (targetArg
   ? db.prepare(
-      'SELECT user_id, role, age_gate, display_name FROM users WHERE user_id = ? OR lower(display_name) = lower(?)'
+      'SELECT user_id, role, age_gate, display_name, daily_pick_cap FROM users WHERE user_id = ? OR lower(display_name) = lower(?)'
     ).all(targetArg, targetArg)
-  : db.prepare("SELECT user_id, role, age_gate, display_name FROM users WHERE role IN ('kid','parent')").all()
+  : db.prepare("SELECT user_id, role, age_gate, display_name, daily_pick_cap FROM users WHERE role IN ('kid','parent')").all()
 ) as UserRow[];
 
 if (users.length === 0) {
