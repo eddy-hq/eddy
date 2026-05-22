@@ -226,6 +226,27 @@ describe('rank — cap arithmetic and short slates', () => {
     const verdicts = rank([], ctx(), { cap: 15 });
     expect(verdicts).toHaveLength(0);
   });
+
+  it.each([
+    { cap: 5, total: 5, bc: 4, dl: 1, sub: 0 },
+    { cap: 4, total: 4, bc: 4, dl: 0, sub: 0 },
+    { cap: 3, total: 3, bc: 3, dl: 0, sub: 0 },
+    { cap: 1, total: 1, bc: 1, dl: 0, sub: 0 },
+  ])('a cap below 6 never overshoots: cap=$cap → $total total picks', ({ cap, total, bc, dl, sub }) => {
+    // Degenerate small caps are reachable (the column is only validated
+    // positive). The fixed buckets must clamp so the slate never exceeds cap;
+    // back-catalogue keeps priority, then delighter, then subscription.
+    const candidates = [
+      ...bucket('sub', 'subscription', 10),
+      ...bucket('bc', 'person_backcatalog', 10),
+      ...bucket('dl', 'interest_search', 10),
+    ];
+    const verdicts = rank(candidates, ctx(), { cap });
+    expect(verdicts.filter((v) => v.disposition === 'back_catalog')).toHaveLength(bc);
+    expect(verdicts.filter((v) => v.disposition === 'delighter')).toHaveLength(dl);
+    expect(verdicts.filter((v) => v.disposition === 'subscription')).toHaveLength(sub);
+    expect(verdicts.filter((v) => isPicked(v.disposition))).toHaveLength(total);
+  });
 });
 
 describe('rank — per-channel cap (global, all buckets incl. subscriptions)', () => {

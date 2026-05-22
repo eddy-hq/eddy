@@ -92,23 +92,21 @@ export async function runDiscoveryForUser(user: UserRow, options: { force?: bool
     return { userId: user.user_id, skipped: true, skipReason: 'No interests or follows set', interestsChecked: 0, candidatesAdded: 0, surfaced: 0, items: [] };
   }
 
-  // One scored pool composed into reserved slots (ADR-0009). Order is fixed
-  // by the spec/reality fix: poll subscriptions first → seed back catalogue →
-  // interest search. The poller writes every windowed video into seen_videos,
-  // but the back-catalogue seeder dedups via isDuplicateCandidate (pool +
-  // requests), not seen_videos, so polling first doesn't starve the back
-  // catalogue of a new follow's recent uploads.
+  // One scored pool composed into reserved slots (ADR-0009). The RSS poll runs
+  // once at the job level (runDiscovery), before the per-user loop and before
+  // any skip — see the spec/reality fix there. By the time this per-user
+  // composition runs, this run's subscription candidates are already in the
+  // pool. Order here: seed back catalogue → interest search. The back-catalogue
+  // seeder dedups via isDuplicateCandidate (pool + requests), not seen_videos,
+  // so the poll-first ordering doesn't starve it of a new follow's recent
+  // uploads.
   logger.info({ userId: user.user_id, interests: userInterests.length }, 'Discovery: refreshing candidate pool');
 
-  // Step 1: poll followed channels so subscription candidates are in the pool
-  // before composition. Awaited — composition must see them this run.
-  await runRssPollPass();
-
-  // Step 2: back-catalogue seeder mines the rest of each followed channel.
+  // Back-catalogue seeder mines the rest of each followed channel.
   const backCatalogAdded = await seedBackCatalogCandidates(user.user_id);
   logger.info({ userId: user.user_id, added: backCatalogAdded }, 'Discovery: back-catalog candidates added');
 
-  // Step 3: interest search runs unconditionally at full budget to supply the
+  // Interest search runs unconditionally at full budget to supply the
   // delighter bucket — the #149 gate (skip discovery when person supply is
   // sufficient) is gone (ADR-0009).
   const interestSearchAdded = await refreshCandidatePool(user.user_id, userInterests);
@@ -224,6 +222,16 @@ export function pruneStalePool(): void {
 
 async function runDiscovery(): Promise<void> {
   logger.info('Discovery job started');
+
+  // RSS poll is the job's first awaited step (ADR-0009) — once, channel-wide,
+  // before the per-user loop and before any per-user skip. The poll advances
+  // `seen_videos` and seeds subscription candidates regardless of whether any
+  // individual user is later skipped (already-at-cap / no interests), so a
+  // skipped user can't cause RSS uploads to backlog. The retired setInterval
+  // poller's daily cadence now rides on the discovery schedule.
+  await runRssPollPass().catch((err: unknown) => {
+    logger.error({ err }, 'Discovery: RSS poll pass failed');
+  });
 
   const users = db.prepare(
     "SELECT user_id, role, age_gate, daily_pick_cap FROM users WHERE role IN ('kid', 'parent')"

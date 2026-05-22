@@ -43,7 +43,6 @@ export const MAX_PER_CHANNEL = 2;
 // reallocated.
 export const BACK_CATALOG_QUOTA = 4;
 export const DELIGHTER_QUOTA = 2;
-const RESERVED_QUOTA = BACK_CATALOG_QUOTA + DELIGHTER_QUOTA;
 
 const TITLE_SIMILARITY_THRESHOLD = 0.4;
 
@@ -363,16 +362,22 @@ interface RefusalEntry {
   dedupedAgainst?: string;
 }
 
-// Per-bucket fixed quotas (ADR-0009). Back-catalogue and delighter are
-// floors-that-are-also-ceilings; subscription gets `cap − 6`. Clamped at 0 so
-// a cap below 6 can't make a quota negative — a small per-user cap simply
-// yields zero subscription slots, never a negative one.
+// Per-bucket fixed quotas (ADR-0009). In the normal case (cap ≥ 6):
+// back-catalogue 4, delighter 2, subscription `cap − 6`. The fixed buckets are
+// floors-that-are-also-ceilings.
+//
+// Degenerate small-cap guard: `daily_pick_cap` / DEFAULT_DAILY_PICK_CAP are
+// only validated positive, so a cap below 6 is reachable config/user data.
+// When the two fixed buckets wouldn't fit, they are clamped so the whole slate
+// never exceeds the cap — back-catalogue keeps priority (filled first), then
+// delighter takes whatever remains, then subscription gets nothing. The total
+// of all three quotas is therefore always ≤ cap.
 function bucketQuotas(cap: number): Record<Bucket, number> {
-  return {
-    subscription: Math.max(0, cap - RESERVED_QUOTA),
-    back_catalog: BACK_CATALOG_QUOTA,
-    delighter: DELIGHTER_QUOTA,
-  };
+  const safeCap = Math.max(0, cap);
+  const backCatalog = Math.min(BACK_CATALOG_QUOTA, safeCap);
+  const delighter = Math.min(DELIGHTER_QUOTA, safeCap - backCatalog);
+  const subscription = Math.max(0, safeCap - backCatalog - delighter);
+  return { subscription, back_catalog: backCatalog, delighter };
 }
 
 // Single weighted-desc pass. Each eligible item competes for a slot in its

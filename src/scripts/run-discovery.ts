@@ -14,6 +14,7 @@ import { runMigrations } from '../db/migrate';
 import { seedUsers } from '../db/seed';
 import { db } from '../db/client';
 import { runDiscoveryForUser } from '../modules/discovery/index';
+import { runRssPollPass } from '../modules/people';
 
 runMigrations();
 seedUsers();
@@ -38,6 +39,10 @@ if (users.length === 0) {
 }
 
 async function main() {
+  // Mirror the production job: poll once before the per-user loop so
+  // subscription candidates are in the pool for this debug run.
+  await runRssPollPass();
+
   for (const user of users) {
     // eslint-disable-next-line no-console
     console.log(`\n── ${user.display_name} (${user.role}) ──────────────────────`);
