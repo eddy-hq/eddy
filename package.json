@@ -20,6 +20,7 @@
     "discovery:rescore": "tsx src/scripts/rescore-discovery.ts",
     "discovery:preview": "tsx src/scripts/preview-discovery.ts",
     "discovery:preview-html": "tsx src/scripts/preview-html.ts",
+    "eval:scoring-why": "tsx src/scripts/eval-scoring-why.ts",
     "label-guard": "tsx src/scripts/label-guard.ts",
     "thumbs:backfill": "tsx src/scripts/thumbs-backfill.ts",
     "thumbs:quality": "tsx src/scripts/thumb-quality-test.ts",

@@ -110,8 +110,10 @@ export function buildScoringPrompt(
     const seedTag = item.interestLabel
       ? ` [seeded by interest: "${item.interestLabel}"${item.expertise ? `, ${item.expertise}` : ''}]`
       : '';
-    const followTag = item.sourceType === 'person_backcatalog' && item.personName
-      ? ` [back-catalog from a person you follow: ${item.personName}]`
+    const followTag = item.personName && (item.sourceType === 'person_backcatalog' || item.sourceType === 'subscription')
+      ? item.sourceType === 'subscription'
+        ? ` [new upload from a person you follow: ${item.personName}]`
+        : ` [back-catalog from a person you follow: ${item.personName}]`
       : '';
     return `${item.index}. "${item.title}" — ${channel} | ${formatDuration(item.durationSecs)} | ${formatAge(item.publishedAt)}${seedTag}${followTag}`;
   }).join('\n');
@@ -126,15 +128,15 @@ export function buildScoringPrompt(
     ? `\nKnown preference patterns (you may cite one of these by name in "why"):\n${affinityStatements.map((s, i) => `${i + 1}. ${s}`).join('\n')}\n`
     : '';
 
-  return `Score YouTube videos for a personal discovery feed. For each video give a connection score, a quality score, a time-sensitivity tag, and a one-sentence reason.
+  return `Score YouTube videos for a personal discovery feed. For each video give a connection score, a quality score, a time-sensitivity tag, and a one-sentence reason in Eddy's voice.
 
 User interests (priority order, expertise): ${interestSummary}
 ${affinitySection}
-Videos (title — channel | length | age [seeded by interest] [back-catalog from a person you follow]):
+Videos (title — channel | length | age [seeded by interest] [back-catalog from a person you follow] [new upload from a person you follow]):
 ${videoList}
 
 Return ONLY this JSON, one entry per video, no other text:
-[{"index":1,"connection":7,"quality":8,"time_sensitivity":"standard","why":"Names the matched interest and a specific aspect of THIS video, max 20 words."}]
+[{"index":1,"connection":7,"quality":8,"time_sensitivity":"standard","why":"A practical look at {specific aspect}, close to the way you have been exploring {grounding}."}]
 
 CONNECTION (0–10): match to a named interest at the user's expertise level.
 - 8–10: clearly and specifically matches a named interest
@@ -158,9 +160,16 @@ TIME_SENSITIVITY:
 - "standard": tutorials, year-stamped roadmaps, trend pieces
 - "evergreen": fundamentals, history, philosophy, classic retrospectives
 
-If a video is tagged "[back-catalog from a person you follow: NAME]", name that person in the "why" — e.g. "NAME has a video on {specific aspect} you haven't seen". The follow does not change the connection or quality scores; the user still has to want this specific video.
+For "why", write one warm, specific sentence that could sit above the card in Eddy's voice:
+- Lead with the video's concrete value: the question, technique, perspective, match moment, build, argument, or explanation it contains.
+- Tie that value to the user's taste in plain language, using "you" or "your" naturally.
+- For followed people, use the person only when their style or perspective matters; otherwise explain the video itself.
 
-The "why" must name the matched interest and something specific about THIS video. Generic phrasing means connection ≤ 3. Do not consider freshness or popularity in the scores — those are applied separately.`;
+Good shapes:
+- "A concise look at the Southport shape after the red card, which fits your habit of watching the tactical side of York games."
+- "Steve Mould's kind of hands-on physics explanation, but aimed at gyroscopes rather than the usual pressure or sound demos."
+
+If the best reason would only be provenance, give a low connection score. The follow does not change the connection or quality scores; the user still has to want this specific video. Do not consider freshness or popularity in the scores — those are applied separately.`;
 }
 
 interface ScoreEntry { index: number; connection?: number; quality?: number; time_sensitivity?: string; why?: string; score?: number }
@@ -178,6 +187,13 @@ export function parseScoringVerdict(raw: string): ScoreEntry[] | null {
     try { return JSON.parse(m[0]) as ScoreEntry; } catch { return null; }
   }).filter((o): o is ScoreEntry => o !== null);
   return objects.length === 0 ? null : objects;
+}
+
+export function normalizeScoringWhy(title: string, why: string | undefined): string | null {
+  const trimmed = why?.trim();
+  if (!trimmed) return null;
+  if (trimmed.toLowerCase() === title.trim().toLowerCase()) return null;
+  return trimmed;
 }
 
 export async function scoreCandidates(userId: string, userInterests: UserInterestRow[]): Promise<void> {
@@ -291,7 +307,7 @@ export async function scoreCandidates(userId: string, userInterests: UserInteres
         SET connection_score = ?, quality_score = ?, gemma_score = ?,
             time_sensitivity = ?, why_text = ?, status = 'scored', scored_at = ?
         WHERE candidate_id = ?
-      `).run(connection, quality, combined, sensitivity, entry.why ?? null, now, item.candidateId);
+      `).run(connection, quality, combined, sensitivity, normalizeScoringWhy(item.title, entry.why), now, item.candidateId);
     }
   }
 }

@@ -3,6 +3,7 @@ import {
   overrideTimeSensitivity,
   parseScoringVerdict,
   buildScoringPrompt,
+  normalizeScoringWhy,
 } from './scoring';
 
 vi.mock('../../config', () => ({
@@ -77,10 +78,35 @@ describe('parseScoringVerdict', () => {
   it('returns null on malformed input with no parseable JSON', () => {
     expect(parseScoringVerdict('totally not json')).toBeNull();
   });
+
+  it('parses a voice-style why that is not the video title', () => {
+    const title = 'Tool Calling Is Not Just Plumbing for AI Agents — Roy Derks';
+    const raw = `[{"index":1,"connection":8,"quality":7,"time_sensitivity":"standard","why":"I thought you'd like this because it gets into how agent tools are designed, not just wired up."}]`;
+    const out = parseScoringVerdict(raw);
+
+    expect(out).toHaveLength(1);
+    expect(out?.[0]?.why).not.toBe(title);
+    expect(out?.[0]?.why).toMatch(/[.!?]$/);
+  });
+});
+
+describe('normalizeScoringWhy', () => {
+  it('rejects title parroting', () => {
+    const title = 'Tool Calling Is Not Just Plumbing for AI Agents — Roy Derks';
+
+    expect(normalizeScoringWhy(title, title)).toBeNull();
+  });
+
+  it('trims usable why text', () => {
+    expect(normalizeScoringWhy(
+      'A title',
+      '  I thought you would like this because it connects AI agents to practical tool design.  ',
+    )).toBe('I thought you would like this because it connects AI agents to practical tool design.');
+  });
 });
 
 describe('buildScoringPrompt', () => {
-  it('numbers each video line and includes interest + back-catalog tags', () => {
+  it('numbers each video line and includes interest + followed-person tags', () => {
     const prompt = buildScoringPrompt(
       [
         {
@@ -109,6 +135,19 @@ describe('buildScoringPrompt', () => {
           personId: 'p1',
           personName: 'Simon Peyton Jones',
         },
+        {
+          index: 3,
+          candidateId: 'c3',
+          title: 'New compiler talk',
+          channel: 'Some Channel',
+          durationSecs: 1500,
+          publishedAt: null,
+          interestLabel: null,
+          expertise: null,
+          sourceType: 'subscription',
+          personId: 'p2',
+          personName: 'Jane Compiler',
+        },
       ],
       '"functional programming" (deep)',
     );
@@ -117,7 +156,35 @@ describe('buildScoringPrompt', () => {
     expect(prompt).toContain('[seeded by interest: "functional programming", deep]');
     expect(prompt).toContain('2. "Old talk on monads"');
     expect(prompt).toContain('[back-catalog from a person you follow: Simon Peyton Jones]');
+    expect(prompt).toContain('3. "New compiler talk"');
+    expect(prompt).toContain('[new upload from a person you follow: Jane Compiler]');
     expect(prompt).toContain('User interests (priority order, expertise): "functional programming" (deep)');
+  });
+
+  it('instructs Gemma to write the why in Eddy voice without title parroting', () => {
+    const prompt = buildScoringPrompt(
+      [{
+        index: 1,
+        candidateId: 'c1',
+        title: 'Tool Calling Is Not Just Plumbing for AI Agents — Roy Derks',
+        channel: 'AI Channel',
+        durationSecs: 900,
+        publishedAt: null,
+        interestLabel: 'AI agents',
+        expertise: 'deep',
+        sourceType: 'interest_search',
+        personId: null,
+        personName: null,
+      }],
+      '"AI agents" (deep)',
+    );
+
+    expect(prompt).toContain('one-sentence reason in Eddy\'s voice');
+    expect(prompt).toContain('write one warm, specific sentence');
+    expect(prompt).toContain('Lead with the video\'s concrete value');
+    expect(prompt).toContain('using "you" or "your" naturally');
+    expect(prompt).toContain('For followed people, use the person only when their style or perspective matters');
+    expect(prompt).toContain('If the best reason would only be provenance, give a low connection score');
   });
 
   it('omits the affinity section entirely when no statements are passed', () => {
