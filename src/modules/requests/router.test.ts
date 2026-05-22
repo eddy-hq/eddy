@@ -59,6 +59,7 @@ import { runMigrations } from '../../db/migrate';
 import { EddyError } from '../../errors';
 import { downloadQueue } from '../../queue';
 import {
+  FEED_LIMIT,
   requestsRouter,
   readRecentRejectedRequestsForAdmin,
 } from './index';
@@ -571,6 +572,30 @@ describe('GET /requests/feed', () => {
     );
     expect(byId.get('cancelled-by-user')).toBe('Cancelled');
     expect(byId.get('guard-blocked')).toBe('Not suitable for this age band');
+  });
+
+  it('keeps the temporary feed cap above the legacy 200-row cutoff until old-day summaries exist', async () => {
+    expect(FEED_LIMIT).toBeGreaterThan(200);
+
+    const baseTime = new Date(isoAt(0)).getTime();
+    for (let i = 0; i < 201; i += 1) {
+      insertRequestRow({
+        request_id: `feed-cap-${i}`,
+        status: 'ready',
+        source: 'share_sheet',
+        added_at: new Date(baseTime - i * 1000).toISOString(),
+      });
+    }
+
+    const resp = await request('GET', '/requests/feed?user=Boy1');
+    expect(resp.status).toBe(200);
+    const body = resp.json<{
+      days: Array<{ cards: Array<{ request_id: string }>; sections?: Array<{ cards: Array<{ request_id: string }> }> }>;
+    }>();
+    const ids = body.days.flatMap((d) => d.sections ? d.sections.flatMap((s) => s.cards) : d.cards).map((c) => c.request_id);
+
+    expect(ids).toHaveLength(201);
+    expect(ids).toContain('feed-cap-200');
   });
 
   it('returns 400 when neither userId nor user is provided', async () => {

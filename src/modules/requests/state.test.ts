@@ -1240,8 +1240,8 @@ describe('create_candidate', () => {
     expect(row.decided_by).toBe('auto');
     expect(new Date(row.decided_at).getTime()).toBeGreaterThanOrEqual(before);
     expect(new Date(row.requested_at).getTime()).toBeGreaterThanOrEqual(before);
-    // Feed query orders by added_at DESC LIMIT 200 — a NULL would push the
-    // row out of the cap and make the accept look like a silent dismiss.
+    // Feed query orders by added_at DESC with a fixed cap — a NULL would push
+    // the row out of the cap and make the accept look like a silent dismiss.
     expect(row.added_at).not.toBeNull();
     expect(new Date(row.added_at!).getTime()).toBeGreaterThanOrEqual(before);
 

@@ -600,9 +600,9 @@ export const TRANSITIONS = {
   } as Descriptor<Extract<Event, { kind: 'create_channel_poll' }>>,
 
   // added_at matches the other two creators: the feed query orders by
-  // `added_at DESC LIMIT 200`, so a NULL there pushes the row below every
-  // dated request and out of the cap entirely — the candidate accept then
-  // looks like a silent dismiss in the PWA.
+  // `added_at DESC` with a fixed cap, so a NULL there pushes the row below
+  // every dated request and out of the cap entirely — the candidate accept
+  // then looks like a silent dismiss in the PWA.
   create_candidate: {
     sources: 'creation',
     target: 'downloading',

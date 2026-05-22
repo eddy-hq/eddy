@@ -44,6 +44,7 @@ export type {
 } from './state';
 
 export const requestsRouter = Router();
+export const FEED_LIMIT = 1000;
 
 interface AdminRequestRow {
   request_id: string;
@@ -211,8 +212,8 @@ requestsRouter.get('/feed', (req: Request, res: Response) => {
       AND status NOT IN ('dismissed', 'deleted')
       AND NOT (source = 'channel_subscription' AND status IN ('pending', 'downloading'))
     ORDER BY added_at DESC
-    LIMIT 200
-  `).all(found.user_id) as Array<{
+    LIMIT ?
+  `).all(found.user_id, FEED_LIMIT) as Array<{
     request_id: string; url: string; youtube_id: string | null;
     youtube_channel_id: string | null;
     title: string | null; channel: string | null; status: string; file_state: string;
