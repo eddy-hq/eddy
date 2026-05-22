@@ -69,6 +69,8 @@ No Python in Eddy — yt-dlp is a binary shell-out.
 - Add Tailwind, Storybook, or CSS-in-JS.
 - Auto-apply Drift suggestions or any profile change.
 - Put kid PII or consumption details in anything that could leave the local network.
+- Use watch behaviour as an originator of a discovery input (watch = weight + Drift only; every discovery input must trace to a declaration or a follow).
+- Auto-promote interests into `user_interests` from follows or watch without an explicit Keep action.
 
 ## Deploying / restarting
 
@@ -83,3 +85,5 @@ npm run test
 ```
 
 All green. New behaviour demonstrable end-to-end on the M4 over Tailscale.
+
+**PWA UI changes cannot be browser-tested AFK.** Vitest runs in `node` env (`src/**/*.test.ts` only — no RTL, no jsdom, no happy-dom). When shipping UI work without a human present: extract pure logic into unit-testable helpers, write those tests, and add an explicit "UI not browser-verified (AFK)" note to the PR body with a numbered manual click-through for review on the M4. (Harness gap tracked in #174.)
