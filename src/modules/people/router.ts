@@ -120,13 +120,27 @@ peopleRouter.post('/follow', (req: Request, res: Response) => {
   void applyChannelInfoToPerson(personId, channelId)
     .catch((err: unknown) => logger.warn({ err, channelId }, 'Capture channel info on follow failed'));
 
-  // Fire-and-forget: poll the channel immediately so videos appear without waiting for the poller
-  void pollChannel({ output_id: outputId, channel_id: channelId, person_id: personId, channel_name: channelName.trim() })
-    .catch((err: unknown) => logger.error({ err, channelId }, 'Immediate post-follow poll failed'));
-
-  // Fire-and-forget: infer interest links for this channel
-  void inferChannelInterests(channelId, channelName.trim())
-    .catch((err: unknown) => logger.error({ err, channelId }, 'Channel interest inference failed'));
+  // Fire-and-forget, but ordered: infer the channel's interest links FIRST,
+  // then poll. The immediate poll's first-poll confirmation candidate is a
+  // 'subscription' candidate that must carry the channel's interest_id
+  // (ADR-0009), read from channel_interest_links — which inferChannelInterests
+  // populates. Running them concurrently races a (slower, Gemma-backed)
+  // inference against the poll, so the candidate would be written with a null
+  // interest_id and then marked seen, leaving the daily poll unable to repair
+  // it. Awaiting inference before the poll closes that race; the whole chain
+  // stays off the HTTP response path.
+  void (async () => {
+    try {
+      await inferChannelInterests(channelId, channelName.trim());
+    } catch (err) {
+      logger.error({ err, channelId }, 'Channel interest inference failed');
+    }
+    try {
+      await pollChannel({ output_id: outputId, channel_id: channelId, person_id: personId, channel_name: channelName.trim() });
+    } catch (err) {
+      logger.error({ err, channelId }, 'Immediate post-follow poll failed');
+    }
+  })();
 
   logger.info({ userId: uid, personId, channelId }, 'User followed channel');
   res.json({ personId, channelId, following: true });
