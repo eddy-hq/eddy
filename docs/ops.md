@@ -75,16 +75,16 @@ npm run deploy -- --server-only   # restart M4 server only
 
 1. `git push origin <current-branch>`
 2. SSHes to Ubuntu:
-   - `git pull --ff-only`
-   - `npm ci --omit=dev` — only if `package.json` or `package-lock.json` changed since Ubuntu's last commit; skipped otherwise
-   - `npm run build` (`tsc && vite build && copy migrations`)
+   - `git pull --ff-only origin`
+   - `npm ci` (full install, unconditional — the build needs dev deps like `tsc`/`vite`)
+   - `npm run build` (`tsc && vite build && cp -r src/db/migrations dist/db/`) — the worker runs the compiled `dist/workers/download.js`, so the build is required
    - `systemctl --user restart eddy-worker`
    - Verifies worker is active before returning
 3. Prints summary
 
-**`--server` / `--full`** additionally runs `launchctl kickstart -k gui/$(id -u)/com.eddy.server` and waits for `/health` to respond.
+**`--server` / `--full`** additionally runs `npm run build` **on the M4** (`tsc + vite build`, refreshing the `dist/pwa` the server serves), then `launchctl kickstart -k gui/$(id -u)/com.eddy.server` and waits for `/health` to respond. `--server-only` does the same M4 build + restart without touching Ubuntu.
 
-The M4 Express server uses `tsx watch` and hot-reloads on changes to any file under `src/` — a server restart is only needed when picking up new env vars, after a crash, or after editing the plist itself (see "Reloading the server plist" below).
+The M4 Express server runs from source via `tsx watch` and hot-reloads on any change under `src/`, so server *logic* changes go live without a restart. A restart (`--server` / `--full`) is still needed to **apply new DB migrations** (they run on startup) or pick up new env vars; a **rebuild** is needed for **PWA changes**, since the server serves the prebuilt `dist/pwa` from disk. The `--server` / `--full` path does both. See also "Reloading the server plist" below for plist edits, which need a full bootout/bootstrap.
 
 ### Manually restarting services
 

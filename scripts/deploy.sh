@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Deploy Eddy: push to GitHub, update Ubuntu worker, optionally restart M4 server.
 #
-# Ubuntu only runs the BullMQ worker — no build step needed there.
-# The M4 server restart builds (tsc + vite) locally before relaunching.
+# Ubuntu runs the BullMQ worker from compiled output (dist/workers/download.js),
+# so it builds (npm ci + npm run build) after pulling. The M4 server restart
+# (--server/--full) also builds (tsc + vite) locally before relaunching.
 #
 # Usage:
 #   deploy.sh              — push + deploy Ubuntu worker
