@@ -62,7 +62,14 @@ export function surfaceForToday(userId: string, isKid: boolean, cap: number): Ve
   // The ranker is handed the full per-user cap; the mid-day top-up is bounded
   // by prefilledBucketCounts (per-bucket spend already on today's slate)
   // rather than a scalar `remaining`, so each bucket tops up to its own quota.
-  const eligibleGuard = isKid ? "AND (c.guard_verdict = 'clear_yes' OR c.guard_verdict IS NULL)" : '';
+  //
+  // Kid surfacing requires an explicit `clear_yes` (ADR-0009 / kid-safety
+  // non-negotiable). Now that follows route through the pool, a NULL
+  // guard_verdict means the candidate was never guard-rechecked (e.g. it fell
+  // outside the top-N recheck) — admitting it would surface a followed upload
+  // to a kid unguarded, which is exactly the bypass this issue closes. Default
+  // to escalation: an un-rechecked candidate does not surface for a kid.
+  const eligibleGuard = isKid ? "AND c.guard_verdict = 'clear_yes'" : '';
 
   // Data-shape SQL only: status, surfaced_date, kid guard, history
   // exclusion, why_text presence. Score floors live in the ranker so

@@ -78,9 +78,18 @@ export async function runDiscoveryForUser(user: UserRow, options: { force?: bool
 
   const userInterests = selectDeclaredInterests(user.user_id);
 
-  if (userInterests.length === 0) {
-    logger.info({ userId: user.user_id }, 'Discovery: user has no interests, skipping');
-    return { userId: user.user_id, skipped: true, skipReason: 'No interests set', interestsChecked: 0, candidatesAdded: 0, surfaced: 0, items: [] };
+  // A user with no declared interests can still have follows, and follows now
+  // route through the scored pool (ADR-0009) — so only skip when there is
+  // genuinely nothing to source: no interests AND no follows. A follow-only
+  // user proceeds; interest search just contributes nothing to the delighter
+  // bucket, and subscription + back-catalogue candidates still flow.
+  const followCount = (db.prepare(
+    'SELECT COUNT(*) AS n FROM followed_people WHERE user_id = ?',
+  ).get(user.user_id) as { n: number }).n;
+
+  if (userInterests.length === 0 && followCount === 0) {
+    logger.info({ userId: user.user_id }, 'Discovery: user has no interests and no follows, skipping');
+    return { userId: user.user_id, skipped: true, skipReason: 'No interests or follows set', interestsChecked: 0, candidatesAdded: 0, surfaced: 0, items: [] };
   }
 
   // One scored pool composed into reserved slots (ADR-0009). Order is fixed

@@ -185,7 +185,11 @@ describe('surfaceForToday — kid-safety filter (eligibleGuard)', () => {
     expect(ids).toContain('cand-yes');
   });
 
-  it('admits kid candidates with guard_verdict = clear_yes OR NULL', () => {
+  it('admits ONLY clear_yes for kids — NULL (un-rechecked) is excluded (ADR-0009 kid safety)', () => {
+    // Now that follows route through the pool, a NULL guard_verdict means the
+    // candidate was never guard-rechecked. Admitting it would surface an
+    // un-guarded followed upload to a kid — the bypass this issue closes.
+    // Default to escalation: only an explicit clear_yes surfaces.
     insertCandidate({ candidateId: 'cand-null', guardVerdict: null });
     insertCandidate({ candidateId: 'cand-yes', guardVerdict: 'clear_yes' });
     insertCandidate({ candidateId: 'cand-no', guardVerdict: 'clear_no' });
@@ -194,7 +198,8 @@ describe('surfaceForToday — kid-safety filter (eligibleGuard)', () => {
     const verdicts = surfaceForToday(KID_USER_ID, true, CAP);
     const ids = verdicts.map((v) => v.candidate.candidateId);
 
-    expect(ids).toEqual(expect.arrayContaining(['cand-null', 'cand-yes']));
+    expect(ids).toEqual(['cand-yes']);
+    expect(ids).not.toContain('cand-null');
     expect(ids).not.toContain('cand-no');
     expect(ids).not.toContain('cand-unc');
   });
