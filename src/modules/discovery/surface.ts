@@ -7,14 +7,45 @@ export interface ScoredCandidateForGuard {
   url: string;
 }
 
-export function readScoredCandidates(userId: string, limit: number): ScoredCandidateForGuard[] {
-  return db.prepare(`
-    SELECT candidate_id, title, url
-    FROM candidate_pool
-    WHERE user_id = ? AND status = 'scored'
-    ORDER BY gemma_score DESC
-    LIMIT ?
-  `).all(userId, limit) as ScoredCandidateForGuard[];
+// Kid guard recheck candidates, the top `perBucketLimit` scored rows in EACH
+// composition bucket (ADR-0009). A flat top-N by gemma_score starves a kid's
+// reserved back-catalogue / delighter floors on a flood day: if the top N are
+// all subscriptions, the lower-raw-score candidates that would fill those
+// floors stay un-rechecked and (since kid surfacing requires clear_yes) can't
+// surface even when supply exists. Bucketing the recheck guarantees each
+// floor's strongest candidates are guarded, so a thin slate reflects genuine
+// supply or guard rejections — never an artefact of the recheck window.
+//
+// Buckets here mirror ranker.bucketFor: subscription / person_backcatalog /
+// everything-else (delighter). `perBucketLimit` is sized comfortably above the
+// largest bucket quota so guard rejections don't exhaust the rechecked set
+// before a floor is filled.
+export function readScoredCandidatesByBucket(
+  userId: string,
+  perBucketLimit: number,
+): ScoredCandidateForGuard[] {
+  const row = db.prepare(`
+    WITH ranked AS (
+      SELECT candidate_id, title, url,
+             CASE
+               WHEN source_type = 'subscription' THEN 'subscription'
+               WHEN source_type = 'person_backcatalog' THEN 'person_backcatalog'
+               ELSE 'delighter'
+             END AS bucket,
+             ROW_NUMBER() OVER (
+               PARTITION BY CASE
+                 WHEN source_type = 'subscription' THEN 'subscription'
+                 WHEN source_type = 'person_backcatalog' THEN 'person_backcatalog'
+                 ELSE 'delighter'
+               END
+               ORDER BY gemma_score DESC
+             ) AS rn
+      FROM candidate_pool
+      WHERE user_id = ? AND status = 'scored'
+    )
+    SELECT candidate_id, title, url FROM ranked WHERE rn <= ?
+  `);
+  return row.all(userId, perBucketLimit) as ScoredCandidateForGuard[];
 }
 
 export function updateCandidatePoolStatus(

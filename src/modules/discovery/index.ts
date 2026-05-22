@@ -17,7 +17,7 @@ import { scoreCandidates } from './scoring';
 import { bucketFor, isPicked } from './ranker';
 import {
   surfaceForToday,
-  readScoredCandidates,
+  readScoredCandidatesByBucket,
   updateCandidatePoolStatus,
 } from './surface';
 
@@ -40,8 +40,14 @@ export interface DiscoveryRunResult {
   items: Array<{ title: string | null; score: number | null; why: string | null; guardVerdict: string | null }>;
 }
 
-// Top-N scored candidates re-checked through the guard for kid users.
-const KID_GUARD_RECHECK_LIMIT = 30;
+// Per-bucket recheck depth for the kid guard (ADR-0009). The recheck runs over
+// the top-N scored rows in EACH composition bucket, not the top-N overall — a
+// flat top-N starves a kid's reserved back-catalogue / delighter floors on a
+// subscription flood day (those candidates stay un-rechecked, and kid
+// surfacing requires clear_yes). 12 sits comfortably above the largest bucket
+// quota (subscription = cap − 6 with the default cap of 15 → 9) so guard
+// rejections don't exhaust the rechecked set before a floor fills.
+const KID_GUARD_RECHECK_PER_BUCKET = 12;
 
 // The connection-axis vocabulary that feeds scoring. Per ADR-0008, this is
 // built from DECLARED interests only — stored `user_interests` rows. Inferred
@@ -118,7 +124,10 @@ export async function runDiscoveryForUser(user: UserRow, options: { force?: bool
 
   if (isKid) {
     const ageBand = getAgeBand(user.user_id);
-    const scored = readScoredCandidates(user.user_id, KID_GUARD_RECHECK_LIMIT);
+    // Scale the per-bucket recheck depth with the cap so a large per-user cap
+    // (subscription quota = cap − 6) can't outrun the rechecked set.
+    const perBucket = Math.max(KID_GUARD_RECHECK_PER_BUCKET, cap);
+    const scored = readScoredCandidatesByBucket(user.user_id, perBucket);
     for (const c of scored) {
       const verdict = await evaluateCandidate({
         candidateId: c.candidate_id,

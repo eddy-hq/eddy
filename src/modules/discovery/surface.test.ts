@@ -31,7 +31,7 @@ vi.mock('../../ytdlp', () => ({
 
 import { db } from '../../db/client';
 import { runMigrations } from '../../db/migrate';
-import { surfaceForToday } from './surface';
+import { surfaceForToday, readScoredCandidatesByBucket } from './surface';
 
 // Role-blind default cap (ADR-0009). surfaceForToday now takes the per-user
 // cap as a third argument; tests pass it explicitly.
@@ -56,6 +56,8 @@ interface CandidateOpts {
   connectionScore?: number | null;
   qualityScore?: number | null;
   timeSensitivity?: string | null;
+  sourceType?: string;
+  gemmaScore?: number | null;
   interestId?: string | null;
   surfacedDate?: string | null;
   externalId?: string;
@@ -75,17 +77,18 @@ function insertCandidate(opts: CandidateOpts): void {
     INSERT INTO candidate_pool
       (candidate_id, user_id, content_type, source_type,
        interest_id, url, external_id, title,
-       connection_score, quality_score, time_sensitivity,
+       connection_score, quality_score, time_sensitivity, gemma_score,
        published_at, guard_verdict, status, surfaced_date, created_at,
        why_text)
-    VALUES (?, ?, 'video', 'interest_search',
+    VALUES (?, ?, 'video', ?,
             ?, ?, ?, ?,
-            ?, ?, ?,
+            ?, ?, ?, ?,
             ?, ?, ?, ?, ?,
             ?)
   `).run(
     opts.candidateId,
     userId,
+    opts.sourceType ?? 'interest_search',
     opts.interestId ?? null,
     `https://www.youtube.com/watch?v=${opts.candidateId}`,
     externalId,
@@ -93,6 +96,7 @@ function insertCandidate(opts: CandidateOpts): void {
     opts.connectionScore ?? 8,
     opts.qualityScore ?? 8,
     opts.timeSensitivity ?? 'evergreen',
+    opts.gemmaScore ?? null,
     opts.publishedAt ?? new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
     opts.guardVerdict ?? null,
     opts.status ?? 'scored',
@@ -458,5 +462,42 @@ describe('surfaceForToday — already-requested exclusion', () => {
     const ids = verdicts.map((v) => v.candidate.candidateId);
 
     expect(ids).toContain('mine');
+  });
+});
+
+describe('readScoredCandidatesByBucket — kid guard recheck covers every bucket', () => {
+  it('rechecks each bucket\'s top-N, not the top-N overall (flood-day floor protection)', () => {
+    // Flood day: 10 subscriptions with the highest raw gemma_score, plus a few
+    // back-catalogue and delighter rows scoring lower. A flat top-N=3 by
+    // gemma_score would only return subscriptions, leaving the reserved
+    // back-catalogue / delighter floors un-rechecked (and so un-surfaceable
+    // for a kid). Per-bucket recheck must reach all three buckets.
+    for (let i = 0; i < 10; i++) {
+      insertCandidate({
+        candidateId: `sub-${i}`, sourceType: 'subscription',
+        gemmaScore: 100 - i, // highest raw scores
+      });
+    }
+    insertCandidate({ candidateId: 'bc-1', sourceType: 'person_backcatalog', gemmaScore: 20 });
+    insertCandidate({ candidateId: 'bc-2', sourceType: 'person_backcatalog', gemmaScore: 19 });
+    insertCandidate({ candidateId: 'dl-1', sourceType: 'interest_search', gemmaScore: 10 });
+    insertCandidate({ candidateId: 'dl-2', sourceType: 'interest_search', gemmaScore: 9 });
+
+    // perBucketLimit = 2 → top 2 from each bucket.
+    const rows = readScoredCandidatesByBucket(KID_USER_ID, 2);
+    const ids = rows.map((r) => r.candidate_id).sort();
+
+    // Two subscriptions (the very top), both back-cat, both delighter — the
+    // lower-raw-score floors are reached despite the subscription flood.
+    expect(ids).toEqual(['bc-1', 'bc-2', 'dl-1', 'dl-2', 'sub-0', 'sub-1'].sort());
+  });
+
+  it('treats any non-subscription / non-backcatalog source_type as the delighter bucket', () => {
+    insertCandidate({ candidateId: 'is-1', sourceType: 'interest_search', gemmaScore: 30 });
+    insertCandidate({ candidateId: 'other-1', sourceType: 'person_recommendation', gemmaScore: 29 });
+
+    const rows = readScoredCandidatesByBucket(KID_USER_ID, 1);
+    // Both map to the delighter bucket, so top-1 returns only the higher-scored.
+    expect(rows.map((r) => r.candidate_id)).toEqual(['is-1']);
   });
 });
