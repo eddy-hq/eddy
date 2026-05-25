@@ -1,7 +1,8 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { AnimatePresence, motion } from 'framer-motion';
+import { ChevronRight } from 'lucide-react';
 import { Card, type CardData } from '../components/Card';
 import { CompactCard, type SourceKind } from '../components/CompactCard';
 import { VideoDetailSheet } from '../components/VideoDetailSheet';
@@ -10,6 +11,15 @@ import { AppHeader } from '../components/AppHeader';
 import { useVideoSheet } from '../hooks/useVideoSheet';
 import { useRestorePolling } from '../hooks/useRestorePolling';
 import type { WatchSource } from '../lib/watchEvents';
+import {
+  ageInDays,
+  agoLabel,
+  isQuiet,
+  isTier2Age,
+  itemsLabel,
+  moreCount,
+  provenanceSegments,
+} from './feed-tier3';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -105,6 +115,26 @@ function sourceKind(src: string): SourceKind | null {
   return null;
 }
 
+// Provenance colour map — kept literally in sync with the CompactCard DOT map
+// (and index.css). Used by the Tier 3 day-row's provenance bar + title dots.
+const PROVENANCE_DOT: Record<'req' | 'follow' | 'pick', string> = {
+  req: '#B8863C',          // amber-gold
+  follow: 'var(--accent)', // teal
+  pick: 'var(--save)',     // save green
+};
+
+// Today as a 'YYYY-MM-DD' string at the local day boundary, for client-side
+// tier bucketing. Matches the granularity the server buckets on (a calendar
+// day); `ageInDays` then treats both ends as UTC midnight, so the delta is a
+// pure calendar-day count.
+function todayDateStr(): string {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, '0');
+  const d = String(now.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
 // ── Component ────────────────────────────────────────────────────────────────
 
 export function Feed() {
@@ -124,13 +154,26 @@ export function Feed() {
   if (isLoading) return <Empty text="Loading…" />;
   if (isError) return <Empty text="Could not load." />;
 
+  const today = todayDateStr();
   const allDays = data?.days ?? [];
   const todayDay = allDays.find((d) => d.label === 'Today') ?? null;
-  const pastDays = allDays.filter((d) => d !== todayDay && (d.cards.length > 0 || d.sections?.some((s) => s.cards.length)));
+  const populatedPastDays = allDays.filter(
+    (d) => d !== todayDay && (d.cards.length > 0 || d.sections?.some((s) => s.cards.length)),
+  );
+
+  // Tier 2: only days less than 7 calendar days old (yesterday … 6 days ago).
+  // Older history is summarised by Tier 3 (7–29d) day-rows and Tier 4 weeks.
+  const pastDays = populatedPastDays.filter((d) => isTier2Age(ageInDays(d.date, today)));
+
+  // Tier 3 day-rows come from the additive `tier3Days` summary (#140). On
+  // expand each row looks up its full card rows by date in `days`; days beyond
+  // FEED_LIMIT have no match and degrade to the peek-only view.
+  const tier3Days = data?.tier3Days ?? [];
+  const daysByDate = new Map(allDays.map((d) => [d.date, d]));
 
   const hasAnyTodayContent =
     !!todayDay && ((todayDay.sections?.some((s) => s.cards.length) ?? false) || todayDay.cards.length > 0);
-  const showEmpty = !hasAnyTodayContent && pastDays.length === 0;
+  const showEmpty = !hasAnyTodayContent && pastDays.length === 0 && tier3Days.length === 0;
 
   return (
     <div style={{ minHeight: '100dvh', background: 'var(--bg-primary)' }}>
@@ -164,6 +207,20 @@ export function Feed() {
                 userId={user}
               />
             ))}
+
+            {/* Tier 3 — collapsed day-rows for 7–29d history. */}
+            {tier3Days.map((t3) => (
+              <DayRow
+                key={t3.date}
+                day={t3}
+                age={ageInDays(t3.date, today)}
+                matchedDay={daysByDate.get(t3.date) ?? null}
+                onSelect={onSelect}
+                userId={user}
+              />
+            ))}
+
+            {/* Tier 4 (week-rows + month markers) slots in here — sibling #142. */}
           </>
         )}
       </main>
@@ -339,6 +396,192 @@ function PastDayBlock({
         </AnimatePresence>
       </CompactList>
     </section>
+  );
+}
+
+// ── Day row — Tier 3 (collapsed summary, expands to compact cards) ───────────
+
+// One Tier 3 day. Collapsed it shows a vertical provenance bar, the date / ago
+// / count, a 3-title peek with provenance dots, and a chevron. Tapping expands
+// inline: the matched full day (looked up by date in `days`) renders its rows
+// via the existing CompactCard. Rows older than ~14d dim (quiet variant). The
+// component stays thin — proportions, "+N more", quiet threshold and the ago
+// string come from ./feed-tier3 (unit-tested). AnimatePresence wraps the
+// expanded body so a future open/close transition slots straight in.
+function DayRow({
+  day, age, matchedDay, onSelect, userId,
+}: {
+  day: Tier3Day;
+  age: number;
+  matchedDay: Day | null;
+  onSelect: (data: CardData, source: WatchSource) => void;
+  userId: string;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const quiet = isQuiet(age);
+
+  const dateObj = new Date(day.date + 'T12:00:00');
+  const dateLabel = dateObj.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
+
+  const peek = day.topTitles.slice(0, 3);
+  const more = moreCount(day.count, peek.length);
+  const segments = provenanceSegments(day.provenanceMix);
+
+  const expandedCards = matchedDay
+    ? (matchedDay.sections?.length ? matchedDay.sections.flatMap((s) => s.cards) : matchedDay.cards)
+    : [];
+  const canExpand = expandedCards.length > 0;
+
+  return (
+    <div style={{ margin: '0 14px 6px' }}>
+      <div
+        role="button"
+        tabIndex={0}
+        aria-expanded={expanded}
+        onClick={() => { if (canExpand) setExpanded((v) => !v); }}
+        onKeyDown={(e) => {
+          if ((e.key === 'Enter' || e.key === ' ') && canExpand) { e.preventDefault(); setExpanded((v) => !v); }
+        }}
+        style={{
+          display: 'flex',
+          alignItems: 'stretch',
+          gap: 12,
+          padding: '12px 14px',
+          borderRadius: 12,
+          border: '1px solid',
+          borderColor: expanded ? 'var(--border-subtle)' : 'transparent',
+          background: expanded ? 'var(--bg-surface)' : 'transparent',
+          cursor: canExpand ? 'pointer' : 'default',
+          WebkitTapHighlightColor: 'transparent',
+        }}
+      >
+        {/* Provenance bar — segments stacked follow / req / pick, heights ∝ counts */}
+        <div
+          aria-hidden
+          style={{
+            width: 4,
+            flexShrink: 0,
+            alignSelf: 'stretch',
+            minHeight: 56,
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 1.5,
+            borderRadius: 999,
+            overflow: 'hidden',
+            background: '#E6E3DB', // faint neutral track (no global token; nearest --bg-elevated is too light here)
+            opacity: quiet ? 0.62 : 1,
+          }}
+        >
+          {segments.map((seg) => (
+            <div
+              key={seg.kind}
+              style={{
+                width: '100%',
+                flex: `${seg.grow} 0 auto`,
+                minHeight: seg.grow > 0 ? 6 : 0,
+                background: PROVENANCE_DOT[seg.kind],
+              }}
+            />
+          ))}
+        </div>
+
+        {/* Info column */}
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 6 }}>
+            <span style={{
+              fontFamily: 'var(--font-serif)', fontWeight: 500, fontSize: 14,
+              color: 'var(--text-primary)', letterSpacing: '-0.005em',
+            }}>
+              {dateLabel}
+            </span>
+            <span style={{
+              fontFamily: 'var(--font-serif)', fontStyle: 'italic', fontSize: 11,
+              color: 'var(--text-tertiary)',
+            }}>
+              {agoLabel(age)}
+            </span>
+            <span style={{
+              marginLeft: 'auto', fontFamily: 'var(--font-sans)', fontSize: 10.5, fontWeight: 600,
+              letterSpacing: '0.04em', textTransform: 'uppercase', color: 'var(--text-tertiary)',
+            }}>
+              {itemsLabel(day.count)}
+            </span>
+          </div>
+
+          <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: 4 }}>
+            {peek.map((t, i) => (
+              <li
+                key={`${t.kind}-${i}`}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 8,
+                  fontFamily: 'var(--font-sans)', fontSize: 11.5, lineHeight: 1.3, fontWeight: 500,
+                  letterSpacing: '-0.001em',
+                  color: quiet ? 'var(--text-secondary)' : 'var(--text-primary)',
+                  whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+                }}
+              >
+                <span style={{
+                  flexShrink: 0, width: 5, height: 5, borderRadius: '50%',
+                  background: PROVENANCE_DOT[t.kind],
+                }} />
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{t.title}</span>
+              </li>
+            ))}
+            {more > 0 && (
+              <li style={{
+                display: 'flex', alignItems: 'center', gap: 8,
+                fontFamily: 'var(--font-sans)', fontSize: 11.5, lineHeight: 1.3, fontWeight: 500,
+                color: 'var(--text-tertiary)',
+              }}>
+                <span style={{ flexShrink: 0, width: 5 }} />
+                <span>+ {more} more</span>
+              </li>
+            )}
+          </ul>
+        </div>
+
+        {/* Chevron — rotates 90° when expanded */}
+        <ChevronRight
+          size={14}
+          strokeWidth={1.5}
+          aria-hidden
+          style={{
+            flexShrink: 0,
+            alignSelf: 'flex-start',
+            marginTop: 2,
+            color: 'var(--text-tertiary)',
+            transform: expanded ? 'rotate(90deg)' : 'none',
+            transition: 'transform 180ms ease',
+            visibility: canExpand ? 'visible' : 'hidden',
+          }}
+        />
+      </div>
+
+      <AnimatePresence initial={false}>
+        {expanded && canExpand && (
+          <motion.div
+            key="body"
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: 'auto' }}
+            exit={{ opacity: 0, height: 0 }}
+            transition={{ duration: 0.22, ease: [0.33, 1, 0.68, 1] }}
+            style={{ overflow: 'hidden' }}
+          >
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10, padding: '4px 16px 14px' }}>
+              {expandedCards.map((row) => (
+                <CompactCard
+                  key={row.request_id}
+                  data={toCardData(row)}
+                  userId={userId}
+                  sourceKind={sourceKind(row.source)}
+                  onSelect={(c) => onSelect(c, 'history')}
+                />
+              ))}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
   );
 }
 
