@@ -123,16 +123,14 @@ const PROVENANCE_DOT: Record<'req' | 'follow' | 'pick', string> = {
   pick: 'var(--save)',     // save green
 };
 
-// Today as a 'YYYY-MM-DD' string at the local day boundary, for client-side
-// tier bucketing. Matches the granularity the server buckets on (a calendar
-// day); `ageInDays` then treats both ends as UTC midnight, so the delta is a
-// pure calendar-day count.
+// Today as a 'YYYY-MM-DD' string on the **UTC** calendar, for client-side tier
+// bucketing. The server buckets with `new Date().toISOString().slice(0, 10)`
+// (UTC) in src/modules/requests/index.ts, so the client must use the same UTC
+// basis — using the local date instead would, in non-UTC offsets between local
+// and UTC midnight, shift every age by a day and make a server age-6 day (still
+// in `days`, never in `tier3Days`) vanish from both tiers.
 function todayDateStr(): string {
-  const now = new Date();
-  const y = now.getFullYear();
-  const m = String(now.getMonth() + 1).padStart(2, '0');
-  const d = String(now.getDate()).padStart(2, '0');
-  return `${y}-${m}-${d}`;
+  return new Date().toISOString().slice(0, 10);
 }
 
 // ── Component ────────────────────────────────────────────────────────────────
