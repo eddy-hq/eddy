@@ -20,6 +20,12 @@ import {
   moreCount,
   provenanceSegments,
 } from './feed-tier3';
+import {
+  formatWeekRange,
+  markersByIndex,
+  resolveSummary,
+  weekMonthMarkers,
+} from './feed-tier4';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -223,7 +229,8 @@ export function Feed() {
               />
             ))}
 
-            {/* Tier 4 (week-rows + month markers) slots in here — sibling #142. */}
+            {/* Tier 4 — week-rows (≥30d) with month-marker scroll anchors. */}
+            <Tier4Section weeks={tier4Weeks} currentYear={Number(today.slice(0, 4))} />
           </>
         )}
       </main>
@@ -584,6 +591,120 @@ function DayRow({
           </motion.div>
         )}
       </AnimatePresence>
+    </div>
+  );
+}
+
+// ── Tier 4 — week-rows (≥30d) with month-marker scroll anchors ───────────────
+
+// Renders the newest-first (rangeStart-DESC) list of Tier 4 weeks, slotting a
+// passive month-marker divider between two consecutive weeks where the calendar
+// month changes. Grouping basis: each week's `rangeStart` month (the Monday of
+// the ISO week). No marker renders above the first week, and an empty list
+// renders nothing. All placement/label logic lives in ./feed-tier4 (unit-tested).
+function Tier4Section({ weeks, currentYear }: { weeks: Tier4Week[]; currentYear: number }) {
+  if (weeks.length === 0) return null;
+
+  const markers = markersByIndex(weekMonthMarkers(weeks, currentYear));
+
+  return (
+    <>
+      {weeks.map((week, i) => (
+        <React.Fragment key={week.rangeStart}>
+          {markers.has(i) && <MonthMark label={markers.get(i)!} />}
+          <WeekRow week={week} />
+        </React.Fragment>
+      ))}
+    </>
+  );
+}
+
+// A passive scroll anchor between month blocks: a serif-italic month label and
+// a hairline rule. Token mapping from the prototype: --ink-400 → --text-tertiary,
+// --rule → --border-subtle, --serif → --font-serif.
+function MonthMark({ label }: { label: string }) {
+  return (
+    <div style={{ padding: '36px 22px 8px', display: 'flex', alignItems: 'center', gap: 14 }}>
+      <span style={{
+        fontFamily: 'var(--font-serif)', fontStyle: 'italic', fontSize: 13,
+        color: 'var(--text-tertiary)', letterSpacing: '0.01em',
+      }}>
+        {label}
+      </span>
+      <span aria-hidden style={{ flex: 1, height: 1, background: 'var(--border-subtle)' }} />
+    </div>
+  );
+}
+
+// One Tier 4 week: a teal tick, a range line, a one-line editorial summary (or
+// the "{count} items" fallback when the Gemma line is null), and a chevron. The
+// tap handler is wired but stubbed — expand-week is an explicit follow-up, out
+// of scope here. Range formatting and summary fallback come from ./feed-tier4
+// (unit-tested); the component stays thin. Token mapping from the prototype:
+// --teal → --teal, --ink-700 → --text-primary, --ink-400/--ink-300 →
+// --text-tertiary, --serif → --font-serif.
+function WeekRow({ week }: { week: Tier4Week }) {
+  const range = formatWeekRange(week.rangeStart, week.rangeEnd);
+  const summary = resolveSummary(week.summary, week.count);
+
+  // Stubbed no-op — expand-week is an explicit follow-up, out of scope here.
+  // (The repo's PWA bans `console`, so a no-op rather than a console.warn.)
+  const onExpand = () => { /* expand-week: follow-up */ };
+
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={onExpand}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onExpand(); }
+      }}
+      style={{
+        margin: '0 18px 4px',
+        padding: '14px 14px',
+        background: 'transparent',
+        borderRadius: 10,
+        display: 'flex',
+        alignItems: 'center',
+        gap: 14,
+        border: '1px solid transparent',
+        cursor: 'pointer',
+        WebkitTapHighlightColor: 'transparent',
+      }}
+    >
+      {/* Teal tick */}
+      <div
+        aria-hidden
+        style={{
+          width: 3, alignSelf: 'stretch', flexShrink: 0,
+          background: 'var(--teal)', opacity: 0.3, borderRadius: 3,
+        }}
+      />
+
+      {/* Info column — range + summary */}
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{
+          fontFamily: 'var(--font-serif)', fontWeight: 500, fontSize: 13,
+          color: 'var(--text-primary)', marginBottom: 2, letterSpacing: '-0.003em',
+        }}>
+          {range}
+        </div>
+        <div style={{
+          fontFamily: 'var(--font-serif)', fontStyle: 'italic', fontSize: 11.5,
+          color: 'var(--text-tertiary)', lineHeight: 1.4, letterSpacing: '0.005em',
+          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+        }}>
+          {summary}
+        </div>
+      </div>
+
+      {/* Chevron */}
+      <ChevronRight
+        size={14}
+        strokeWidth={1.5}
+        aria-hidden
+        style={{ flexShrink: 0, color: 'var(--text-tertiary)', opacity: 0.6 }}
+      />
     </div>
   );
 }
