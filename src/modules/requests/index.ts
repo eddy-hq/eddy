@@ -18,6 +18,11 @@ import {
 } from './state';
 import { getRequestsState } from './state-default';
 import { buildTierSummaries } from './feed-tiers';
+import {
+  readWeekSummaryCache,
+  applyCachedSummaries,
+  regenerateStaleWeekSummaries,
+} from './week-summary';
 
 export {
   createRequestsState,
@@ -55,6 +60,29 @@ export type {
   Tier4Week,
   TierInputRow,
 } from './feed-tiers';
+export {
+  readWeekSummaryCache,
+  applyCachedSummaries,
+  cachedSummaryForWeek,
+  computeStaleWeeks,
+  groupTier4Weeks,
+  generateWeekSummary,
+  guardSummary,
+  guardSummaryDetailed,
+  redactNames,
+  buildWeekSummaryPrompt,
+  writeWeekSummary,
+  regenerateStaleWeekSummaries,
+  WEEK_SUMMARY_PROMPT_VERSION,
+} from './week-summary';
+export type {
+  WeekSummaryItem,
+  StaleWeek,
+  RegenerateResult,
+  RegenerateOptions,
+  GuardResult,
+  GuardFailureReason,
+} from './week-summary';
 
 export const requestsRouter = Router();
 export const FEED_LIMIT = 1000;
@@ -303,7 +331,14 @@ requestsRouter.get('/feed', (req: Request, res: Response) => {
   // not be capped to a week. See issue #140.
   const { tier3Days, tier4Weeks } = buildTierSummaries(tierRows, todayStr);
 
-  res.json({ days, tier3Days, tier4Weeks });
+  // Tier 4 editorial summaries (issue #143) are populated from the cache only —
+  // a week serves its stored summary when the cached item_count still matches
+  // its current count, otherwise null. The feed path never calls Ollama;
+  // regeneration of stale weeks happens out-of-band via the admin trigger.
+  const summaryCache = readWeekSummaryCache(found.user_id);
+  const tier4WeeksWithSummary = applyCachedSummaries(tier4Weeks, summaryCache);
+
+  res.json({ days, tier3Days, tier4Weeks: tier4WeeksWithSummary });
 });
 
 // GET /requests/admin/pipeline — active + recent rejected requests across all users
@@ -342,6 +377,26 @@ requestsRouter.get('/admin/pipeline', async (_req: Request, res: Response) => {
   }
 
   res.json({ active: activeWithJobState, recentRejected });
+});
+
+// POST /requests/admin/week-summaries/regenerate — (re)generate Tier 4 week
+// summaries for a user (issue #143). By default only stale weeks (current item
+// count differs from the cached count, or no cached row) are regenerated; pass
+// `{ "force": true }` to regenerate every Tier 4 week regardless of cache state
+// (e.g. after a prompt/model/guard change). This is the out-of-band
+// regeneration trigger; the GET /feed path only ever reads the cache. Accepts
+// userId (UUID) or user (display name) like the other routes. Runs the Gemma
+// call site serially over the selected weeks and returns a count summary.
+// Internal/admin use only — same network posture as /admin/pipeline (no signed
+// token; LAN-only).
+requestsRouter.post('/admin/week-summaries/regenerate', async (req: Request, res: Response) => {
+  const { userId, user: userName, force } = req.body as { userId?: string; user?: string; force?: boolean };
+  const lookupValue = userId ?? userName;
+  if (!lookupValue) throw new ValidationError('userId or user is required');
+  const found = resolveUserByIdOrName(lookupValue);
+
+  const result = await regenerateStaleWeekSummaries(found.user_id, { force: force === true });
+  res.json(result);
 });
 
 // DELETE /requests/:id — hard-delete a request record
