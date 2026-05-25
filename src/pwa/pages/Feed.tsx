@@ -240,10 +240,11 @@ function TodayBlock({
   );
 }
 
-// One card in the unified Today stream. Picks keep their Eddy voice line
-// (why_text) as their introduction — the always-hero treatment is dropped
-// (ADR-0009). Follow cards render as a normal card. Both carry a provenance
-// pill via `sourceKind` so the source is legible without a section header.
+// One card in the unified Today stream. Every card carries its Eddy voice
+// line (why_text) as its introduction — scoring writes one for follows,
+// back-catalogue and picks alike (brief §9a) — and the always-hero pick
+// treatment is dropped (ADR-0009). Both carry a provenance pill via
+// `sourceKind` so the source is legible without a section header.
 function TodayStreamCard({
   row, userId, selectedId, onSelect,
 }: {
@@ -263,7 +264,7 @@ function TodayStreamCard({
       exit={{ opacity: 0, y: -8, scale: 0.97 }}
       transition={{ duration: 0.3, ease: [0.33, 1, 0.68, 1] }}
     >
-      {isPick && row.why_text && <VoiceLine text={row.why_text} />}
+      {row.why_text && <VoiceLine text={row.why_text} />}
       <CardList>
         <Card
           data={toCardData(row)}
