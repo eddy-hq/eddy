@@ -6,6 +6,7 @@ import { WATCHED_RATIO, WATCHED_TIME_FLOOR_S } from '../watch-events';
 import { computeTrustWeight, TRUST_DEFAULT } from './util';
 import { regenerateAffinities } from './affinities';
 import { generateDriftObservations } from '../drift';
+import { regenerateStaleWeekSummaries } from '../requests';
 
 export { computeTrustWeight, TRUST_COLD_START_FLOOR, TRUST_DEFAULT, TRUST_BASELINE } from './util';
 export {
@@ -265,6 +266,40 @@ async function runAffinityRegeneration(): Promise<void> {
   logger.info('Affinity regeneration job complete');
 }
 
+// Weekly (Sunday 21:00): regenerate stale Tier 4 week summaries. "Stale" means a
+// week with no cached row — which a week becomes the moment it crosses the
+// 30-day line into Tier 4 — or one whose item count has drifted. Cached weeks
+// with an unchanged count are skipped, so in steady state this is about one
+// Gemma call per user per week. The requests module owns the generation, prompt
+// and guards (the same path the admin endpoint drives); we only trigger it on
+// this cadence so summaries appear without a manual admin call.
+async function runWeekSummaries(): Promise<void> {
+  logger.info('Week summaries job started');
+
+  const users = db.prepare(
+    "SELECT user_id FROM users WHERE role IN ('kid', 'parent')"
+  ).all() as UserRow[];
+
+  for (const user of users) {
+    try {
+      const result = await regenerateStaleWeekSummaries(user.user_id);
+      logger.info(
+        {
+          userId: user.user_id,
+          selected: result.staleCount,
+          generated: result.generated,
+          nulled: result.nulled,
+        },
+        'Week summaries: user complete'
+      );
+    } catch (err) {
+      logger.error({ err, userId: user.user_id }, 'Week summaries: user run failed');
+    }
+  }
+
+  logger.info('Week summaries job complete');
+}
+
 let profileEnrichmentWorker: Worker | null = null;
 
 // Daily run at 05:00 — strictly before discovery (06:00) so the nightly
@@ -287,9 +322,17 @@ export function startProfileEnrichmentScheduler(): void {
     logger.warn({ err }, 'Affinity regeneration: failed to schedule repeatable job')
   );
 
+  void profileEnrichmentQueue.add('week-summaries', {}, {
+    repeat: { pattern: '0 21 * * 0' },
+    jobId: 'week-summaries-weekly',
+  }).catch((err: unknown) =>
+    logger.warn({ err }, 'Week summaries: failed to schedule repeatable job')
+  );
+
   profileEnrichmentWorker = new Worker('profile-enrichment', async (job) => {
     if (job.name === 'run') await runProfileEnrichment();
     else if (job.name === 'affinities') await runAffinityRegeneration();
+    else if (job.name === 'week-summaries') await runWeekSummaries();
   }, { connection: redis, concurrency: 1 });
 
   profileEnrichmentWorker.on('completed', (job) => {
@@ -299,7 +342,7 @@ export function startProfileEnrichmentScheduler(): void {
     logger.error({ err, jobId: job?.id }, 'Profile enrichment job failed');
   });
 
-  logger.info('Profile enrichment scheduler started (daily 05:00, affinities Sunday 21:00)');
+  logger.info('Profile enrichment scheduler started (daily 05:00, affinities + week summaries Sunday 21:00)');
 }
 
 export async function stopProfileEnrichmentScheduler(): Promise<void> {
