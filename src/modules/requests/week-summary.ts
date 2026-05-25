@@ -127,16 +127,28 @@ function containsName(haystackLower: string, nameLower: string): boolean {
   return new RegExp(`\\b${escaped}\\b`).test(haystackLower);
 }
 
-// Guard a raw Gemma output into a storable summary, or null if it fails any
-// check. All four failure modes (too long, wrong shape, contains a real name,
-// empty) collapse to null so the feed serves the front-end's templated
-// fallback rather than a bad string.
-export function guardSummary(
+// Why a raw output was rejected. Used only as a non-PII log reason — the
+// rejected text itself (which may contain the very real name the guard
+// refused) is never logged, per the no-PII-in-logs rule.
+export type GuardFailureReason = 'empty' | 'shape' | 'length' | 'pii';
+
+export interface GuardResult {
+  /** The storable summary, or null if any check failed. */
+  summary: string | null;
+  /** Set only when summary is null — a coarse, PII-free reason code. */
+  reason: GuardFailureReason | null;
+}
+
+// Guard a raw Gemma output into a storable summary, reporting a PII-free reason
+// code on failure. All failure modes (empty, wrong shape, too long, contains a
+// real name) collapse to a null summary so the feed serves the front-end's
+// templated fallback rather than a bad string.
+export function guardSummaryDetailed(
   raw: string,
   count: number,
   displayNames: string[],
-): string | null {
-  if (!raw) return null;
+): GuardResult {
+  if (!raw) return { summary: null, reason: 'empty' };
 
   // Collapse to a single line and strip surrounding quotes the model sometimes
   // wraps the line in, then trim trailing end-punctuation (acceptance: no
@@ -145,25 +157,35 @@ export function guardSummary(
   line = line.replace(/^["'“‘]+/, '').replace(/["'”’]+$/, '').trim();
   line = line.replace(/[.!?;,…]+$/, '').trim();
 
-  if (!line) return null;
+  if (!line) return { summary: null, reason: 'empty' };
 
   // Shape: must be "{count} items · {prose}" with non-empty prose. The middot
   // separator and the exact count anchor the line; reject anything else.
   const prefix = `${count} items · `;
-  if (!line.startsWith(prefix)) return null;
+  if (!line.startsWith(prefix)) return { summary: null, reason: 'shape' };
   const prose = line.slice(prefix.length).trim();
-  if (!prose) return null;
+  if (!prose) return { summary: null, reason: 'shape' };
 
   // Length: whole line ≤ 80 chars (after trimming).
-  if (line.length > MAX_SUMMARY_LEN) return null;
+  if (line.length > MAX_SUMMARY_LEN) return { summary: null, reason: 'length' };
 
   // PII: reject any household real name, case-insensitive, on a word boundary.
   const lower = line.toLowerCase();
   for (const name of displayNames) {
-    if (containsName(lower, name)) return null;
+    if (containsName(lower, name)) return { summary: null, reason: 'pii' };
   }
 
-  return line;
+  return { summary: line, reason: null };
+}
+
+// Thin wrapper returning just the storable summary (or null). Keeps the simple
+// shape for callers/tests that don't need the failure reason.
+export function guardSummary(
+  raw: string,
+  count: number,
+  displayNames: string[],
+): string | null {
+  return guardSummaryDetailed(raw, count, displayNames).summary;
 }
 
 // Generate + guard one week's summary. Returns the guarded string, or null on
@@ -187,9 +209,11 @@ export async function generateWeekSummary(week: StaleWeek): Promise<string | nul
     return null;
   }
 
-  const summary = guardSummary(raw, week.count, displayNames);
+  const { summary, reason } = guardSummaryDetailed(raw, week.count, displayNames);
   if (summary === null) {
-    logger.info({ weekStart: week.weekStart, raw: raw.slice(0, 120) }, 'Week summary: output failed guard — storing null');
+    // Log only the coarse reason code — never the rejected text, which may
+    // contain the very real name the PII guard refused (no-PII-in-logs rule).
+    logger.info({ weekStart: week.weekStart, reason }, 'Week summary: output failed guard — storing null');
   }
   return summary;
 }

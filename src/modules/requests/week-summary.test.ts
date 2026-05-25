@@ -44,9 +44,11 @@ vi.mock('../../db/client', () => ({
 }));
 
 import { ollamaGenerate } from '../../ollama';
+import { logger } from '../../logger';
 import {
   buildWeekSummaryPrompt,
   guardSummary,
+  guardSummaryDetailed,
   redactNames,
   generateWeekSummary,
   cachedSummaryForWeek,
@@ -68,6 +70,8 @@ beforeEach(() => {
   feedRows = [];
   mockRun.mockReset();
   vi.mocked(ollamaGenerate).mockReset();
+  vi.mocked(logger.info).mockReset();
+  vi.mocked(logger.warn).mockReset();
 });
 
 const sampleItems: WeekSummaryItem[] = [
@@ -163,6 +167,22 @@ describe('guardSummary', () => {
   });
 });
 
+describe('guardSummaryDetailed', () => {
+  it('reports a PII-free reason code for each failure mode', () => {
+    expect(guardSummaryDetailed('', 3, [])).toEqual({ summary: null, reason: 'empty' });
+    expect(guardSummaryDetailed('a plain line', 3, [])).toEqual({ summary: null, reason: 'shape' });
+    expect(guardSummaryDetailed(`3 items · ${'x'.repeat(90)}`, 3, [])).toEqual({ summary: null, reason: 'length' });
+    expect(guardSummaryDetailed('3 items · a week for Alice', 3, ['alice'])).toEqual({ summary: null, reason: 'pii' });
+  });
+
+  it('returns the line and a null reason on success', () => {
+    expect(guardSummaryDetailed('3 items · a quiet week', 3, [])).toEqual({
+      summary: '3 items · a quiet week',
+      reason: null,
+    });
+  });
+});
+
 describe('generateWeekSummary', () => {
   const week: StaleWeek = { weekStart: '2026-01-05', count: 38, items: sampleItems };
 
@@ -183,6 +203,19 @@ describe('generateWeekSummary', () => {
     vi.mocked(ollamaGenerate).mockResolvedValue('38 items · a strong week for Charlie');
     const out = await generateWeekSummary(week);
     expect(out).toBeNull();
+  });
+
+  it('never logs the rejected text when the PII guard refuses it', async () => {
+    displayNames = [{ display_name: 'Charlie' }];
+    vi.mocked(ollamaGenerate).mockResolvedValue('38 items · a strong week for Charlie');
+    await generateWeekSummary(week);
+    // The log call carries a coarse reason code, not the refused output.
+    const logged = JSON.stringify(vi.mocked(logger.info).mock.calls);
+    expect(logged).not.toContain('Charlie');
+    expect(logger.info).toHaveBeenCalledWith(
+      { weekStart: week.weekStart, reason: 'pii' },
+      expect.any(String),
+    );
   });
 
   it('Gemma unreachable → null', async () => {

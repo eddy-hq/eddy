@@ -68,6 +68,7 @@ export {
   groupTier4Weeks,
   generateWeekSummary,
   guardSummary,
+  guardSummaryDetailed,
   redactNames,
   buildWeekSummaryPrompt,
   writeWeekSummary,
@@ -79,6 +80,8 @@ export type {
   StaleWeek,
   RegenerateResult,
   RegenerateOptions,
+  GuardResult,
+  GuardFailureReason,
 } from './week-summary';
 
 export const requestsRouter = Router();
