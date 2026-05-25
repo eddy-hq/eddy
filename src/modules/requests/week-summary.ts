@@ -105,7 +105,7 @@ ${count} items · {your prose}
 Rules:
 - Start with "${count} items · " exactly.
 - UK English.
-- At most ${MAX_SUMMARY_LEN} characters total, single line.
+- Be terse: at most 10 words of prose, keeping the whole line under 70 characters, on one line. (The hard limit is ${MAX_SUMMARY_LEN}; aim well under it.)
 - No trailing full stop or other end punctuation.
 - Use only the channels and topics shown above — never invent names, and never name a person.
 
