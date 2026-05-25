@@ -723,8 +723,11 @@ describe('GET /requests/feed', () => {
       const monday = ms - (((new Date(ms).getUTCDay() + 6) % 7) * 86_400_000);
       return new Date(monday);
     }
+    // Start well past the 30-day boundary so that even after walking back to a
+    // cross-month week, BOTH Monday and Sunday remain ≥30 days old and route to
+    // Tier 4 (a probe ~35d back could yield a Sunday only 29d old → Tier 3).
     const probe = new Date();
-    probe.setUTCDate(probe.getUTCDate() - 35);
+    probe.setUTCDate(probe.getUTCDate() - 45);
     let monday = mondayOf(probe);
     // Walk back a week at a time until the Mon–Sun span crosses a month edge.
     for (let i = 0; i < 12; i += 1) {
@@ -734,6 +737,11 @@ describe('GET /requests/feed', () => {
     }
     const sunday = new Date(monday.getTime() + 6 * 86_400_000);
     expect(monday.getUTCMonth()).not.toBe(sunday.getUTCMonth());
+    // Guard the fixture invariant the assertions below rely on: the most-recent
+    // end (Sunday) is ≥30 days old, so both rows land in Tier 4.
+    const todayMidnight = Date.parse(new Date().toISOString().slice(0, 10) + 'T00:00:00Z');
+    const sundayAge = Math.round((todayMidnight - Date.parse(sunday.toISOString().slice(0, 10) + 'T00:00:00Z')) / 86_400_000);
+    expect(sundayAge).toBeGreaterThanOrEqual(30);
 
     const mondayIso = monday.toISOString().slice(0, 10);
     const sundayIso = sunday.toISOString().slice(0, 10);
