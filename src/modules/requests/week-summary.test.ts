@@ -198,6 +198,22 @@ describe('generateWeekSummary', () => {
     expect(out).toBeNull();
   });
 
+  it('retries once on a too-long line, then keeps the in-budget retry', async () => {
+    vi.mocked(ollamaGenerate)
+      .mockResolvedValueOnce(`38 items · ${'y'.repeat(100)}`) // length fail
+      .mockResolvedValueOnce('38 items · a tidy second attempt'); // in budget
+    const out = await generateWeekSummary(week);
+    expect(out).toBe('38 items · a tidy second attempt');
+    expect(ollamaGenerate).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not retry a shape failure (only length is worth re-rolling)', async () => {
+    vi.mocked(ollamaGenerate).mockResolvedValue('not the expected shape at all');
+    const out = await generateWeekSummary(week);
+    expect(out).toBeNull();
+    expect(ollamaGenerate).toHaveBeenCalledTimes(1);
+  });
+
   it('output contains a kid real name → fallback null', async () => {
     displayNames = [{ display_name: 'Charlie' }, { display_name: 'Dana' }];
     vi.mocked(ollamaGenerate).mockResolvedValue('38 items · a strong week for Charlie');

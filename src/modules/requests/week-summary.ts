@@ -29,9 +29,10 @@ import { sourceToKind, isoWeekRange, ageInDays } from './feed-tiers';
 
 export const WEEK_SUMMARY_PROMPT_VERSION = 'week-summary-v1';
 
-// Output guard constants. #143 suggested ≤80, but that limit is arbitrary;
-// gemma4:e4b's natural one-line summary runs ~85 chars, so the cap is 90 to let
-// a well-formed line through rather than null it.
+// Output guard constants. #143 suggested ≤80; that's arbitrary and sits inside
+// gemma4:e4b's natural one-line range (~85–93 chars). We keep a punchy 90 cap
+// and pair it with a single cheap retry in generateWeekSummary for the
+// occasional overshoot, rather than inflating the cap into two-line territory.
 const MAX_SUMMARY_LEN = 90;
 // Cap how many items are listed in the prompt — a busy week can hold hundreds
 // of rows, but the editorial line only needs the texture (dominant channels,
@@ -197,29 +198,35 @@ export async function generateWeekSummary(week: StaleWeek): Promise<string | nul
   const displayNames = householdDisplayNames();
   const prompt = buildWeekSummaryPrompt(week.count, week.items, displayNames);
 
-  let raw: string;
-  try {
-    // One short line of prose: low temperature for stable wording across runs.
-    // No num_predict — gemma4:e4b spends a token cap on hidden template tokens
-    // and returns an empty body (done_reason "length") on real-sized prompts, so
-    // we let its stop token govern length (it stops after one line, ~85 chars;
-    // MAX_SUMMARY_LEN guards anything longer). Summary model override falls back
-    // to the guard model.
-    raw = await ollamaGenerate(prompt, config.OLLAMA_SUMMARY_MODEL, undefined, {
-      temperature: 0.3,
-    });
-  } catch (err) {
-    logger.warn({ err, weekStart: week.weekStart }, 'Week summary: Gemma call failed — storing null');
-    return null;
+  // One short line of prose: low temperature for stable wording across runs.
+  // No num_predict — gemma4:e4b spends a token cap on hidden template tokens and
+  // returns an empty body (done_reason "length") on real-sized prompts, so we
+  // let its stop token govern length. Its natural line occasionally overshoots
+  // MAX_SUMMARY_LEN; one cheap retry catches that. Other guard failures
+  // (shape/pii/empty) won't improve on a re-roll, so we don't retry them.
+  // Summary model override falls back to the guard model.
+  let lastReason: GuardFailureReason | null = null;
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    let raw: string;
+    try {
+      raw = await ollamaGenerate(prompt, config.OLLAMA_SUMMARY_MODEL, undefined, {
+        temperature: 0.3,
+      });
+    } catch (err) {
+      logger.warn({ err, weekStart: week.weekStart }, 'Week summary: Gemma call failed — storing null');
+      return null;
+    }
+
+    const { summary, reason } = guardSummaryDetailed(raw, week.count, displayNames);
+    if (summary !== null) return summary;
+    lastReason = reason;
+    if (reason !== 'length') break;
   }
 
-  const { summary, reason } = guardSummaryDetailed(raw, week.count, displayNames);
-  if (summary === null) {
-    // Log only the coarse reason code — never the rejected text, which may
-    // contain the very real name the PII guard refused (no-PII-in-logs rule).
-    logger.info({ weekStart: week.weekStart, reason }, 'Week summary: output failed guard — storing null');
-  }
-  return summary;
+  // Log only the coarse reason code — never the rejected text, which may contain
+  // the very real name the PII guard refused (no-PII-in-logs rule).
+  logger.info({ weekStart: week.weekStart, reason: lastReason }, 'Week summary: output failed guard — storing null');
+  return null;
 }
 
 // ── Cache ────────────────────────────────────────────────────────────────────
