@@ -29,8 +29,10 @@ import { sourceToKind, isoWeekRange, ageInDays } from './feed-tiers';
 
 export const WEEK_SUMMARY_PROMPT_VERSION = 'week-summary-v1';
 
-// Output guard constants (issue #143 acceptance).
-const MAX_SUMMARY_LEN = 80;
+// Output guard constants. #143 suggested ≤80, but that limit is arbitrary;
+// gemma4:e4b's natural one-line summary runs ~85 chars, so the cap is 90 to let
+// a well-formed line through rather than null it.
+const MAX_SUMMARY_LEN = 90;
 // Cap how many items are listed in the prompt — a busy week can hold hundreds
 // of rows, but the editorial line only needs the texture (dominant channels,
 // notable runs), not an exhaustive manifest. Most-recent-first ordering is
@@ -197,11 +199,13 @@ export async function generateWeekSummary(week: StaleWeek): Promise<string | nul
 
   let raw: string;
   try {
-    // One short line of prose: low temperature for stable wording across runs,
-    // small num_predict — the line is capped at 80 chars. Summary model
-    // override falls back to the guard model.
+    // One short line of prose: low temperature for stable wording across runs.
+    // No num_predict — gemma4:e4b spends a token cap on hidden template tokens
+    // and returns an empty body (done_reason "length") on real-sized prompts, so
+    // we let its stop token govern length (it stops after one line, ~85 chars;
+    // MAX_SUMMARY_LEN guards anything longer). Summary model override falls back
+    // to the guard model.
     raw = await ollamaGenerate(prompt, config.OLLAMA_SUMMARY_MODEL, undefined, {
-      num_predict: 120,
       temperature: 0.3,
     });
   } catch (err) {

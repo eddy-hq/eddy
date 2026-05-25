@@ -139,8 +139,8 @@ describe('guardSummary', () => {
     expect(out).toBe('12 items · a quiet week of science');
   });
 
-  it('rejects output over 80 chars (fallback null)', () => {
-    const longProse = 'x'.repeat(90);
+  it('rejects output over the length cap (fallback null)', () => {
+    const longProse = 'x'.repeat(100);
     const out = guardSummary(`5 items · ${longProse}`, 5, []);
     expect(out).toBeNull();
   });
