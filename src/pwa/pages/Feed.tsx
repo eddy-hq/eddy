@@ -167,11 +167,16 @@ export function Feed() {
   // expand each row looks up its full card rows by date in `days`; days beyond
   // FEED_LIMIT have no match and degrade to the peek-only view.
   const tier3Days = data?.tier3Days ?? [];
+  const tier4Weeks = data?.tier4Weeks ?? [];
   const daysByDate = new Map(allDays.map((d) => [d.date, d]));
 
   const hasAnyTodayContent =
     !!todayDay && ((todayDay.sections?.some((s) => s.cards.length) ?? false) || todayDay.cards.length > 0);
-  const showEmpty = !hasAnyTodayContent && pastDays.length === 0 && tier3Days.length === 0;
+  // Tier 4 (≥30d) isn't rendered until #142, but it still counts as history:
+  // without it here a user whose only activity is 30+ days old would wrongly
+  // see the "nothing here yet" placeholder while `tier4Weeks` holds items.
+  const showEmpty =
+    !hasAnyTodayContent && pastDays.length === 0 && tier3Days.length === 0 && tier4Weeks.length === 0;
 
   return (
     <div style={{ minHeight: '100dvh', background: 'var(--bg-primary)' }}>
