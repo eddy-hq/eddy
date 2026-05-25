@@ -65,8 +65,10 @@ export {
   applyCachedSummaries,
   cachedSummaryForWeek,
   computeStaleWeeks,
+  groupTier4Weeks,
   generateWeekSummary,
   guardSummary,
+  redactNames,
   buildWeekSummaryPrompt,
   writeWeekSummary,
   regenerateStaleWeekSummaries,
@@ -76,6 +78,7 @@ export type {
   WeekSummaryItem,
   StaleWeek,
   RegenerateResult,
+  RegenerateOptions,
 } from './week-summary';
 
 export const requestsRouter = Router();
@@ -373,21 +376,23 @@ requestsRouter.get('/admin/pipeline', async (_req: Request, res: Response) => {
   res.json({ active: activeWithJobState, recentRejected });
 });
 
-// POST /requests/admin/week-summaries/regenerate — (re)generate stale Tier 4
-// week summaries for a user (issue #143). Stale = a week whose current item
-// count differs from the cached count, or that has no cached row. This is the
-// out-of-band regeneration trigger; the GET /feed path only ever reads the
-// cache. Accepts userId (UUID) or user (display name) like the other routes.
-// Runs the Gemma call site serially over the user's stale weeks and returns a
-// count summary. Internal/admin use only — same network posture as
-// /admin/pipeline (no signed token; LAN-only).
+// POST /requests/admin/week-summaries/regenerate — (re)generate Tier 4 week
+// summaries for a user (issue #143). By default only stale weeks (current item
+// count differs from the cached count, or no cached row) are regenerated; pass
+// `{ "force": true }` to regenerate every Tier 4 week regardless of cache state
+// (e.g. after a prompt/model/guard change). This is the out-of-band
+// regeneration trigger; the GET /feed path only ever reads the cache. Accepts
+// userId (UUID) or user (display name) like the other routes. Runs the Gemma
+// call site serially over the selected weeks and returns a count summary.
+// Internal/admin use only — same network posture as /admin/pipeline (no signed
+// token; LAN-only).
 requestsRouter.post('/admin/week-summaries/regenerate', async (req: Request, res: Response) => {
-  const { userId, user: userName } = req.body as { userId?: string; user?: string };
+  const { userId, user: userName, force } = req.body as { userId?: string; user?: string; force?: boolean };
   const lookupValue = userId ?? userName;
   if (!lookupValue) throw new ValidationError('userId or user is required');
   const found = resolveUserByIdOrName(lookupValue);
 
-  const result = await regenerateStaleWeekSummaries(found.user_id);
+  const result = await regenerateStaleWeekSummaries(found.user_id, { force: force === true });
   res.json(result);
 });
 

@@ -57,13 +57,36 @@ const KIND_LABEL: Record<FeedKind, string> = {
   pick: 'a pick',
 };
 
+// Replace any household real name found in a title/channel string with a
+// neutral placeholder BEFORE the text reaches Gemma. A YouTube title or channel
+// can legitimately contain a household member's name (a video about/by them),
+// and the acceptance requires kids be Boy1/Boy2 in any text Gemma sees — the
+// output guard is too late on its own, so we scrub the input too. Word-boundary
+// matched, case-insensitive, preserving everything else.
+export function redactNames(text: string, displayNames: string[]): string {
+  let out = text;
+  for (const name of displayNames) {
+    if (!name) continue;
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    out = out.replace(new RegExp(`\\b${escaped}\\b`, 'gi'), '[name]');
+  }
+  return out;
+}
+
 // Build the generation prompt. Inputs are the week's item count plus a bounded
-// list of (title, channel, provenance) lines. The model is asked for exactly
-// the "{count} items · {prose}" shape so the shape guard can verify it.
-export function buildWeekSummaryPrompt(count: number, items: WeekSummaryItem[]): string {
+// list of (title, channel, provenance) lines, with any household real name in a
+// title/channel already redacted (see redactNames) — no user id and no real
+// name ever reaches Gemma. The model is asked for exactly the "{count} items ·
+// {prose}" shape so the shape guard can verify it.
+export function buildWeekSummaryPrompt(
+  count: number,
+  items: WeekSummaryItem[],
+  displayNames: string[] = [],
+): string {
   const lines = items.slice(0, MAX_PROMPT_ITEMS).map((item, i) => {
-    const channel = item.channel ? item.channel : 'unknown channel';
-    return `${i + 1}. "${item.title}" — ${channel} (${KIND_LABEL[item.kind]})`;
+    const title = redactNames(item.title, displayNames);
+    const channel = item.channel ? redactNames(item.channel, displayNames) : 'unknown channel';
+    return `${i + 1}. "${title}" — ${channel} (${KIND_LABEL[item.kind]})`;
   }).join('\n');
 
   return `Write a single editorial line summarising a week of a person's watch history, in the warm, plain voice of a personal media companion.
@@ -148,7 +171,7 @@ export function guardSummary(
 // throws — the caller stores whatever comes back (including null).
 export async function generateWeekSummary(week: StaleWeek): Promise<string | null> {
   const displayNames = householdDisplayNames();
-  const prompt = buildWeekSummaryPrompt(week.count, week.items);
+  const prompt = buildWeekSummaryPrompt(week.count, week.items, displayNames);
 
   let raw: string;
   try {
@@ -248,23 +271,16 @@ export function writeWeekSummary(
 
 // ── Staleness ────────────────────────────────────────────────────────────────
 
-// Group a user's Tier 4 rows (age ≥ 30 days) into per-week buckets, mirroring
-// buildTierSummaries' Tier 4 logic, and return the weeks whose current item
-// count differs from the cache (or that have no cached row). These are the
-// weeks the regeneration trigger should re-run Gemma for. Pure given `rows`,
-// `todayStr` and the cache.
 const TIER4_MIN_AGE_DAYS = 30;
 
-export function computeStaleWeeks(
-  rows: TierInputRow[],
-  todayStr: string,
-  cache: Map<string, CacheRow>,
-): StaleWeek[] {
-  // `count` must match buildTierSummaries' Tier 4 `count` exactly — that is the
-  // value the feed compares the cache against, so it counts EVERY row in the
-  // week (including title-less rows). The prompt item list, by contrast, only
-  // carries titled rows: a null title gives Gemma nothing useful and an empty
-  // week (all rows title-less) still gets a count-only summary attempt.
+// Group a user's Tier 4 rows (age ≥ 30 days) into per-week buckets, mirroring
+// buildTierSummaries' Tier 4 logic. `count` counts EVERY row in the week
+// (including title-less rows) so it matches the feed's Tier 4 `count` exactly —
+// that is the value the feed compares the cache against. The prompt item list,
+// by contrast, carries only titled rows: a null title gives Gemma nothing
+// useful, and an all-title-less week still gets a count-only summary attempt.
+// Pure given `rows` and `todayStr`.
+export function groupTier4Weeks(rows: TierInputRow[], todayStr: string): StaleWeek[] {
   const counts = new Map<string, number>();
   const items = new Map<string, WeekSummaryItem[]>();
   for (const row of rows) {
@@ -281,22 +297,42 @@ export function computeStaleWeeks(
     }
   }
 
-  const stale: StaleWeek[] = [];
+  const weeks: StaleWeek[] = [];
   for (const [weekStart, count] of counts) {
-    const cached = cache.get(weekStart);
-    if (!cached || cached.item_count !== count) {
-      stale.push({ weekStart, count, items: items.get(weekStart) ?? [] });
-    }
+    weeks.push({ weekStart, count, items: items.get(weekStart) ?? [] });
   }
-  return stale;
+  return weeks;
+}
+
+// Of all a user's Tier 4 weeks, return those whose current item count differs
+// from the cache (or that have no cached row) — the weeks the regeneration
+// trigger re-runs Gemma for by default. Pure given `rows`, `todayStr` and the
+// cache.
+export function computeStaleWeeks(
+  rows: TierInputRow[],
+  todayStr: string,
+  cache: Map<string, CacheRow>,
+): StaleWeek[] {
+  return groupTier4Weeks(rows, todayStr).filter((week) => {
+    const cached = cache.get(week.weekStart);
+    return !cached || cached.item_count !== week.count;
+  });
 }
 
 // ── Regeneration trigger ──────────────────────────────────────────────────────
 
+// Must match FEED_LIMIT in ./index.ts. The regeneration path has to slice weeks
+// from the exact same row set the feed serves — including the same LIMIT — or a
+// user over the cap would get a different Tier 4 count for the cutoff week, and
+// that cache row would never match in applyCachedSummaries, leaving the week's
+// summary permanently null. Declared here (not imported) to avoid a circular
+// import with index.ts; the value must track FEED_LIMIT.
+const FEED_ROW_LIMIT = 1000;
+
 // Read a user's Tier-input rows the same way the feed handler does (added_at,
 // falling back to requested_at, for the rows the feed surfaces). Kept here so
 // the regeneration path and the feed path slice weeks from the same source.
-// The status / source filter mirrors the GET /feed query.
+// The status / source filter and LIMIT mirror the GET /feed query.
 function readTierRows(userId: string): TierInputRow[] {
   const rows = db.prepare(`
     SELECT title, channel, source, requested_at, added_at
@@ -305,7 +341,8 @@ function readTierRows(userId: string): TierInputRow[] {
       AND status NOT IN ('dismissed', 'deleted')
       AND NOT (source = 'channel_subscription' AND status IN ('pending', 'downloading'))
     ORDER BY added_at DESC
-  `).all(userId) as Array<{
+    LIMIT ?
+  `).all(userId, FEED_ROW_LIMIT) as Array<{
     title: string | null; channel: string | null; source: string;
     requested_at: string; added_at: string | null;
   }>;
@@ -318,28 +355,46 @@ function readTierRows(userId: string): TierInputRow[] {
 }
 
 export interface RegenerateResult {
+  /** Weeks selected for regeneration this run (stale-only, or all when forced). */
   staleCount: number;
   generated: number;
   nulled: number;
+  /** Whether every Tier 4 week was regenerated regardless of cache state. */
+  forced: boolean;
 }
 
-// Regenerate every stale Tier 4 week summary for a user. A week is stale when
-// its current item count differs from the cached count, or no row exists. Runs
-// Gemma serially (one short call per stale week — bounded by how many ≥30-day
-// weeks a user has) and upserts each result, storing null when Gemma is
-// unreachable or the output fails guard. This is the out-of-band trigger; the
-// feed path never reaches here. `todayStr` is injectable for tests.
+export interface RegenerateOptions {
+  /**
+   * Regenerate every Tier 4 week regardless of cache state, not just the stale
+   * ones. The admin trigger exposes this so a prompt/model/guard change can be
+   * re-run across a user's whole history without manually clearing cache rows
+   * (issue #143 allows regeneration "on demand via admin endpoint").
+   */
+  force?: boolean;
+  /** Injectable reference date for tests. */
+  todayStr?: string;
+}
+
+// Regenerate Tier 4 week summaries for a user. By default only stale weeks (item
+// count changed, or no cached row) are processed; with `force` every Tier 4
+// week is regenerated. Runs Gemma serially (one short call per selected week —
+// bounded by how many ≥30-day weeks a user has) and upserts each result,
+// storing null when Gemma is unreachable or the output fails guard. This is the
+// out-of-band trigger; the feed path never reaches here.
 export async function regenerateStaleWeekSummaries(
   userId: string,
-  todayStr = new Date().toISOString().slice(0, 10),
+  options: RegenerateOptions = {},
 ): Promise<RegenerateResult> {
+  const { force = false, todayStr = new Date().toISOString().slice(0, 10) } = options;
   const cache = readWeekSummaryCache(userId);
   const tierRows = readTierRows(userId);
-  const stale = computeStaleWeeks(tierRows, todayStr, cache);
+  const weeks = force
+    ? groupTier4Weeks(tierRows, todayStr)
+    : computeStaleWeeks(tierRows, todayStr, cache);
 
   let generated = 0;
   let nulled = 0;
-  for (const week of stale) {
+  for (const week of weeks) {
     const summary = await generateWeekSummary(week);
     writeWeekSummary(userId, week.weekStart, week.count, summary);
     if (summary === null) nulled += 1;
@@ -347,8 +402,8 @@ export async function regenerateStaleWeekSummaries(
   }
 
   logger.info(
-    { userId, staleCount: stale.length, generated, nulled },
+    { userId, selected: weeks.length, generated, nulled, forced: force },
     'Week summaries regenerated',
   );
-  return { staleCount: stale.length, generated, nulled };
+  return { staleCount: weeks.length, generated, nulled, forced: force };
 }

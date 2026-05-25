@@ -47,9 +47,11 @@ import { ollamaGenerate } from '../../ollama';
 import {
   buildWeekSummaryPrompt,
   guardSummary,
+  redactNames,
   generateWeekSummary,
   cachedSummaryForWeek,
   computeStaleWeeks,
+  groupTier4Weeks,
   applyCachedSummaries,
   readWeekSummaryCache,
   writeWeekSummary,
@@ -94,6 +96,31 @@ describe('buildWeekSummaryPrompt', () => {
     // 41st item (index 40) and beyond are dropped from the prompt body.
     expect(prompt).not.toContain('Video 40.');
     expect(prompt).not.toContain('41. "Video 40"');
+  });
+
+  it('redacts household real names from titles and channels before they reach Gemma', () => {
+    const items: WeekSummaryItem[] = [
+      { title: 'A day out with Alice', channel: 'Bob and friends', kind: 'pick' },
+    ];
+    const prompt = buildWeekSummaryPrompt(1, items, ['alice', 'bob']);
+    expect(prompt).not.toContain('Alice');
+    expect(prompt).not.toContain('Bob');
+    expect(prompt).toContain('[name]');
+  });
+});
+
+describe('redactNames', () => {
+  it('replaces a household name on a word boundary, case-insensitively', () => {
+    expect(redactNames('A vlog by Alice', ['alice'])).toBe('A vlog by [name]');
+    expect(redactNames('ALICE builds a den', ['alice'])).toBe('[name] builds a den');
+  });
+
+  it('leaves substrings of other words untouched', () => {
+    expect(redactNames('all about robotics', ['rob'])).toBe('all about robotics');
+  });
+
+  it('is a no-op with no names', () => {
+    expect(redactNames('Minecraft survival', [])).toBe('Minecraft survival');
   });
 });
 
@@ -258,6 +285,28 @@ describe('computeStaleWeeks', () => {
   });
 });
 
+describe('groupTier4Weeks', () => {
+  const today = '2026-03-01';
+  const rows: TierInputRow[] = [
+    { day: '2026-01-05', title: 'A', channel: 'C1', source: 'share_sheet' },
+    { day: '2026-01-06', title: null, channel: null, source: 'recommended' },
+  ];
+
+  it('returns every Tier 4 week with count over all rows but items over titled rows only', () => {
+    const weeks = groupTier4Weeks(rows, today);
+    expect(weeks).toHaveLength(1);
+    expect(weeks[0]?.count).toBe(2);
+    expect(weeks[0]?.items).toHaveLength(1);
+  });
+
+  it('excludes rows newer than 30 days', () => {
+    const recent: TierInputRow[] = [
+      { day: '2026-02-25', title: 'recent', channel: 'C', source: 'recommended' },
+    ];
+    expect(groupTier4Weeks(recent, today)).toHaveLength(0);
+  });
+});
+
 describe('readWeekSummaryCache', () => {
   it('maps cached rows by week_start', () => {
     cacheRows = [
@@ -298,11 +347,12 @@ describe('regenerateStaleWeekSummaries', () => {
     ];
     vi.mocked(ollamaGenerate).mockResolvedValue('2 items · a quiet science week');
 
-    const result = await regenerateStaleWeekSummaries('u1', '2026-03-01');
+    const result = await regenerateStaleWeekSummaries('u1', { todayStr: '2026-03-01' });
 
     expect(result.staleCount).toBe(1);
     expect(result.generated).toBe(1);
     expect(result.nulled).toBe(0);
+    expect(result.forced).toBe(false);
     // Upserted with the guarded summary.
     const upsert = mockRun.mock.calls.find(
       (c) => typeof c[0] === 'object' && c[0] !== null && 'week_start' in (c[0] as Record<string, unknown>)
@@ -316,7 +366,7 @@ describe('regenerateStaleWeekSummaries', () => {
     ];
     vi.mocked(ollamaGenerate).mockRejectedValue(new Error('Ollama unreachable'));
 
-    const result = await regenerateStaleWeekSummaries('u1', '2026-03-01');
+    const result = await regenerateStaleWeekSummaries('u1', { todayStr: '2026-03-01' });
     expect(result.staleCount).toBe(1);
     expect(result.generated).toBe(0);
     expect(result.nulled).toBe(1);
@@ -326,7 +376,34 @@ describe('regenerateStaleWeekSummaries', () => {
     feedRows = [
       { title: 'recent', channel: 'C', source: 'recommended', requested_at: '2026-02-25T10:00:00Z', added_at: '2026-02-25T10:00:00Z' },
     ];
-    const result = await regenerateStaleWeekSummaries('u1', '2026-03-01');
+    const result = await regenerateStaleWeekSummaries('u1', { todayStr: '2026-03-01' });
+    expect(result.staleCount).toBe(0);
+    expect(vi.mocked(ollamaGenerate)).not.toHaveBeenCalled();
+  });
+
+  it('with force, regenerates a week whose cached count is unchanged (on-demand)', async () => {
+    feedRows = [
+      { title: 'A', channel: 'C1', source: 'share_sheet', requested_at: '2026-01-05T10:00:00Z', added_at: '2026-01-05T10:00:00Z' },
+    ];
+    // Cache already matches the current count of 1 → not stale, so the default
+    // path would skip it; force must regenerate it anyway.
+    cacheRows = [{ week_start: '2026-01-05', item_count: 1, summary: '1 items · old line' }];
+    vi.mocked(ollamaGenerate).mockResolvedValue('1 items · a fresh take');
+
+    const result = await regenerateStaleWeekSummaries('u1', { force: true, todayStr: '2026-03-01' });
+    expect(result.forced).toBe(true);
+    expect(result.staleCount).toBe(1);
+    expect(result.generated).toBe(1);
+    expect(vi.mocked(ollamaGenerate)).toHaveBeenCalledTimes(1);
+  });
+
+  it('without force, skips a week whose cached count is unchanged', async () => {
+    feedRows = [
+      { title: 'A', channel: 'C1', source: 'share_sheet', requested_at: '2026-01-05T10:00:00Z', added_at: '2026-01-05T10:00:00Z' },
+    ];
+    cacheRows = [{ week_start: '2026-01-05', item_count: 1, summary: '1 items · old line' }];
+
+    const result = await regenerateStaleWeekSummaries('u1', { todayStr: '2026-03-01' });
     expect(result.staleCount).toBe(0);
     expect(vi.mocked(ollamaGenerate)).not.toHaveBeenCalled();
   });
