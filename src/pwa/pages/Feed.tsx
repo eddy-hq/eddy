@@ -43,7 +43,29 @@ interface Day {
   sections?: DaySection[];
 }
 
-interface FeedResponse { days: Day[]; }
+// Tier 3 (per-day) and Tier 4 (per-week) summaries for older history. Additive
+// fields on the /feed payload (issue #140); rendered by sub-issues #141/#142.
+// `tier4Weeks[].summary` is null until the Gemma sub-issue (#143) populates it.
+interface Tier3Day {
+  date: string;
+  count: number;
+  provenanceMix: { req: number; follow: number; pick: number };
+  topTitles: Array<{ title: string; kind: 'req' | 'follow' | 'pick' }>;
+}
+
+interface Tier4Week {
+  rangeStart: string;
+  rangeEnd: string;
+  count: number;
+  topChannels: string[];
+  summary: string | null;
+}
+
+interface FeedResponse {
+  days: Day[];
+  tier3Days?: Tier3Day[];
+  tier4Weeks?: Tier4Week[];
+}
 
 // ── API ──────────────────────────────────────────────────────────────────────
 

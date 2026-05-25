@@ -148,6 +148,7 @@ function insertRequestRow(opts: {
   youtube_id?: string | null;
   url?: string;
   title?: string | null;
+  channel?: string | null;
   added_at?: string;
   requested_at?: string;
   rejection_reason?: string | null;
@@ -156,9 +157,9 @@ function insertRequestRow(opts: {
   const now = new Date().toISOString();
   db.prepare(
     `INSERT INTO requests
-       (request_id, user_id, source, url, youtube_id, title, status,
+       (request_id, user_id, source, url, youtube_id, title, channel, status,
         rejection_reason, requested_at, added_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     opts.request_id,
     opts.user_id ?? USER_ID,
@@ -166,6 +167,7 @@ function insertRequestRow(opts: {
     opts.url ?? 'https://www.youtube.com/watch?v=' + opts.request_id,
     opts.youtube_id ?? null,
     opts.title ?? null,
+    opts.channel ?? null,
     opts.status,
     opts.rejection_reason ?? null,
     opts.requested_at ?? now,
@@ -606,6 +608,200 @@ describe('GET /requests/feed', () => {
   it('returns 400 when neither userId nor user is provided', async () => {
     const resp = await request('GET', '/requests/feed');
     expect(resp.status).toBe(400);
+  });
+
+  // ─── Tier 3 / Tier 4 summaries (issue #140) ───────────────────────────────
+  //
+  // Additive top-level fields alongside `days`. Tier 3 = per-day summaries for
+  // rows aged 7–29 days; Tier 4 = per-week (Mon–Sun) summaries for rows aged
+  // ≥ 30 days. Rows aged < 7 days stay in `days` only. Age is a whole-day
+  // calendar delta from today.
+
+  interface TierBody {
+    days: Array<{ date: string; cards: Array<{ request_id: string }>; sections?: Array<{ cards: Array<{ request_id: string }> }> }>;
+    tier3Days: Array<{
+      date: string;
+      count: number;
+      provenanceMix: { req: number; follow: number; pick: number };
+      topTitles: Array<{ title: string; kind: 'req' | 'follow' | 'pick' }>;
+    }>;
+    tier4Weeks: Array<{
+      rangeStart: string;
+      rangeEnd: string;
+      count: number;
+      topChannels: string[];
+      summary: string | null;
+    }>;
+  }
+
+  it('(a) <7d history: tier3Days and tier4Weeks are empty, days carries the rows unchanged', async () => {
+    insertRequestRow({ request_id: 'recent-0', status: 'ready', source: 'share_sheet', added_at: isoAt(0) });
+    insertRequestRow({ request_id: 'recent-3', status: 'ready', source: 'share_sheet', added_at: isoAt(3) });
+    insertRequestRow({ request_id: 'recent-6', status: 'ready', source: 'share_sheet', added_at: isoAt(6) });
+
+    const resp = await request('GET', '/requests/feed?user=Boy1');
+    expect(resp.status).toBe(200);
+    const body = resp.json<TierBody>();
+
+    // Nothing aged into Tier 3/4 yet.
+    expect(body.tier3Days).toEqual([]);
+    expect(body.tier4Weeks).toEqual([]);
+
+    // The <7d rows are all present in `days` (full rows), unchanged.
+    const dayIds = body.days.flatMap((d) => d.sections ? d.sections.flatMap((s) => s.cards) : d.cards).map((c) => c.request_id);
+    expect(dayIds).toEqual(expect.arrayContaining(['recent-0', 'recent-3', 'recent-6']));
+    expect(dayIds).toHaveLength(3);
+  });
+
+  it('(b) 7–30d history: tier3Days is populated with per-day provenanceMix + topTitles (max 3, most-recent-first)', async () => {
+    // Four rows on the same day (age 10) of mixed provenance; topTitles caps at
+    // 3 and follows the added_at DESC ordering (latest hour first).
+    insertRequestRow({ request_id: 't3-a', status: 'ready', source: 'share_sheet', title: 'Asked One', added_at: isoAt(10, 9) });
+    insertRequestRow({ request_id: 't3-b', status: 'ready', source: 'channel_subscription', title: 'Follow Two', added_at: isoAt(10, 11) });
+    insertRequestRow({ request_id: 't3-c', status: 'ready', source: 'recommended', title: 'Pick Three', added_at: isoAt(10, 13) });
+    insertRequestRow({ request_id: 't3-d', status: 'ready', source: 'share_sheet', title: 'Asked Four', added_at: isoAt(10, 15) });
+    // A second Tier-3 day (age 8) to confirm dates come back DESC.
+    insertRequestRow({ request_id: 't3-e', status: 'ready', source: 'share_sheet', title: 'Newer Day', added_at: isoAt(8) });
+
+    const resp = await request('GET', '/requests/feed?user=Boy1');
+    expect(resp.status).toBe(200);
+    const body = resp.json<TierBody>();
+
+    expect(body.tier4Weeks).toEqual([]);
+    // `days` is the full history regardless of age (Saved.tsx depends on it),
+    // so every seeded row is still present there — the tiers are additive
+    // summaries layered on top, not a partition of `days`.
+    const dayIds = body.days.flatMap((d) => d.sections ? d.sections.flatMap((s) => s.cards) : d.cards).map((c) => c.request_id);
+    expect(dayIds.sort()).toEqual(['t3-a', 't3-b', 't3-c', 't3-d', 't3-e'].sort());
+
+    expect(body.tier3Days.map((d) => d.date)).toEqual([isoAt(8).slice(0, 10), isoAt(10).slice(0, 10)]);
+
+    const day10 = body.tier3Days.find((d) => d.date === isoAt(10).slice(0, 10))!;
+    expect(day10.count).toBe(4);
+    expect(day10.provenanceMix).toEqual({ req: 2, follow: 1, pick: 1 });
+    // Ordered most-recent-first (added_at DESC), capped at 3.
+    expect(day10.topTitles).toEqual([
+      { title: 'Asked Four', kind: 'req' },
+      { title: 'Pick Three', kind: 'pick' },
+      { title: 'Follow Two', kind: 'follow' },
+    ]);
+  });
+
+  it('(c) 30+d history: tier4Weeks is populated, with topChannels by count and summary null', async () => {
+    // Age 40 falls in one ISO week. Three rows: Channel X twice, Channel Y once.
+    insertRequestRow({ request_id: 't4-a', status: 'ready', source: 'channel_subscription', channel: 'Channel X', added_at: isoAt(40, 9) });
+    insertRequestRow({ request_id: 't4-b', status: 'ready', source: 'channel_subscription', channel: 'Channel Y', added_at: isoAt(40, 11) });
+    insertRequestRow({ request_id: 't4-c', status: 'ready', source: 'channel_subscription', channel: 'Channel X', added_at: isoAt(41, 9) });
+
+    const resp = await request('GET', '/requests/feed?user=Boy1');
+    expect(resp.status).toBe(200);
+    const body = resp.json<TierBody>();
+
+    // `days` still carries the full history; only the tier summaries partition
+    // by age. These rows are all ≥30d, so Tier 3 is empty and Tier 4 has them.
+    const dayIds = body.days.flatMap((d) => d.cards).map((c) => c.request_id);
+    expect(dayIds.sort()).toEqual(['t4-a', 't4-b', 't4-c'].sort());
+    expect(body.tier3Days).toEqual([]);
+    expect(body.tier4Weeks).toHaveLength(1);
+
+    const week = body.tier4Weeks[0]!;
+    expect(week.count).toBe(3);
+    expect(week.topChannels).toEqual(['Channel X', 'Channel Y']);
+    expect(week.summary).toBeNull();
+    // rangeStart is a Monday, rangeEnd the following Sunday (6 days later).
+    expect(new Date(week.rangeStart + 'T00:00:00Z').getUTCDay()).toBe(1);
+    expect(new Date(week.rangeEnd + 'T00:00:00Z').getUTCDay()).toBe(0);
+    const spanDays = (Date.parse(week.rangeEnd) - Date.parse(week.rangeStart)) / 86_400_000;
+    expect(spanDays).toBe(6);
+  });
+
+  it('(d) a Tier-4 week that spans a month boundary is one week with a cross-month range', async () => {
+    // Find a Monday that sits in a different month from the Sunday of that week,
+    // and is at least 30 days old, by walking back from today.
+    function mondayOf(d: Date): Date {
+      const ms = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+      const monday = ms - (((new Date(ms).getUTCDay() + 6) % 7) * 86_400_000);
+      return new Date(monday);
+    }
+    const probe = new Date();
+    probe.setUTCDate(probe.getUTCDate() - 35);
+    let monday = mondayOf(probe);
+    // Walk back a week at a time until the Mon–Sun span crosses a month edge.
+    for (let i = 0; i < 12; i += 1) {
+      const sunday = new Date(monday.getTime() + 6 * 86_400_000);
+      if (monday.getUTCMonth() !== sunday.getUTCMonth()) break;
+      monday = new Date(monday.getTime() - 7 * 86_400_000);
+    }
+    const sunday = new Date(monday.getTime() + 6 * 86_400_000);
+    expect(monday.getUTCMonth()).not.toBe(sunday.getUTCMonth());
+
+    const mondayIso = monday.toISOString().slice(0, 10);
+    const sundayIso = sunday.toISOString().slice(0, 10);
+    insertRequestRow({ request_id: 't4-mon', status: 'ready', source: 'channel_subscription', channel: 'Cross', added_at: monday.toISOString() });
+    insertRequestRow({ request_id: 't4-sun', status: 'ready', source: 'channel_subscription', channel: 'Cross', added_at: sunday.toISOString() });
+
+    const resp = await request('GET', '/requests/feed?user=Boy1');
+    expect(resp.status).toBe(200);
+    const body = resp.json<TierBody>();
+
+    expect(body.tier4Weeks).toHaveLength(1);
+    const week = body.tier4Weeks[0]!;
+    expect(week.rangeStart).toBe(mondayIso);
+    expect(week.rangeEnd).toBe(sundayIso);
+    expect(week.count).toBe(2);
+  });
+
+  it('(e) no items: tier3Days and tier4Weeks are empty arrays, not a crash', async () => {
+    const resp = await request('GET', '/requests/feed?user=Boy1');
+    expect(resp.status).toBe(200);
+    const body = resp.json<TierBody>();
+    expect(body.days).toEqual([]);
+    expect(body.tier3Days).toEqual([]);
+    expect(body.tier4Weeks).toEqual([]);
+  });
+
+  it('(f) boundary days: age exactly 7 → tier3, exactly 30 → tier4, age 6 → no tier, age 29 → tier3', async () => {
+    insertRequestRow({ request_id: 'age-6', status: 'ready', source: 'share_sheet', added_at: isoAt(6) });
+    insertRequestRow({ request_id: 'age-7', status: 'ready', source: 'share_sheet', added_at: isoAt(7) });
+    insertRequestRow({ request_id: 'age-29', status: 'ready', source: 'share_sheet', added_at: isoAt(29) });
+    insertRequestRow({ request_id: 'age-30', status: 'ready', source: 'channel_subscription', channel: 'Boundary', added_at: isoAt(30) });
+
+    const resp = await request('GET', '/requests/feed?user=Boy1');
+    expect(resp.status).toBe(200);
+    const body = resp.json<TierBody>();
+
+    // `days` carries the whole history regardless of age — all four rows.
+    const dayIds = body.days.flatMap((d) => d.sections ? d.sections.flatMap((s) => s.cards) : d.cards).map((c) => c.request_id);
+    expect(dayIds.sort()).toEqual(['age-29', 'age-30', 'age-6', 'age-7'].sort());
+
+    // age 6 → not summarised into a tier (Tier 1+2 / `days` only).
+    const t3Andt4Dates = [
+      ...body.tier3Days.map((d) => d.date),
+    ];
+    expect(t3Andt4Dates).not.toContain(isoAt(6).slice(0, 10));
+
+    // age 7 and age 29 → Tier 3 (each its own day); age 30 not in Tier 3.
+    const t3Dates = body.tier3Days.map((d) => d.date);
+    expect(t3Dates).toContain(isoAt(7).slice(0, 10));
+    expect(t3Dates).toContain(isoAt(29).slice(0, 10));
+    expect(t3Dates).not.toContain(isoAt(30).slice(0, 10));
+
+    // age 30 → Tier 4.
+    expect(body.tier4Weeks).toHaveLength(1);
+    expect(body.tier4Weeks[0]!.count).toBe(1);
+    expect(body.tier4Weeks[0]!.topChannels).toEqual(['Boundary']);
+  });
+
+  it('unknown/legacy source values bucket to req in the Tier-3 provenanceMix rather than crashing', async () => {
+    insertRequestRow({ request_id: 't3-legacy', status: 'ready', source: 'dns_landing', title: 'Legacy', added_at: isoAt(10) });
+    insertRequestRow({ request_id: 't3-search', status: 'ready', source: 'search', title: 'Searched', added_at: isoAt(10) });
+
+    const resp = await request('GET', '/requests/feed?user=Boy1');
+    expect(resp.status).toBe(200);
+    const body = resp.json<TierBody>();
+
+    const day = body.tier3Days.find((d) => d.date === isoAt(10).slice(0, 10))!;
+    expect(day.provenanceMix).toEqual({ req: 2, follow: 0, pick: 0 });
   });
 });
 

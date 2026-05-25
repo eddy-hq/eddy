@@ -17,6 +17,7 @@ import {
   displayRejectionReason,
 } from './state';
 import { getRequestsState } from './state-default';
+import { buildTierSummaries } from './feed-tiers';
 
 export {
   createRequestsState,
@@ -42,6 +43,18 @@ export type {
   Ports,
   RequestsState,
 } from './state';
+export {
+  buildTierSummaries,
+  sourceToKind,
+  ageInDays,
+  isoWeekRange,
+} from './feed-tiers';
+export type {
+  FeedKind,
+  Tier3Day,
+  Tier4Week,
+  TierInputRow,
+} from './feed-tiers';
 
 export const requestsRouter = Router();
 export const FEED_LIMIT = 1000;
@@ -195,7 +208,13 @@ requestsRouter.post('/', async (req: Request, res: Response) => {
 });
 
 // GET /feed?user=... — timeline feed, day-grouped, anchored by added_at
-// Returns: { days: [{ date: 'YYYY-MM-DD', label: 'Today'|'Yesterday'|'Mon 7 Apr', sections?: [...], cards: [...] }] }
+// Returns: {
+//   days: [{ date, label, sections?, cards }]          — Tier 1+2, full rows, full history
+//   tier3Days: [{ date, count, provenanceMix, topTitles }]      — age 7–29 days
+//   tier4Weeks: [{ rangeStart, rangeEnd, count, topChannels, summary }] — age ≥ 30 days
+// }
+// `days` is unchanged from before (Saved.tsx depends on the full history); the
+// tier fields are additive. Tier grouping lives in ./feed-tiers (issue #140).
 requestsRouter.get('/feed', (req: Request, res: Response) => {
   const { userId, user: userName } = req.query as { userId?: string; user?: string };
   const lookupValue = userId ?? userName;
@@ -234,6 +253,15 @@ requestsRouter.get('/feed', (req: Request, res: Response) => {
   }
 
   const dayMap = new Map<string, typeof rows>();
+  // Tier inputs are derived from the same day-slicing rule (added_at, falling
+  // back to requested_at), and stay in the query's added_at DESC order so
+  // Tier 3 topTitles come out most-recent-first within a day.
+  const tierRows = rows.map((row) => ({
+    day: (row.added_at ?? row.requested_at).slice(0, 10),
+    title: row.title,
+    channel: row.channel,
+    source: row.source,
+  }));
   for (const row of rows) {
     const day = (row.added_at ?? row.requested_at).slice(0, 10);
     if (!dayMap.has(day)) dayMap.set(day, []);
@@ -269,7 +297,13 @@ requestsRouter.get('/feed', (req: Request, res: Response) => {
     };
   });
 
-  res.json({ days });
+  // Tier 3 (per-day, age 7–29) and Tier 4 (per-week, age ≥ 30) summaries are
+  // additive top-level fields. `days` (Tier 1+2 full rows) is unchanged —
+  // Saved.tsx flatMaps the whole `days` history to find saved items, so it must
+  // not be capped to a week. See issue #140.
+  const { tier3Days, tier4Weeks } = buildTierSummaries(tierRows, todayStr);
+
+  res.json({ days, tier3Days, tier4Weeks });
 });
 
 // GET /requests/admin/pipeline — active + recent rejected requests across all users
