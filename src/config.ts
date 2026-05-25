@@ -7,6 +7,11 @@ const schema = z.object({
   REDIS_URL: z.string().default('redis://localhost:6379'),
   OLLAMA_URL: z.string().default('http://localhost:11434'),
   OLLAMA_GUARD_MODEL: z.string().default('gemma4:e4b'),
+  // Optional model override for the Tier 4 week-summary call site (issue #143).
+  // Unset reuses the guard model — the summary is a short prose line, not a
+  // safety datum, so it shares the guard model by default rather than pulling a
+  // second model into memory.
+  OLLAMA_SUMMARY_MODEL: z.string().optional(),
   TOKEN_SECRET: z.string().min(32, 'TOKEN_SECRET must be at least 32 characters'),
   TAILSCALE_HOSTNAME: z.string().default('localhost'),
   TAILSCALE_IP: z.string().default('127.0.0.1'),
