@@ -27,6 +27,14 @@ import {
   resolveSummary,
   weekMonthMarkers,
 } from './feed-tier4';
+import {
+  CARD_MIN_COL,
+  COMPACT_MIN_COL,
+  FEED_MAX_WIDTH,
+  FEED_SIDE_PAD,
+  GRID_GAP,
+  gridColumns,
+} from './feed-grid';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -193,8 +201,9 @@ export function Feed() {
         <AppHeader />
       </div>
 
-      {/* Feed content */}
-      <main style={{ paddingBottom: 100 }}>
+      {/* Feed content — capped + centred so wide iPads settle at three
+          columns rather than sprawling; phones stay full-bleed. */}
+      <main style={{ paddingBottom: 100, maxWidth: FEED_MAX_WIDTH, margin: '0 auto' }}>
         {showEmpty ? (
           <div style={{ paddingTop: 64, textAlign: 'center', padding: '64px 32px 0' }}>
             <p style={{ color: 'var(--text-secondary)', fontSize: 'var(--text-base)', margin: 0 }}>
@@ -317,17 +326,19 @@ function TodayBlock({
       {todayCards.length > 0 && (
         <>
           <SectionHeader label="Today" count={todayCards.length} />
-          <AnimatePresence mode="popLayout">
-            {todayCards.map((row) => (
-              <TodayStreamCard
-                key={row.request_id}
-                row={row}
-                userId={userId}
-                selectedId={selectedId}
-                onSelect={onSelect}
-              />
-            ))}
-          </AnimatePresence>
+          <TodayGrid>
+            <AnimatePresence mode="popLayout">
+              {todayCards.map((row) => (
+                <TodayStreamCard
+                  key={row.request_id}
+                  row={row}
+                  userId={userId}
+                  selectedId={selectedId}
+                  onSelect={onSelect}
+                />
+              ))}
+            </AnimatePresence>
+          </TodayGrid>
         </>
       )}
 
@@ -359,17 +370,27 @@ function TodayStreamCard({
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, y: -8, scale: 0.97 }}
       transition={{ duration: 0.3, ease: [0.33, 1, 0.68, 1] }}
+      // Row subgrid: the voice line takes parent row 1, the card row 2. The
+      // parent sizes row 1 to the tallest voice line across the visual row, so
+      // every card in the row starts at the same Y. `rowGap` overrides the
+      // parent's inter-row gap for the voice-line→card spacing. The empty
+      // spacer keeps the card in row 2 on the rare card with no voice line.
+      style={{
+        display: 'grid',
+        gridTemplateRows: 'subgrid',
+        gridRow: 'span 2',
+        rowGap: 5, // voice line sits close to its card
+        alignItems: 'start',
+      }}
     >
-      {row.why_text && <VoiceLine text={row.why_text} />}
-      <CardList>
-        <Card
-          data={toCardData(row)}
-          userId={userId}
-          onSelect={(c) => onSelect(c, watchSource)}
-          isSelected={selectedId === row.request_id}
-          sourceKind={kind}
-        />
-      </CardList>
+      {row.why_text ? <VoiceLine text={row.why_text} /> : <span aria-hidden />}
+      <Card
+        data={toCardData(row)}
+        userId={userId}
+        onSelect={(c) => onSelect(c, watchSource)}
+        isSelected={selectedId === row.request_id}
+        sourceKind={kind}
+      />
     </motion.div>
   );
 }
@@ -584,7 +605,13 @@ function DayRow({
             transition={{ duration: 0.22, ease: [0.33, 1, 0.68, 1] }}
             style={{ overflow: 'hidden' }}
           >
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 10, padding: '4px 16px 14px' }}>
+            <div style={{
+              display: 'grid',
+              gridTemplateColumns: gridColumns(COMPACT_MIN_COL),
+              gap: GRID_GAP,
+              alignItems: 'start',
+              padding: `4px ${FEED_SIDE_PAD}px 14px`,
+            }}>
               {expandedCards.map((row) => (
                 <CompactCard
                   key={row.request_id}
@@ -754,7 +781,13 @@ function WeekRow({
             transition={{ duration: 0.22, ease: [0.33, 1, 0.68, 1] }}
             style={{ overflow: 'hidden' }}
           >
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 10, padding: '4px 16px 14px' }}>
+            <div style={{
+              display: 'grid',
+              gridTemplateColumns: gridColumns(COMPACT_MIN_COL),
+              gap: GRID_GAP,
+              alignItems: 'start',
+              padding: `4px ${FEED_SIDE_PAD}px 14px`,
+            }}>
               {matchedCards.map((row) => (
                 <CompactCard
                   key={row.request_id}
@@ -841,7 +874,14 @@ function SectionHeader({ label, count }: { label: string; count: number }) {
 function VoiceLine({ text }: { text: string }) {
   return (
     <p style={{
-      margin: '18px 16px 10px',
+      // No margin: the subgrid cell insets it horizontally, and the cell's
+      // rowGap owns the spacing down to the card. A bottom margin here would
+      // stack on top of that gap.
+      margin: 0,
+      // Sit at the bottom of the (row-equalised) voice-line track, so the line
+      // hugs its card; the per-row slack falls above the line, not between it
+      // and the video.
+      alignSelf: 'end',
       padding: '4px 0 6px',
       fontFamily: 'var(--font-serif)',
       fontStyle: 'italic',
@@ -874,17 +914,55 @@ function EndToday() {
   );
 }
 
+// Responsive card grid: one column on a phone, two on an iPad in portrait,
+// three in landscape (see ./feed-grid). `align-items: start` keeps each card at
+// its natural height with a uniform gap, rather than stretching the shortest in
+// a row up to the tallest. Used for the big Today / "You asked" cards.
 function CardList({ children }: { children: React.ReactNode }) {
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 12, padding: '0 16px' }}>
+    <div style={{
+      display: 'grid',
+      gridTemplateColumns: gridColumns(CARD_MIN_COL),
+      gap: GRID_GAP,
+      alignItems: 'start',
+      padding: `0 ${FEED_SIDE_PAD}px`,
+    }}>
       {children}
     </div>
   );
 }
 
+// The Today grid. Same responsive columns as CardList, but each child cell is
+// a two-row subgrid (voice line, then card) spanning `2 *` the parent's row
+// tracks — so the parent equalises voice-line heights per row and the card
+// tops line up across a row without clamping the voice line (see
+// TodayStreamCard). `rowGap` here is the gap *between* logical card rows; the
+// in-cell voice→card gap is set on the cell. Subgrid is Safari 16+ (the iPads).
+function TodayGrid({ children }: { children: React.ReactNode }) {
+  return (
+    <div style={{
+      display: 'grid',
+      gridTemplateColumns: gridColumns(CARD_MIN_COL),
+      columnGap: GRID_GAP,
+      rowGap: GRID_GAP + 6, // a touch more breathing room below each card row
+      padding: `0 ${FEED_SIDE_PAD}px`,
+    }}>
+      {children}
+    </div>
+  );
+}
+
+// Same responsive grid for the denser past-day rows, on a slightly narrower
+// minimum track (the compact card is a horizontal thumbnail + text row).
 function CompactList({ children }: { children: React.ReactNode }) {
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 10, padding: '0 16px' }}>
+    <div style={{
+      display: 'grid',
+      gridTemplateColumns: gridColumns(COMPACT_MIN_COL),
+      gap: GRID_GAP,
+      alignItems: 'start',
+      padding: `0 ${FEED_SIDE_PAD}px`,
+    }}>
       {children}
     </div>
   );
