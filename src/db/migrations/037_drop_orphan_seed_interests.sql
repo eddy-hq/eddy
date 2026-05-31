@@ -25,11 +25,14 @@ UPDATE candidate_pool
 -- interests(id) (migration 023). Deleting an interest still referenced by guard
 -- history would fail the migration and brick server startup — and that history
 -- is kid-safety record we must keep. So only delete a row that nothing
--- references: not declared, and not pointed at by any guard eval. A referenced
+-- references: not declared, not pointed at by any guard eval, and not in
+-- balance_prompts history (matching migration 017's precedent — avoids dangling
+-- prompt rows and a recreated slug inheriting an old cooldown). A referenced
 -- orphan stays as inert vocabulary (the leak is already fixed by removing its
 -- channel links above and by the new inference path).
 DELETE FROM interests
  WHERE id IN ('news_analysis', 'programming', 'camping')
    AND source = 'seed'
    AND id NOT IN (SELECT interest_id FROM user_interests)
-   AND id NOT IN (SELECT interest_id FROM guard_eval WHERE interest_id IS NOT NULL);
+   AND id NOT IN (SELECT interest_id FROM guard_eval WHERE interest_id IS NOT NULL)
+   AND id NOT IN (SELECT interest_id FROM balance_prompts);

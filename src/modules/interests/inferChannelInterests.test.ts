@@ -31,15 +31,20 @@ const vocabulary = [
 let existingLink: { 1: number } | undefined;
 const interestInserts: Array<{ sql: string; args: unknown[] }> = [];
 const channelLinkInserts: Array<{ sql: string; args: unknown[] }> = [];
-// Models INSERT OR IGNORE: an id already present yields changes:0. Pre-seed to
-// force a slug collision.
-const existingInterestIds = new Set<string>();
+// Models INSERT OR IGNORE: an id already present yields changes:0. Maps id ->
+// label so the collision branch's "SELECT label" lookup works. Pre-seed to
+// force a slug collision (same label => concurrent reuse; different => lossy).
+const existingInterests = new Map<string, string>();
 
 vi.mock('../../db/client', () => ({
   db: {
     prepare: vi.fn((sql: string) => ({
-      get: vi.fn(() => {
+      get: vi.fn((...gargs: unknown[]) => {
         if (sql.includes('FROM channel_interest_links')) return existingLink;
+        if (sql.includes('label FROM interests')) {
+          const id = gargs[0] as string;
+          return existingInterests.has(id) ? { label: existingInterests.get(id) } : undefined;
+        }
         return undefined;
       }),
       all: vi.fn(() => {
@@ -50,8 +55,8 @@ vi.mock('../../db/client', () => ({
         if (sql.includes('INTO interests')) {
           interestInserts.push({ sql, args });
           const id = args[0] as string;
-          if (existingInterestIds.has(id)) return { changes: 0 };
-          existingInterestIds.add(id);
+          if (existingInterests.has(id)) return { changes: 0 };
+          existingInterests.set(id, args[1] as string);
           return { changes: 1 };
         }
         if (sql.includes('INTO channel_interest_links')) channelLinkInserts.push({ sql, args });
@@ -77,7 +82,7 @@ beforeEach(() => {
   existingLink = undefined;
   interestInserts.length = 0;
   channelLinkInserts.length = 0;
-  existingInterestIds.clear();
+  existingInterests.clear();
   mockedWarn.mockReset();
   mockQueueAdd.mockReset();
   mockQueueAdd.mockResolvedValue(undefined);
@@ -137,10 +142,10 @@ describe('inferChannelInterests', () => {
     expect(interestInserts).toHaveLength(1);
   });
 
-  it('mints a distinct id on a slug collision instead of clobbering/mislinking', async () => {
-    // An unrelated interest already owns the lossy slug "c" (e.g. "C"); a "c#"
+  it('mints a distinct id on an UNRELATED slug collision (lossy slugger)', async () => {
+    // An unrelated interest already owns the lossy slug "c" (label "C"); a "c#"
     // channel must NOT link to or overwrite it — it gets a channel-stable id.
-    existingInterestIds.add('c');
+    existingInterests.set('c', 'C');
     gemma('{"label":"c#"}', '{"match":null}');
     await inferChannelInterests('UCsharp', 'C# Tutorials');
 
@@ -148,6 +153,19 @@ describe('inferChannelInterests', () => {
     expect(attemptedIds[0]).toBe('c');            // INSERT OR IGNORE — no-op
     expect(attemptedIds[1]).toBe('c_ucsharp');    // distinct, channel-stable
     expect(linkedIds()).toEqual(['c_ucsharp']);   // never linked the unrelated 'c'
+  });
+
+  it('reuses the existing row on a SAME-label slug collision (concurrent create, no fragmentation)', async () => {
+    // Another follow inferred the same topic concurrently and created the row
+    // first. The second call must reuse it (one shared id) rather than mint a
+    // duplicate, so getInferredInterests aggregates them as one interest.
+    existingInterests.set('speedcubing', 'speedcubing');
+    gemma('{"label":"speedcubing"}', '{"match":null}');
+    await inferChannelInterests('UCbbb', 'Cube Records');
+
+    expect(interestInserts.map((i) => i.args[0])).toEqual(['speedcubing']); // no suffixed dup
+    expect(linkedIds()).toEqual(['speedcubing']);
+    expect(mockQueueAdd).not.toHaveBeenCalled(); // reused row already has a job in flight
   });
 
   it('inserts nothing when the channel topic is unclear (no second Gemma call)', async () => {

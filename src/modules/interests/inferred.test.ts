@@ -124,6 +124,20 @@ describe('getInferredInterests — derive', () => {
     expect(getInferredInterests(KID)).toEqual([]);
   });
 
+  it('excludes an inferred interest still pending search-terms (kid-safety ordering)', () => {
+    // A Tier-2 inferred interest sits on the pending sentinel until its
+    // search_terms are generated. Proposing it before then would let a Keep
+    // enqueue the guard eval with no terms to judge (#52). It must stay hidden
+    // until generation lands (a permanent failure stays hidden — fail-closed).
+    db.prepare(
+      "INSERT OR IGNORE INTO interests (id, label, category, source, search_terms) VALUES ('pending_topic','Pending Topic',NULL,'inferred',?)",
+    ).run('__pending_specificity__');
+    follow(KID, PERSON_A);
+    link(CHANNEL_A, 'pending_topic', 1.0);
+
+    expect(getInferredInterests(KID)).toEqual([]);
+  });
+
   it('excludes interests the user has already declared (no duplicate provenance)', () => {
     follow(KID, PERSON_A);
     link(CHANNEL_A, MINECRAFT, 1.0);

@@ -192,24 +192,39 @@ export async function inferChannelInterests(channelId: string, channelName: stri
       VALUES (?, ?, NULL, 'inferred', ?)
     `);
     interestId = slug;
-    let res = insert.run(interestId, freeLabel, SEARCH_TERMS_PENDING);
+    const res = insert.run(interestId, freeLabel, SEARCH_TERMS_PENDING);
     if (res.changes === 0) {
-      // The slug collides with an interest canonicalisation did NOT match (the
-      // slugger is lossy — "c#" and "c++" both slug to "c"). Don't link to or
-      // clobber that unrelated row: mint a distinct, channel-stable id instead.
-      interestId = `${slug}_${slugifyInterestLabel(channelId) || uuidv7()}`;
-      res = insert.run(interestId, freeLabel, SEARCH_TERMS_PENDING);
+      // The slug already exists. Two cases to tell apart:
+      //  - same topic created concurrently (another follow inferred the same
+      //    label before this lookup) — reuse the row so aggregation doesn't
+      //    fragment across `minecraft` / `minecraft_ucbbb`;
+      //  - a genuine lossy-slug collision with an UNRELATED interest ("c#" and
+      //    "c++" both slug to "c") — mint a distinct, channel-stable id so we
+      //    neither link to nor clobber that row.
+      const owner = db.prepare('SELECT label FROM interests WHERE id = ?')
+        .get(interestId) as { label: string } | undefined;
+      const sameTopic = owner?.label.trim().toLowerCase() === freeLabel.toLowerCase();
+      if (!sameTopic) {
+        interestId = `${slug}_${slugifyInterestLabel(channelId) || uuidv7()}`;
+        insert.run(interestId, freeLabel, SEARCH_TERMS_PENDING);
+      } else {
+        created = false; // reusing an existing row; its search-terms job is already in flight
+      }
     }
 
-    // Populate search_terms async via the existing chain; isUserAdded=false so
-    // the kid-interest guard branch never fires here — inference output is inert
-    // until a human Keep, where keepInferredInterest runs the guard.
-    const payload: GenerateSearchTermsJob = {
-      interestId, label: freeLabel, userId: '', isUserAdded: false, isKid: false,
-    };
-    void interestsQueue.add(GENERATE_SEARCH_TERMS_JOB, payload).catch((err: unknown) => {
-      logger.warn({ err, interestId }, 'Inferred interest: failed to enqueue search-terms job');
-    });
+    // Populate search_terms async via the existing chain (only for a row we
+    // actually created — a reused concurrent row already has a job in flight).
+    // isUserAdded=false so the kid-interest guard branch never fires here:
+    // inference output is inert until a human Keep, where keepInferredInterest
+    // runs the guard.
+    if (created) {
+      const payload: GenerateSearchTermsJob = {
+        interestId, label: freeLabel, userId: '', isUserAdded: false, isKid: false,
+      };
+      void interestsQueue.add(GENERATE_SEARCH_TERMS_JOB, payload).catch((err: unknown) => {
+        logger.warn({ err, interestId }, 'Inferred interest: failed to enqueue search-terms job');
+      });
+    }
   }
 
   db.prepare(`

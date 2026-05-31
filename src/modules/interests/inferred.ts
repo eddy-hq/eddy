@@ -1,6 +1,7 @@
 import { db } from '../../db/client';
 import { logger } from '../../logger';
 import { guardQueue } from '../../queue';
+import { SEARCH_TERMS_PENDING } from './reconcile';
 import { KID_INTEREST_EVAL_JOB } from '../guard/index';
 
 // Inferred interests (#156, ADR-0008). An inferred interest is NOT a stored
@@ -57,9 +58,16 @@ export function getInferredInterests(userId: string): InferredInterest[] {
       AND i.id NOT IN (
         SELECT interest_id FROM inferred_interest_suppressions WHERE user_id = ?
       )
+      -- Kid-safety ordering (#52): an interest inferred from content (Tier 2)
+      -- starts on the pending sentinel until its search_terms are generated.
+      -- Don't propose it yet — a Keep enqueues the guard eval directly
+      -- (keepInferredInterest), and the guard must see populated search_terms.
+      -- Once generation lands (or reconcile re-runs it) the proposal appears;
+      -- a permanently-failed generation stays hidden (fail-closed).
+      AND i.search_terms != ?
     GROUP BY i.id, i.label, i.category
     ORDER BY follower_count DESC, confidence DESC, i.label ASC
-  `).all(userId, userId, userId) as InferredRow[];
+  `).all(userId, userId, userId, SEARCH_TERMS_PENDING) as InferredRow[];
 
   return rows.map((r) => ({
     interestId: r.interest_id,
