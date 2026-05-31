@@ -446,12 +446,14 @@ function SheetBody({
           onPointerUp={gestureEnd}
           style={{ flex: 1, overflowY: 'auto', padding: '20px 20px 100px' }}
         >
-          {/* Person row — fires the lookup only when a channelId exists; the
-              row self-hides unless a real Person resolves (no channel-name
-              fallback, per #138's no-Person acceptance criterion). */}
-          {canTapToPerson && youtubeChannelId && (
+          {/* Person row — shown for any resolvable channel (name + channelId).
+              Renders nothing when that metadata is missing (#138); a channel
+              with no Person row yet still shows "Not followed" and resolves the
+              Person on tap. */}
+          {canTapToPerson && channel && youtubeChannelId && (
             <PersonRow
               userId={userId}
+              channel={channel}
               channelId={youtubeChannelId}
               onTap={() => void goToPerson()}
             />

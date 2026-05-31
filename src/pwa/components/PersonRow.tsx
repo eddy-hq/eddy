@@ -6,27 +6,29 @@ import { followSubLine, personInitial, avatarGradient } from '../lib/personRow';
 // Player-sheet Person row (#138). Replaces the old channel-name button: a
 // circular avatar (captured photo, else a gradient swatch with the initial),
 // the person name, and a "Followed since {Mon YYYY}" / "Not followed" sub-line.
-// Tapping navigates to the person view (handled by the parent's resolve+nav).
+// Tapping navigates to the person view; for a channel with no Person row yet
+// the parent's resolve-on-tap creates one (recovery path preserved).
 //
 // Per ADR-0007 the subscription unit is the Person, so follow state comes from
-// followed_people via /people/by-channel — not a channel table. Renders nothing
-// until the lookup resolves a real Person: while the query is pending, and when
-// it 404s (no Person row for the channel yet). A channel ID alone is not a
-// resolvable Person — the acceptance criterion forbids a channel-name fallback.
+// followed_people via /people/by-channel — not a channel table. The row renders
+// for any resolvable channel (channelId + name, gated by the parent): it shows
+// the channel name + gradient + "Not followed" immediately, then enriches with
+// the captured photo and real follow date once the lookup resolves. A 404 (no
+// Person row yet) keeps the not-followed fallback rather than hiding the row.
 export function PersonRow({
   userId,
+  channel,
   channelId,
   onTap,
 }: {
   userId: string;
+  channel: string;
   channelId: string;
   onTap: () => void;
 }) {
-  const { data, isPending } = usePersonSummary(userId, channelId);
-  if (isPending || data == null) return null;
-
-  const name = data.displayName;
-  const sub = followSubLine(data.followedAt);
+  const { data } = usePersonSummary(userId, channelId);
+  const name = data?.displayName ?? channel;
+  const sub = followSubLine(data?.followedAt);
 
   return (
     <button
@@ -41,7 +43,7 @@ export function PersonRow({
         WebkitTapHighlightColor: 'transparent',
       }}
     >
-      <Avatar photoUrl={data.photoUrl} name={name} />
+      <Avatar photoUrl={data?.photoUrl ?? null} name={name} />
       <span style={{ display: 'flex', flexDirection: 'column', gap: 1, minWidth: 0, flex: 1 }}>
         <span style={{
           fontWeight: 600, fontSize: 14, letterSpacing: '-0.005em',
