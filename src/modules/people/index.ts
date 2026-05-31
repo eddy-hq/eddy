@@ -5,12 +5,13 @@
 // `./registry`) to break the requests↔people runtime cycle.
 export { applyChannelInfoToPerson, ensurePersonForChannel } from './registry';
 export { extractBio } from './util';
-export { getPersonView, parseSupportUrls, isKidVisibleSupport } from './personView';
+export { getPersonView, getPersonSummaryByChannel, parseSupportUrls, isKidVisibleSupport } from './personView';
 export type {
   PersonView,
   PersonViewItem,
   PersonViewPerson,
   PersonViewSupport,
+  PersonSummary,
   SupportKind,
 } from './personView';
 export { runRssPollPass } from './poller';

@@ -2,11 +2,12 @@ import React, { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion, useDragControls } from 'framer-motion';
 import { useQueryClient, useMutation, useQuery } from '@tanstack/react-query';
-import { X, Bookmark, BookmarkCheck, ChevronRight, Trash2, Share } from 'lucide-react';
+import { X, Bookmark, BookmarkCheck, Trash2, Share } from 'lucide-react';
 import { readProgress, writeProgress, clearProgress } from '../lib/videoProgress';
 import { useWatchEventTracker, type WatchSource } from '../lib/watchEvents';
 import { canShare, shareVideo } from '../lib/webShare';
 import { useResolvePersonId } from '../hooks/useResolvePersonId';
+import { PersonRow } from './PersonRow';
 import type { CardData } from './Card';
 
 const EASE: [number, number, number, number] = [0.33, 1, 0.68, 1];
@@ -445,33 +446,17 @@ function SheetBody({
           onPointerUp={gestureEnd}
           style={{ flex: 1, overflowY: 'auto', padding: '20px 20px 100px' }}
         >
-          {channel && (
-            canTapToPerson ? (
-              <button
-                onClick={() => void goToPerson()}
-                style={{
-                  display: 'flex', alignItems: 'center', gap: 6,
-                  padding: '6px 0',
-                  marginBottom: 4, marginLeft: -2,
-                  background: 'none', border: 'none',
-                  fontFamily: 'inherit',
-                  fontSize: 11, fontWeight: 600, letterSpacing: '0.07em',
-                  textTransform: 'uppercase', color: 'var(--text-secondary)',
-                  cursor: 'pointer', minHeight: 36,
-                  WebkitTapHighlightColor: 'transparent',
-                }}
-              >
-                <span>{channel}</span>
-                <ChevronRight size={13} strokeWidth={2.2} aria-hidden style={{ color: 'var(--text-tertiary)' }} />
-              </button>
-            ) : (
-              <p style={{
-                fontSize: 11, fontWeight: 600, letterSpacing: '0.07em',
-                textTransform: 'uppercase', color: 'var(--text-tertiary)', marginBottom: 6,
-              }}>
-                {channel}
-              </p>
-            )
+          {/* Person row — shown for any resolvable channel (name + channelId).
+              Renders nothing when that metadata is missing (#138); a channel
+              with no Person row yet still shows "Not followed" and resolves the
+              Person on tap. */}
+          {canTapToPerson && channel && youtubeChannelId && (
+            <PersonRow
+              userId={userId}
+              channel={channel}
+              channelId={youtubeChannelId}
+              onTap={() => void goToPerson()}
+            />
           )}
 
           {title && (

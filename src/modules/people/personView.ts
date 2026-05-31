@@ -54,6 +54,13 @@ export interface PersonView {
   followedAt: string | null;
 }
 
+export interface PersonSummary {
+  personId: string;
+  displayName: string;
+  photoUrl: string | null;
+  followedAt: string | null;
+}
+
 const ITEMS_CAP = 6;
 
 // Items considered "in library" for this person view: the kid either has the
@@ -118,6 +125,34 @@ export function getPersonView(personId: string, userId: string): PersonView {
     items,
     support: parseSupportUrls(personRow.support_urls),
     followedAt: followRow?.followed_at ?? null,
+  };
+}
+
+// Lightweight Person lookup for the player's Person row (#138): resolve a
+// YouTube channel to its existing Person plus this user's follow state, without
+// the items/support payload getPersonView assembles. Read-only — unlike POST
+// /people/resolve it never creates a Person row or fires bio/photo capture, so
+// it's safe to call on every video-detail open. Returns null when no Person
+// exists for the channel yet; the caller falls back to the channel name it
+// already holds and renders the "Not followed" branch.
+export function getPersonSummaryByChannel(channelId: string, userId: string): PersonSummary | null {
+  const row = db.prepare(`
+    SELECT p.person_id, p.display_name, p.photo_url, fp.followed_at
+    FROM person_outputs po
+    INNER JOIN people p ON p.person_id = po.person_id
+    LEFT JOIN followed_people fp ON fp.person_id = p.person_id AND fp.user_id = ?
+    WHERE po.output_type = 'youtube' AND po.external_id = ?
+    LIMIT 1
+  `).get(userId, channelId) as
+    | { person_id: string; display_name: string; photo_url: string | null; followed_at: string | null }
+    | undefined;
+
+  if (!row) return null;
+  return {
+    personId: row.person_id,
+    displayName: row.display_name,
+    photoUrl: row.photo_url,
+    followedAt: row.followed_at,
   };
 }
 

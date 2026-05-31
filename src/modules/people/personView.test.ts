@@ -16,7 +16,7 @@ vi.mock('../../logger', () => ({
 import { db } from '../../db/client';
 import { runMigrations } from '../../db/migrate';
 import { NotFoundError } from '../../errors';
-import { getPersonView, parseSupportUrls } from './personView';
+import { getPersonView, getPersonSummaryByChannel, parseSupportUrls } from './personView';
 
 const USER_ID = '11111111-1111-7111-8111-111111111111';
 const PERSON_ID = '22222222-2222-7222-8222-222222222222';
@@ -233,6 +233,46 @@ describe('getPersonView', () => {
       { kind: 'merch',    url: 'https://shop.example.com' },
       { kind: 'other',    url: 'https://random.example.com' },
     ]);
+  });
+});
+
+describe('getPersonSummaryByChannel', () => {
+  it('returns null when no Person exists for the channel', () => {
+    expect(getPersonSummaryByChannel(CHANNEL_ID, USER_ID)).toBeNull();
+  });
+
+  it('returns the summary with followedAt when the user follows the person', () => {
+    seedPerson({ photoUrl: 'http://avatar' });
+    seedFollow('2026-03-01T09:00:00.000Z');
+
+    expect(getPersonSummaryByChannel(CHANNEL_ID, USER_ID)).toEqual({
+      personId: PERSON_ID,
+      displayName: CHANNEL_NAME,
+      photoUrl: 'http://avatar',
+      followedAt: '2026-03-01T09:00:00.000Z',
+    });
+  });
+
+  it('returns null followedAt and photoUrl when person exists but is not followed', () => {
+    seedPerson();
+
+    expect(getPersonSummaryByChannel(CHANNEL_ID, USER_ID)).toEqual({
+      personId: PERSON_ID,
+      displayName: CHANNEL_NAME,
+      photoUrl: null,
+      followedAt: null,
+    });
+  });
+
+  it('does not leak another user\'s follow state', () => {
+    seedPerson();
+    seedFollow('2026-03-01T09:00:00.000Z');
+    const OTHER_USER = '33333333-3333-7333-8333-333333333333';
+    db.prepare(
+      'INSERT INTO users (user_id, display_name, role, age_gate, created_at) VALUES (?, ?, ?, ?, ?)',
+    ).run(OTHER_USER, 'Boy2', 'kid', 0, new Date().toISOString());
+
+    expect(getPersonSummaryByChannel(CHANNEL_ID, OTHER_USER)?.followedAt).toBeNull();
   });
 });
 

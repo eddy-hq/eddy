@@ -10,7 +10,7 @@ import { inferChannelInterests } from '../interests';
 import { resolveUserById } from '../users';
 import { searchChannelsFlat, type SearchChannel } from '../../ytdlp';
 import { applyChannelInfoToPerson, ensurePersonForChannel } from './registry';
-import { getPersonView } from './personView';
+import { getPersonView, getPersonSummaryByChannel } from './personView';
 import { pollChannel } from './poller';
 
 export const peopleRouter = Router();
@@ -144,6 +144,23 @@ peopleRouter.post('/follow', (req: Request, res: Response) => {
 
   logger.info({ userId: uid, personId, channelId }, 'User followed channel');
   res.json({ personId, channelId, following: true });
+});
+
+// GET /people/by-channel/:channelId?userId=
+// Lightweight Person summary for a YouTube channel — drives the player's
+// Person row (#138). Read-only: never creates a Person or fires capture.
+// 404 when no Person row exists for the channel yet (caller renders the
+// not-followed row from the channel name it already holds). Two-segment path
+// so it can't collide with the single-segment /:personId route below.
+peopleRouter.get('/by-channel/:channelId', (req: Request, res: Response) => {
+  const { channelId } = req.params as { channelId: string };
+  const { userId } = req.query as { userId?: string };
+  const uid = resolveUserById(userId).user_id;
+
+  const summary = getPersonSummaryByChannel(channelId, uid);
+  if (!summary) throw new NotFoundError(`person for channel ${channelId}`);
+
+  res.json(summary);
 });
 
 // GET /people/:personId?userId=
