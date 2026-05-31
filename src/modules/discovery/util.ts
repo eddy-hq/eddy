@@ -27,3 +27,18 @@ export function formatDuration(secs: number | null): string {
   const m = Math.floor((secs % 3600) / 60);
   return m > 0 ? `${h}h${m}m` : `${h}h`;
 }
+
+// Resolve after `ms` (immediate for ms <= 0). Used to space discovery's yt-dlp
+// fan-out so it drips rather than bursting into the shared IP (#185).
+export function sleep(ms: number): Promise<void> {
+  if (ms <= 0) return Promise.resolve();
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Base delay plus a random 0..jitter, both ms. RNG is injectable so the spacing
+// is unit-testable without depending on Math.random. Negative inputs clamp to 0.
+export function jitteredDelayMs(baseMs: number, jitterMs: number, rng: () => number = Math.random): number {
+  const base = baseMs > 0 ? baseMs : 0;
+  const jitter = jitterMs > 0 ? Math.floor(rng() * jitterMs) : 0;
+  return base + jitter;
+}

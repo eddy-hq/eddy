@@ -11,7 +11,7 @@ vi.mock('../../logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 
-import { cleanStaleIntermediates, makeUnifiedProgressParser } from './download';
+import { cleanStaleIntermediates, makeUnifiedProgressParser, mapYtdlpError, attemptsExhausted } from './download';
 
 function feedAll(lines: string[]): number[] {
   const emitted: number[] = [];
@@ -173,5 +173,40 @@ describe('cleanStaleIntermediates', () => {
     cleanStaleIntermediates(dir, '');
 
     expect(fs.readdirSync(dir).sort()).toEqual(['.DS_Store', '.mp4']);
+  });
+});
+
+describe('mapYtdlpError', () => {
+  it('maps known terminal errors to kid-readable reasons', () => {
+    expect(mapYtdlpError('ERROR: This video is age-restricted')).toMatch(/grown-up/);
+    expect(mapYtdlpError('ERROR: Private video')).toMatch(/private/i);
+    expect(mapYtdlpError('ERROR: Video unavailable')).toMatch(/available/i);
+  });
+
+  it('treats bot-detection as non-terminal (null → retryable)', () => {
+    // Returning null is what keeps the error inside BullMQ's retry budget; the
+    // worker separately arms the cooldown so that retry parks (#185).
+    expect(mapYtdlpError("ERROR: Sign in to confirm you're not a bot")).toBeNull();
+  });
+
+  it('returns null for an unrecognised error', () => {
+    expect(mapYtdlpError('yt-dlp exited with code 1\nHTTP Error 416')).toBeNull();
+  });
+});
+
+describe('attemptsExhausted (#183)', () => {
+  it('is false while retries remain', () => {
+    expect(attemptsExhausted(1, 3)).toBe(false);
+    expect(attemptsExhausted(2, 3)).toBe(false);
+  });
+
+  it('is true once attemptsMade reaches the configured maximum', () => {
+    expect(attemptsExhausted(3, 3)).toBe(true);
+    expect(attemptsExhausted(4, 3)).toBe(true);
+  });
+
+  it('defaults a missing attempts option to 1 (single-shot job)', () => {
+    expect(attemptsExhausted(1, undefined)).toBe(true);
+    expect(attemptsExhausted(0, undefined)).toBe(false);
   });
 });

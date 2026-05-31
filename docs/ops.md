@@ -135,6 +135,43 @@ systemctl --user restart eddy-worker
 
 ---
 
+## yt-dlp version channel & the PO-token stack
+
+YouTube's "Sign in to confirm you're not a bot" detection is an arms race. Fixes land in yt-dlp's **nightly** channel first and only periodically roll into stable, so **the download worker tracks nightly, not stable.** Stable can lag 2+ months on exactly the extractor code that fights bot-detection.
+
+**Ubuntu worker** (`config.YTDLP_BIN` = `~/.local/bin/yt-dlp`, pip `--user`) — pinned to nightly on 2026-05-31. To upgrade:
+
+```bash
+# on Ubuntu
+python3 -m pip install -U --pre --user --break-system-packages "yt-dlp[default]"
+~/.local/bin/yt-dlp --version   # expect a nightly stamp like 2026.05.25.234532
+```
+
+No worker restart needed — yt-dlp is shelled out per job, so the next download uses the new binary.
+
+**Footgun:** `pip install yt-dlp` *without* `--pre` silently reverts to stable. Always include `--pre`.
+
+**PO-token stack** (clears bot-detection without cookies, on the worker): the `bgutil-ytdlp-pot-provider` pip plugin + the `bgutil-pot-server.service` Node server on `127.0.0.1:4416`. Plugin and server must stay version-matched (both 1.3.1 as of 2026-05-31). The worker passes `--extractor-args youtube:player_client=mweb` + the POT plugin via `baseArgs()` in `src/modules/content/download.ts`; the M4 **search** path (`src/ytdlp.ts`) is deliberately anonymous and gets none of this.
+
+**M4** runs yt-dlp via Homebrew (stable) for anonymous metadata *search* only — it does **not** download. Homebrew ships stable only; moving the M4 to nightly means a pipx/pip install off brew (pending).
+
+**Nightly is not a free pass:** bot-blocks are also volume-triggered and IP-wide (both boxes share one household public IP). Nightly raises the threshold; it doesn't make throughput unlimited. If a block hits, stop retrying and let the IP go quiet — see the watchdog note below, and don't let stuck `downloading` rows re-enqueue into a blocked IP.
+
+### Throughput throttling (issue #185)
+
+Eddy now rate-shapes its own yt-dlp throughput so it stops *causing* the volume blocks, and stands down automatically when one hits. All knobs are `.env` (zod-validated, see `.env.example`):
+
+- **`YTDLP_BOTDETECT_COOLDOWN_SECS`** (default 2700 = 45 min) — on a bot-detection signature, the detector (`src/botdetect.ts`) arms a cooldown via a Redis key (`eddy:ytdlp:botdetect-cooldown`). It's **cross-process**: the Ubuntu download worker and the M4 discovery search both check and arm it, because the block is IP-wide. While armed, the worker **parks** queued downloads in BullMQ's `delayed` state (`moveToDelayed`, which doesn't spend a retry) instead of hammering, and discovery **skips** its interest-search + back-catalogue fan-out. Set `0` to disable.
+- **`DISCOVERY_SEARCH_LIMIT`** (default 10, was a hardcoded 20) — `ytsearchN` depth for the interest search. Halving it halves the per-search extraction volume.
+- **`DISCOVERY_SEARCH_DELAY_MS` / `DISCOVERY_SEARCH_JITTER_MS`** (default 2000 / 2000) — base + random gap between consecutive searches so a user's fan-out drips.
+- **`DISCOVERY_USER_STAGGER_MS`** (default 15000) — gap between users in the daily loop, so the whole fleet's work spreads across the 06:00 run rather than landing at once.
+
+Fail-open by design: a Redis outage reports "no cooldown" rather than wedging downloads/discovery shut.
+
+**Orphaned-`downloading` fix (issue #183):** the worker now owns the terminal transition on attempt-exhaustion. When a download spends its full BullMQ retry budget on a non-terminal error, the worker posts `/internal/requests/:id/failed` (→ `mark_failed`) so the row leaves `downloading` immediately, instead of orphaning there until the watchdog escalation maybe rescues it. With the cooldown above, bot-detection retries *park* rather than exhaust, so this fires for genuinely failing downloads; either way the row no longer hangs.
+
+---
+
 ## Plex — Eddy Videos library prefs
 
 Plex's per-library credit-marker detection (`enableCreditsMarkerGeneration`) runs ffmpeg analysis over every clip. Pointless on the Eddy Videos library — YouTube clips have no credits — and it pegs ~10 cores for hours per sweep. Disable it once on the mediaserver:

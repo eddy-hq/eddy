@@ -4,9 +4,11 @@ import { logger } from '../../logger';
 import { downloadQueue } from '../../queue';
 import { verifySignedJson } from '../../signed-channel';
 import { getRequestsState } from '../requests';
+import { getNotifications } from '../notifications';
 import { checkStuckDownloads } from '../watchdog';
 import { scoreForRequest, classifyThumbnail, classifyYtImage } from '../guard';
 import { ollamaGenerate } from '../../ollama';
+import { config } from '../../config';
 
 export const internalRouter = Router();
 
@@ -120,6 +122,56 @@ internalRouter.post('/requests/:id/rejected', verifySignedJson<{ requestId: stri
     logger.info(
       { requestId: payload.requestId, reason: payload.reason, currentStatus: result.currentStatus },
       'Worker rejection callback ignored — request not in downloading state',
+    );
+  }
+  res.status(204).end();
+}));
+
+// POST /internal/requests/:id/failed — called by the Ubuntu worker when a
+// download exhausts its BullMQ retry budget on a non-terminal error (issue
+// #183). The worker owns this terminal transition so the request can't orphan
+// at `downloading` waiting on the (unreliable, in-memory-counter) watchdog
+// escalation. mark_failed gates on `downloading`, so a row that already moved
+// on (user-cancelled, or a success callback that raced in) is a safe no-op.
+internalRouter.post('/requests/:id/failed', verifySignedJson<{ requestId: string; reason?: string }>((_req, res, payload) => {
+  // Read for the alert before the transition — mark_failed doesn't clear these
+  // columns, but reading first keeps the notification independent of ordering.
+  const row = db.prepare(
+    'SELECT title, youtube_id, url, requested_at FROM requests WHERE request_id = ?',
+  ).get(payload.requestId) as
+    | { title: string | null; youtube_id: string | null; url: string; requested_at: string }
+    | undefined;
+
+  const { result } = getRequestsState().apply({
+    kind: 'mark_failed',
+    requestId: payload.requestId,
+  });
+
+  if (result.transitioned) {
+    logger.warn(
+      { requestId: payload.requestId, reason: payload.reason },
+      'Request marked failed by worker (download attempts exhausted)',
+    );
+    // Preserve the visibility the watchdog used to provide on escalation: now
+    // that the worker owns this transition the watchdog never sees the row, so
+    // alert Steve here rather than let an exhausted download be a silent dead
+    // end. The admin pipeline also surfaces `failed` rows for one-tap retry.
+    if (row) {
+      void getNotifications().notify(
+        {
+          kind: 'download_alert',
+          requestId: payload.requestId,
+          title: row.title ?? row.youtube_id ?? row.url,
+          stuckMins: Math.round((Date.now() - new Date(row.requested_at).getTime()) / 60_000),
+          action: 'failed',
+        },
+        config.USER_ID_STEVE,
+      );
+    }
+  } else {
+    logger.info(
+      { requestId: payload.requestId, currentStatus: result.currentStatus },
+      'Worker failed callback ignored — request not in downloading state',
     );
   }
   res.status(204).end();

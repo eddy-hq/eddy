@@ -13,7 +13,8 @@ import { Worker, Job, DelayedError } from 'bullmq';
 import { redis, closeQueues, thumbsQueue } from '../queue';
 import { config } from '../config';
 import { logger } from '../logger';
-import { fetchMetadata, downloadVideo } from '../modules/content/download';
+import { fetchMetadata, downloadVideo, attemptsExhausted } from '../modules/content/download';
+import { botDetectionCooldownMs, engageBotDetectionCooldown } from '../botdetect';
 import { triggerPlexScan, updatePlexMetadata } from '../modules/content/plex';
 import { postSigned } from '../signed-channel';
 import { generateThumbnail } from './thumb';
@@ -62,6 +63,20 @@ async function processJob(job: Job<DownloadJobData>, token?: string): Promise<vo
 
   log.info(isRestore ? 'Picked up restore job' : 'Picked up download job');
 
+  // Stand down while a bot-detection cooldown is active (#185). Park the job in
+  // BullMQ's delayed state until the window passes rather than spending a retry
+  // hammering a blocked IP. moveToDelayed doesn't consume an attempt, so a long
+  // block parks the request (visible as `delayed`, watchdog leaves it alone)
+  // instead of failing it; the wake jitter staggers parked jobs so they don't
+  // all re-stampede the moment the cooldown lifts.
+  const cooldownMs = await botDetectionCooldownMs(redis);
+  if (cooldownMs > 0) {
+    const wakeJitterMs = Math.floor(Math.random() * 30_000);
+    log.warn({ cooldownMs }, 'Bot-detection cooldown active — parking download in delayed state');
+    await job.moveToDelayed(Date.now() + cooldownMs + wakeJitterMs, token);
+    throw new DelayedError();
+  }
+
   // Surface 0% as soon as the job is picked up so the PWA card replaces its
   // metadata-phase spinner with a moving bar instead of going spinner→jump.
   await redis.set(PROGRESS_KEY(requestId), 0, 'EX', 3600);
@@ -94,7 +109,11 @@ async function processJob(job: Job<DownloadJobData>, token?: string): Promise<vo
       throw new DelayedError();
     }
     // Non-terminal: BullMQ retries with backoff. Leave the 0% in place so the
-    // PWA's bar holds steady instead of flickering back to a spinner.
+    // PWA's bar holds steady instead of flickering back to a spinner. If this
+    // was bot-detection, arm the cooldown first so the retry parks (#185).
+    if ((err as { botDetection?: boolean }).botDetection) {
+      await engageBotDetectionCooldown(redis, config.YTDLP_BOTDETECT_COOLDOWN_SECS, 'metadata');
+    }
     throw err;
   }
 
@@ -141,6 +160,11 @@ async function processJob(job: Job<DownloadJobData>, token?: string): Promise<vo
         log.error({ cbErr }, 'Failed to post rejection callback')
       );
       return;
+    }
+    // Non-terminal download failure. Arm the cooldown on bot-detection so the
+    // BullMQ retry parks rather than hammers the blocked IP (#185).
+    if ((err as { botDetection?: boolean }).botDetection) {
+      await engageBotDetectionCooldown(redis, config.YTDLP_BOTDETECT_COOLDOWN_SECS, 'download');
     }
     throw err;
   }
@@ -330,6 +354,23 @@ async function start(): Promise<void> {
 
   worker.on('failed', (job, err) => {
     logger.error({ jobId: job?.id, requestId: job?.data.requestId, err }, 'Job failed');
+    // #183: own the terminal transition on attempt-exhaustion. When the retry
+    // budget is spent the BullMQ job dies in the `failed` zset, but nothing
+    // moves the request off `downloading` — it orphans there until the
+    // (unreliable) watchdog escalation maybe rescues it. Post a callback so the
+    // M4 flips it to `failed` directly. mark_failed gates on `downloading`, so a
+    // row that already moved on (cancelled / late success) is a safe no-op.
+    // Cooldown parks (DelayedError) don't reach here, so a bot-detection block
+    // parks instead of exhausting — this fires for genuinely failing downloads.
+    if (job && attemptsExhausted(job.attemptsMade, job.opts.attempts)) {
+      const { requestId } = job.data;
+      void postSigned(`/internal/requests/${requestId}/failed`, {
+        requestId,
+        reason: 'Download attempts exhausted',
+      }).catch((cbErr: unknown) =>
+        logger.error({ cbErr, requestId }, 'Failed to post attempts-exhausted callback'),
+      );
+    }
   });
 
   // Thumbnail-upgrade worker: concurrency 1 keeps Gemma pressure low and predictable.

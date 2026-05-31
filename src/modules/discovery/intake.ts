@@ -2,15 +2,18 @@ import { v7 as uuidv7 } from 'uuid';
 import { db } from '../../db/client';
 import { logger } from '../../logger';
 import { config } from '../../config';
+import { redis } from '../../queue';
 import { SHORTS_MAX_SECS } from '../content';
 import {
   searchVideosWithDates,
   flatPlaylistChannel,
   type SearchVideoWithDate,
   type PlaylistEntry,
+  type YtdlpError,
 } from '../../ytdlp';
+import { botDetectionCooldownMs, engageBotDetectionCooldown } from '../../botdetect';
 import { getDeclaredChannelInterest } from '../interests';
-import { daysSince, uploadDateToIso } from './util';
+import { daysSince, uploadDateToIso, sleep, jitteredDelayMs } from './util';
 
 export interface UserInterestRow {
   interest_id: string;
@@ -108,6 +111,18 @@ export async function refreshCandidatePool(
   userId: string,
   userInterests: UserInterestRow[],
 ): Promise<number> {
+  // Stand down during a bot-detection cooldown (#185): skip the search fan-out
+  // rather than spending it into a blocked IP. Candidates already in the pool
+  // still flow through scoring / guard / surfacing this run.
+  const cooldownMs = await botDetectionCooldownMs(redis);
+  if (cooldownMs > 0) {
+    logger.warn(
+      { userId, cooldownMs },
+      'Discovery: bot-detection cooldown active — skipping interest search',
+    );
+    return 0;
+  }
+
   const now = new Date().toISOString();
   let added = 0;
 
@@ -127,12 +142,32 @@ export async function refreshCandidatePool(
 
   if (plan.length === 0) return 0;
 
-  for (const { interest, term } of plan) {
+  // Rate-shaping (#185): a shallower ytsearch depth and a jittered gap between
+  // consecutive searches so the per-user fan-out drips instead of bursting.
+  const searchLimit = config.DISCOVERY_SEARCH_LIMIT;
+  const baseDelayMs = config.DISCOVERY_SEARCH_DELAY_MS;
+  const jitterMs = config.DISCOVERY_SEARCH_JITTER_MS;
+
+  for (let i = 0; i < plan.length; i++) {
+    const { interest, term } = plan[i]!;
+    // Space every search after the first; no point delaying the opener.
+    if (i > 0) await sleep(jitteredDelayMs(baseDelayMs, jitterMs));
+
     let results: SearchVideoWithDate[];
     try {
-      results = await searchVideosWithDates(term);
+      results = await searchVideosWithDates(term, searchLimit);
     } catch (err) {
       logger.warn({ err, searchTerm: term }, 'Discovery: yt-dlp search failed');
+      // A bot-detection block won't clear by trying the next term — arm the
+      // cooldown and abandon the rest of this run's searches (#185).
+      if ((err as YtdlpError).botDetection) {
+        await engageBotDetectionCooldown(redis, config.YTDLP_BOTDETECT_COOLDOWN_SECS, 'search');
+        logger.warn(
+          { userId },
+          'Discovery: bot-detection during interest search — cooldown engaged, aborting remaining searches',
+        );
+        break;
+      }
       continue;
     }
 
@@ -221,6 +256,18 @@ function shuffleInPlace<T>(arr: T[]): T[] {
 }
 
 export async function seedBackCatalogCandidates(userId: string): Promise<number> {
+  // Same bot-detection cooldown gate as the interest search (#185): during a
+  // cooldown, don't mine back catalogues — that's another yt-dlp fan-out into
+  // a blocked IP.
+  const cooldownMs = await botDetectionCooldownMs(redis);
+  if (cooldownMs > 0) {
+    logger.warn(
+      { userId, cooldownMs },
+      'Discovery: bot-detection cooldown active — skipping back-catalogue seed',
+    );
+    return 0;
+  }
+
   const followed = db.prepare(`
     SELECT po.output_id, po.person_id, po.external_id AS channel_id, p.display_name
     FROM followed_people fp
@@ -246,6 +293,11 @@ export async function seedBackCatalogCandidates(userId: string): Promise<number>
       playlist = await flatPlaylistChannel(output.channel_id);
     } catch (err) {
       logger.warn({ err, channelId: output.channel_id }, 'Back-catalog: flat-playlist fetch failed');
+      if ((err as YtdlpError).botDetection) {
+        await engageBotDetectionCooldown(redis, config.YTDLP_BOTDETECT_COOLDOWN_SECS, 'backcatalog');
+        logger.warn({ userId }, 'Discovery: bot-detection during back-catalogue seed — cooldown engaged, aborting');
+        break;
+      }
       continue;
     }
     if (playlist.length === 0) continue;

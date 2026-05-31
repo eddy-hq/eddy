@@ -4,8 +4,25 @@ import fs from 'fs';
 import path from 'path';
 import { config } from '../../config';
 import { logger } from '../../logger';
+import { isBotDetectionError } from '../../botdetect';
 
 const execFileAsync = promisify(execFile);
+
+// An Error carrying a flag the worker reads off the rejection. `terminal` /
+// `isLive` already follow this shape; `botDetection` joins them so the worker
+// can engage the IP-wide cooldown (#185) on the way out without re-parsing
+// stderr.
+type FlaggedError = Error & { terminal?: boolean; isLive?: boolean; botDetection?: boolean };
+
+// True once a BullMQ job has spent its entire retry budget. The worker reads
+// this in its `failed` handler so it can own the terminal request transition on
+// attempt-exhaustion (issue #183) — flipping the row off `downloading` itself
+// rather than leaving it orphaned for the (unreliable, in-memory-counter)
+// watchdog escalation to maybe rescue. BullMQ increments `attemptsMade` before
+// emitting `failed`, so on the final attempt attemptsMade === attempts.
+export function attemptsExhausted(attemptsMade: number, maxAttempts: number | undefined): boolean {
+  return attemptsMade >= (maxAttempts ?? 1);
+}
 
 // Node binary for yt-dlp JS challenge solving (signature/n-challenge).
 // Falls back to 'node' if not explicitly set — systemd PATH includes nvm bin dir.
@@ -136,8 +153,11 @@ export function mapYtdlpError(stderr: string): string | null {
   if (/premieres? in|premieres? on|this live event will begin|scheduled (start )?time/i.test(stderr)) {
     return "This one hasn't aired yet. Try again once it's live.";
   }
-  // Bot detection is transient — return null so BullMQ retries with backoff
-  if (/sign in to confirm|bot detection|please sign in/i.test(stderr)) {
+  // Bot detection is transient — return null so BullMQ retries with backoff.
+  // The worker also engages an IP-wide cooldown (#185) so the retry parks in
+  // BullMQ's delayed state instead of hammering a blocked IP. Detection itself
+  // lives in botdetect.isBotDetectionError (single source of truth).
+  if (isBotDetectionError(stderr)) {
     return null;
   }
   return null;
@@ -158,6 +178,11 @@ export async function fetchMetadata(url: string): Promise<VideoMetadata> {
       const terminalErr = new Error(reason) as Error & { terminal: boolean };
       terminalErr.terminal = true;
       throw terminalErr;
+    }
+    // Non-terminal: flag bot-detection so the worker arms the cooldown (#185)
+    // before BullMQ retries. Still thrown (not terminal) — the retry parks.
+    if (isBotDetectionError(`${err.message ?? ''}\n${errOutput}`)) {
+      (err as FlaggedError).botDetection = true;
     }
     throw err;
   });
@@ -327,7 +352,12 @@ export async function downloadVideo(
           err.terminal = true;
           return reject(err);
         }
-        return reject(new Error(`yt-dlp exited with code ${code}\n${stderr}`));
+        // Non-terminal yt-dlp failure. Flag bot-detection so the worker arms
+        // the IP-wide cooldown (#185); the error is still retryable, but the
+        // retry will park in delayed state rather than hammer the block.
+        const err = new Error(`yt-dlp exited with code ${code}\n${stderr}`) as FlaggedError;
+        if (isBotDetectionError(stderr)) err.botDetection = true;
+        return reject(err);
       }
       logger.info({ youtubeId, outputPath }, 'yt-dlp download complete');
       resolve(outputPath);

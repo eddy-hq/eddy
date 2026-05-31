@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { uploadDateToIso, daysSince, formatAge, formatDuration } from './util';
+import { uploadDateToIso, daysSince, formatAge, formatDuration, sleep, jitteredDelayMs } from './util';
 
 describe('uploadDateToIso', () => {
   it('converts a valid 8-char yt-dlp upload_date to ISO', () => {
@@ -93,5 +93,43 @@ describe('formatDuration', () => {
 
   it('formats whole hours without trailing 0m', () => {
     expect(formatDuration(2 * 3600)).toBe('2h');
+  });
+});
+
+describe('jitteredDelayMs (#185 search spacing)', () => {
+  it('returns the base delay when jitter is 0', () => {
+    expect(jitteredDelayMs(2000, 0)).toBe(2000);
+  });
+
+  it('adds floor(rng() * jitter) to the base', () => {
+    expect(jitteredDelayMs(2000, 2000, () => 0.5)).toBe(3000);
+    expect(jitteredDelayMs(2000, 2000, () => 0)).toBe(2000);
+    expect(jitteredDelayMs(2000, 2000, () => 0.999)).toBe(3998);
+  });
+
+  it('clamps negative base / jitter to 0', () => {
+    expect(jitteredDelayMs(-100, 0)).toBe(0);
+    expect(jitteredDelayMs(0, -100, () => 0.5)).toBe(0);
+  });
+});
+
+describe('sleep', () => {
+  it('resolves immediately for ms <= 0 (no timer)', async () => {
+    await expect(sleep(0)).resolves.toBeUndefined();
+    await expect(sleep(-5)).resolves.toBeUndefined();
+  });
+
+  it('resolves after the timer for ms > 0', async () => {
+    vi.useFakeTimers();
+    try {
+      let done = false;
+      const p = sleep(1000).then(() => { done = true; });
+      expect(done).toBe(false);
+      await vi.advanceTimersByTimeAsync(1000);
+      await p;
+      expect(done).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

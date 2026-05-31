@@ -9,7 +9,21 @@ const { mockConfig } = vi.hoisted(() => ({
     OLLAMA_URL: 'http://localhost:11434',
     OLLAMA_MODEL: 'gemma4:e4b',
     DISCOVERY_CHANNEL_DISMISS_THRESHOLD: 3,
+    // #185 throttling knobs. Delays 0 so the spacing is a no-op in tests.
+    DISCOVERY_SEARCH_LIMIT: 10,
+    DISCOVERY_SEARCH_DELAY_MS: 0,
+    DISCOVERY_SEARCH_JITTER_MS: 0,
+    YTDLP_BOTDETECT_COOLDOWN_SECS: 2700,
   },
+}));
+
+// Bot-detection cooldown gate (#185). botDetectionCooldownMs is hoisted so
+// individual tests can simulate an active cooldown; default is 0 (no cooldown).
+const { mockCooldownMs } = vi.hoisted(() => ({ mockCooldownMs: vi.fn() }));
+vi.mock('../../botdetect', () => ({
+  botDetectionCooldownMs: mockCooldownMs,
+  engageBotDetectionCooldown: vi.fn(),
+  isBotDetectionError: vi.fn(() => false),
 }));
 
 vi.mock('../../config', () => ({
@@ -117,6 +131,8 @@ beforeEach(() => {
   db.exec('DELETE FROM requests');
   mockedSearch.mockReset();
   mockConfig.DISCOVERY_CHANNEL_DISMISS_THRESHOLD = 3;
+  mockCooldownMs.mockReset();
+  mockCooldownMs.mockResolvedValue(0); // no cooldown unless a test opts in
 });
 
 describe('refreshCandidatePool — search budget', () => {
@@ -151,6 +167,34 @@ describe('refreshCandidatePool — search budget', () => {
       expect(calledTerms).not.toContain('t11a');
       expect(calledTerms).not.toContain('t12a');
     });
+  });
+});
+
+describe('refreshCandidatePool — bot-detection cooldown + search depth (#185)', () => {
+  it('skips every search and returns 0 while a cooldown is active', async () => {
+    mockCooldownMs.mockResolvedValue(60_000); // cooldown armed
+
+    const interests: UserInterestRow[] = [
+      makeInterest({ interestId: 'i1', rank: 1, searchTerms: JSON.stringify(['term']) }),
+    ];
+
+    const added = await refreshCandidatePool(USER_ID, interests);
+
+    expect(added).toBe(0);
+    expect(mockedSearch).not.toHaveBeenCalled();
+  });
+
+  it('passes the configured ytsearch depth to the search', async () => {
+    mockedSearch.mockResolvedValue([]);
+
+    const interests: UserInterestRow[] = [
+      makeInterest({ interestId: 'i1', rank: 1, searchTerms: JSON.stringify(['term']) }),
+    ];
+
+    await refreshCandidatePool(USER_ID, interests);
+
+    // DISCOVERY_SEARCH_LIMIT in the mock config is 10 (was a hardcoded 20).
+    expect(mockedSearch).toHaveBeenCalledWith('term', 10);
   });
 });
 
@@ -659,5 +703,16 @@ describe('seedBackCatalogCandidates — dedup switch to isDuplicateCandidate', (
     const added = await seedBackCatalogCandidates(USER_ID);
 
     expect(added).toBe(0);
+  });
+
+  it('skips back-catalogue mining entirely while a bot-detection cooldown is active (#185)', async () => {
+    setupFollowedChannel();
+    mockCooldownMs.mockResolvedValue(60_000); // cooldown armed
+
+    const added = await seedBackCatalogCandidates(USER_ID);
+
+    expect(added).toBe(0);
+    // The cooldown short-circuits before any flat-playlist fetch.
+    expect(mockedPlaylist).not.toHaveBeenCalled();
   });
 });

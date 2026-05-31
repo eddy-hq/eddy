@@ -79,6 +79,26 @@ const schema = z.object({
   // 2). The migration backfills existing users to this value; a user whose
   // column is null falls back to this default at compose time.
   DEFAULT_DAILY_PICK_CAP: z.coerce.number().int().positive().default(15),
+  // ── yt-dlp throttling (issue #185) ───────────────────────────────────────
+  // Cooldown window after a YouTube bot-detection block ("Sign in to confirm
+  // you're not a bot"). On the signature error the download worker parks queued
+  // jobs in BullMQ's delayed state and discovery skips its searches for this
+  // long, rather than retrying straight back into a blocked IP. Shared
+  // cross-process via a Redis key (both boxes egress one residential IP).
+  // Default 2700s = 45 min. Set 0 to disable the gate entirely.
+  YTDLP_BOTDETECT_COOLDOWN_SECS: z.coerce.number().int().nonnegative().default(2700),
+  // Discovery interest-search depth (the N in `ytsearchN`). Was hardcoded 20;
+  // halved to cut the per-run extraction volume that triggers bot-detection.
+  DISCOVERY_SEARCH_LIMIT: z.coerce.number().int().positive().default(10),
+  // Base delay + random jitter (ms) inserted between consecutive discovery
+  // searches so the per-user fan-out drips instead of bursting. Effective gap
+  // is base + random(0, jitter). Set base 0 to disable inter-search spacing.
+  DISCOVERY_SEARCH_DELAY_MS: z.coerce.number().int().nonnegative().default(2000),
+  DISCOVERY_SEARCH_JITTER_MS: z.coerce.number().int().nonnegative().default(2000),
+  // Delay (ms) between users in the daily discovery loop so the whole fleet's
+  // search + download volume spreads across the run instead of landing in one
+  // 06:00 spike from a single IP. Set 0 to disable staggering.
+  DISCOVERY_USER_STAGGER_MS: z.coerce.number().int().nonnegative().default(15000),
 });
 
 const result = schema.safeParse(process.env);

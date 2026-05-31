@@ -15,6 +15,7 @@ import {
 } from './intake';
 import { scoreCandidates } from './scoring';
 import { bucketFor, isPicked } from './ranker';
+import { sleep } from './util';
 import {
   surfaceForToday,
   readScoredCandidatesByBucket,
@@ -246,7 +247,15 @@ async function runDiscovery(): Promise<void> {
     "SELECT user_id, role, age_gate, daily_pick_cap FROM users WHERE role IN ('kid', 'parent')"
   ).all() as UserRow[];
 
-  for (const user of users) {
+  // Stagger per-user runs (#185). The daily job fires for the whole fleet at
+  // 06:00; running users back-to-back concentrates every user's yt-dlp search
+  // fan-out and download flood into one window from one residential IP. A gap
+  // between users spreads that load. The RSS poll above already ran once,
+  // channel-wide, so the only thing being spaced here is per-user work.
+  const staggerMs = config.DISCOVERY_USER_STAGGER_MS;
+  for (let i = 0; i < users.length; i++) {
+    const user = users[i]!;
+    if (i > 0) await sleep(staggerMs);
     await runDiscoveryForUser(user).catch((err: unknown) => {
       logger.error({ err, userId: user.user_id }, 'Discovery: user run failed');
     });
