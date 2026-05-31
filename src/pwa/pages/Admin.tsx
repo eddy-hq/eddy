@@ -19,7 +19,7 @@ interface PipelineItem {
 
 interface PipelineResponse {
   active: PipelineItem[];
-  recentRejected: PipelineItem[];
+  recentFailures: PipelineItem[];
 }
 
 // ── API ──────────────────────────────────────────────────────────────────────
@@ -40,6 +40,11 @@ async function deleteRequest(id: string): Promise<void> {
   if (!res.ok) throw new Error(`Delete failed: ${res.status}`);
 }
 
+async function retryRequest(id: string): Promise<void> {
+  const res = await fetch(`/requests/admin/${id}/retry`, { method: 'POST' });
+  if (!res.ok) throw new Error(`Retry failed: ${res.status}`);
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 const STATUS_COLOUR: Record<string, string> = {
@@ -49,7 +54,13 @@ const STATUS_COLOUR: Record<string, string> = {
   pending:       '#9A9890',
   approved:      '#3A7D5A',
   rejected:      '#B85450',
+  failed:        '#B85450',
 };
+
+// Statuses that the `retry` transition (RETRY_SOURCES) accepts: a stuck
+// `downloading` row (manual nudge ahead of the watchdog) or a `failed` row
+// that escalated past the watchdog. `rejected` is terminal — no retry.
+const RETRYABLE = new Set(['downloading', 'failed']);
 
 function timeAgo(iso: string): string {
   const diff = Date.now() - new Date(iso).getTime();
@@ -79,8 +90,9 @@ function PipelineRow({
   item: PipelineItem;
   onAction: () => void;
 }) {
-  const [busy, setBusy] = useState<'cancel' | 'delete' | null>(null);
+  const [busy, setBusy] = useState<'cancel' | 'delete' | 'retry' | null>(null);
   const isActive = ['downloading', 'guard_review', 'parent_review', 'pending', 'approved'].includes(item.status);
+  const isRetryable = RETRYABLE.has(item.status);
 
   async function handleCancel() {
     setBusy('cancel');
@@ -91,6 +103,12 @@ function PipelineRow({
   async function handleDelete() {
     setBusy('delete');
     try { await deleteRequest(item.request_id); onAction(); }
+    catch { setBusy(null); }
+  }
+
+  async function handleRetry() {
+    setBusy('retry');
+    try { await retryRequest(item.request_id); onAction(); }
     catch { setBusy(null); }
   }
 
@@ -134,6 +152,20 @@ function PipelineRow({
 
       {/* Actions */}
       <div style={{ display: 'flex', gap: 8, flexShrink: 0, alignItems: 'center' }}>
+        {isRetryable && (
+          <button
+            onClick={handleRetry}
+            disabled={!!busy}
+            style={{
+              fontSize: 12, fontWeight: 500, padding: '5px 10px',
+              borderRadius: 8, border: '1px solid var(--border-subtle)',
+              color: busy === 'retry' ? 'var(--text-tertiary)' : '#4E8A8A',
+              background: 'none', cursor: busy ? 'default' : 'pointer',
+            }}
+          >
+            {busy === 'retry' ? '…' : 'Retry'}
+          </button>
+        )}
         {isActive && (
           <button
             onClick={handleCancel}
@@ -181,7 +213,7 @@ export function Admin() {
   }
 
   const active = data?.active ?? [];
-  const rejected = data?.recentRejected ?? [];
+  const failures = data?.recentFailures ?? [];
 
   return (
     <div style={{ minHeight: '100dvh', background: 'var(--bg-primary)' }}>
@@ -221,7 +253,7 @@ export function Admin() {
         </section>
 
         {/* Recent failures */}
-        {rejected.length > 0 && (
+        {failures.length > 0 && (
           <section>
             <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginBottom: 4 }}>
               <h2 style={{ fontSize: 11, fontWeight: 600, letterSpacing: '0.09em', textTransform: 'uppercase', color: 'var(--text-primary)' }}>
@@ -229,7 +261,7 @@ export function Admin() {
               </h2>
               <span style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>last 24h</span>
             </div>
-            {rejected.map((item) => (
+            {failures.map((item) => (
               <PipelineRow key={item.request_id} item={item} onAction={refresh} />
             ))}
           </section>

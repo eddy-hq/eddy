@@ -61,7 +61,7 @@ import { downloadQueue } from '../../queue';
 import {
   FEED_LIMIT,
   requestsRouter,
-  readRecentRejectedRequestsForAdmin,
+  readRecentFailuresForAdmin,
 } from './index';
 
 // ─── Express harness ────────────────────────────────────────────────────────
@@ -202,7 +202,56 @@ describe('requests admin pipeline recency window', () => {
       requestedAt,
     );
 
-    expect(readRecentRejectedRequestsForAdmin()).toEqual([]);
+    expect(readRecentFailuresForAdmin()).toEqual([]);
+  });
+
+  it('surfaces a watchdog-escalated `failed` row, not just `rejected`', () => {
+    insertRequestRow({ request_id: 'failed-1', status: 'failed' });
+    insertRequestRow({ request_id: 'rejected-1', status: 'rejected', rejection_reason: 'Not suitable' });
+    insertRequestRow({ request_id: 'ready-1', status: 'ready' });
+
+    const rows = readRecentFailuresForAdmin();
+    const statuses = rows.map((r) => r.status).sort();
+    expect(statuses).toEqual(['failed', 'rejected']);
+  });
+});
+
+// ─── POST /requests/admin/:id/retry — re-enqueue a stuck/failed download ──────
+
+describe('POST /requests/admin/:id/retry', () => {
+  it('applies a `retry` event and returns 200 on transition', async () => {
+    const resp = await request('POST', '/requests/admin/failed-1/retry');
+
+    expect(resp.status).toBe(200);
+    expect(applyMock).toHaveBeenCalledTimes(1);
+    const event = applyMock.mock.calls[0]![0];
+    expect(event.kind).toBe('retry');
+    expect(event.requestId).toBe('failed-1');
+    expect(resp.json<{ ok: boolean }>().ok).toBe(true);
+  });
+
+  it('returns 400 when the request is in a non-retryable status', async () => {
+    applyMock.mockReturnValue({
+      result: { transitioned: false, currentStatus: 'rejected' },
+      settled: Promise.resolve(),
+    });
+
+    const resp = await request('POST', '/requests/admin/rejected-1/retry');
+
+    expect(resp.status).toBe(400);
+    expect(resp.json<{ error: string }>().error).toBe('VALIDATION_ERROR');
+  });
+
+  it('returns 404 when the request does not exist', async () => {
+    applyMock.mockReturnValue({
+      result: { transitioned: false, currentStatus: null },
+      settled: Promise.resolve(),
+    });
+
+    const resp = await request('POST', '/requests/admin/missing/retry');
+
+    expect(resp.status).toBe(404);
+    expect(resp.json<{ error: string }>().error).toBe('NOT_FOUND');
   });
 });
 
