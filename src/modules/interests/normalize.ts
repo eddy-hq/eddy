@@ -3,6 +3,7 @@ import { db } from '../../db/client';
 import { logger } from '../../logger';
 import { interestsQueue, guardQueue } from '../../queue';
 import { GENERATE_SEARCH_TERMS_JOB, type GenerateSearchTermsJob } from './searchTermsWorker';
+import { slugifyInterestLabel } from './util';
 import { KID_INTEREST_EVAL_JOB } from '../guard/index';
 
 // Free-text interest normalization: takes a user-typed label, slugs it,
@@ -21,8 +22,7 @@ export interface NormalizedUserInterest {
 
 export function normalizeUserAddedInterest(userId: string, label: string): NormalizedUserInterest {
   const trimmed = label.trim();
-  const slug = trimmed.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/, '');
-  const interestId = slug || uuidv7();
+  const interestId = slugifyInterestLabel(trimmed) || uuidv7();
   const now = new Date().toISOString();
 
   const nextRank = (db.prepare(

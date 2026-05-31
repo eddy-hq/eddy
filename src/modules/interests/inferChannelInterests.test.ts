@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { inferChannelInterests } from './index';
 
 vi.mock('../../config', () => ({
-  config: { OLLAMA_URL: 'http://localhost:11434', OLLAMA_MODEL: 'gemma4:e4b' },
+  config: { OLLAMA_URL: 'http://localhost:11434', OLLAMA_GUARD_MODEL: 'gemma4:e4b' },
 }));
 
 const { mockedWarn } = vi.hoisted(() => ({ mockedWarn: vi.fn() }));
@@ -10,8 +10,9 @@ vi.mock('../../logger', () => ({
   logger: { info: vi.fn(), warn: mockedWarn, error: vi.fn(), debug: vi.fn() },
 }));
 
+const { mockQueueAdd } = vi.hoisted(() => ({ mockQueueAdd: vi.fn() }));
 vi.mock('../../queue', () => ({
-  interestsQueue: { add: vi.fn() },
+  interestsQueue: { add: mockQueueAdd },
   guardQueue: { add: vi.fn() },
 }));
 
@@ -20,14 +21,15 @@ vi.mock('../../ollama', async (importOriginal) => ({
   ollamaGenerate: vi.fn(),
 }));
 
-const validInterests = [
+// Existing vocabulary the canonicalisation step matches against.
+const vocabulary = [
   { id: 'minecraft', label: 'Minecraft', category: 'gaming' },
-  { id: 'programming', label: 'Programming', category: 'tech' },
+  { id: 'economics', label: 'Economics', category: null },
 ];
 
 let existingLink: { 1: number } | undefined;
-const mockRun = vi.fn();
-const insertSqls: string[] = [];
+const interestInserts: Array<{ sql: string; args: unknown[] }> = [];
+const channelLinkInserts: Array<{ sql: string; args: unknown[] }> = [];
 
 vi.mock('../../db/client', () => ({
   db: {
@@ -37,12 +39,13 @@ vi.mock('../../db/client', () => ({
         return undefined;
       }),
       all: vi.fn(() => {
-        if (sql.includes('FROM interests ORDER BY')) return validInterests;
+        if (sql.includes('FROM interests')) return vocabulary;
         return [];
       }),
       run: vi.fn((...args: unknown[]) => {
-        if (sql.includes('INTO channel_interest_links')) insertSqls.push(sql);
-        return mockRun(...args);
+        if (sql.includes('INTO interests')) interestInserts.push({ sql, args });
+        if (sql.includes('INTO channel_interest_links')) channelLinkInserts.push({ sql, args });
+        return { changes: 1 };
       }),
     })),
   },
@@ -50,17 +53,26 @@ vi.mock('../../db/client', () => ({
 
 import { ollamaGenerate } from '../../ollama';
 
+// Sequence the two Gemma calls: describe (call 1), then canonicalise (call 2).
+function gemma(describeJson: string, canonicaliseJson?: string): void {
+  vi.mocked(ollamaGenerate).mockResolvedValueOnce(describeJson);
+  if (canonicaliseJson !== undefined) {
+    vi.mocked(ollamaGenerate).mockResolvedValueOnce(canonicaliseJson);
+  }
+}
+
+const linkedIds = (): unknown[] => channelLinkInserts.map((c) => c.args[1]);
+
 beforeEach(() => {
   existingLink = undefined;
-  mockRun.mockReset();
-  insertSqls.length = 0;
+  interestInserts.length = 0;
+  channelLinkInserts.length = 0;
   mockedWarn.mockReset();
+  mockQueueAdd.mockReset();
+  mockQueueAdd.mockResolvedValue(undefined);
   vi.mocked(ollamaGenerate).mockReset();
-  // Default fetch: return an empty RSS body so the prompt is built without titles.
-  vi.stubGlobal('fetch', vi.fn(async () => ({
-    ok: true,
-    text: async () => '<feed></feed>',
-  })));
+  // Default fetch: empty RSS so the prompt is built without titles.
+  vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, text: async () => '<feed></feed>' })));
 });
 
 afterEach(() => {
@@ -68,38 +80,82 @@ afterEach(() => {
 });
 
 describe('inferChannelInterests', () => {
-  it('exits early when the channel already has a link, without calling Ollama', async () => {
+  it('exits early when the channel already has a link, without calling Gemma', async () => {
     existingLink = { 1: 1 };
     await inferChannelInterests('UC123', 'Some Channel');
     expect(vi.mocked(ollamaGenerate)).not.toHaveBeenCalled();
-    expect(insertSqls).toHaveLength(0);
+    expect(channelLinkInserts).toHaveLength(0);
+    expect(interestInserts).toHaveLength(0);
   });
 
-  it('filters Gemma-returned ids against the valid set and inserts with confidence 1.0', async () => {
-    // Function caps Gemma's list at 2 ids, so the invalid one must sit in the
-    // first two slots to actually exercise the validity filter.
-    vi.mocked(ollamaGenerate).mockResolvedValue('["minecraft","not_a_real_id"]');
-    await inferChannelInterests('UC123', 'Coder Plays Minecraft');
+  it('canonicalises a free label onto an EXISTING interest and links it (no new row)', async () => {
+    gemma('{"label":"minecraft survival"}', '{"match":"minecraft"}');
+    await inferChannelInterests('UC123', 'SurvivalCraft');
 
-    const insertedInterestIds = mockRun.mock.calls
-      .filter((c) => c[0] === 'UC123')
-      .map((c) => c[1]);
-    expect(insertedInterestIds).toEqual(['minecraft']);
-
-    // Each insert SQL had `confidence, inferred_at) VALUES (?, ?, 1.0, ?)`
-    for (const sql of insertSqls) {
-      expect(sql).toContain('1.0');
-    }
+    expect(interestInserts).toHaveLength(0); // matched — nothing created
+    expect(linkedIds()).toEqual(['minecraft']);
+    // Each link inserted at confidence 1.0.
+    for (const c of channelLinkInserts) expect(c.sql).toContain('1.0');
+    expect(mockQueueAdd).not.toHaveBeenCalled();
   });
 
-  it('logs a warning and inserts nothing when the Gemma response is malformed', async () => {
-    vi.mocked(ollamaGenerate).mockResolvedValue('here is the answer: [bad json] thanks');
-    await expect(inferChannelInterests('UC456', 'Other Channel')).resolves.toBeUndefined();
+  it('creates a new inferred interest on a genuine no-match, enqueues search-terms, links it', async () => {
+    gemma('{"label":"fingerstyle guitar"}', '{"match":null}');
+    await inferChannelInterests('UC123', 'Acoustic Lessons');
 
-    expect(insertSqls).toHaveLength(0);
+    expect(interestInserts).toHaveLength(1);
+    expect(interestInserts[0]!.sql).toContain("'inferred'");
+    expect(interestInserts[0]!.args[0]).toBe('fingerstyle_guitar'); // slug id
+    expect(interestInserts[0]!.args[1]).toBe('fingerstyle guitar'); // free label
+    expect(linkedIds()).toEqual(['fingerstyle_guitar']);
+    // Search-terms job enqueued for the new vocabulary, NOT as a kid-authored add.
+    expect(mockQueueAdd).toHaveBeenCalledTimes(1);
+    expect(mockQueueAdd.mock.calls[0]![1]).toMatchObject({ isUserAdded: false, isKid: false });
+  });
+
+  it('does NOT force-fit: a hallucinated match id is treated as no-match and creates cleanly', async () => {
+    // The old prompt forced a pick from the catalogue; the new flow must never
+    // link an id that is not genuinely the same topic. A garbled/non-existent
+    // match id falls through to create — it must not link 'economics' et al.
+    gemma('{"label":"competitive pokemon"}', '{"match":"not_a_real_id"}');
+    await inferChannelInterests('UC123', 'PokeBattles');
+
+    expect(linkedIds()).toEqual(['competitive_pokemon']);
+    expect(linkedIds()).not.toContain('economics');
+    expect(interestInserts).toHaveLength(1);
+  });
+
+  it('inserts nothing when the channel topic is unclear (no second Gemma call)', async () => {
+    gemma('{"label":null}');
+    await inferChannelInterests('UC123', 'Vague Channel');
+
+    expect(vi.mocked(ollamaGenerate)).toHaveBeenCalledTimes(1); // describe only
+    expect(channelLinkInserts).toHaveLength(0);
+    expect(interestInserts).toHaveLength(0);
+  });
+
+  it('inserts nothing and warns when canonicalisation is unparseable (no junk row)', async () => {
+    gemma('{"label":"fingerstyle guitar"}', 'sorry, I cannot do that');
+    await inferChannelInterests('UC456', 'Acoustic Lessons');
+
+    expect(channelLinkInserts).toHaveLength(0);
+    expect(interestInserts).toHaveLength(0);
     expect(mockedWarn).toHaveBeenCalledWith(
       expect.objectContaining({ channelId: 'UC456' }),
-      'Channel interest inference: could not parse response',
+      'Channel interest inference: could not parse canonicalisation',
     );
+  });
+
+  it('collapses distinct free labels onto one shared id so aggregation holds', async () => {
+    // Two Minecraft channels, two different free labels, both canonicalising to
+    // `minecraft` → both links carry the same id. getInferredInterests then
+    // aggregates them as one interest with followerCount 2 (see inferred.test).
+    gemma('{"label":"minecraft survival"}', '{"match":"minecraft"}');
+    await inferChannelInterests('UCaaa', 'SurvivalCraft');
+    gemma('{"label":"MC redstone builds"}', '{"match":"minecraft"}');
+    await inferChannelInterests('UCbbb', 'RedstoneWizard');
+
+    expect(linkedIds()).toEqual(['minecraft', 'minecraft']);
+    expect(interestInserts).toHaveLength(0);
   });
 });

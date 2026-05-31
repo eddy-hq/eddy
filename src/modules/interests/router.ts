@@ -5,17 +5,6 @@ import { resolveUserById } from '../users';
 import { normalizeUserAddedInterest } from './normalize';
 import { getInferredInterests, suppressInferredInterest, keepInferredInterest } from './inferred';
 
-interface InterestRow {
-  id: string;
-  label: string;
-  category: string | null;
-}
-
-interface CategoryGroup {
-  name: string;
-  interests: Array<{ id: string; label: string; selected: boolean }>;
-}
-
 interface MineRow {
   interest_id: string;
   label: string;
@@ -24,28 +13,6 @@ interface MineRow {
 }
 
 export const interestsRouter = Router();
-
-interestsRouter.get('/', (req: Request, res: Response) => {
-  const user = resolveUserById(req.query['userId']);
-
-  const allInterests = db.prepare(
-    `SELECT id, label, category FROM interests ORDER BY category, label`
-  ).all() as InterestRow[];
-
-  const selectedIds = new Set(
-    (db.prepare('SELECT interest_id FROM user_interests WHERE user_id = ?').all(user.user_id) as Array<{ interest_id: string }>)
-      .map((r) => r.interest_id)
-  );
-
-  const categoryMap = new Map<string, CategoryGroup>();
-  for (const t of allInterests) {
-    const cat = t.category ?? 'Other';
-    if (!categoryMap.has(cat)) categoryMap.set(cat, { name: cat, interests: [] });
-    categoryMap.get(cat)!.interests.push({ id: t.id, label: t.label, selected: selectedIds.has(t.id) });
-  }
-
-  res.json({ categories: Array.from(categoryMap.values()), selected_count: selectedIds.size });
-});
 
 interestsRouter.post('/select', (req: Request, res: Response) => {
   const { userId, interestId } = req.body as { userId?: string; interestId?: string };
