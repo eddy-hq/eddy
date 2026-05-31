@@ -446,12 +446,12 @@ function SheetBody({
           onPointerUp={gestureEnd}
           style={{ flex: 1, overflowY: 'auto', padding: '20px 20px 100px' }}
         >
-          {/* Person row — only when there's a resolvable person (channel name
-              + channelId both present). No fallback string otherwise (#138). */}
-          {canTapToPerson && channel && youtubeChannelId && (
+          {/* Person row — fires the lookup only when a channelId exists; the
+              row self-hides unless a real Person resolves (no channel-name
+              fallback, per #138's no-Person acceptance criterion). */}
+          {canTapToPerson && youtubeChannelId && (
             <PersonRow
               userId={userId}
-              channel={channel}
               channelId={youtubeChannelId}
               onTap={() => void goToPerson()}
             />

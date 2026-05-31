@@ -9,23 +9,24 @@ import { followSubLine, personInitial, avatarGradient } from '../lib/personRow';
 // Tapping navigates to the person view (handled by the parent's resolve+nav).
 //
 // Per ADR-0007 the subscription unit is the Person, so follow state comes from
-// followed_people via /people/by-channel — not a channel table. Renders only
-// when there's a resolvable person (channel name + channelId both present);
-// the parent gates on that.
+// followed_people via /people/by-channel — not a channel table. Renders nothing
+// until the lookup resolves a real Person: while the query is pending, and when
+// it 404s (no Person row for the channel yet). A channel ID alone is not a
+// resolvable Person — the acceptance criterion forbids a channel-name fallback.
 export function PersonRow({
   userId,
-  channel,
   channelId,
   onTap,
 }: {
   userId: string;
-  channel: string;
   channelId: string;
   onTap: () => void;
 }) {
-  const { data } = usePersonSummary(userId, channelId);
-  const name = data?.displayName ?? channel;
-  const sub = followSubLine(data?.followedAt);
+  const { data, isPending } = usePersonSummary(userId, channelId);
+  if (isPending || data == null) return null;
+
+  const name = data.displayName;
+  const sub = followSubLine(data.followedAt);
 
   return (
     <button
@@ -40,7 +41,7 @@ export function PersonRow({
         WebkitTapHighlightColor: 'transparent',
       }}
     >
-      <Avatar photoUrl={data?.photoUrl ?? null} name={name} />
+      <Avatar photoUrl={data.photoUrl} name={name} />
       <span style={{ display: 'flex', flexDirection: 'column', gap: 1, minWidth: 0, flex: 1 }}>
         <span style={{
           fontWeight: 600, fontSize: 14, letterSpacing: '-0.005em',

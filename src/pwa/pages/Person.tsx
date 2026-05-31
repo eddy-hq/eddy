@@ -145,6 +145,11 @@ export function Person() {
     },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['person-following', userId] });
+      // Drop the player Person row's cached follow state for this channel so a
+      // reopened video sheet doesn't show stale "Followed since" (#138).
+      if (data?.person.channelId) {
+        void queryClient.invalidateQueries({ queryKey: ['person-summary', data.person.channelId] });
+      }
       navigate(profileHref);
     },
   });
@@ -178,6 +183,10 @@ export function Person() {
     onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: ['person-view', personId, userId] });
       void queryClient.invalidateQueries({ queryKey: ['person-following', userId] });
+      // Keep the player Person row's cached follow state in sync (#138).
+      if (data?.person.channelId) {
+        void queryClient.invalidateQueries({ queryKey: ['person-summary', data.person.channelId] });
+      }
     },
   });
 
