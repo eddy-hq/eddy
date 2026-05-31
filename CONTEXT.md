@@ -136,6 +136,10 @@ _Avoid_: explicit interest (use "declared"), manual interest
 An **Interest** Eddy derived live from the user's **Follows** (`follows → channel_interest_links → interests`), surfaced in the profile's "Eddy noticed" band as a proposal with **Keep** / **Remove**. *Inert until kept* — it does not feed search or scoring vocabulary until **Keep** promotes it to a **Declared interest**. Derived, never auto-written; backward-looking by nature.
 _Avoid_: auto-interest, suggested interest, observed interest (in code — "inferred" is canonical)
 
+**Follow suggestion**:
+A **Person** the user has watched or saved but does not **Follow**, surfaced on the People tab as a candidate **Follow** because they map to ≥1 **Declared interest**. Ranked by engagement strength (watched + saved count); each carries a literal reason-line (*"Watched 4 · saved 2 — football"*). Distinct from a **Pick** (content Eddy surfaced, not a person) and a **Recommendation** (a pointer *from* a followed person). Following one is ungated for kids — the surfacing guard, not the follow, is the safety boundary. See [[0010-kid-follows-are-ungated-the-surfacing-guard-is-the-boundary]].
+_Avoid_: suggested creator, recommended follow, people you may know
+
 **Profile**:
 A user's four-layer model — explicit interests + followed people + hard exclusions (Layer 1), behavioural signals (Layer 2), per-person trust (Layer 3), Gemma-inferred affinities (Layer 4).
 _Avoid_: preferences, settings, account
@@ -218,6 +222,7 @@ _Avoid_: API (overloaded), control plane (descriptive but not the term)
 
 - A **Person** has one or more **Outputs**; following a person subscribes to all of them.
 - A **Person** also has zero or more **Recommendations** — pointers to things they didn't make, surfaced as **Candidates** with attribution.
+- A **Person** the user has engaged with but not followed, and who maps to a **Declared interest**, becomes a **Follow suggestion** — a candidate **Follow**, ranked by engagement; following one is ungated even for kids.
 - An **Output** produces **Items**; an **Item** renders as a **Card** on the **Feed**.
 - A **Card** carries a **Provenance** (*request*, *follow*, or *pick*) — the same item shared by two people produces two distinct cards with different provenance per user.
 - The **Feed** is anchored by *added date*; **Today** is the top stretch of the feed.
