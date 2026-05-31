@@ -50,17 +50,26 @@ export function getDeclaredInterestLinks(userId: string): DeclaredInterestLink[]
 }
 
 // Engaged-not-followed channels that currently lack ANY channel_interest_links
-// row (#151 decision #4). The nightly profile-enrichment pass runs
+// row (#151 decision #4: "inferChannelInterests over engaged-not-followed
+// channels lacking links"). The nightly profile-enrichment pass runs
 // inferChannelInterests over these so the suggestion surface has alignment data
 // to gate on. The "lacking links" predicate touches channel_interest_links
 // (interests-owned), so profile-enrichment delegates here rather than querying
 // that table directly.
 //
-// A channel qualifies when it has ≥1 watched-or-saved request and no
-// channel_interest_links row. The channel name is resolved from the request
-// (requests.channel) or, failing that, the linked person's display_name — so
-// inferChannelInterests has a name to categorise on. Channels with no resolvable
-// name are skipped (Gemma needs a name to categorise).
+// A channel qualifies when:
+//   (a) it has ≥1 watched-or-saved request,
+//   (b) it has no channel_interest_links row, and
+//   (c) at least one engaging user does not follow its person — a channel every
+//       engaging user already follows can never become a suggestion (the
+//       suggestion surface excludes followed channels), so inferring its links
+//       is wasted Gemma work. Followed channels are already inferred at
+//       follow-time; this keeps the channel-global pass to candidates that can
+//       actually surface.
+// The channel name is resolved from the request (requests.channel) or, failing
+// that, the linked person's display_name — so inferChannelInterests has a name
+// to categorise on. Channels with no resolvable name are skipped (Gemma needs a
+// name to categorise).
 
 export interface EngagedChannelLackingLinks {
   channelId: string;
@@ -86,6 +95,12 @@ export function getEngagedChannelsLackingInterestLinks(): EngagedChannelLackingL
       AND (r.watched_at IS NOT NULL OR r.saved_at IS NOT NULL)
       AND r.youtube_channel_id NOT IN (
         SELECT channel_id FROM channel_interest_links
+      )
+      -- (c) keep only channels at least one engaging user does not follow: the
+      -- engaging user has no followed_people row for the channel's person.
+      AND NOT EXISTS (
+        SELECT 1 FROM followed_people fp
+        WHERE fp.user_id = r.user_id AND fp.person_id = po.person_id
       )
     GROUP BY r.youtube_channel_id
   `).all() as EngagedChannelRow[];
