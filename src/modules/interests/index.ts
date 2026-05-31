@@ -1,8 +1,10 @@
 import { db } from '../../db/client';
 import { logger } from '../../logger';
 import { ollamaGenerate, parseOllamaJson } from '../../ollama';
+import { v7 as uuidv7 } from 'uuid';
 import { interestsQueue } from '../../queue';
 import { GENERATE_SEARCH_TERMS_JOB, type GenerateSearchTermsJob } from './searchTermsWorker';
+import { SEARCH_TERMS_PENDING } from './reconcile';
 import { slugifyInterestLabel } from './util';
 
 export { interestsRouter, removeUserInterest } from './router';
@@ -176,18 +178,32 @@ export async function inferChannelInterests(channelId: string, channelName: stri
   } else {
     const slug = slugifyInterestLabel(freeLabel);
     if (!slug) return; // unsluggable label — nothing to create
-    interestId = slug;
     created = true;
 
-    // Create the interest on demand (bottom-up vocabulary growth). Populate
-    // search_terms async via the existing chain; isUserAdded=false so the
-    // kid-interest guard branch never fires here — inference output is inert
-    // until a human Keep, where keepInferredInterest runs the guard.
-    db.prepare(`
+    // Create the interest on demand (bottom-up vocabulary growth). search_terms
+    // starts on the pending sentinel, NOT '[]': a finished '[]' is the valid
+    // "deliberately too broad" verdict, so if the enqueue/worker never lands the
+    // row would be permanently indistinguishable from a broad interest. The
+    // sentinel keeps it recoverable — every reader treats it as no-terms, and
+    // the startup reconcile (reconcilePendingSearchTerms) re-enqueues it. The
+    // search-terms worker overwrites it on success.
+    const insert = db.prepare(`
       INSERT OR IGNORE INTO interests (id, label, category, source, search_terms)
-      VALUES (?, ?, NULL, 'inferred', '[]')
-    `).run(interestId, freeLabel);
+      VALUES (?, ?, NULL, 'inferred', ?)
+    `);
+    interestId = slug;
+    let res = insert.run(interestId, freeLabel, SEARCH_TERMS_PENDING);
+    if (res.changes === 0) {
+      // The slug collides with an interest canonicalisation did NOT match (the
+      // slugger is lossy — "c#" and "c++" both slug to "c"). Don't link to or
+      // clobber that unrelated row: mint a distinct, channel-stable id instead.
+      interestId = `${slug}_${slugifyInterestLabel(channelId) || uuidv7()}`;
+      res = insert.run(interestId, freeLabel, SEARCH_TERMS_PENDING);
+    }
 
+    // Populate search_terms async via the existing chain; isUserAdded=false so
+    // the kid-interest guard branch never fires here — inference output is inert
+    // until a human Keep, where keepInferredInterest runs the guard.
     const payload: GenerateSearchTermsJob = {
       interestId, label: freeLabel, userId: '', isUserAdded: false, isKid: false,
     };

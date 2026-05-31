@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { inferChannelInterests } from './index';
+import { SEARCH_TERMS_PENDING } from './reconcile';
 
 vi.mock('../../config', () => ({
   config: { OLLAMA_URL: 'http://localhost:11434', OLLAMA_GUARD_MODEL: 'gemma4:e4b' },
@@ -30,6 +31,9 @@ const vocabulary = [
 let existingLink: { 1: number } | undefined;
 const interestInserts: Array<{ sql: string; args: unknown[] }> = [];
 const channelLinkInserts: Array<{ sql: string; args: unknown[] }> = [];
+// Models INSERT OR IGNORE: an id already present yields changes:0. Pre-seed to
+// force a slug collision.
+const existingInterestIds = new Set<string>();
 
 vi.mock('../../db/client', () => ({
   db: {
@@ -43,7 +47,13 @@ vi.mock('../../db/client', () => ({
         return [];
       }),
       run: vi.fn((...args: unknown[]) => {
-        if (sql.includes('INTO interests')) interestInserts.push({ sql, args });
+        if (sql.includes('INTO interests')) {
+          interestInserts.push({ sql, args });
+          const id = args[0] as string;
+          if (existingInterestIds.has(id)) return { changes: 0 };
+          existingInterestIds.add(id);
+          return { changes: 1 };
+        }
         if (sql.includes('INTO channel_interest_links')) channelLinkInserts.push({ sql, args });
         return { changes: 1 };
       }),
@@ -67,6 +77,7 @@ beforeEach(() => {
   existingLink = undefined;
   interestInserts.length = 0;
   channelLinkInserts.length = 0;
+  existingInterestIds.clear();
   mockedWarn.mockReset();
   mockQueueAdd.mockReset();
   mockQueueAdd.mockResolvedValue(undefined);
@@ -107,6 +118,7 @@ describe('inferChannelInterests', () => {
     expect(interestInserts[0]!.sql).toContain("'inferred'");
     expect(interestInserts[0]!.args[0]).toBe('fingerstyle_guitar'); // slug id
     expect(interestInserts[0]!.args[1]).toBe('fingerstyle guitar'); // free label
+    expect(interestInserts[0]!.args[2]).toBe(SEARCH_TERMS_PENDING); // recoverable, not '[]'
     expect(linkedIds()).toEqual(['fingerstyle_guitar']);
     // Search-terms job enqueued for the new vocabulary, NOT as a kid-authored add.
     expect(mockQueueAdd).toHaveBeenCalledTimes(1);
@@ -123,6 +135,19 @@ describe('inferChannelInterests', () => {
     expect(linkedIds()).toEqual(['competitive_pokemon']);
     expect(linkedIds()).not.toContain('economics');
     expect(interestInserts).toHaveLength(1);
+  });
+
+  it('mints a distinct id on a slug collision instead of clobbering/mislinking', async () => {
+    // An unrelated interest already owns the lossy slug "c" (e.g. "C"); a "c#"
+    // channel must NOT link to or overwrite it — it gets a channel-stable id.
+    existingInterestIds.add('c');
+    gemma('{"label":"c#"}', '{"match":null}');
+    await inferChannelInterests('UCsharp', 'C# Tutorials');
+
+    const attemptedIds = interestInserts.map((i) => i.args[0]);
+    expect(attemptedIds[0]).toBe('c');            // INSERT OR IGNORE — no-op
+    expect(attemptedIds[1]).toBe('c_ucsharp');    // distinct, channel-stable
+    expect(linkedIds()).toEqual(['c_ucsharp']);   // never linked the unrelated 'c'
   });
 
   it('inserts nothing when the channel topic is unclear (no second Gemma call)', async () => {
