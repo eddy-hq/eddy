@@ -15,7 +15,7 @@ import {
 } from './intake';
 import { scoreCandidates } from './scoring';
 import { bucketFor, isPicked } from './ranker';
-import { sleep } from './util';
+import { buildDiscoverySchedule, cronAt } from './util';
 import {
   surfaceForToday,
   readScoredCandidatesByBucket,
@@ -100,10 +100,10 @@ export async function runDiscoveryForUser(user: UserRow, options: { force?: bool
   }
 
   // One scored pool composed into reserved slots (ADR-0009). The RSS poll runs
-  // once at the job level (runDiscovery), before the per-user loop and before
-  // any skip — see the spec/reality fix there. By the time this per-user
-  // composition runs, this run's subscription candidates are already in the
-  // pool. Order here: seed back catalogue → interest search. The back-catalogue
+  // once per day in its own `rss-poll` job at the earliest user's hour, before
+  // any per-user job — so by the time this composition runs, today's
+  // subscription candidates are already in the pool. Order here: seed back
+  // catalogue → interest search. The back-catalogue
   // seeder dedups via isDuplicateCandidate (pool + requests), not seen_videos,
   // so the poll-first ordering doesn't starve it of a new follow's recent
   // uploads.
@@ -230,61 +230,100 @@ export function pruneStalePool(): void {
   }
 }
 
-async function runDiscovery(): Promise<void> {
-  logger.info('Discovery job started');
+// Per-user discovery jobs (#185) fire at each user's own hour so the fleet's
+// yt-dlp search + download volume spreads across the day. The channel-wide RSS
+// poll is a separate daily job at the earliest user's hour; users run a few
+// minutes past the hour so the poll is picked up first (concurrency 1 serialises
+// the rest if the poll runs long).
+const RSS_POLL_JOB_ID = 'discovery-rss-poll';
+const USER_CRON_MINUTE = 10;
 
-  // RSS poll is the job's first awaited step (ADR-0009) — once, channel-wide,
-  // before the per-user loop and before any per-user skip. The poll advances
-  // `seen_videos` and seeds subscription candidates regardless of whether any
-  // individual user is later skipped (already-at-cap / no interests), so a
-  // skipped user can't cause RSS uploads to backlog. The retired setInterval
-  // poller's daily cadence now rides on the discovery schedule.
-  await runRssPollPass().catch((err: unknown) => {
-    logger.error({ err }, 'Discovery: RSS poll pass failed');
+// Run discovery for one scheduled user. Re-reads the row at fire time (the
+// schedule is fixed at startup, but roles/caps can change since) and skips
+// cleanly if the user is gone or no longer eligible.
+async function runScheduledUser(userId: string): Promise<void> {
+  const user = db.prepare(
+    "SELECT user_id, role, age_gate, daily_pick_cap FROM users WHERE user_id = ? AND role IN ('kid', 'parent')"
+  ).get(userId) as UserRow | undefined;
+  if (!user) {
+    logger.warn({ userId }, 'Discovery: scheduled user missing or ineligible, skipping');
+    return;
+  }
+  await runDiscoveryForUser(user).catch((err: unknown) => {
+    logger.error({ err, userId }, 'Discovery: user run failed');
   });
+}
 
-  const users = db.prepare(
-    "SELECT user_id, role, age_gate, daily_pick_cap FROM users WHERE role IN ('kid', 'parent')"
-  ).all() as UserRow[];
+// Reconcile repeatable jobs to the desired set on every startup: drop all
+// existing repeatables (clears the retired single 'discovery-daily' job and any
+// stale hour) then add one RSS-poll job plus one job per eligible user at its
+// configured hour. Idempotent — safe to run on each boot.
+async function reconcileDiscoverySchedule(): Promise<void> {
+  for (const job of await discoveryQueue.getRepeatableJobs()) {
+    await discoveryQueue.removeRepeatableByKey(job.key);
+  }
 
-  // Stagger per-user runs (#185). The daily job fires for the whole fleet at
-  // 06:00; running users back-to-back concentrates every user's yt-dlp search
-  // fan-out and download flood into one window from one residential IP. A gap
-  // between users spreads that load. The RSS poll above already ran once,
-  // channel-wide, so the only thing being spaced here is per-user work.
-  const staggerMs = config.DISCOVERY_USER_STAGGER_MS;
-  for (let i = 0; i < users.length; i++) {
-    const user = users[i]!;
-    if (i > 0) await sleep(staggerMs);
-    await runDiscoveryForUser(user).catch((err: unknown) => {
-      logger.error({ err, userId: user.user_id }, 'Discovery: user run failed');
+  const userIds = (db.prepare(
+    "SELECT user_id FROM users WHERE role IN ('kid', 'parent')"
+  ).all() as { user_id: string }[]).map((u) => u.user_id);
+
+  const hourByUser: Record<string, number> = {};
+  for (const entry of config.discoverySchedule) hourByUser[entry.userId] = entry.hour;
+
+  const { pollHour, users } = buildDiscoverySchedule(
+    userIds,
+    hourByUser,
+    config.DISCOVERY_HOUR_DEFAULT,
+  );
+
+  await discoveryQueue.add('rss-poll', {}, {
+    repeat: { pattern: cronAt(pollHour, 0) },
+    jobId: RSS_POLL_JOB_ID,
+  });
+  for (const user of users) {
+    await discoveryQueue.add('user', { userId: user.userId }, {
+      repeat: { pattern: cronAt(user.hour, USER_CRON_MINUTE) },
+      jobId: `discovery-user-${user.userId}`,
     });
   }
 
-  pruneStalePool();
-  logger.info('Discovery job complete');
+  logger.info({ pollHour, users }, 'Discovery schedule reconciled');
 }
 
 let discoveryWorker: Worker | null = null;
 
 export function startDiscoveryScheduler(): void {
-  void discoveryQueue.add('run', {}, {
-    repeat: { pattern: '0 6 * * *' },
-    jobId: 'discovery-daily',
-  }).catch((err: unknown) => logger.warn({ err }, 'Discovery: failed to schedule repeatable job'));
+  void reconcileDiscoverySchedule().catch((err: unknown) =>
+    logger.warn({ err }, 'Discovery: failed to reconcile schedule'));
 
   discoveryWorker = new Worker('discovery', async (job) => {
-    if (job.name === 'run') await runDiscovery();
+    if (job.name === 'rss-poll') {
+      // Channel-wide, once daily, ahead of any user (ADR-0009). Advances
+      // seen_videos and seeds subscription candidates regardless of per-user
+      // skips, so a skipped user can't backlog RSS uploads. Stale-pool prune
+      // rides here too — once a day, off the per-user path.
+      await runRssPollPass().catch((err: unknown) => {
+        logger.error({ err }, 'Discovery: RSS poll pass failed');
+      });
+      pruneStalePool();
+    } else if (job.name === 'user') {
+      const userId = (job.data as { userId?: unknown }).userId;
+      if (typeof userId === 'string') {
+        await runScheduledUser(userId);
+      } else {
+        logger.warn({ jobId: job.id }, 'Discovery: user job missing userId');
+      }
+    }
   }, { connection: redis, concurrency: 1 });
 
   discoveryWorker.on('completed', (job) => {
-    logger.info({ jobId: job.id }, 'Discovery job completed');
+    logger.info({ jobId: job.id, name: job.name }, 'Discovery job completed');
   });
   discoveryWorker.on('failed', (job, err) => {
-    logger.error({ err, jobId: job?.id }, 'Discovery job failed');
+    logger.error({ err, jobId: job?.id, name: job?.name }, 'Discovery job failed');
   });
 
-  logger.info('Discovery scheduler started (daily at 06:00)');
+  logger.info('Discovery scheduler started (per-user hours, #185)');
 }
 
 export async function stopDiscoveryScheduler(): Promise<void> {

@@ -42,3 +42,32 @@ export function jitteredDelayMs(baseMs: number, jitterMs: number, rng: () => num
   const jitter = jitterMs > 0 ? Math.floor(rng() * jitterMs) : 0;
   return base + jitter;
 }
+
+export interface ScheduledUser {
+  userId: string;
+  hour: number;
+}
+
+// Pure schedule builder for the per-user discovery crons (#185). Each eligible
+// user composes their daily slate at their own hour so the fleet's yt-dlp
+// search + download volume spreads across the day instead of one 06:00 spike
+// from the shared residential IP. A user with no configured hour falls back to
+// defaultHour. `pollHour` is the earliest user hour — the channel-wide RSS poll
+// is scheduled there so it runs before any user composes. Users are sorted by
+// hour (ties broken by id) for stable, readable startup logs.
+export function buildDiscoverySchedule(
+  userIds: readonly string[],
+  hourByUser: Readonly<Record<string, number>>,
+  defaultHour: number,
+): { pollHour: number; users: ScheduledUser[] } {
+  const users = userIds
+    .map((userId) => ({ userId, hour: hourByUser[userId] ?? defaultHour }))
+    .sort((a, b) => a.hour - b.hour || a.userId.localeCompare(b.userId));
+  const pollHour = users.length > 0 ? users[0]!.hour : defaultHour;
+  return { pollHour, users };
+}
+
+// Daily cron pattern (BullMQ `repeat.pattern`) firing every day at hour:minute.
+export function cronAt(hour: number, minute: number): string {
+  return `${minute} ${hour} * * *`;
+}

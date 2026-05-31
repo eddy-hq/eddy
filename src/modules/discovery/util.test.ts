@@ -1,5 +1,14 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { uploadDateToIso, daysSince, formatAge, formatDuration, sleep, jitteredDelayMs } from './util';
+import {
+  uploadDateToIso,
+  daysSince,
+  formatAge,
+  formatDuration,
+  sleep,
+  jitteredDelayMs,
+  buildDiscoverySchedule,
+  cronAt,
+} from './util';
 
 describe('uploadDateToIso', () => {
   it('converts a valid 8-char yt-dlp upload_date to ISO', () => {
@@ -110,6 +119,55 @@ describe('jitteredDelayMs (#185 search spacing)', () => {
   it('clamps negative base / jitter to 0', () => {
     expect(jitteredDelayMs(-100, 0)).toBe(0);
     expect(jitteredDelayMs(0, -100, () => 0.5)).toBe(0);
+  });
+});
+
+describe('cronAt', () => {
+  it('builds a daily cron pattern at hour:minute', () => {
+    expect(cronAt(6, 0)).toBe('0 6 * * *');
+    expect(cronAt(14, 10)).toBe('10 14 * * *');
+    expect(cronAt(0, 0)).toBe('0 0 * * *');
+  });
+});
+
+describe('buildDiscoverySchedule (#185 per-user hours)', () => {
+  const STEVE = 'aaaaaaaa-0000-0000-0000-000000000000';
+  const BOY1 = 'bbbbbbbb-0000-0000-0000-000000000000';
+  const BOY2 = 'cccccccc-0000-0000-0000-000000000000';
+  const hours = { [STEVE]: 6, [BOY1]: 14, [BOY2]: 10 };
+
+  it('assigns each user its configured hour, sorted by hour', () => {
+    const { users } = buildDiscoverySchedule([STEVE, BOY1, BOY2], hours, 6);
+    expect(users).toEqual([
+      { userId: STEVE, hour: 6 },
+      { userId: BOY2, hour: 10 },
+      { userId: BOY1, hour: 14 },
+    ]);
+  });
+
+  it('sets pollHour to the earliest user hour', () => {
+    expect(buildDiscoverySchedule([STEVE, BOY1, BOY2], hours, 6).pollHour).toBe(6);
+    // Earliest user is the one configured latest-named — pollHour tracks the min.
+    expect(buildDiscoverySchedule([BOY1, BOY2], hours, 9).pollHour).toBe(10);
+  });
+
+  it('falls back to defaultHour for an unconfigured user', () => {
+    const extra = 'dddddddd-0000-0000-0000-000000000000';
+    const { users, pollHour } = buildDiscoverySchedule([STEVE, extra], hours, 6);
+    expect(users).toEqual([
+      { userId: STEVE, hour: 6 },
+      { userId: extra, hour: 6 },
+    ]);
+    expect(pollHour).toBe(6);
+  });
+
+  it('breaks hour ties by userId for stable ordering', () => {
+    const { users } = buildDiscoverySchedule([BOY2, STEVE], { [STEVE]: 8, [BOY2]: 8 }, 6);
+    expect(users.map((u) => u.userId)).toEqual([STEVE, BOY2]);
+  });
+
+  it('returns defaultHour as pollHour when there are no users', () => {
+    expect(buildDiscoverySchedule([], hours, 7)).toEqual({ pollHour: 7, users: [] });
   });
 });
 

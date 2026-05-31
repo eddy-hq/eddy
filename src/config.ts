@@ -95,10 +95,19 @@ const schema = z.object({
   // is base + random(0, jitter). Set base 0 to disable inter-search spacing.
   DISCOVERY_SEARCH_DELAY_MS: z.coerce.number().int().nonnegative().default(2000),
   DISCOVERY_SEARCH_JITTER_MS: z.coerce.number().int().nonnegative().default(2000),
-  // Delay (ms) between users in the daily discovery loop so the whole fleet's
-  // search + download volume spreads across the run instead of landing in one
-  // 06:00 spike from a single IP. Set 0 to disable staggering.
-  DISCOVERY_USER_STAGGER_MS: z.coerce.number().int().nonnegative().default(15000),
+  // Per-user discovery hour (local time, 0–23). Each user's daily slate composes
+  // at their own hour so the fleet's yt-dlp search + download volume spreads
+  // across the day instead of one 06:00 spike from the shared residential IP
+  // (#185). Defaults put Steve on the early run and the boys mid-morning /
+  // early-afternoon (fresh slate ready before after-school). The channel-wide
+  // RSS poll is scheduled at the earliest of these hours, ahead of any user.
+  DISCOVERY_HOUR_STEVE: z.coerce.number().int().min(0).max(23).default(6),
+  DISCOVERY_HOUR_BOY1: z.coerce.number().int().min(0).max(23).default(14),
+  DISCOVERY_HOUR_BOY2: z.coerce.number().int().min(0).max(23).default(10),
+  // Fallback hour for any eligible (kid/parent) user not named above. Defensive:
+  // the seeded fleet is exactly the three users, but a future row without a
+  // configured hour gets discovery here rather than silently none.
+  DISCOVERY_HOUR_DEFAULT: z.coerce.number().int().min(0).max(23).default(6),
 });
 
 const result = schema.safeParse(process.env);
@@ -127,4 +136,14 @@ const ntfyUserConfig: ReadonlyArray<{ userId: string; topic: string; credentials
     : [],
 );
 
-export const config = { ...env, ntfyUserConfig };
+// Per-user discovery hours (#185), flattened for the scheduler. Only the named
+// users carry overrides; any other eligible user falls back to
+// DISCOVERY_HOUR_DEFAULT inside buildDiscoverySchedule. Keyed by the same fixed
+// UUIDs as ntfyUserConfig.
+const discoverySchedule: ReadonlyArray<{ userId: string; hour: number }> = [
+  { userId: env.USER_ID_STEVE, hour: env.DISCOVERY_HOUR_STEVE },
+  { userId: env.USER_ID_BOY1,  hour: env.DISCOVERY_HOUR_BOY1  },
+  { userId: env.USER_ID_BOY2,  hour: env.DISCOVERY_HOUR_BOY2  },
+];
+
+export const config = { ...env, ntfyUserConfig, discoverySchedule };
