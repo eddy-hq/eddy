@@ -365,7 +365,7 @@ describe('pollChannel first-poll confirmation', () => {
     expect(row.status).toBe('pending');
   });
 
-  it('carries the channel interest_id when channel_interest_links has one', async () => {
+  it('carries the channel interest_id when the follower has declared that interest', async () => {
     insertFollower(USER_ID_A);
     // Seed an interest + a channel→interest link so the candidate inherits it.
     db.prepare(
@@ -375,6 +375,12 @@ describe('pollChannel first-poll confirmation', () => {
       `INSERT INTO channel_interest_links (channel_id, interest_id, confidence, inferred_at)
        VALUES (?, ?, 0.9, ?)`,
     ).run(CHANNEL_ID, 'interest-x', new Date().toISOString());
+    // The follower must have declared the interest: channel_interest_links is a
+    // global, all-users inference, so the tag only carries when it traces to
+    // THIS user's declaration (else it leaks another user's interest).
+    db.prepare(
+      "INSERT INTO user_interests (user_id, interest_id, rank, expertise, liked, added_at) VALUES (?, ?, 1, 'comfortable', 1, ?)",
+    ).run(USER_ID_A, 'interest-x', new Date().toISOString());
 
     const xml = rssXml({ entries: [{ videoId: 'linkedvid01', title: 'Linked' }] });
     mockFetchOk(xml);
@@ -386,6 +392,30 @@ describe('pollChannel first-poll confirmation', () => {
       .prepare('SELECT interest_id FROM candidate_pool WHERE external_id = ?')
       .get('linkedvid01') as { interest_id: string | null };
     expect(row.interest_id).toBe('interest-x');
+  });
+
+  it('leaves interest_id null when the follower has NOT declared the channel interest', async () => {
+    insertFollower(USER_ID_A);
+    // Channel is globally inferred as interest-undeclared, which no user has
+    // declared — the candidate must not inherit it (no leak).
+    db.prepare(
+      "INSERT OR IGNORE INTO interests (id, label, search_terms, category, source) VALUES (?, ?, '[]', 'tech', 'seed')",
+    ).run('interest-undeclared', 'astronomy');
+    db.prepare(
+      `INSERT INTO channel_interest_links (channel_id, interest_id, confidence, inferred_at)
+       VALUES (?, ?, 0.9, ?)`,
+    ).run(CHANNEL_ID, 'interest-undeclared', new Date().toISOString());
+
+    const xml = rssXml({ entries: [{ videoId: 'linkedvid02', title: 'Linked' }] });
+    mockFetchOk(xml);
+    vi.mocked(videoDuration).mockResolvedValue(600);
+
+    await pollChannel(OUTPUT);
+
+    const row = db
+      .prepare('SELECT interest_id FROM candidate_pool WHERE external_id = ?')
+      .get('linkedvid02') as { interest_id: string | null };
+    expect(row.interest_id).toBeNull();
   });
 });
 

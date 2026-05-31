@@ -27,7 +27,7 @@ vi.mock('../../queue', () => ({
 
 import { db } from '../../db/client';
 import { runMigrations } from '../../db/migrate';
-import { getDeclaredInterestLinks, getEngagedChannelsLackingInterestLinks } from './declaredLinks';
+import { getDeclaredInterestLinks, getDeclaredChannelInterest, getEngagedChannelsLackingInterestLinks } from './declaredLinks';
 
 const KID = '11111111-1111-7111-8111-111111111111';
 const OTHER = '22222222-2222-7222-8222-222222222222';
@@ -146,6 +146,56 @@ describe('getDeclaredInterestLinks', () => {
     link(CHANNEL_A, FOOTBALL, 1.0);
 
     expect(getDeclaredInterestLinks(KID)).toEqual([]);
+  });
+});
+
+describe('getDeclaredChannelInterest', () => {
+  it('returns the channel interest when the user has declared it', () => {
+    declare(KID, FOOTBALL, 1);
+    link(CHANNEL_A, FOOTBALL, 1.0);
+
+    expect(getDeclaredChannelInterest(KID, CHANNEL_A)).toBe(FOOTBALL);
+  });
+
+  it('returns null when the user has NOT declared the inferred interest (no leak)', () => {
+    // Channel globally inferred as gaming, but KID never declared gaming — the
+    // global channel_interest_links inference must not stamp it onto the feed.
+    link(CHANNEL_A, GAMING, 1.0);
+
+    expect(getDeclaredChannelInterest(KID, CHANNEL_A)).toBeNull();
+  });
+
+  it('returns null for a user with no declared interests at all', () => {
+    link(CHANNEL_A, FOOTBALL, 1.0);
+
+    expect(getDeclaredChannelInterest(KID, CHANNEL_A)).toBeNull();
+  });
+
+  it('does not inherit another user\'s declared interest', () => {
+    // OTHER declared football; KID did not. The same channel is followed by
+    // both, but the link only traces to OTHER's declaration.
+    declare(OTHER, FOOTBALL, 1);
+    link(CHANNEL_A, FOOTBALL, 1.0);
+
+    expect(getDeclaredChannelInterest(OTHER, CHANNEL_A)).toBe(FOOTBALL);
+    expect(getDeclaredChannelInterest(KID, CHANNEL_A)).toBeNull();
+  });
+
+  it('picks the highest-confidence declared link when several match', () => {
+    declare(KID, FOOTBALL, 1);
+    declare(KID, GAMING, 2);
+    link(CHANNEL_A, GAMING, 0.4);
+    link(CHANNEL_A, FOOTBALL, 0.9);
+
+    expect(getDeclaredChannelInterest(KID, CHANNEL_A)).toBe(FOOTBALL);
+  });
+
+  it('skips a higher-confidence UNdeclared link in favour of a declared one', () => {
+    declare(KID, FOOTBALL, 1);
+    link(CHANNEL_A, GAMING, 1.0);    // higher confidence, NOT declared
+    link(CHANNEL_A, FOOTBALL, 0.3);  // lower confidence, declared
+
+    expect(getDeclaredChannelInterest(KID, CHANNEL_A)).toBe(FOOTBALL);
   });
 });
 

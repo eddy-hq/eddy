@@ -49,6 +49,30 @@ export function getDeclaredInterestLinks(userId: string): DeclaredInterestLink[]
   }));
 }
 
+// A followed channel's inferred interest, scoped to what the FOLLOWING user has
+// declared. channel_interest_links is global and inferred against the whole
+// interests catalogue (every user's declarations), so a channel can carry a
+// label only an adult declared — e.g. 'economics'/'philosophy' inferred from a
+// finance/theory channel. Tagging a candidate with that raw link lets one user's
+// interests leak onto another's feed (notably a kid inheriting a parent's). This
+// returns the channel's top-confidence link ONLY if the user has declared that
+// interest, else null — so a candidate's interest_id always traces to the user's
+// own declaration (AGENTS.md discovery rule), and a user with no declared
+// interests gets an untagged (null) candidate rather than a borrowed label.
+export function getDeclaredChannelInterest(userId: string, channelId: string): string | null {
+  const row = db.prepare(`
+    SELECT cil.interest_id AS interest_id
+    FROM channel_interest_links cil
+    WHERE cil.channel_id = ?
+      AND cil.interest_id IN (
+        SELECT interest_id FROM user_interests WHERE user_id = ?
+      )
+    ORDER BY cil.confidence DESC
+    LIMIT 1
+  `).get(channelId, userId) as { interest_id: string } | undefined;
+  return row?.interest_id ?? null;
+}
+
 // Engaged-not-followed channels that currently lack ANY channel_interest_links
 // row (#151 decision #4: "inferChannelInterests over engaged-not-followed
 // channels lacking links"). The nightly profile-enrichment pass runs

@@ -9,6 +9,7 @@ import {
   type SearchVideoWithDate,
   type PlaylistEntry,
 } from '../../ytdlp';
+import { getDeclaredChannelInterest } from '../interests';
 import { daysSince, uploadDateToIso } from './util';
 
 export interface UserInterestRow {
@@ -268,11 +269,10 @@ export async function seedBackCatalogCandidates(userId: string): Promise<number>
     // Channel→interest mapping (from inferChannelInterests at follow time)
     // gives the candidate an interest_id, so the per-interest cap engages
     // and rank-weighted surfacing works the same way as interest-search.
-    const interestRow = db.prepare(`
-      SELECT interest_id FROM channel_interest_links
-      WHERE channel_id = ? ORDER BY confidence DESC LIMIT 1
-    `).get(output.channel_id) as { interest_id: string } | undefined;
-    const interestId = interestRow?.interest_id ?? null;
+    // Scoped to this user's declared interests so the global, all-users
+    // channel_interest_links inference can't stamp another user's interest
+    // onto this feed (e.g. a kid inheriting an adult's economics/philosophy).
+    const interestId = getDeclaredChannelInterest(userId, output.channel_id);
 
     const sampled = shuffleInPlace(eligible).slice(0, PER_CHANNEL_BACKCATALOG_BUDGET);
 

@@ -14,6 +14,7 @@ export {
 } from './inferred';
 export {
   getDeclaredInterestLinks,
+  getDeclaredChannelInterest,
   getEngagedChannelsLackingInterestLinks,
   type DeclaredInterestLink,
   type EngagedChannelLackingLinks,

@@ -19,6 +19,7 @@ import { logger } from '../../logger';
 import { SHORTS_MAX_SECS } from '../content';
 import { videoDuration } from '../../ytdlp';
 import { applyChannelInfoToPerson } from './registry';
+import { getDeclaredChannelInterest } from '../interests';
 
 // ── RSS parsing ───────────────────────────────────────────────────────────────
 
@@ -162,17 +163,16 @@ export async function pollChannel(output: OutputRow): Promise<void> {
 
     const url = `https://www.youtube.com/watch?v=${video.videoId}`;
 
-    // The channel's inferred interest (from inferChannelInterests at follow
-    // time) gives the candidate an interest_id so scoring can name the
-    // connection and the per-interest cap engages for follow-provenance
-    // back-catalogue / delighter siblings. Mirrors seedBackCatalogCandidates.
-    const interestRow = db.prepare(`
-      SELECT interest_id FROM channel_interest_links
-      WHERE channel_id = ? ORDER BY confidence DESC LIMIT 1
-    `).get(output.channel_id) as { interest_id: string } | undefined;
-    const interestId = interestRow?.interest_id ?? null;
-
     for (const follower of followers) {
+      // The channel's inferred interest (from inferChannelInterests at follow
+      // time) gives the candidate an interest_id so scoring can name the
+      // connection and the per-interest cap engages for follow-provenance
+      // back-catalogue / delighter siblings. Mirrors seedBackCatalogCandidates.
+      // Scoped per-follower to that user's declared interests: the global
+      // channel_interest_links inference must not stamp another user's interest
+      // onto this feed (e.g. a kid inheriting an adult's economics/philosophy).
+      const interestId = getDeclaredChannelInterest(follower.user_id, output.channel_id);
+
       // Dedup against both the pool and requests: a video already a candidate
       // (e.g. seeded by the back catalogue) or already requested for this user
       // must not spawn a second subscription candidate.
