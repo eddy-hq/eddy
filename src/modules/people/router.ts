@@ -12,6 +12,7 @@ import { searchChannelsFlat, type SearchChannel } from '../../ytdlp';
 import { applyChannelInfoToPerson, ensurePersonForChannel } from './registry';
 import { getPersonView, getPersonSummaryByChannel } from './personView';
 import { pollChannel } from './poller';
+import { getFollowSuggestions, dismissFollowSuggestion } from './suggestions';
 
 export const peopleRouter = Router();
 
@@ -161,6 +162,26 @@ peopleRouter.get('/by-channel/:channelId', (req: Request, res: Response) => {
   if (!summary) throw new NotFoundError(`person for channel ${channelId}`);
 
   res.json(summary);
+});
+
+// GET /people/suggestions?userId= — flat top-5 follow suggestions (#151).
+// Engaged-but-not-followed creators mapping to ≥1 declared interest, ranked by
+// engagement. Registered before /:personId so it isn't swallowed by the param
+// matcher.
+peopleRouter.get('/suggestions', (req: Request, res: Response) => {
+  const { userId } = req.query as { userId?: string };
+  const uid = resolveUserById(userId).user_id;
+  res.json({ suggestions: getFollowSuggestions(uid) });
+});
+
+// POST /people/suggestions/dismiss — body: { userId, channelId }
+// Durable dismiss: never re-suggest this channel for this user (ADR-0010 path
+// is unaffected — a dismiss only hides a suggestion, it touches no gating).
+peopleRouter.post('/suggestions/dismiss', (req: Request, res: Response) => {
+  const { userId, channelId } = req.body as { userId?: string; channelId?: string };
+  if (!channelId?.trim()) throw new ValidationError('channelId required');
+  const uid = resolveUserById(userId).user_id;
+  res.json(dismissFollowSuggestion(uid, channelId.trim()));
 });
 
 // GET /people/:personId?userId=

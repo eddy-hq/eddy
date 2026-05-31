@@ -12,6 +12,12 @@ export {
   type InferredInterest,
   type KeptInterest,
 } from './inferred';
+export {
+  getDeclaredInterestLinks,
+  getEngagedChannelsLackingInterestLinks,
+  type DeclaredInterestLink,
+  type EngagedChannelLackingLinks,
+} from './declaredLinks';
 
 interface InterestRow {
   id: string;

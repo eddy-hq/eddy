@@ -7,6 +7,7 @@ import { computeTrustWeight, TRUST_DEFAULT } from './util';
 import { regenerateAffinities } from './affinities';
 import { generateDriftObservations } from '../drift';
 import { regenerateStaleWeekSummaries } from '../requests';
+import { inferChannelInterests, getEngagedChannelsLackingInterestLinks } from '../interests';
 
 export { computeTrustWeight, TRUST_COLD_START_FLOOR, TRUST_DEFAULT, TRUST_BASELINE } from './util';
 export {
@@ -210,7 +211,43 @@ async function runProfileEnrichment(): Promise<void> {
     }
   }
 
+  // Follow-suggestion alignment data (#151, decision #4). Run the Gemma channel
+  // interest inference over engaged-not-followed channels that currently lack
+  // links, so the People-tab suggestion surface (cheap SQL, no render-time
+  // Gemma) has alignment data to gate on. Channel-global, not per-user:
+  // inferChannelInterests is idempotent (early-returns if links already exist).
+  // Sequential, each in its own try/catch so one Gemma failure doesn't abort
+  // the pass.
+  await inferEngagedChannelInterests();
+
   logger.info('Profile enrichment job complete');
+}
+
+// Enumerate distinct engaged-not-followed channels lacking interest links and
+// run inferChannelInterests over each. The "lacking links" enumeration touches
+// channel_interest_links (interests-owned), so it is delegated to the interests
+// module; this pass only orchestrates and logs a structured summary.
+async function inferEngagedChannelInterests(): Promise<void> {
+  const channels = getEngagedChannelsLackingInterestLinks();
+  if (channels.length === 0) {
+    logger.info({ attempted: 0 }, 'Profile enrichment: no channels needing interest inference');
+    return;
+  }
+
+  let attempted = 0;
+  for (const channel of channels) {
+    attempted += 1;
+    try {
+      await inferChannelInterests(channel.channelId, channel.channelName);
+    } catch (err) {
+      logger.error(
+        { err, channelId: channel.channelId },
+        'Profile enrichment: channel interest inference failed'
+      );
+    }
+  }
+
+  logger.info({ attempted }, 'Profile enrichment: channel interest inference pass complete');
 }
 
 // Weekly affinities run. Daily cadence is too aggressive for a Gemma round
