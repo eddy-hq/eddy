@@ -9,7 +9,7 @@
     "dev:all": "concurrently -n server,pwa -c cyan,magenta \"tsx watch src/index.ts\" \"vite --host\"",
     "build": "tsc && vite build && cp -r src/db/migrations dist/db/",
     "start": "node dist/index.js",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p src/pwa/tsconfig.json",
     "lint": "eslint src",
     "test": "vitest run --passWithNoTests",
     "deploy": "bash scripts/deploy.sh",

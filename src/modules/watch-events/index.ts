@@ -9,7 +9,7 @@ export const watchEventsRouter = Router();
 
 const VALID_SOURCES = new Set([
   'feed', 'discovery', 'search', 'channel', 'history',
-  'saved', 'notification', 'direct',
+  'saved', 'notification', 'direct', 'person',
 ]);
 const VALID_REASONS = new Set(['ended', 'dismissed', 'navigated', 'backgrounded']);
 

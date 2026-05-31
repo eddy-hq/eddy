@@ -2,7 +2,7 @@ import { RefObject, useEffect, useRef } from 'react';
 
 export type WatchSource =
   | 'feed' | 'discovery' | 'search' | 'channel'
-  | 'history' | 'saved' | 'notification' | 'direct';
+  | 'history' | 'saved' | 'notification' | 'direct' | 'person';
 
 export type WatchReason = 'ended' | 'dismissed' | 'navigated' | 'backgrounded';
 
