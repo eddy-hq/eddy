@@ -282,6 +282,29 @@ describe('getFollowSuggestions — ranking', () => {
     expect(result.map((r) => r.channelId)).toEqual([CHANNEL_B, CHANNEL_A]);
   });
 
+  it('ranks on distinct watched-or-saved requests, not watched + saved (a request both watched and saved counts once)', () => {
+    declare(KID, FOOTBALL, 1);
+    link(CHANNEL_A, FOOTBALL, 1.0);
+    link(CHANNEL_B, FOOTBALL, 1.0);
+
+    // A: two requests, each BOTH watched and saved → watchedCount 2, savedCount
+    // 2, but only 2 distinct engaged requests. B: three distinct engaged
+    // requests. The spec ranks by distinct watched-or-saved count, so B (3)
+    // ranks above A (2) even though A's watched+saved sum is 4.
+    request(KID, CHANNEL_A, { watchedAt: '2026-05-01T00:00:00.000Z', savedAt: '2026-05-01T00:00:00.000Z' });
+    request(KID, CHANNEL_A, { watchedAt: '2026-05-02T00:00:00.000Z', savedAt: '2026-05-02T00:00:00.000Z' });
+    request(KID, CHANNEL_B, { watchedAt: '2026-05-03T00:00:00.000Z' });
+    request(KID, CHANNEL_B, { watchedAt: '2026-05-04T00:00:00.000Z' });
+    request(KID, CHANNEL_B, { savedAt: '2026-05-05T00:00:00.000Z' });
+
+    const result = getFollowSuggestions(KID);
+    expect(result.map((r) => r.channelId)).toEqual([CHANNEL_B, CHANNEL_A]);
+    // A's counts are reported separately and overlap is fine.
+    const a = result.find((r) => r.channelId === CHANNEL_A)!;
+    expect(a).toMatchObject({ watchedCount: 2, savedCount: 2 });
+    expect(a.reason).toBe('Watched 2 · saved 2 — football');
+  });
+
   it('breaks an engagement-count tie by most-recent engagement DESC', () => {
     declare(KID, FOOTBALL, 1);
     link(CHANNEL_A, FOOTBALL, 1.0);
