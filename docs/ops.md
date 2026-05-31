@@ -153,7 +153,14 @@ No worker restart needed — yt-dlp is shelled out per job, so the next download
 
 **PO-token stack** (clears bot-detection without cookies, on the worker): the `bgutil-ytdlp-pot-provider` pip plugin + the `bgutil-pot-server.service` Node server on `127.0.0.1:4416`. Plugin and server must stay version-matched (both 1.3.1 as of 2026-05-31). The worker passes `--extractor-args youtube:player_client=mweb` + the POT plugin via `baseArgs()` in `src/modules/content/download.ts`; the M4 **search** path (`src/ytdlp.ts`) is deliberately anonymous and gets none of this.
 
-**M4** runs yt-dlp via Homebrew (stable) for anonymous metadata *search* only — it does **not** download. Homebrew ships stable only; moving the M4 to nightly means a pipx/pip install off brew (pending).
+**M4** runs yt-dlp for anonymous metadata *search* only — it does **not** download. Pinned to nightly on 2026-05-31 to match the worker, via a standalone universal build at `~/.local/bin/yt-dlp` (Homebrew's build blocks self-update, so brew can't follow nightly). `config.YTDLP_BIN_M4` points there explicitly because launchd's PATH wouldn't include `~/.local/bin`. To upgrade:
+
+```bash
+~/.local/bin/yt-dlp --update-to nightly
+~/.local/bin/yt-dlp --version   # expect a nightly stamp like 2026.05.25.234532
+```
+
+Binary self-updates need no server restart (shelled out per call), but the one-time switch off Homebrew was a `YTDLP_BIN_M4` path change in `.env`, which did need `npm run deploy -- --server`. Homebrew stable at `/opt/homebrew/bin/yt-dlp` remains the `config.YTDLP_BIN_M4` default/fallback.
 
 **Nightly is not a free pass:** bot-blocks are also volume-triggered and IP-wide (both boxes share one household public IP). Nightly raises the threshold; it doesn't make throughput unlimited. If a block hits, stop retrying and let the IP go quiet — see the watchdog note below, and don't let stuck `downloading` rows re-enqueue into a blocked IP.
 
