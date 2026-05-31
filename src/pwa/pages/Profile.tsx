@@ -33,6 +33,18 @@ interface FollowedPerson {
 
 interface FollowingResponse { following: FollowedPerson[] }
 
+interface FollowSuggestion {
+  channelId: string;
+  displayName: string;
+  photoUrl: string | null;
+  interests: Array<{ id: string; label: string }>;
+  watchedCount: number;
+  savedCount: number;
+  reason: string;
+}
+
+interface SuggestionsResponse { suggestions: FollowSuggestion[] }
+
 // ── API ──────────────────────────────────────────────────────────────────────
 
 async function fetchMine(userId: string): Promise<MineResponse> {
@@ -81,6 +93,30 @@ async function fetchFollowing(userId: string): Promise<FollowingResponse> {
   const res = await fetch(`/people/following?userId=${encodeURIComponent(userId)}`);
   if (!res.ok) throw new Error('Failed to load people');
   return res.json() as Promise<FollowingResponse>;
+}
+
+async function fetchSuggestions(userId: string): Promise<SuggestionsResponse> {
+  const res = await fetch(`/people/suggestions?userId=${encodeURIComponent(userId)}`);
+  if (!res.ok) throw new Error('Failed to load suggestions');
+  return res.json() as Promise<SuggestionsResponse>;
+}
+
+async function followSuggestion(userId: string, channelId: string, channelName: string): Promise<void> {
+  const res = await fetch('/people/follow', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ userId, channelId, channelName }),
+  });
+  if (!res.ok) throw new Error('Follow failed');
+}
+
+async function dismissSuggestion(userId: string, channelId: string): Promise<void> {
+  const res = await fetch('/people/suggestions/dismiss', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ userId, channelId }),
+  });
+  if (!res.ok) throw new Error('Dismiss failed');
 }
 
 async function fetchInferred(userId: string): Promise<InferredResponse> {
@@ -483,6 +519,7 @@ function PeopleTab({ userId }: { userId: string }) {
   }
 
   return (
+    <>
     <Section title="People" hint="Tap a person for their page.">
       {isLoading ? (
         <p style={{
@@ -545,6 +582,108 @@ function PeopleTab({ userId }: { userId: string }) {
           ))}
         </ul>
       )}
+    </Section>
+    <FollowSuggestions userId={userId} />
+    </>
+  );
+}
+
+// "People you might follow" — engaged-but-not-followed creators mapping to a
+// declared interest (#151, ADR-0010). Hidden entirely when empty (no
+// empty-state text). Rendered below the followed list.
+function FollowSuggestions({ userId }: { userId: string }) {
+  const queryClient = useQueryClient();
+
+  const { data } = useQuery({
+    queryKey: ['follow-suggestions', userId],
+    queryFn: () => fetchSuggestions(userId),
+    enabled: !!userId,
+  });
+
+  const followMutation = useMutation({
+    mutationFn: (s: FollowSuggestion) => followSuggestion(userId, s.channelId, s.displayName),
+    onSuccess: () => {
+      // The followed channel should vanish from suggestions and appear in the
+      // followed list.
+      void queryClient.invalidateQueries({ queryKey: ['follow-suggestions', userId] });
+      void queryClient.invalidateQueries({ queryKey: ['person-following', userId] });
+    },
+  });
+
+  const dismissMutation = useMutation({
+    mutationFn: (channelId: string) => dismissSuggestion(userId, channelId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['follow-suggestions', userId] });
+    },
+  });
+
+  const suggestions = data?.suggestions ?? [];
+  if (suggestions.length === 0) return null;
+
+  return (
+    <Section title="People you might follow" hint="Creators you've watched or saved that match your interests.">
+      <ul style={{
+        listStyle: 'none', margin: 0, padding: '4px 14px 0',
+        display: 'flex', flexDirection: 'column', gap: 8,
+      }}>
+        {suggestions.map((s) => {
+          const pending = followMutation.isPending && followMutation.variables?.channelId === s.channelId;
+          const dismissing = dismissMutation.isPending && dismissMutation.variables === s.channelId;
+          return (
+            <li key={s.channelId} style={{
+              display: 'flex', alignItems: 'center', gap: 12,
+              padding: '10px 12px',
+              background: 'var(--bg-surface)',
+              border: '1px solid var(--border-subtle)',
+              borderRadius: 12,
+            }}>
+              <PersonAvatar photoUrl={s.photoUrl} alt={s.displayName} />
+              <span style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 }}>
+                <span style={{
+                  fontSize: 15, fontWeight: 500, color: 'var(--text-primary)',
+                  overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                }}>
+                  {s.displayName}
+                </span>
+                <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
+                  {s.reason}
+                </span>
+              </span>
+              <button
+                onClick={() => dismissMutation.mutate(s.channelId)}
+                disabled={dismissing || pending}
+                aria-label={`Dismiss ${s.displayName}`}
+                style={{
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  width: 36, height: 36, flexShrink: 0,
+                  background: 'none', border: 'none', borderRadius: 8,
+                  color: 'var(--text-tertiary)', cursor: 'pointer',
+                  WebkitTapHighlightColor: 'transparent',
+                }}
+              >
+                <X size={18} strokeWidth={2} />
+              </button>
+              <button
+                onClick={() => followMutation.mutate(s)}
+                disabled={pending || dismissing}
+                style={{
+                  flexShrink: 0,
+                  padding: '7px 14px',
+                  background: 'var(--accent, var(--text-primary))',
+                  color: 'var(--bg-primary)',
+                  border: 'none', borderRadius: 999,
+                  fontFamily: 'inherit', fontSize: 13, fontWeight: 600,
+                  cursor: 'pointer',
+                  WebkitTapHighlightColor: 'transparent',
+                  opacity: pending ? 0.6 : 1,
+                }}
+              >
+                {pending ? 'Following…' : 'Follow'}
+              </button>
+            </li>
+          );
+        })}
+      </ul>
     </Section>
   );
 }

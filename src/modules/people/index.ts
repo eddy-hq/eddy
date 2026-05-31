@@ -16,3 +16,9 @@ export type {
 } from './personView';
 export { runRssPollPass } from './poller';
 export { peopleRouter } from './router';
+export {
+  getFollowSuggestions,
+  dismissFollowSuggestion,
+  buildSuggestionReason,
+  type FollowSuggestion,
+} from './suggestions';
