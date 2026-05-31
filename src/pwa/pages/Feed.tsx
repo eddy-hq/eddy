@@ -21,6 +21,7 @@ import {
   provenanceSegments,
 } from './feed-tier3';
 import {
+  cardsForWeekRange,
   formatWeekRange,
   markersByIndex,
   resolveSummary,
@@ -230,7 +231,13 @@ export function Feed() {
             ))}
 
             {/* Tier 4 — week-rows (≥30d) with month-marker scroll anchors. */}
-            <Tier4Section weeks={tier4Weeks} currentYear={Number(today.slice(0, 4))} />
+            <Tier4Section
+              weeks={tier4Weeks}
+              allDays={allDays}
+              currentYear={Number(today.slice(0, 4))}
+              onSelect={onSelect}
+              userId={user}
+            />
           </>
         )}
       </main>
@@ -602,7 +609,15 @@ function DayRow({
 // month changes. Grouping basis: each week's `rangeStart` month (the Monday of
 // the ISO week). No marker renders above the first week, and an empty list
 // renders nothing. All placement/label logic lives in ./feed-tier4 (unit-tested).
-function Tier4Section({ weeks, currentYear }: { weeks: Tier4Week[]; currentYear: number }) {
+function Tier4Section({
+  weeks, allDays, currentYear, onSelect, userId,
+}: {
+  weeks: Tier4Week[];
+  allDays: Day[];
+  currentYear: number;
+  onSelect: (data: CardData, source: WatchSource) => void;
+  userId: string;
+}) {
   if (weeks.length === 0) return null;
 
   const markers = markersByIndex(weekMonthMarkers(weeks, currentYear));
@@ -612,7 +627,12 @@ function Tier4Section({ weeks, currentYear }: { weeks: Tier4Week[]; currentYear:
       {weeks.map((week, i) => (
         <React.Fragment key={week.rangeStart}>
           {markers.has(i) && <MonthMark label={markers.get(i)!} />}
-          <WeekRow week={week} />
+          <WeekRow
+            week={week}
+            matchedCards={cardsForWeekRange(allDays, week.rangeStart, week.rangeEnd)}
+            onSelect={onSelect}
+            userId={userId}
+          />
         </React.Fragment>
       ))}
     </>
@@ -637,74 +657,117 @@ function MonthMark({ label }: { label: string }) {
 }
 
 // One Tier 4 week: a teal tick, a range line, a one-line editorial summary (or
-// the "{count} items" fallback when the Gemma line is null), and a chevron. The
-// tap handler is wired but stubbed — expand-week is an explicit follow-up, out
-// of scope here. Range formatting and summary fallback come from ./feed-tier4
-// (unit-tested); the component stays thin. Token mapping from the prototype:
+// the "{count} items" fallback when the Gemma line is null), and a chevron.
+// Tapping expands inline to the week's full cards — `matchedCards` are the rows
+// from `days` whose date falls in [rangeStart, rangeEnd] (collected by the
+// unit-tested `cardsForWeekRange`), rendered via the same CompactCard the Tier 3
+// day-row uses. A week with no matched rows (history beyond FEED_LIMIT) can't
+// expand and degrades to the peek-only summary. Range formatting / summary
+// fallback come from ./feed-tier4. Token mapping from the prototype:
 // --teal → --teal, --ink-700 → --text-primary, --ink-400/--ink-300 →
 // --text-tertiary, --serif → --font-serif.
-function WeekRow({ week }: { week: Tier4Week }) {
+function WeekRow({
+  week, matchedCards, onSelect, userId,
+}: {
+  week: Tier4Week;
+  matchedCards: FeedCard[];
+  onSelect: (data: CardData, source: WatchSource) => void;
+  userId: string;
+}) {
+  const [expanded, setExpanded] = useState(false);
   const range = formatWeekRange(week.rangeStart, week.rangeEnd);
   const summary = resolveSummary(week.summary, week.count);
-
-  // Stubbed no-op — expand-week is an explicit follow-up, out of scope here.
-  // (The repo's PWA bans `console`, so a no-op rather than a console.warn.)
-  const onExpand = () => { /* expand-week: follow-up */ };
+  const canExpand = matchedCards.length > 0;
 
   return (
-    <div
-      role="button"
-      tabIndex={0}
-      onClick={onExpand}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onExpand(); }
-      }}
-      style={{
-        margin: '0 18px 4px',
-        padding: '14px 14px',
-        background: 'transparent',
-        borderRadius: 10,
-        display: 'flex',
-        alignItems: 'center',
-        gap: 14,
-        border: '1px solid transparent',
-        cursor: 'pointer',
-        WebkitTapHighlightColor: 'transparent',
-      }}
-    >
-      {/* Teal tick */}
+    <div style={{ margin: '0 18px 4px' }}>
       <div
-        aria-hidden
-        style={{
-          width: 3, alignSelf: 'stretch', flexShrink: 0,
-          background: 'var(--teal)', opacity: 0.3, borderRadius: 3,
+        role="button"
+        tabIndex={0}
+        aria-expanded={expanded}
+        onClick={() => { if (canExpand) setExpanded((v) => !v); }}
+        onKeyDown={(e) => {
+          if ((e.key === 'Enter' || e.key === ' ') && canExpand) { e.preventDefault(); setExpanded((v) => !v); }
         }}
-      />
+        style={{
+          padding: '14px 14px',
+          background: expanded ? 'var(--bg-surface)' : 'transparent',
+          borderRadius: 10,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 14,
+          border: '1px solid',
+          borderColor: expanded ? 'var(--border-subtle)' : 'transparent',
+          cursor: canExpand ? 'pointer' : 'default',
+          WebkitTapHighlightColor: 'transparent',
+        }}
+      >
+        {/* Teal tick */}
+        <div
+          aria-hidden
+          style={{
+            width: 3, alignSelf: 'stretch', flexShrink: 0,
+            background: 'var(--teal)', opacity: 0.3, borderRadius: 3,
+          }}
+        />
 
-      {/* Info column — range + summary */}
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{
-          fontFamily: 'var(--font-serif)', fontWeight: 500, fontSize: 13,
-          color: 'var(--text-primary)', marginBottom: 2, letterSpacing: '-0.003em',
-        }}>
-          {range}
+        {/* Info column — range + summary */}
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{
+            fontFamily: 'var(--font-serif)', fontWeight: 500, fontSize: 13,
+            color: 'var(--text-primary)', marginBottom: 2, letterSpacing: '-0.003em',
+          }}>
+            {range}
+          </div>
+          <div style={{
+            fontFamily: 'var(--font-serif)', fontStyle: 'italic', fontSize: 11.5,
+            color: 'var(--text-tertiary)', lineHeight: 1.4, letterSpacing: '0.005em',
+            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+          }}>
+            {summary}
+          </div>
         </div>
-        <div style={{
-          fontFamily: 'var(--font-serif)', fontStyle: 'italic', fontSize: 11.5,
-          color: 'var(--text-tertiary)', lineHeight: 1.4, letterSpacing: '0.005em',
-          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-        }}>
-          {summary}
-        </div>
+
+        {/* Chevron — rotates 90° when expanded */}
+        <ChevronRight
+          size={14}
+          strokeWidth={1.5}
+          aria-hidden
+          style={{
+            flexShrink: 0,
+            color: 'var(--text-tertiary)',
+            opacity: 0.6,
+            transform: expanded ? 'rotate(90deg)' : 'none',
+            transition: 'transform 180ms ease',
+            visibility: canExpand ? 'visible' : 'hidden',
+          }}
+        />
       </div>
 
-      {/* Chevron */}
-      <ChevronRight
-        size={14}
-        strokeWidth={1.5}
-        aria-hidden
-        style={{ flexShrink: 0, color: 'var(--text-tertiary)', opacity: 0.6 }}
-      />
+      <AnimatePresence initial={false}>
+        {expanded && canExpand && (
+          <motion.div
+            key="body"
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: 'auto' }}
+            exit={{ opacity: 0, height: 0 }}
+            transition={{ duration: 0.22, ease: [0.33, 1, 0.68, 1] }}
+            style={{ overflow: 'hidden' }}
+          >
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10, padding: '4px 16px 14px' }}>
+              {matchedCards.map((row) => (
+                <CompactCard
+                  key={row.request_id}
+                  data={toCardData(row)}
+                  userId={userId}
+                  sourceKind={sourceKind(row.source)}
+                  onSelect={(c) => onSelect(c, 'history')}
+                />
+              ))}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

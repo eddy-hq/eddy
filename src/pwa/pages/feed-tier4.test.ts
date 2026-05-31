@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  cardsForWeekRange,
   formatWeekRange,
   itemsLabel,
   markersByIndex,
@@ -148,5 +149,32 @@ describe('markersByIndex', () => {
     expect(map.get(3)).toBe('January');
     expect(map.has(0)).toBe(false);
     expect(map.has(1)).toBe(false);
+  });
+});
+
+describe('cardsForWeekRange', () => {
+  const days = [
+    { date: '2025-05-12', cards: [{ id: 'd' }] },               // outside (after end)
+    { date: '2025-05-11', cards: [{ id: 'c' }] },               // Sunday, inside
+    { date: '2025-05-07', cards: [{ id: 'b1' }, { id: 'b2' }] }, // inside
+    { date: '2025-05-05', cards: [{ id: 'a' }] },               // Monday, inside
+    { date: '2025-05-04', cards: [{ id: 'z' }] },               // outside (before start)
+  ];
+
+  it('collects only cards whose day is within the inclusive range, newest-first', () => {
+    const out = cardsForWeekRange(days, '2025-05-05', '2025-05-11');
+    expect(out.map((c) => c.id)).toEqual(['c', 'b1', 'b2', 'a']);
+  });
+
+  it('returns [] when no day falls in the range (history beyond FEED_LIMIT)', () => {
+    expect(cardsForWeekRange(days, '2025-01-06', '2025-01-12')).toEqual([]);
+  });
+
+  it('flattens sections when a day carries them instead of flat cards', () => {
+    const withSections = [
+      { date: '2025-05-07', cards: [] as Array<{ id: string }>, sections: [{ cards: [{ id: 's1' }] }, { cards: [{ id: 's2' }] }] },
+    ];
+    const out = cardsForWeekRange(withSections, '2025-05-05', '2025-05-11');
+    expect(out.map((c) => c.id)).toEqual(['s1', 's2']);
   });
 });

@@ -125,3 +125,23 @@ export function weekMonthMarkers(
 export function markersByIndex(markers: ReadonlyArray<WeekMarker>): Map<number, string> {
   return new Map(markers.map((m) => [m.beforeIndex, m.label]));
 }
+
+/**
+ * Collect every card whose day falls within a Tier 4 week's inclusive
+ * [rangeStart, rangeEnd] range, newest-first. The full rows for ≥30d history are
+ * already in the /feed `days` payload (within FEED_LIMIT), so a week-row expands
+ * inline by reusing them — no extra fetch, mirroring the Tier 3 day-row. Days are
+ * matched by ISO date string (lexicographic compare is correct for
+ * 'YYYY-MM-DD'); `days` is added_at-DESC and each day's cards are too, so the
+ * result is newest-first. A week with no matching days (history beyond
+ * FEED_LIMIT) returns [], degrading the row to its peek-only summary.
+ */
+export function cardsForWeekRange<C>(
+  days: ReadonlyArray<{ date: string; cards: C[]; sections?: Array<{ cards: C[] }> }>,
+  rangeStart: string,
+  rangeEnd: string,
+): C[] {
+  return days
+    .filter((d) => d.date >= rangeStart && d.date <= rangeEnd)
+    .flatMap((d) => (d.sections?.length ? d.sections.flatMap((s) => s.cards) : d.cards));
+}
