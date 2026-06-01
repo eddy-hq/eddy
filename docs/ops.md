@@ -178,6 +178,8 @@ Fail-open by design: a Redis outage reports "no cooldown" rather than wedging do
 
 **Orphaned-`downloading` fix (issue #183):** the worker now owns the terminal transition on attempt-exhaustion. When a download spends its full BullMQ retry budget on a non-terminal error, the worker posts `/internal/requests/:id/failed` (→ `mark_failed`) so the row leaves `downloading` immediately, instead of orphaning there until the watchdog escalation maybe rescues it. With the cooldown above, bot-detection retries *park* rather than exhaust, so this fires for genuinely failing downloads; either way the row no longer hangs.
 
+**Restart-proof watchdog escalation (issue #184):** the in-server download watchdog (`src/modules/watchdog/index.ts`, 5-min cycle) used to give up on a stuck `downloading` row only after re-enqueueing it a fixed number of times, counted in an **in-memory `Map`**. The M4 server runs as `tsx watch` under launchd and restarts often; every restart wiped the counter, so the give-up window never completed and stuck rows re-enqueued **every 5 min forever** — exactly the pressure-on-a-blocked-IP failure the note above warns about. The watchdog now escalates on **elapsed time** instead: a stuck row past `ESCALATION_AGE_MS` (15 min, measured from its stored `requested_at`) is marked `failed` rather than re-enqueued, a verdict that's identical no matter how many times the process bounced. Rows whose BullMQ job is still healthy-pending (`active`/`waiting`/`delayed`/…) are skipped regardless of age, so a worker outage never escalates a queued job.
+
 ---
 
 ## Plex — Eddy Videos library prefs
