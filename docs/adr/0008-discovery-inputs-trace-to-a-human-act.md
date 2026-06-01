@@ -21,7 +21,22 @@ The principle has two halves and they're inseparable. The rejected half: no auto
 - **Auto-promotion from behaviour.** Watching a lot of X auto-adds X as an interest (the YouTube/TikTok default). Rejected: it is the capture loop by definition, and it makes the system, not the user, the author of the profile.
 - **Inference replaces declaration** (the original framing of issue #150). Rejected: inference is structurally backward-looking — it can only reflect what you already follow and watch. Declaration is the only forward-looking input ("I want to get into woodworking"), and the only cold-start seed. The two are complementary, not redundant.
 
+## Built since (Tier 2 inference — issue #181, 2026-05-31)
+
+**Tier 2 inference is now built.** The deferral was tripped exactly as anticipated: a kid following ~28 Minecraft creators got the parent's adult seed topics (`economics`, `philosophy`, `news_analysis`) force-fit onto those channels, because `inferChannelInterests` could only *pick from the existing catalogue*. Specificity had drifted broad.
+
+Inference now grows the vocabulary **bottom-up from content**, mirroring how a declared `user_added` interest is created on demand:
+
+1. **Describe** — Gemma free-labels the channel's primary topic from its name + recent titles, unbiased by the catalogue (1–3 word label, or "unclear" ⇒ insert nothing).
+2. **Canonicalise** — that free label is matched against the existing vocabulary on *semantic sameness* (not nearest-fit from a closed list, and explicitly allowed to find no match). This is the crux: it collapses "minecraft survival" / "MC redstone" onto one `minecraft` id, so the inferred-interest follower-count and the `MAX_PER_INTEREST` diversity cap keep aggregating correctly.
+3. **Create on demand** — a genuine miss inserts a new `interests` row (`source='inferred'`) and enqueues the existing search-terms job. The new interest is still subject to every prior consequence: it is **inert until Kept**, and a kid's Keep still routes through the guard. So bottom-up vocabulary growth adds no kid-safety surface at inference time — the human-act boundary is unchanged.
+
+The pre-seeded catalogue is therefore no longer a *forced* inference target. The seed rows that existed **only** as inference targets (declared by nobody) and were the leak fodder — `news_analysis`, `programming`, `camping` — were removed (migration 038); declared seeds stay. The add-interest browse grid (`GET /interests/`) was already unused and was removed; declared interests are added freeform (`/user-add`) or by Keeping an inference.
+
+This supersedes the "Tier 2 inference" deferral below; the "specificity prompt at Keep" alternative remains unbuilt and unneeded for now.
+
 ## Deferred
 
-- **Tier 2 inference — generating new vocabulary from content.** Today inference only proposes interests already in the shared vocabulary (`inferChannelInterests` links a channel to existing `interests` rows). Generating a *new* interest label + `search_terms` from a channel's actual content is deferred. This is knowingly deferring the **specificity** lever: inference can only ever be as specific as the declared vocabulary, so Tier 2 is the mechanism that would yield sharper interests than the vocabulary holds. Revisit if interest specificity drifts broad in real use.
+- **Tier 2 inference — generating new vocabulary from content.** *(Built — see above.)* ~~Today inference only proposes interests already in the shared vocabulary~~ Generating a *new* interest label + `search_terms` from a channel's actual content was the **specificity** lever: inference could only ever be as specific as the declared vocabulary.
 - **Specificity prompt at the Keep moment** ("Keep 'AI', or make it more specific?"). A cheaper partial alternative to Tier 2; deferred until drift is observed.
+- **Backfill of pre-existing `channel_interest_links`.** The new inference applies to *future* follows; the stale links from the old force-fit prompt are left in place (one affected kid's were cleaned manually). Re-inferring the whole table is its own job.
