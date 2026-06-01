@@ -108,6 +108,13 @@ const schema = z.object({
   // the seeded fleet is exactly the three users, but a future row without a
   // configured hour gets discovery here rather than silently none.
   DISCOVERY_HOUR_DEFAULT: z.coerce.number().int().min(0).max(23).default(6),
+  // Freshness TTL (days) for the per-person channel-info refresh (bio + avatar).
+  // applyChannelInfoToPerson fires once per followed channel on every RSS poll
+  // pass; bio/avatar are near-static, so we skip the yt-dlp channel-page fetch
+  // unless the last successful refresh is older than this. Deliberately long —
+  // this is the dominant volume cut on the people path (#185). 0 disables the
+  // gate (refetch every pass, pre-#185 behaviour).
+  PERSON_CHANNEL_INFO_TTL_DAYS: z.coerce.number().int().nonnegative().default(30),
 });
 
 const result = schema.safeParse(process.env);
