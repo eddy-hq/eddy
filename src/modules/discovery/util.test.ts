@@ -23,6 +23,12 @@ describe('uploadDateToIso', () => {
     expect(uploadDateToIso('2026-03-15')).toBeNull();
     expect(uploadDateToIso('202603')).toBeNull();
   });
+
+  it('returns null for an eight-char value that is not a real date', () => {
+    expect(uploadDateToIso('abcdefgh')).toBeNull();
+    expect(uploadDateToIso('20261340')).toBeNull();
+    expect(uploadDateToIso('20260230')).toBeNull();
+  });
 });
 
 describe('daysSince', () => {

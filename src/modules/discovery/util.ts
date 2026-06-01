@@ -1,7 +1,8 @@
-export function uploadDateToIso(uploadDate: string | null): string | null {
-  if (!uploadDate || uploadDate.length !== 8) return null;
-  return `${uploadDate.slice(0, 4)}-${uploadDate.slice(4, 6)}-${uploadDate.slice(6, 8)}T00:00:00.000Z`;
-}
+// Canonical implementation lives in the pure date helper (src/date.ts) so the
+// content download path can share it without importing the discovery barrel.
+// Re-exported here to keep discovery's existing callers and tests on the same
+// import.
+export { uploadDateToIso } from '../../date';
 
 export function daysSince(isoDate: string | null): number | null {
   if (!isoDate) return null;

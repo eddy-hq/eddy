@@ -5,7 +5,7 @@ import path from 'path';
 import { config } from '../../config';
 import { logger } from '../../logger';
 import { isBotDetectionError } from '../../botdetect';
-import { uploadDateToIso } from '../discovery';
+import { uploadDateToIso } from '../../date';
 
 const execFileAsync = promisify(execFile);
 

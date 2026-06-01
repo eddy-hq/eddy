@@ -335,7 +335,3 @@ export async function stopDiscoveryScheduler(): Promise<void> {
 
 export { scoreCandidates } from './scoring';
 export { discoveryRouter } from './router';
-// Shared YYYYMMDD → ISO conversion for yt-dlp's `upload_date`. Re-exported so
-// the content module can capture publish dates at download time without
-// reaching into discovery internals (issue #186).
-export { uploadDateToIso } from './util';
