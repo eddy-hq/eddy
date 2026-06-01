@@ -256,6 +256,7 @@ async function processJob(job: Job<DownloadJobData>, token?: string): Promise<vo
       description: metadata.description,
       durationSecs: metadata.durationSecs,
       transcript: metadata.transcript,
+      publishedAt: metadata.publishedAt,
       fileSizeBytes,
     });
   }

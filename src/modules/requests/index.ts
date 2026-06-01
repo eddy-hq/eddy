@@ -259,7 +259,7 @@ requestsRouter.get('/feed', (req: Request, res: Response) => {
     SELECT
       request_id, url, youtube_id, youtube_channel_id, title, channel, status, file_state,
       rejection_reason, nginx_url, thumbnail_url, duration_secs, why_text,
-      requested_at, added_at, watched_at, saved_at, source
+      requested_at, published_at, added_at, watched_at, saved_at, source
     FROM requests
     WHERE user_id = ?
       AND status NOT IN ('dismissed', 'deleted')
@@ -273,7 +273,8 @@ requestsRouter.get('/feed', (req: Request, res: Response) => {
     rejection_reason: string | null; nginx_url: string | null;
     thumbnail_url: string | null; duration_secs: number | null;
     why_text: string | null;
-    requested_at: string; added_at: string; watched_at: string | null;
+    requested_at: string; published_at: string | null;
+    added_at: string; watched_at: string | null;
     saved_at: string | null; source: string;
   }>;
 

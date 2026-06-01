@@ -28,6 +28,10 @@ interface DownloadedPayload {
   description: string;
   durationSecs: number;
   transcript: string | null;
+  // Video's own publish date (ISO 8601) from yt-dlp's `upload_date`. Optional
+  // on the wire so an older worker predating #186 still produces a valid
+  // mark_downloaded — the column just stays null for those.
+  publishedAt?: string | null;
   // Bytes on disk captured by the worker after yt-dlp finishes. Optional on
   // the wire so an older worker that hasn't shipped #114 yet still produces
   // a valid mark_downloaded — the column just stays null until the backfill
@@ -37,7 +41,7 @@ interface DownloadedPayload {
 
 // POST /internal/videos/:youtube_id/downloaded — called by Ubuntu worker on success
 internalRouter.post('/videos/:youtube_id/downloaded', verifySignedJson<DownloadedPayload>((req, res, payload) => {
-  const { requestId, filePath, nginxUrl, thumbnailUrl, title, channel, youtubeChannelId, description, durationSecs, transcript, fileSizeBytes } = payload;
+  const { requestId, filePath, nginxUrl, thumbnailUrl, title, channel, youtubeChannelId, description, durationSecs, transcript, publishedAt, fileSizeBytes } = payload;
 
   const { result } = getRequestsState().apply({
     kind: 'mark_downloaded',
@@ -52,6 +56,7 @@ internalRouter.post('/videos/:youtube_id/downloaded', verifySignedJson<Downloade
       filePath,
       nginxUrl,
       thumbnailUrl,
+      publishedAt: publishedAt ?? null,
       fileSizeBytes: fileSizeBytes ?? null,
     },
   });

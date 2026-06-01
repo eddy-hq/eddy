@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { RotateCw } from 'lucide-react';
 import { readProgress, onProgressChange } from '../lib/videoProgress';
+import { relativeTimeAgo } from '../lib/relativeTime';
 import { useResolvePersonId } from '../hooks/useResolvePersonId';
 import { useRestoreRequest } from '../hooks/useRestoreRequest';
 import { useRestoreStore } from '../store/restore';
@@ -24,6 +25,10 @@ export interface CardData {
   durationSecs: number | null;
   whyText: string | null;
   requestedAt: string;
+  // Video's own publish date (ISO 8601), null when unknown (pre-#186 rows or
+  // videos yt-dlp couldn't date). When present the card shows publish-date
+  // relative time; otherwise it falls back to `requestedAt`.
+  publishedAt?: string | null;
   rejectionReason: string | null;
   watchedAt: string | null;
   savedAt: string | null;
@@ -165,7 +170,10 @@ export function Card({
     : isRestoring ? 'Restoring…'
     : isRecycled ? 'Tap to restore'
     : isWatched && data.watchedAt ? watchedAgo(data.watchedAt)
-    : timeAgo(data.requestedAt);
+    // Prefer the video's own publish date — it distinguishes a back-catalogue
+    // pull from a fresh upload. Falls back to requested_at for rows that
+    // predate #186 or that yt-dlp couldn't date.
+    : timeAgo(data.publishedAt ?? data.requestedAt);
 
   return (
     <motion.article
@@ -446,16 +454,7 @@ function ChannelTap({
   );
 }
 
-function timeAgo(iso: string): string {
-  const diff = Date.now() - new Date(iso).getTime();
-  const mins = Math.floor(diff / 60_000);
-  if (mins < 1) return 'just now';
-  if (mins < 60) return `${mins}m ago`;
-  const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs}h ago`;
-  const days = Math.floor(hrs / 24);
-  return `${days}d ago`;
-}
+const timeAgo = relativeTimeAgo;
 
 function watchedAgo(iso: string): string {
   const diff = Date.now() - new Date(iso).getTime();

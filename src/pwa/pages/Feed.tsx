@@ -53,6 +53,7 @@ interface FeedCard {
   why_text: string | null;
   rejection_reason: string | null;
   requested_at: string;
+  published_at: string | null;
   added_at: string;
   watched_at: string | null;
   saved_at: string | null;
@@ -116,6 +117,7 @@ function toCardData(row: FeedCard): CardData {
     durationSecs: row.duration_secs,
     whyText: row.why_text,
     requestedAt: row.requested_at,
+    publishedAt: row.published_at,
     rejectionReason: row.rejection_reason,
     watchedAt: row.watched_at,
     savedAt: row.saved_at,

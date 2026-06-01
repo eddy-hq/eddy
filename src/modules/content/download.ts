@@ -5,6 +5,7 @@ import path from 'path';
 import { config } from '../../config';
 import { logger } from '../../logger';
 import { isBotDetectionError } from '../../botdetect';
+import { uploadDateToIso } from '../discovery';
 
 const execFileAsync = promisify(execFile);
 
@@ -130,6 +131,19 @@ export interface VideoMetadata {
   description: string;
   durationSecs: number;
   transcript: string | null;
+  // Video's own publish date (ISO 8601), captured from yt-dlp's `upload_date`.
+  // Null when yt-dlp omits it or it can't be parsed — the UI falls back to
+  // `requested_at` in that case (issue #186).
+  publishedAt: string | null;
+}
+
+// Pull the ISO publish date out of a parsed yt-dlp `--dump-json` object.
+// `upload_date` is `YYYYMMDD`; uploadDateToIso returns null for missing or
+// malformed values, so a video yt-dlp can't date simply carries null through.
+// Exported for unit testing without shelling out to yt-dlp.
+export function extractPublishedAt(json: Record<string, unknown>): string | null {
+  const raw = json['upload_date'];
+  return typeof raw === 'string' ? uploadDateToIso(raw) : null;
 }
 
 // Maps yt-dlp error output to kid-readable rejection reasons.
@@ -245,6 +259,7 @@ export async function fetchMetadata(url: string): Promise<VideoMetadata> {
     description: String(json['description'] ?? '').slice(0, 2000),
     durationSecs: Number(json['duration'] ?? 0),
     transcript,
+    publishedAt: extractPublishedAt(json),
   };
 }
 
