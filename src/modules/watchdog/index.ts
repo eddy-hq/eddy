@@ -9,18 +9,40 @@ import { getRequestsState } from '../requests';
 const MIN_AGE_MS = 2 * 60 * 1000; // ignore requests younger than 2 min (callback may still be in-flight)
 const CHECK_INTERVAL_MS = 5 * 60 * 1000;
 
-// Re-enqueue limit per request before the watchdog gives up and escalates to
-// `failed`. At CHECK_INTERVAL_MS=5min × threshold=3 this is a ~15-minute grace
-// window during which an underlying bug (e.g. a stale yt-dlp intermediate
-// triggering HTTP 416 on every resume) can be ridden out, before we stop
-// silently spinning at default priority and surface the failure loudly.
-const REENQUEUE_ESCALATION_THRESHOLD = 3;
+// Grace window before the watchdog gives up on a stuck `downloading` row and
+// escalates it to `failed`. A row younger than this gets re-enqueued each cycle
+// (recovering a job that vanished from Redis); once it crosses the window the
+// watchdog stops re-enqueueing and surfaces the failure loudly instead.
+//
+// #184: this used to be a count of re-enqueues (threshold 3 × 5-min cycle ≈ the
+// same 15 min), held in an in-memory Map. The M4 server runs as `tsx watch`
+// under launchd and restarts often; each restart wiped the counter, so the
+// give-up window never completed and stuck rows re-enqueued every 5 min
+// forever — sustaining pressure on a rate-blocked YouTube IP. Measuring elapsed
+// time against the row's stored `requested_at` is restart-proof by
+// construction: the verdict is the same no matter how many times the process
+// has bounced.
+const ESCALATION_AGE_MS = 15 * 60 * 1000;
 
-// Per-request count of consecutive re-enqueues with no progress out of
-// `downloading`. Reset when the row leaves `downloading` (resolved, rejected,
-// failed, etc.). In-memory only — a server restart resets the grace window,
-// which is the right behaviour (a fresh process gets a fresh chance).
-const consecutiveReenqueues = new Map<string, number>();
+// Pure escalation predicate (the heart of the #184 fix). Whether a stuck
+// `downloading` row has been alive long enough to give up on. Decided solely
+// from the stored `requested_at` against the supplied clock — no process-local
+// state — so it survives any number of restarts and is trivially unit-testable.
+//
+// A non-finite age (unparseable timestamp — shouldn't happen, `requested_at` is
+// NOT NULL and machine-written) escalates rather than loops: "fail loudly"
+// beats the silent forever-spin this issue is about.
+//
+// Caveat (deliberate): `requested_at` is the original request time, not the
+// start of the current downloading spell, so an admin `retry` of an ancient row
+// inherits a stale clock and can escalate on its first failed cycle without the
+// usual re-enqueue attempts. That's acceptable — retry enqueues a fresh job
+// that stays healthy-pending (and is skipped) until it genuinely fails, and an
+// old row that fails again is a fair thing to surface immediately.
+export function isStuckBeyondGrace(requestedAt: string, nowMs: number): boolean {
+  const stuckMs = nowMs - Date.parse(requestedAt);
+  return !Number.isFinite(stuckMs) || stuckMs >= ESCALATION_AGE_MS;
+}
 
 interface StuckRequest {
   request_id: string;
@@ -41,15 +63,9 @@ export async function checkStuckDownloads(): Promise<void> {
       AND requested_at < ?
   `).all(cutoff) as StuckRequest[];
 
-  // Drop counters for requests that have left `downloading` since the last
-  // cycle. Done before the empty-result early return so a successful
-  // download still clears its prior count.
-  const stillStuck = new Set(downloading.map((r) => r.request_id));
-  for (const id of [...consecutiveReenqueues.keys()]) {
-    if (!stillStuck.has(id)) consecutiveReenqueues.delete(id);
-  }
-
   if (downloading.length === 0) return;
+
+  const now = Date.now();
 
   for (const req of downloading) {
     const log = logger.child({ requestId: req.request_id, youtubeId: req.youtube_id });
@@ -72,7 +88,7 @@ export async function checkStuckDownloads(): Promise<void> {
     //   prioritized       — queued in priority lane (unused here, defensive)
     //   paused            — queue paused by an operator
     //
-    // The escalation path mustn't count these against the threshold: a worker
+    // The escalation path mustn't touch these regardless of age: a worker
     // outage that lasts >15 minutes would otherwise transition every queued
     // download to `failed` while a valid job is still sitting in the queue.
     // When the worker returns, it would complete the download but the
@@ -87,18 +103,18 @@ export async function checkStuckDownloads(): Promise<void> {
       jobState === 'paused'
     ) continue;
 
-    // Escalate before re-enqueueing if we've already retried this request the
-    // threshold number of times without it making progress. Stops the
-    // re-enqueue/fail/re-enqueue loop a buggy worker can otherwise sustain
-    // indefinitely at default-priority notifications.
-    const priorReenqueues = consecutiveReenqueues.get(req.request_id) ?? 0;
-    if (priorReenqueues >= REENQUEUE_ESCALATION_THRESHOLD) {
-      log.warn({ priorReenqueues }, 'Re-enqueue threshold exceeded — marking failed');
+    const stuckMins = Math.round((now - new Date(req.requested_at).getTime()) / 60_000);
+
+    // Escalate before re-enqueueing once the row has been stuck past the grace
+    // window. Stops the re-enqueue/fail/re-enqueue loop a buggy worker (or a
+    // rate-blocked IP) can otherwise sustain indefinitely, and surfaces the
+    // failure loudly. Restart-proof: the verdict reads only from `requested_at`.
+    if (isStuckBeyondGrace(req.requested_at, now)) {
+      log.warn({ stuckMins }, 'Stuck beyond grace window — marking failed');
       const { result } = getRequestsState().apply({
         kind: 'mark_failed',
         requestId: req.request_id,
       });
-      consecutiveReenqueues.delete(req.request_id);
       if (!result.transitioned) {
         log.warn({ currentStatus: result.currentStatus }, 'Escalation no-op — row already changed state');
         continue;
@@ -108,7 +124,7 @@ export async function checkStuckDownloads(): Promise<void> {
           kind: 'download_alert',
           requestId: req.request_id,
           title: req.title ?? req.youtube_id ?? req.url,
-          stuckMins: Math.round((Date.now() - new Date(req.requested_at).getTime()) / 60_000),
+          stuckMins,
           action: 'failed',
         },
         config.USER_ID_STEVE,
@@ -132,15 +148,13 @@ export async function checkStuckDownloads(): Promise<void> {
       }
       await downloadQueue.add('download', jobData, { jobId: req.request_id });
       reenqueued = true;
-      consecutiveReenqueues.set(req.request_id, priorReenqueues + 1);
-      log.info({ jobState, priorReenqueues: priorReenqueues + 1 }, 'Re-enqueued stuck download');
+      log.info({ jobState, stuckMins }, 'Re-enqueued stuck download');
     } catch (err) {
       log.error({ err }, 'Failed to re-enqueue stuck download — marking failed');
       const { result } = getRequestsState().apply({
         kind: 'mark_failed',
         requestId: req.request_id,
       });
-      consecutiveReenqueues.delete(req.request_id);
       if (!result.transitioned) {
         // Row changed state between the SELECT and this catch (e.g. a worker
         // callback landed concurrently). Whatever owns the new state owns the
@@ -158,17 +172,12 @@ export async function checkStuckDownloads(): Promise<void> {
         kind: 'download_alert',
         requestId: req.request_id,
         title: req.title ?? req.youtube_id ?? req.url,
-        stuckMins: Math.round((Date.now() - new Date(req.requested_at).getTime()) / 60_000),
+        stuckMins,
         action: reenqueued ? 're-enqueued' : 'failed',
       },
       config.USER_ID_STEVE,
     );
   }
-}
-
-// Test seam: reset in-memory counters between cases.
-export function resetWatchdogStateForTests(): void {
-  consecutiveReenqueues.clear();
 }
 
 let watchdogTimer: ReturnType<typeof setInterval> | null = null;

@@ -45,16 +45,19 @@ vi.mock('../notifications', () => ({
 
 import { db } from '../../db/client';
 import { runMigrations } from '../../db/migrate';
-import { checkStuckDownloads, resetWatchdogStateForTests } from './index';
+import { checkStuckDownloads, isStuckBeyondGrace } from './index';
 
-const STUCK_AGO_MS = 10 * 60 * 1000; // older than the watchdog's 2-min MIN_AGE_MS
+// Ages relative to the watchdog's windows: MIN_AGE_MS = 2 min (ignored younger),
+// ESCALATION_AGE_MS = 15 min (give-up window).
+const WITHIN_GRACE_MS = 10 * 60 * 1000; // visible to the watchdog, still inside the grace window → re-enqueue
+const BEYOND_GRACE_MS = 20 * 60 * 1000; // past the give-up window → escalate
 
-function insertStuckRequest(requestId: string): void {
+function insertStuckRequest(requestId: string, agoMs: number = WITHIN_GRACE_MS): void {
   db.prepare(`
     INSERT INTO requests (
       request_id, user_id, source, url, youtube_id, status, requested_at
     ) VALUES (?, ?, 'share_sheet', 'https://youtu.be/abc', 'abc', 'downloading', ?)
-  `).run(requestId, 'user_1', new Date(Date.now() - STUCK_AGO_MS).toISOString());
+  `).run(requestId, 'user_1', new Date(Date.now() - agoMs).toISOString());
 }
 
 function jobInState(state: string): { id: string; getState: () => Promise<string>; remove: () => Promise<void> } {
@@ -64,6 +67,35 @@ function jobInState(state: string): { id: string; getState: () => Promise<string
     remove: removeJobMock,
   };
 }
+
+describe('isStuckBeyondGrace — pure, restart-proof predicate', () => {
+  const NOW = Date.parse('2026-06-01T12:00:00.000Z');
+
+  it('is false within the grace window', () => {
+    expect(isStuckBeyondGrace(new Date(NOW - 5 * 60 * 1000).toISOString(), NOW)).toBe(false);
+  });
+
+  it('is true once past the grace window', () => {
+    expect(isStuckBeyondGrace(new Date(NOW - 20 * 60 * 1000).toISOString(), NOW)).toBe(true);
+  });
+
+  it('is true at exactly the 15-min boundary', () => {
+    expect(isStuckBeyondGrace(new Date(NOW - 15 * 60 * 1000).toISOString(), NOW)).toBe(true);
+  });
+
+  it('escalates (true) on an unparseable timestamp rather than looping forever', () => {
+    expect(isStuckBeyondGrace('not-a-date', NOW)).toBe(true);
+  });
+
+  it('depends only on its arguments — same answer every call, no accumulated state', () => {
+    const ts = new Date(NOW - 20 * 60 * 1000).toISOString();
+    // The pre-#184 bug was state that had to accumulate across calls. This
+    // predicate gives the same verdict no matter how many times it is invoked.
+    expect(isStuckBeyondGrace(ts, NOW)).toBe(true);
+    expect(isStuckBeyondGrace(ts, NOW)).toBe(true);
+    expect(isStuckBeyondGrace(ts, NOW)).toBe(true);
+  });
+});
 
 describe('watchdog checkStuckDownloads', () => {
   beforeAll(async () => {
@@ -101,15 +133,15 @@ describe('watchdog checkStuckDownloads', () => {
   });
 
   it.each(['waiting', 'waiting-children', 'prioritized', 'paused'])(
-    'leaves jobs in `%s` state alone — healthy-pending, must not count toward escalation',
+    'leaves a job in `%s` state alone even past the grace window — a worker outage must not escalate a queued job',
     async (state) => {
-      resetWatchdogStateForTests();
-      insertStuckRequest(`req_${state}`);
+      // Past the give-up window: if the healthy-state guard regressed, this row
+      // would escalate to `failed` while a valid job still sits in the queue —
+      // the orphan-file footgun the guard exists to prevent.
+      insertStuckRequest(`req_${state}`, BEYOND_GRACE_MS);
       getJobMock.mockResolvedValue(jobInState(state));
 
-      // Drive past the escalation threshold; a healthy-pending job must never
-      // tip the watchdog into marking the row `failed`.
-      for (let i = 0; i < 5; i++) await checkStuckDownloads();
+      await checkStuckDownloads();
 
       expect(addJobMock).not.toHaveBeenCalled();
       expect(notifyMock).not.toHaveBeenCalled();
@@ -118,8 +150,8 @@ describe('watchdog checkStuckDownloads', () => {
     },
   );
 
-  it('re-enqueues a `failed` job and alerts', async () => {
-    insertStuckRequest('req_failed');
+  it('re-enqueues a `failed` job that is still inside the grace window, and alerts', async () => {
+    insertStuckRequest('req_failed', WITHIN_GRACE_MS);
     getJobMock.mockResolvedValue(jobInState('failed'));
 
     await checkStuckDownloads();
@@ -130,6 +162,9 @@ describe('watchdog checkStuckDownloads', () => {
       expect.objectContaining({ requestId: 'req_failed' }),
       expect.objectContaining({ jobId: 'req_failed' }),
     );
+    // Row stays `downloading` (re-enqueued, not escalated).
+    const row = db.prepare('SELECT status FROM requests WHERE request_id = ?').get('req_failed') as { status: string };
+    expect(row.status).toBe('downloading');
     expect(notifyMock).toHaveBeenCalledTimes(1);
     expect(notifyMock).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -141,63 +176,58 @@ describe('watchdog checkStuckDownloads', () => {
     );
   });
 
-  describe('escalation after repeated re-enqueues', () => {
-    beforeEach(() => {
-      resetWatchdogStateForTests();
-    });
-
-    it('escalates to failed after the re-enqueue threshold is exceeded', async () => {
-      insertStuckRequest('req_loop');
+  describe('escalation is restart-proof (#184)', () => {
+    it('escalates a row past the grace window on the FIRST cycle — no warm-up, no accumulated counter', async () => {
+      // A freshly-restarted process has no in-memory history. The pre-#184 code
+      // re-enqueued on cycle 1 (counter 0→1) and only gave up on ~cycle 4, so a
+      // server that restarted every few minutes never reached escalation and
+      // re-enqueued the same stuck row forever. Time-based escalation fires on
+      // the very first cycle because the verdict reads only `requested_at`.
+      insertStuckRequest('req_old', BEYOND_GRACE_MS);
       getJobMock.mockResolvedValue(jobInState('failed'));
 
-      // 3 re-enqueue cycles — the threshold — should all pass through normally.
-      for (let i = 0; i < 3; i++) await checkStuckDownloads();
-      expect(addJobMock).toHaveBeenCalledTimes(3);
-      expect(notifyMock).toHaveBeenCalledTimes(3);
-      for (const call of notifyMock.mock.calls) {
-        expect(call[0]).toMatchObject({ action: 're-enqueued' });
-      }
+      await checkStuckDownloads(); // the very first cycle after a (simulated) restart
 
-      // 4th cycle — over threshold — should escalate, not re-enqueue.
-      await checkStuckDownloads();
-      expect(addJobMock).toHaveBeenCalledTimes(3); // unchanged
-      expect(notifyMock).toHaveBeenCalledTimes(4);
-      expect(notifyMock).toHaveBeenLastCalledWith(
-        expect.objectContaining({ action: 'failed', requestId: 'req_loop' }),
+      // Did NOT re-enqueue — escalated instead.
+      expect(addJobMock).not.toHaveBeenCalled();
+      const row = db.prepare('SELECT status FROM requests WHERE request_id = ?').get('req_old') as { status: string };
+      expect(row.status).toBe('failed');
+      expect(notifyMock).toHaveBeenCalledTimes(1);
+      expect(notifyMock).toHaveBeenCalledWith(
+        expect.objectContaining({ action: 'failed', requestId: 'req_old' }),
         '00000000-0000-7000-8000-000000000001',
       );
-
-      const row = db.prepare('SELECT status FROM requests WHERE request_id = ?').get('req_loop') as { status: string };
-      expect(row.status).toBe('failed');
     });
 
-    it('resets the counter when a request leaves `downloading` between cycles', async () => {
-      insertStuckRequest('req_recovers');
+    it('escalates a missing job (vanished from Redis) once past the grace window', async () => {
+      // The job was evicted (removeOnFail) or Redis was flushed — getJob returns
+      // null. An old row with no recoverable job must terminate, not spin.
+      insertStuckRequest('req_gone', BEYOND_GRACE_MS);
+      getJobMock.mockResolvedValue(null);
+
+      await checkStuckDownloads();
+
+      expect(addJobMock).not.toHaveBeenCalled();
+      const row = db.prepare('SELECT status FROM requests WHERE request_id = ?').get('req_gone') as { status: string };
+      expect(row.status).toBe('failed');
+      expect(notifyMock).toHaveBeenCalledWith(
+        expect.objectContaining({ action: 'failed', requestId: 'req_gone' }),
+        '00000000-0000-7000-8000-000000000001',
+      );
+    });
+
+    it('escalation no-ops without alerting if the row already left `downloading`', async () => {
+      // mark_failed gates on `status = 'downloading'`; a concurrent worker
+      // callback that already moved the row must not draw a stale "failed" alert.
+      insertStuckRequest('req_raced', BEYOND_GRACE_MS);
       getJobMock.mockResolvedValue(jobInState('failed'));
+      db.prepare(`UPDATE requests SET status = 'ready' WHERE request_id = ?`).run('req_raced');
 
-      // Two re-enqueues — build up some counter state.
-      await checkStuckDownloads();
-      await checkStuckDownloads();
-      expect(addJobMock).toHaveBeenCalledTimes(2);
-
-      // Simulate the worker succeeding: row moves to `ready` (or anywhere out
-      // of `downloading`).
-      db.prepare(`UPDATE requests SET status = 'ready' WHERE request_id = ?`).run('req_recovers');
-
-      // Next cycle clears the counter (request no longer stuck).
       await checkStuckDownloads();
 
-      // Row goes back to `downloading` (manual retry, watchdog can't tell).
-      // The escalation grace window should reset: 3 fresh re-enqueues, no escalation.
-      db.prepare(`UPDATE requests SET status = 'downloading' WHERE request_id = ?`).run('req_recovers');
-      addJobMock.mockClear();
-      notifyMock.mockClear();
-
-      for (let i = 0; i < 3; i++) await checkStuckDownloads();
-      expect(addJobMock).toHaveBeenCalledTimes(3);
-      for (const call of notifyMock.mock.calls) {
-        expect(call[0]).toMatchObject({ action: 're-enqueued' });
-      }
+      expect(notifyMock).not.toHaveBeenCalled();
+      const row = db.prepare('SELECT status FROM requests WHERE request_id = ?').get('req_raced') as { status: string };
+      expect(row.status).toBe('ready');
     });
   });
 });
