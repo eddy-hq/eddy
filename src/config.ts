@@ -115,6 +115,24 @@ const schema = z.object({
   // this is the dominant volume cut on the people path (#185). 0 disables the
   // gate (refetch every pass, pre-#185 behaviour).
   PERSON_CHANNEL_INFO_TTL_DAYS: z.coerce.number().int().nonnegative().default(30),
+  // ── Discovery metadata source (#189) ─────────────────────────────────────
+  // Where discovery reads its metadata from. 'ytdlp' (default) scrapes via
+  // yt-dlp on the M4; 'api' uses the YouTube Data API v3 (a plain API key,
+  // public read-only data, no OAuth) to cut the ~450 hits/day that trip
+  // YouTube's IP-wide bot-detection. Downloads stay on yt-dlp either way.
+  // See docs/adr (#194).
+  DISCOVERY_SOURCE: z.enum(['ytdlp', 'api']).default('ytdlp'),
+  // API key for DISCOVERY_SOURCE=api. Required only when that source is
+  // selected (enforced by the superRefine below).
+  YOUTUBE_API_KEY: z.string().optional(),
+}).superRefine((env, ctx) => {
+  if (env.DISCOVERY_SOURCE === 'api' && !env.YOUTUBE_API_KEY) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['YOUTUBE_API_KEY'],
+      message: 'YOUTUBE_API_KEY is required when DISCOVERY_SOURCE=api',
+    });
+  }
 });
 
 const result = schema.safeParse(process.env);

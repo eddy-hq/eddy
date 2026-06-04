@@ -9,8 +9,8 @@ import {
   flatPlaylistChannel,
   type SearchVideoWithDate,
   type PlaylistEntry,
-  type YtdlpError,
-} from '../../ytdlp';
+} from '../../discovery-metadata';
+import { type YtdlpError } from '../../ytdlp';
 import { botDetectionCooldownMs, engageBotDetectionCooldown } from '../../botdetect';
 import { getDeclaredChannelInterest } from '../interests';
 import { daysSince, uploadDateToIso, sleep, jitteredDelayMs } from './util';
