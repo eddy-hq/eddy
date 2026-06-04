@@ -1,7 +1,7 @@
 import { db } from '../../db/client';
 import { config } from '../../config';
 import { logger } from '../../logger';
-import { channelInfo } from '../../ytdlp';
+import { channelInfo } from '../../discovery-metadata';
 import { extractBio } from './util';
 
 const DAY_MS = 86_400_000;

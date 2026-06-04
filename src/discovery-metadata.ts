@@ -7,10 +7,8 @@
 // Downloads are NOT routed through here: the worker's authenticated download
 // path stays on yt-dlp by design (ADR — Eddy owns the video files).
 //
-// Staged rollout: only searchVideosWithDates is wired to the API in #190. The
-// other three delegate to yt-dlp until their slices land (#191 back-catalogue,
-// #192 channel info, #193 duration), at which point each gains the same
-// useApi() branch.
+// All four metadata reads now dispatch on DISCOVERY_SOURCE: searchVideosWithDates
+// (#190), flatPlaylistChannel (#191), channelInfo (#192), videoDuration (#193).
 import { config } from './config';
 import * as ytdlp from './ytdlp';
 import * as api from './youtubeapi';
@@ -25,17 +23,16 @@ export function searchVideosWithDates(query: string, limit?: number) {
     : ytdlp.searchVideosWithDates(query, limit);
 }
 
-// #191 — flip to `useApi() ? api.flatPlaylistChannel(...) : ...`
 export function flatPlaylistChannel(channelId: string) {
-  return ytdlp.flatPlaylistChannel(channelId);
+  return useApi()
+    ? api.flatPlaylistChannel(channelId)
+    : ytdlp.flatPlaylistChannel(channelId);
 }
 
-// #192
 export function channelInfo(channelId: string) {
-  return ytdlp.channelInfo(channelId);
+  return useApi() ? api.channelInfo(channelId) : ytdlp.channelInfo(channelId);
 }
 
-// #193
 export function videoDuration(videoId: string) {
-  return ytdlp.videoDuration(videoId);
+  return useApi() ? api.videoDuration(videoId) : ytdlp.videoDuration(videoId);
 }

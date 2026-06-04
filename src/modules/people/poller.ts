@@ -17,7 +17,7 @@ import { v7 as uuidv7 } from 'uuid';
 import { db } from '../../db/client';
 import { logger } from '../../logger';
 import { SHORTS_MAX_SECS } from '../content';
-import { videoDuration } from '../../ytdlp';
+import { videoDuration } from '../../discovery-metadata';
 import { applyChannelInfoToPerson } from './registry';
 import { getDeclaredChannelInterest } from '../interests';
 
@@ -73,14 +73,18 @@ export function parseYoutubeRss(xml: string): { channelName: string; videos: Rss
 
 // ── RSS poller ────────────────────────────────────────────────────────────────
 
-// YouTube RSS doesn't carry duration, so we probe with yt-dlp before
-// queueing. On failure we return null and let the caller proceed —
-// better to download the occasional short than to silently drop a
-// followed creator's video because metadata flaked.
+// YouTube RSS doesn't carry duration, so we probe (yt-dlp, or the Data API
+// under DISCOVERY_SOURCE=api) before queueing. A generic flake returns null and
+// the caller proceeds — better to download the occasional short than to
+// silently drop a followed creator's video because metadata wobbled. A Data API
+// quota exhaustion is NOT a flake, though: swallowing it as "unknown duration"
+// would disable Shorts filtering for the rest of the pass and flood the pool,
+// so it propagates for the caller to stand the poll down (#194).
 async function fetchVideoDuration(videoId: string): Promise<number | null> {
   try {
     return await videoDuration(videoId);
-  } catch {
+  } catch (err) {
+    if ((err as { quotaExceeded?: boolean }).quotaExceeded) throw err;
     return null;
   }
 }
@@ -139,14 +143,18 @@ export async function pollChannel(output: OutputRow): Promise<void> {
 
     if (alreadySeen) continue;
 
-    db.prepare(
-      'INSERT OR IGNORE INTO seen_videos (channel_id, video_id, seen_at) VALUES (?, ?, ?)'
-    ).run(output.channel_id, video.videoId, new Date().toISOString());
-
+    // Probe duration BEFORE marking the video seen. On a quota stand-down
+    // fetchVideoDuration throws and unwinds the pass; leaving the row unseen
+    // means the next pass retries it rather than recording it seen-but-never-
+    // queued. A normal flake returns null and we fall through as before.
     // Skip shorts before consuming the first-poll confirmation slot, so
     // a channel whose latest upload is a short still confirms with the
     // next non-short rather than queueing nothing.
     const duration = await fetchVideoDuration(video.videoId);
+
+    db.prepare(
+      'INSERT OR IGNORE INTO seen_videos (channel_id, video_id, seen_at) VALUES (?, ?, ?)'
+    ).run(output.channel_id, video.videoId, new Date().toISOString());
     if (duration !== null && duration <= SHORTS_MAX_SECS) {
       logger.info(
         { videoId: video.videoId, channelId: output.channel_id, duration },
@@ -234,9 +242,21 @@ export async function runRssPollPass(): Promise<void> {
   logger.info({ count: outputs.length }, 'RSS poll pass starting');
 
   for (const output of outputs) {
-    await pollChannel(output).catch((err: unknown) => {
+    try {
+      await pollChannel(output);
+    } catch (err) {
+      // Data API quota exhaustion (#194): the next channel's probes hit the
+      // same wall, so abort the whole pass rather than burn a failed call per
+      // remaining channel. No fallback to yt-dlp scraping, by design.
+      if ((err as { quotaExceeded?: boolean }).quotaExceeded) {
+        logger.warn(
+          { channelId: output.channel_id },
+          'RSS poll pass: YouTube Data API quota exhausted — aborting remaining channels',
+        );
+        break;
+      }
       logger.error({ err, channelId: output.channel_id }, 'RSS poll failed for channel');
-    });
+    }
   }
 
   logger.info({ count: outputs.length }, 'RSS poll pass complete');

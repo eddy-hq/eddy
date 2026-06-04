@@ -8,6 +8,7 @@
 // throw YoutubeApiError on failure; callers that want "treat failure as empty"
 // wrap with try/catch, exactly as with the yt-dlp adapter.
 import { config } from './config';
+import { logger } from './logger';
 import type { SearchVideoWithDate, PlaylistEntry, ChannelInfo } from './ytdlp';
 
 const API_BASE = 'https://www.googleapis.com/youtube/v3';
@@ -71,6 +72,55 @@ interface VideosListResponse {
   items?: VideoItem[];
 }
 
+// ── Quota accounting (#194) ────────────────────────────────────────────────
+// The Data API bills per call, not per result: search.list costs 100 units,
+// every other resource we touch costs 1. The free tier is 10k units/day,
+// resetting at midnight Pacific — but we only need a coarse local tally to warn
+// before exhaustion, so we reset on the UTC calendar day (no tz library) and
+// accept the few-hours skew. getQuotaUsage() exposes the running total for the
+// observability surface; the 80% line logs once per day, matching botdetect's
+// log-only stand-down (no ntfy).
+const QUOTA_DAILY_FREE_UNITS = 10_000;
+const QUOTA_WARN_FRACTION = 0.8;
+const quotaState = { day: '', units: 0, warned: false };
+
+function utcDay(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function unitCostFor(resource: string): number {
+  return resource === 'search' ? 100 : 1;
+}
+
+function recordQuota(resource: string): void {
+  const today = utcDay();
+  if (quotaState.day !== today) {
+    quotaState.day = today;
+    quotaState.units = 0;
+    quotaState.warned = false;
+  }
+  quotaState.units += unitCostFor(resource);
+  logger.debug(
+    { resource, units: quotaState.units, day: quotaState.day },
+    'youtube data api quota',
+  );
+  if (
+    !quotaState.warned &&
+    quotaState.units >= QUOTA_DAILY_FREE_UNITS * QUOTA_WARN_FRACTION
+  ) {
+    quotaState.warned = true;
+    logger.warn(
+      { units: quotaState.units, cap: QUOTA_DAILY_FREE_UNITS, day: quotaState.day },
+      'youtube data api quota past 80% of the daily free tier',
+    );
+  }
+}
+
+// Current day's estimated quota spend, for the observability surface (#194).
+export function getQuotaUsage(): { day: string; units: number } {
+  return { day: quotaState.day, units: quotaState.units };
+}
+
 // Single GET against the Data API. Appends the key, surfaces quota errors as a
 // flagged YoutubeApiError, and never logs the key (it stays in the URL object,
 // not in thrown messages).
@@ -97,6 +147,12 @@ async function apiGet<T>(resource: string, params: Record<string, string>): Prom
       { quotaExceeded },
     );
   }
+
+  // Count the call only once it's billed (response ok). Errors above either
+  // didn't reach quota (network) or already burned it server-side without
+  // returning data we can use; the quotaExceeded flag, not the tally, drives
+  // the stand-down.
+  recordQuota(resource);
 
   try {
     return (await response.json()) as T;
@@ -241,18 +297,93 @@ export async function searchVideosWithDates(
   return out;
 }
 
-// Placeholders for the remaining slices, so the dispatch seam can route all
-// four functions through one source. Filled in by #191 (back-catalogue via
-// playlistItems.list), #192 (channel info via channels.list), #193 (duration
-// via batched videos.list). Until then the seam delegates these to yt-dlp.
-export async function flatPlaylistChannel(_channelId: string): Promise<PlaylistEntry[]> {
-  throw new YoutubeApiError('flatPlaylistChannel via Data API not yet implemented (#191)');
+interface PlaylistItemsResponse {
+  nextPageToken?: string;
+  items?: Array<{ contentDetails?: { videoId?: string } }>;
 }
 
-export async function channelInfo(_channelId: string): Promise<ChannelInfo> {
-  throw new YoutubeApiError('channelInfo via Data API not yet implemented (#192)');
+interface ChannelsListResponse {
+  items?: Array<{
+    snippet?: { description?: string; thumbnails?: Record<string, { url?: string }> };
+  }>;
 }
 
-export async function videoDuration(_videoId: string): Promise<number> {
-  throw new YoutubeApiError('videoDuration via Data API not yet implemented (#193)');
+// A channel's uploads playlist id is its channel id with the "UC" prefix
+// swapped for "UU" — a documented YouTube invariant, so we derive it rather
+// than spend a channels.list call to read contentDetails.relatedPlaylists.
+// Non-UC ids (already a playlist, or a legacy form) pass through unchanged.
+function toUploadsPlaylistId(channelId: string): string {
+  return channelId.startsWith('UC') ? `UU${channelId.slice(2)}` : channelId;
+}
+
+// Back-catalogue listing (#191). yt-dlp's flatPlaylistChannel walks a channel's
+// uploads with --flat-playlist; here we page playlistItems.list (1 unit/page)
+// over the derived uploads playlist for the ids, then one batched
+// videos.list fills durations and live status. Paged to a ceiling so a
+// long-running channel can't run the tally away; the discovery seeder only
+// needs the recent head of the list.
+const MAX_PLAYLIST_PAGES = 4; // 4 × 50 = 200 most-recent uploads
+
+export async function flatPlaylistChannel(channelId: string): Promise<PlaylistEntry[]> {
+  const playlistId = toUploadsPlaylistId(channelId);
+  const ids: string[] = [];
+  let pageToken: string | undefined;
+  for (let page = 0; page < MAX_PLAYLIST_PAGES; page++) {
+    const params: Record<string, string> = {
+      part: 'contentDetails',
+      playlistId,
+      maxResults: '50',
+    };
+    if (pageToken) params.pageToken = pageToken;
+    const data = await apiGet<PlaylistItemsResponse>('playlistItems', params);
+    for (const item of data.items ?? []) {
+      const id = item.contentDetails?.videoId;
+      if (typeof id === 'string') ids.push(id);
+    }
+    if (!data.nextPageToken) break;
+    pageToken = data.nextPageToken;
+  }
+  if (ids.length === 0) return [];
+
+  const meta = await fetchVideoMetadata(ids);
+  const out: PlaylistEntry[] = [];
+  for (const id of ids) {
+    const m = meta.get(id);
+    if (!m) continue; // private / removed since the playlist page was fetched
+    out.push({
+      videoId: m.videoId,
+      title: m.title,
+      durationSecs: m.durationSecs,
+      liveStatus: m.liveStatus,
+    });
+  }
+  return out;
+}
+
+// Channel bio + avatar (#192). One channels.list call (1 unit). Mirrors
+// yt-dlp's channelInfo contract: blank/whitespace description collapses to
+// null, avatar is the largest thumbnail.
+export async function channelInfo(channelId: string): Promise<ChannelInfo> {
+  const data = await apiGet<ChannelsListResponse>('channels', {
+    part: 'snippet',
+    id: channelId,
+  });
+  const item = data.items?.[0];
+  if (!item) throw new YoutubeApiError(`channelInfo: no channel for ${channelId}`);
+  const sn = item.snippet ?? {};
+  const description =
+    typeof sn.description === 'string' && sn.description.trim() ? sn.description : null;
+  return { description, avatarUrl: pickThumbnail(sn.thumbnails) };
+}
+
+// Single-video duration (#193). Reuses the batched videos.list path (1 unit).
+// Throws on a missing or non-positive duration, matching yt-dlp's videoDuration
+// reject-≤0 stance — the caller (poller) treats the throw as "unknown".
+export async function videoDuration(videoId: string): Promise<number> {
+  const meta = await fetchVideoMetadata([videoId]);
+  const d = meta.get(videoId)?.durationSecs;
+  if (d == null || d <= 0) {
+    throw new YoutubeApiError(`videoDuration: no usable duration for ${videoId}`);
+  }
+  return d;
 }

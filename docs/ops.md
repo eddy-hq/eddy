@@ -153,7 +153,7 @@ No worker restart needed — yt-dlp is shelled out per job, so the next download
 
 **PO-token stack** (clears bot-detection without cookies, on the worker): the `bgutil-ytdlp-pot-provider` pip plugin + the `bgutil-pot-server.service` Node server on `127.0.0.1:4416`. Plugin and server must stay version-matched (both 1.3.1 as of 2026-05-31). The worker passes `--extractor-args youtube:player_client=mweb` + the POT plugin via `baseArgs()` in `src/modules/content/download.ts`; the M4 **search** path (`src/ytdlp.ts`) is deliberately anonymous and gets none of this.
 
-**M4** runs yt-dlp for anonymous metadata *search* only — it does **not** download. Pinned to nightly on 2026-05-31 to match the worker, via a standalone universal build at `~/.local/bin/yt-dlp` (Homebrew's build blocks self-update, so brew can't follow nightly). `config.YTDLP_BIN_M4` points there explicitly because launchd's PATH wouldn't include `~/.local/bin`. To upgrade:
+**M4** runs yt-dlp for anonymous metadata *search* only — it does **not** download. (When `DISCOVERY_SOURCE=api`, metadata comes from the YouTube Data API instead and the M4's yt-dlp goes idle except as the fallback — see *Discovery metadata source* below.) Pinned to nightly on 2026-05-31 to match the worker, via a standalone universal build at `~/.local/bin/yt-dlp` (Homebrew's build blocks self-update, so brew can't follow nightly). `config.YTDLP_BIN_M4` points there explicitly because launchd's PATH wouldn't include `~/.local/bin`. To upgrade:
 
 ```bash
 ~/.local/bin/yt-dlp --update-to nightly
@@ -179,6 +179,17 @@ Fail-open by design: a Redis outage reports "no cooldown" rather than wedging do
 **Orphaned-`downloading` fix (issue #183):** the worker now owns the terminal transition on attempt-exhaustion. When a download spends its full BullMQ retry budget on a non-terminal error, the worker posts `/internal/requests/:id/failed` (→ `mark_failed`) so the row leaves `downloading` immediately, instead of orphaning there until the watchdog escalation maybe rescues it. With the cooldown above, bot-detection retries *park* rather than exhaust, so this fires for genuinely failing downloads; either way the row no longer hangs.
 
 **Restart-proof watchdog escalation (issue #184):** the in-server download watchdog (`src/modules/watchdog/index.ts`, 5-min cycle) used to give up on a stuck `downloading` row only after re-enqueueing it a fixed number of times, counted in an **in-memory `Map`**. The M4 server runs as `tsx watch` under launchd and restarts often; every restart wiped the counter, so the give-up window never completed and stuck rows re-enqueued **every 5 min forever** — exactly the pressure-on-a-blocked-IP failure the note above warns about. The watchdog now escalates on **elapsed time** instead: a stuck row past `ESCALATION_AGE_MS` (15 min, measured from its stored `requested_at`) is marked `failed` rather than re-enqueued, a verdict that's identical no matter how many times the process bounced. Rows whose BullMQ job is still healthy-pending (`active`/`waiting`/`delayed`/…) are skipped regardless of age, so a worker outage never escalates a queued job.
+
+### Discovery metadata source (#189, ADR-0011)
+
+Discovery's **metadata** reads (search, channel uploads, durations, channel bio/avatar) can come from yt-dlp scraping or the **YouTube Data API v3** — the structural fix for the volume problem the throttling above only mitigates, since the API takes that traffic off the residential IP entirely. **Downloads always stay on yt-dlp.** Selected by one `.env` knob:
+
+- **`DISCOVERY_SOURCE`** (`ytdlp` default | `api`) — where the four metadata functions read from. The seam is `src/discovery-metadata.ts`; every discovery call site imports from there, so the flip is config-only and reversible per-deploy. Flipping it needs `npm run deploy -- --server`.
+- **`YOUTUBE_API_KEY`** — required when `DISCOVERY_SOURCE=api` (zod `superRefine` fails startup otherwise). A plain Google Cloud API key with the *YouTube Data API v3* enabled — read-only public data, **no OAuth, no billing account**. It is a secret: `.env` only, never committed, name-only in `.env.example`.
+
+**Quota:** the free tier is **10,000 units/day**, resetting midnight Pacific. `search.list` costs **100 units**; every other call (`videos.list`, `playlistItems.list`, `channels.list`) costs **1**. Current fleet use is ~3.9k/day, dominated by interest-search. `youtubeapi.ts` keeps a coarse local tally (reset on the UTC day) and logs a one-shot `warn` at 80%; `getQuotaUsage()` exposes the running total.
+
+**On exhaustion, discovery skips and warns — no fallback to yt-dlp scraping** (by design; falling back reintroduces the IP load this removes). A `quotaExceeded` error breaks out of the interest-search and back-catalogue loops for the rest of that run, log-only (no ntfy), mirroring the bot-detection stand-down. If you see the 80%/exhaustion warnings routinely, the fleet has outgrown the free tier — raise the quota in Google Cloud or trim search depth (`DISCOVERY_SEARCH_LIMIT`), don't paper over it.
 
 ---
 

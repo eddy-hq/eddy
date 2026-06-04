@@ -601,6 +601,30 @@ describe('pollChannel failure modes', () => {
     expect(meta).toMatchObject({ channelId: CHANNEL_ID });
   });
 
+  it('Data API quota exhaustion → pass aborts before marking seen, so the row is retried (no Shorts leak)', async () => {
+    insertFollower(USER_ID_A);
+    // Steady state so the probe runs on the first unseen video.
+    insertSeenVideo('priorvid001');
+    const xml = rssXml({ entries: [{ videoId: 'quotavid001', title: 'Probed under quota exhaustion' }] });
+    mockFetchOk(xml);
+    vi.mocked(videoDuration).mockRejectedValue(
+      Object.assign(new Error('quotaExceeded'), { quotaExceeded: true }),
+    );
+
+    // Propagates rather than failing open — the caller (runRssPollPass) stands
+    // the pass down on this.
+    await expect(pollChannel(OUTPUT)).rejects.toMatchObject({ quotaExceeded: true });
+
+    // No candidate enqueued, and the video stays UNSEEN so the next pass retries
+    // it once quota resets — the regression this guards against was treating the
+    // exhaustion as "unknown duration" and queueing the item (Shorts included).
+    expect(subscriptionCandidates(USER_ID_A)).toHaveLength(0);
+    const seen = db
+      .prepare('SELECT video_id FROM seen_videos WHERE channel_id = ? AND video_id = ?')
+      .get(CHANNEL_ID, 'quotavid001');
+    expect(seen).toBeUndefined();
+  });
+
   it('applyChannelInfoToPerson rejecting does not bubble (fire-and-forget bio/photo refresh)', async () => {
     insertFollower(USER_ID_A);
     vi.mocked(applyChannelInfoToPerson).mockRejectedValueOnce(new Error('yt-dlp flaked'));
