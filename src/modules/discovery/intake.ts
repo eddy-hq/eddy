@@ -157,7 +157,17 @@ export async function refreshCandidatePool(
     try {
       results = await searchVideosWithDates(term, searchLimit);
     } catch (err) {
-      logger.warn({ err, searchTerm: term }, 'Discovery: yt-dlp search failed');
+      logger.warn({ err, searchTerm: term }, 'Discovery: interest search failed');
+      // Data API quota exhaustion (#194): the rest of today's searches will hit
+      // the same wall, so stop here. No fallback to yt-dlp scraping by design —
+      // the whole point is to keep the request footprint off the residential IP.
+      if ((err as { quotaExceeded?: boolean }).quotaExceeded) {
+        logger.warn(
+          { userId },
+          'Discovery: YouTube Data API quota exhausted — skipping remaining interest searches',
+        );
+        break;
+      }
       // A bot-detection block won't clear by trying the next term — arm the
       // cooldown and abandon the rest of this run's searches (#185).
       if ((err as YtdlpError).botDetection) {
@@ -293,6 +303,13 @@ export async function seedBackCatalogCandidates(userId: string): Promise<number>
       playlist = await flatPlaylistChannel(output.channel_id);
     } catch (err) {
       logger.warn({ err, channelId: output.channel_id }, 'Back-catalog: flat-playlist fetch failed');
+      if ((err as { quotaExceeded?: boolean }).quotaExceeded) {
+        logger.warn(
+          { userId },
+          'Discovery: YouTube Data API quota exhausted — aborting back-catalogue seed',
+        );
+        break;
+      }
       if ((err as YtdlpError).botDetection) {
         await engageBotDetectionCooldown(redis, config.YTDLP_BOTDETECT_COOLDOWN_SECS, 'backcatalog');
         logger.warn({ userId }, 'Discovery: bot-detection during back-catalogue seed — cooldown engaged, aborting');

@@ -17,7 +17,7 @@ import { v7 as uuidv7 } from 'uuid';
 import { db } from '../../db/client';
 import { logger } from '../../logger';
 import { SHORTS_MAX_SECS } from '../content';
-import { videoDuration } from '../../ytdlp';
+import { videoDuration } from '../../discovery-metadata';
 import { applyChannelInfoToPerson } from './registry';
 import { getDeclaredChannelInterest } from '../interests';
 
