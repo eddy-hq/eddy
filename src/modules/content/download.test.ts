@@ -11,7 +11,7 @@ vi.mock('../../logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 
-import { cleanStaleIntermediates, makeUnifiedProgressParser, mapYtdlpError, attemptsExhausted } from './download';
+import { cleanStaleIntermediates, makeUnifiedProgressParser, mapYtdlpError, attemptsExhausted, extractPublishedAt } from './download';
 
 function feedAll(lines: string[]): number[] {
   const emitted: number[] = [];
@@ -208,5 +208,33 @@ describe('attemptsExhausted (#183)', () => {
   it('defaults a missing attempts option to 1 (single-shot job)', () => {
     expect(attemptsExhausted(1, undefined)).toBe(true);
     expect(attemptsExhausted(0, undefined)).toBe(false);
+  });
+});
+
+describe('extractPublishedAt', () => {
+  it('converts yt-dlp upload_date (YYYYMMDD) to an ISO timestamp', () => {
+    expect(extractPublishedAt({ upload_date: '20220315' })).toBe('2022-03-15T00:00:00.000Z');
+  });
+
+  it('returns null when upload_date is absent', () => {
+    expect(extractPublishedAt({ id: 'abc', title: 'No date here' })).toBeNull();
+  });
+
+  it('returns null for a malformed (non-8-char) upload_date', () => {
+    expect(extractPublishedAt({ upload_date: '2022-03-15' })).toBeNull();
+    expect(extractPublishedAt({ upload_date: '' })).toBeNull();
+  });
+
+  it('returns null for an eight-char value that is not a real date', () => {
+    // Non-numeric, and out-of-range month/day that Date would silently roll
+    // over — these must not persist a bad published_at (renders an empty pill).
+    expect(extractPublishedAt({ upload_date: 'abcdefgh' })).toBeNull();
+    expect(extractPublishedAt({ upload_date: '20261340' })).toBeNull();
+    expect(extractPublishedAt({ upload_date: '20260230' })).toBeNull();
+  });
+
+  it('returns null when upload_date is not a string', () => {
+    expect(extractPublishedAt({ upload_date: 20220315 })).toBeNull();
+    expect(extractPublishedAt({ upload_date: null })).toBeNull();
   });
 });

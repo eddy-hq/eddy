@@ -683,6 +683,7 @@ describe('mark_downloaded', () => {
     filePath: '/videos/abc123.mp4',
     nginxUrl: 'https://m4.local/videos/abc123.mp4',
     thumbnailUrl: 'https://m4.local/videos/abc123.jpg',
+    publishedAt: '2022-03-15T00:00:00.000Z',
     fileSizeBytes: 123_456_789,
   };
 
@@ -696,14 +697,15 @@ describe('mark_downloaded', () => {
     const row = db
       .prepare(
         `SELECT status, title, channel, youtube_channel_id, description, duration_secs, transcript,
-                file_path, nginx_url, thumbnail_url, file_size_bytes, downloaded_at
+                file_path, nginx_url, thumbnail_url, published_at, file_size_bytes, downloaded_at
          FROM requests WHERE request_id = ?`,
       )
       .get('req-dl1') as {
         status: string; title: string; channel: string; youtube_channel_id: string;
         description: string;
         duration_secs: number; transcript: string; file_path: string;
-        nginx_url: string; thumbnail_url: string; file_size_bytes: number;
+        nginx_url: string; thumbnail_url: string; published_at: string | null;
+        file_size_bytes: number;
         downloaded_at: string;
       };
     expect(row.status).toBe('ready');
@@ -716,6 +718,7 @@ describe('mark_downloaded', () => {
     expect(row.file_path).toBe(FIELDS.filePath);
     expect(row.nginx_url).toBe(FIELDS.nginxUrl);
     expect(row.thumbnail_url).toBe(FIELDS.thumbnailUrl);
+    expect(row.published_at).toBe(FIELDS.publishedAt);
     expect(row.file_size_bytes).toBe(FIELDS.fileSizeBytes);
     expect(new Date(row.downloaded_at).getTime()).toBeGreaterThanOrEqual(before);
 
@@ -733,6 +736,19 @@ describe('mark_downloaded', () => {
       .prepare('SELECT file_size_bytes FROM requests WHERE request_id = ?')
       .get('req-dl1b') as { file_size_bytes: number | null };
     expect(row.file_size_bytes).toBeNull();
+  });
+
+  it('writes null published_at when yt-dlp could not date the video', () => {
+    insertRequest({ request_id: 'req-dl1c', status: 'downloading' });
+    const fieldsNoDate: DownloadedFields = { ...FIELDS, publishedAt: null };
+
+    const { result } = state.apply({ kind: 'mark_downloaded', requestId: 'req-dl1c', fields: fieldsNoDate });
+
+    expect(result).toEqual({ transitioned: true, userId: USER_ID });
+    const row = db
+      .prepare('SELECT published_at FROM requests WHERE request_id = ?')
+      .get('req-dl1c') as { published_at: string | null };
+    expect(row.published_at).toBeNull();
   });
 
   it('is a no-op on an already-rejected row and does not fire the notification', () => {
@@ -1413,6 +1429,7 @@ const PROP_DOWNLOADED_FIELDS: DownloadedFields = {
   filePath: PROP_FILE_PATH,
   nginxUrl: null,
   thumbnailUrl: null,
+  publishedAt: null,
   fileSizeBytes: 42,
 };
 

@@ -125,6 +125,10 @@ export interface DownloadedFields {
   filePath: string;
   nginxUrl: string | null;
   thumbnailUrl: string | null;
+  // Video's own publish date (ISO 8601) from yt-dlp's `upload_date`. Nullable:
+  // yt-dlp may omit it, and pre-#186 rows stay null and show the requested_at
+  // fallback in the UI.
+  publishedAt: string | null;
   // Bytes on disk at download completion — feeds the per-user recycler budget
   // (issue #113). Nullable because pre-#114 rows that never get backfilled
   // (e.g. file already gone) will stay null; the recycler treats null as
@@ -397,6 +401,7 @@ export const TRANSITIONS = {
                   file_path          = ?,
                   nginx_url          = ?,
                   thumbnail_url      = ?,
+                  published_at       = ?,
                   file_size_bytes    = ?,
                   downloaded_at      = ?
             WHERE request_id = ? AND status IN ('downloading')
@@ -411,6 +416,7 @@ export const TRANSITIONS = {
         event.fields.filePath,
         event.fields.nginxUrl,
         event.fields.thumbnailUrl,
+        event.fields.publishedAt,
         event.fields.fileSizeBytes,
         now,
         event.requestId,
