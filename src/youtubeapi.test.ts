@@ -5,6 +5,12 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 const mockConfig = vi.hoisted(() => ({ YOUTUBE_API_KEY: 'test-key' as string | undefined }));
 vi.mock('./config', () => ({ config: mockConfig }));
 
+// Stub the logger so the quota-threshold test can assert the 80% warn fires.
+vi.mock('./logger', () => ({
+  logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+}));
+import { logger } from './logger';
+
 import {
   parseIso8601Duration,
   searchVideosWithDates,
@@ -384,5 +390,30 @@ describe('quota accounting', () => {
     const before = getQuotaUsage().units;
     await videoDuration('v').catch(() => undefined);
     expect(getQuotaUsage().units).toBe(before);
+  });
+
+  it('warns exactly once when the day crosses 80% of the free tier', async () => {
+    // search.list (100) + videos.list (1) = 101 units/call; loop past the
+    // 8,000-unit (80% of 10k) line, then keep going to prove the warn is
+    // one-shot per day, not per-call. No ntfy by design (ADR-0011).
+    fetchMock.mockImplementation((url: URL) => {
+      const path = url.toString();
+      if (path.includes('/youtube/v3/search')) {
+        return Promise.resolve(fetchResult({ items: [{ id: { videoId: 'a' } }] }));
+      }
+      return Promise.resolve(
+        fetchResult({ items: [{ id: 'a', snippet: { title: 'A' }, contentDetails: { duration: 'PT1M' } }] }),
+      );
+    });
+    vi.mocked(logger.warn).mockClear();
+    while (getQuotaUsage().units < 8_000) await searchVideosWithDates('x');
+    await searchVideosWithDates('x'); // still over the line — must not re-warn
+    await searchVideosWithDates('x');
+
+    const thresholdWarns = vi
+      .mocked(logger.warn)
+      .mock.calls.filter((c) => typeof c[1] === 'string' && c[1].includes('80%'));
+    expect(thresholdWarns).toHaveLength(1);
+    expect(getQuotaUsage().units).toBeLessThan(10_000); // warned before the ceiling
   });
 });

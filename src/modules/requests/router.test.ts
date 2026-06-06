@@ -737,10 +737,24 @@ describe('GET /requests/feed', () => {
   });
 
   it('(c) 30+d history: tier4Weeks is populated, with topChannels by count and summary null', async () => {
-    // Age 40 falls in one ISO week. Three rows: Channel X twice, Channel Y once.
-    insertRequestRow({ request_id: 't4-a', status: 'ready', source: 'channel_subscription', channel: 'Channel X', added_at: isoAt(40, 9) });
-    insertRequestRow({ request_id: 't4-b', status: 'ready', source: 'channel_subscription', channel: 'Channel Y', added_at: isoAt(40, 11) });
-    insertRequestRow({ request_id: 't4-c', status: 'ready', source: 'channel_subscription', channel: 'Channel X', added_at: isoAt(41, 9) });
+    // Two adjacent days inside one ISO week, both ≥30d old, so the three rows
+    // aggregate into a single Tier-4 week (Channel X twice, Channel Y once).
+    // Computed from a Monday well past the 30-day line rather than from fixed
+    // ages — fixed ages 40/41 straddle the Sun/Mon ISO-week boundary on some
+    // calendar days, which flaked this test (mirrors (d)'s mondayOf approach).
+    function mondayOf(d: Date): Date {
+      const ms = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+      const monday = ms - (((new Date(ms).getUTCDay() + 6) % 7) * 86_400_000);
+      return new Date(monday);
+    }
+    const probe = new Date();
+    probe.setUTCDate(probe.getUTCDate() - 45); // ≥30d even at the week's Sunday end
+    const monday = mondayOf(probe);
+    const dayA = new Date(monday.getTime() + 86_400_000); dayA.setUTCHours(9); // Tue
+    const dayB = new Date(monday.getTime() + 2 * 86_400_000); dayB.setUTCHours(9); // Wed
+    insertRequestRow({ request_id: 't4-a', status: 'ready', source: 'channel_subscription', channel: 'Channel X', added_at: dayA.toISOString() });
+    insertRequestRow({ request_id: 't4-b', status: 'ready', source: 'channel_subscription', channel: 'Channel Y', added_at: dayA.toISOString() });
+    insertRequestRow({ request_id: 't4-c', status: 'ready', source: 'channel_subscription', channel: 'Channel X', added_at: dayB.toISOString() });
 
     const resp = await request('GET', '/requests/feed?user=Boy1');
     expect(resp.status).toBe(200);
