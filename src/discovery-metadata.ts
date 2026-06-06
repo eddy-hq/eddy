@@ -8,7 +8,8 @@
 // path stays on yt-dlp by design (ADR — Eddy owns the video files).
 //
 // All four metadata reads now dispatch on DISCOVERY_SOURCE: searchVideosWithDates
-// (#190), flatPlaylistChannel (#191), channelInfo (#192), videoDuration (#193).
+// (#190), flatPlaylistChannel (#191), channelInfo (#192), videoDurations (#193,
+// batched).
 import { config } from './config';
 import * as ytdlp from './ytdlp';
 import * as api from './youtubeapi';
@@ -33,6 +34,9 @@ export function channelInfo(channelId: string) {
   return useApi() ? api.channelInfo(channelId) : ytdlp.channelInfo(channelId);
 }
 
-export function videoDuration(videoId: string) {
-  return useApi() ? api.videoDuration(videoId) : ytdlp.videoDuration(videoId);
+// Batched (#193): resolve many ids in one Data API call, or loop the per-video
+// yt-dlp probe under the fallback. Returns a map of id → positive seconds; a
+// missing id means "no usable duration", which the caller treats as unknown.
+export function videoDurations(ids: string[]) {
+  return useApi() ? api.videoDurations(ids) : ytdlp.videoDurations(ids);
 }

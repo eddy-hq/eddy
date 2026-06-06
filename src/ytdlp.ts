@@ -314,3 +314,23 @@ export async function videoDuration(videoId: string): Promise<number> {
   }
   return n;
 }
+
+// Batched-shaped duration resolver mirroring youtubeapi.videoDurations, so the
+// dispatch seam (#193) has one contract for both sources. yt-dlp can't batch —
+// it probes per video — so this loops videoDuration, isolating each id: a probe
+// that throws (flake, bot-detection, unusable output) drops that id from the
+// map rather than poisoning the rest, exactly as the per-video probe behaved
+// before. Sequential, not Promise.all, to keep the request rate the throttling
+// work (#185) tuned for.
+export async function videoDurations(ids: string[]): Promise<Map<string, number>> {
+  const out = new Map<string, number>();
+  for (const id of ids) {
+    try {
+      out.set(id, await videoDuration(id));
+    } catch {
+      // Unusable / flake → no information for this id; omit it. The poller
+      // treats a miss as "unknown duration, proceed" (shorts filter can't fire).
+    }
+  }
+  return out;
+}

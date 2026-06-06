@@ -387,3 +387,21 @@ export async function videoDuration(videoId: string): Promise<number> {
   }
   return d;
 }
+
+// Batched duration resolver (#193). The RSS poller resolves a whole pass's new
+// ids in one call rather than probing per video: fetchVideoMetadata batches 50
+// ids/request at 1 unit each. Returns a map of id → positive seconds; ids the
+// API omits (private / removed) or with a non-positive duration are simply
+// absent — the same reject-≤0 stance videoDuration throws on, surfaced as "no
+// information" rather than an error, which is the contract the poller's call
+// site wants. Quota exhaustion still propagates from apiGet so the caller can
+// stand the pass down (#194).
+export async function videoDurations(ids: string[]): Promise<Map<string, number>> {
+  const out = new Map<string, number>();
+  if (ids.length === 0) return out;
+  const meta = await fetchVideoMetadata(ids);
+  for (const [id, m] of meta) {
+    if (m.durationSecs != null && m.durationSecs > 0) out.set(id, m.durationSecs);
+  }
+  return out;
+}

@@ -17,7 +17,7 @@ import { v7 as uuidv7 } from 'uuid';
 import { db } from '../../db/client';
 import { logger } from '../../logger';
 import { SHORTS_MAX_SECS } from '../content';
-import { videoDuration } from '../../discovery-metadata';
+import { videoDurations } from '../../discovery-metadata';
 import { applyChannelInfoToPerson } from './registry';
 import { getDeclaredChannelInterest } from '../interests';
 
@@ -73,19 +73,23 @@ export function parseYoutubeRss(xml: string): { channelName: string; videos: Rss
 
 // ── RSS poller ────────────────────────────────────────────────────────────────
 
-// YouTube RSS doesn't carry duration, so we probe (yt-dlp, or the Data API
-// under DISCOVERY_SOURCE=api) before queueing. A generic flake returns null and
-// the caller proceeds — better to download the occasional short than to
-// silently drop a followed creator's video because metadata wobbled. A Data API
-// quota exhaustion is NOT a flake, though: swallowing it as "unknown duration"
-// would disable Shorts filtering for the rest of the pass and flood the pool,
-// so it propagates for the caller to stand the poll down (#194).
-async function fetchVideoDuration(videoId: string): Promise<number | null> {
+// YouTube RSS doesn't carry duration, so we resolve it before queueing. Under
+// the Data API the whole pass's new ids go in one batched videos.list (#193);
+// yt-dlp still probes per video behind the same call. An id missing from the
+// map is unknown duration and the caller proceeds — better to download the
+// occasional short than to silently drop a followed creator's video because
+// metadata wobbled. A Data API quota exhaustion is NOT a flake, though:
+// swallowing it would disable Shorts filtering for the rest of the pass and
+// flood the pool, so it propagates for the caller to stand the poll down (#194);
+// a generic flake yields an empty map and every new video proceeds as unknown.
+async function fetchDurations(ids: string[]): Promise<Map<string, number>> {
+  if (ids.length === 0) return new Map();
   try {
-    return await videoDuration(videoId);
+    return await videoDurations(ids);
   } catch (err) {
     if ((err as { quotaExceeded?: boolean }).quotaExceeded) throw err;
-    return null;
+    logger.debug({ err }, 'Batched duration probe failed — proceeding unknown');
+    return new Map();
   }
 }
 
@@ -134,23 +138,31 @@ export async function pollChannel(output: OutputRow): Promise<void> {
   ).get(output.channel_id);
   const isFirstPoll = !hasAnySeenVideos;
 
+  // Collect this channel's new uploads (RSS order) before any duration probe or
+  // seen-marking, so the batch resolves in a single videos.list (#193) and a
+  // quota stand-down leaves every one of them unseen to retry next pass — the
+  // filter only reads seen_videos, it doesn't write.
+  const unseen = videos.filter(
+    (video) =>
+      !db
+        .prepare('SELECT 1 FROM seen_videos WHERE channel_id = ? AND video_id = ?')
+        .get(output.channel_id, video.videoId),
+  );
+
+  // Resolve all the new durations up front. Throws (and unwinds the pass) only
+  // on a quota stand-down; otherwise returns a map with a positive duration for
+  // every id it could resolve, the rest absent.
+  const durations = await fetchDurations(unseen.map((video) => video.videoId));
+
   let firstUnseen = true;
 
-  for (const video of videos) {
-    const alreadySeen = db.prepare(
-      'SELECT 1 FROM seen_videos WHERE channel_id = ? AND video_id = ?'
-    ).get(output.channel_id, video.videoId);
-
-    if (alreadySeen) continue;
-
-    // Probe duration BEFORE marking the video seen. On a quota stand-down
-    // fetchVideoDuration throws and unwinds the pass; leaving the row unseen
-    // means the next pass retries it rather than recording it seen-but-never-
-    // queued. A normal flake returns null and we fall through as before.
-    // Skip shorts before consuming the first-poll confirmation slot, so
-    // a channel whose latest upload is a short still confirms with the
-    // next non-short rather than queueing nothing.
-    const duration = await fetchVideoDuration(video.videoId);
+  for (const video of unseen) {
+    // A map miss = unusable/unknown duration; treat as no-information and fall
+    // through (shorts filter can't fire), exactly as the per-video null did.
+    // Skip shorts before consuming the first-poll confirmation slot, so a
+    // channel whose latest upload is a short still confirms with the next
+    // non-short rather than queueing nothing.
+    const duration = durations.get(video.videoId) ?? null;
 
     db.prepare(
       'INSERT OR IGNORE INTO seen_videos (channel_id, video_id, seen_at) VALUES (?, ?, ?)'

@@ -19,8 +19,15 @@ vi.mock('../../logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 
+// The poller imports the batched `videoDurations` from the discovery-metadata
+// seam, which (config has no DISCOVERY_SOURCE → not 'api') dispatches to the
+// real `ytdlp.videoDurations`. We mock the whole ytdlp module, so the seam
+// reaches these fakes. `videoDurations` is given a loop-over-`videoDuration`
+// implementation in beforeEach so the existing per-id mocks keep driving it;
+// the quota test overrides it to reject at the batch level.
 vi.mock('../../ytdlp', () => ({
   videoDuration: vi.fn(),
+  videoDurations: vi.fn(),
 }));
 
 vi.mock('./registry', () => ({
@@ -31,7 +38,7 @@ vi.mock('./registry', () => ({
 import { db } from '../../db/client';
 import { logger } from '../../logger';
 import { runMigrations } from '../../db/migrate';
-import { videoDuration } from '../../ytdlp';
+import { videoDuration, videoDurations } from '../../ytdlp';
 import { applyChannelInfoToPerson } from './registry';
 import { pollChannel, parseYoutubeRss, type OutputRow } from './poller';
 
@@ -170,6 +177,21 @@ beforeEach(() => {
   insertPersonOutput();
 
   vi.mocked(videoDuration).mockReset();
+  // Mirror the real ytdlp.videoDurations: loop the per-id probe, dropping ids
+  // whose probe throws. Lets every test keep driving behaviour through the
+  // existing `videoDuration` mock; the quota test overrides this directly.
+  vi.mocked(videoDurations).mockReset();
+  vi.mocked(videoDurations).mockImplementation(async (ids: string[]) => {
+    const out = new Map<string, number>();
+    for (const id of ids) {
+      try {
+        out.set(id, await vi.mocked(videoDuration)(id));
+      } catch {
+        /* unusable / flake → unknown, omit */
+      }
+    }
+    return out;
+  });
   vi.mocked(applyChannelInfoToPerson).mockReset();
   vi.mocked(applyChannelInfoToPerson).mockResolvedValue(undefined);
   vi.mocked(logger.info).mockClear();
@@ -603,11 +625,14 @@ describe('pollChannel failure modes', () => {
 
   it('Data API quota exhaustion → pass aborts before marking seen, so the row is retried (no Shorts leak)', async () => {
     insertFollower(USER_ID_A);
-    // Steady state so the probe runs on the first unseen video.
+    // Steady state so the batch probe runs on the (one) unseen video.
     insertSeenVideo('priorvid001');
     const xml = rssXml({ entries: [{ videoId: 'quotavid001', title: 'Probed under quota exhaustion' }] });
     mockFetchOk(xml);
-    vi.mocked(videoDuration).mockRejectedValue(
+    // Quota is an API-path condition: the batched videos.list call itself
+    // rejects, unlike a per-id flake (which the resolver swallows to "unknown").
+    // So override the batched resolver, not the per-id probe.
+    vi.mocked(videoDurations).mockRejectedValue(
       Object.assign(new Error('quotaExceeded'), { quotaExceeded: true }),
     );
 

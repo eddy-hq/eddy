@@ -18,6 +18,7 @@ import {
   flatPlaylistChannel,
   channelInfo,
   videoDuration,
+  videoDurations,
   getQuotaUsage,
   YoutubeApiError,
 } from './youtubeapi';
@@ -364,6 +365,53 @@ describe('videoDuration', () => {
   it('throws when the video is absent from the response', async () => {
     fetchMock.mockResolvedValue(fetchResult({ items: [] }));
     await expect(videoDuration('v')).rejects.toBeInstanceOf(YoutubeApiError);
+  });
+});
+
+describe('videoDurations (batched)', () => {
+  it('maps each id to its positive duration in one call', async () => {
+    fetchMock.mockResolvedValue(
+      fetchResult({
+        items: [
+          { id: 'a', snippet: { title: 'A' }, contentDetails: { duration: 'PT1M' } },
+          { id: 'b', snippet: { title: 'B' }, contentDetails: { duration: 'PT2M30S' } },
+        ],
+      }),
+    );
+    const map = await videoDurations(['a', 'b']);
+    expect(fetchMock).toHaveBeenCalledTimes(1); // one batched videos.list
+    expect(map.get('a')).toBe(60);
+    expect(map.get('b')).toBe(150);
+    expect(map.size).toBe(2);
+  });
+
+  it('omits ids the API drops and ids with a non-positive duration', async () => {
+    // 'b' requested but absent (private/removed); 'c' present but P0D (live).
+    fetchMock.mockResolvedValue(
+      fetchResult({
+        items: [
+          { id: 'a', snippet: { title: 'A' }, contentDetails: { duration: 'PT45S' } },
+          { id: 'c', snippet: { title: 'C' }, contentDetails: { duration: 'P0D' } },
+        ],
+      }),
+    );
+    const map = await videoDurations(['a', 'b', 'c']);
+    expect(map.get('a')).toBe(45);
+    expect(map.has('b')).toBe(false);
+    expect(map.has('c')).toBe(false);
+  });
+
+  it('makes no call and returns an empty map for no ids', async () => {
+    const map = await videoDurations([]);
+    expect(map.size).toBe(0);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('propagates a quota-exceeded error rather than returning a partial map', async () => {
+    fetchMock.mockResolvedValue(
+      fetchResult('{"error":{"errors":[{"reason":"quotaExceeded"}]}}', { ok: false, status: 403 }),
+    );
+    await expect(videoDurations(['a'])).rejects.toMatchObject({ quotaExceeded: true });
   });
 });
 
