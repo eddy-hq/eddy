@@ -9,20 +9,22 @@
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { config } from './config';
-import { isBotDetectionError } from './botdetect';
+import { shouldEngageCooldown } from './botdetect';
 
 const execFileAsync = promisify(execFile);
 
 export class YtdlpError extends Error {
-  // Set when the failure carries YouTube's bot-detection signature (in the
-  // message or the underlying spawn error's stderr). Callers use it to engage
-  // the IP-wide cooldown (#185) and stop fanning out further searches.
+  // Set when the failure carries a throttle signal — YouTube's bot-detection
+  // challenge OR a 429 rate-limit (in the message or the underlying spawn
+  // error's stderr). Callers use it to engage the IP-wide cooldown (#185) and
+  // stop fanning out further searches. Named botDetection for history; it means
+  // "should stand down" (see shouldEngageCooldown).
   public readonly botDetection: boolean;
   constructor(message: string, public readonly cause?: unknown) {
     super(message);
     this.name = 'YtdlpError';
     const causeStderr = (cause as { stderr?: string } | undefined)?.stderr;
-    this.botDetection = isBotDetectionError(message) || isBotDetectionError(causeStderr);
+    this.botDetection = shouldEngageCooldown(message) || shouldEngageCooldown(causeStderr);
   }
 }
 

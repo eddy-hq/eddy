@@ -6,6 +6,8 @@ vi.mock('./logger', () => ({
 
 import {
   isBotDetectionError,
+  isRateLimitError,
+  shouldEngageCooldown,
   engageBotDetectionCooldown,
   botDetectionCooldownMs,
   BOT_DETECTION_COOLDOWN_KEY,
@@ -37,6 +39,43 @@ describe('isBotDetectionError', () => {
     expect(isBotDetectionError('')).toBe(false);
     expect(isBotDetectionError(null)).toBe(false);
     expect(isBotDetectionError(undefined)).toBe(false);
+  });
+});
+
+describe('isRateLimitError', () => {
+  it('matches yt-dlp 429 / Too Many Requests output', () => {
+    expect(isRateLimitError('ERROR: unable to download: HTTP Error 429: Too Many Requests')).toBe(true);
+    expect(isRateLimitError('HTTP Error 429')).toBe(true);
+    expect(isRateLimitError('YouTube said: rate-limited, try later')).toBe(true);
+    expect(isRateLimitError('rate limiting in effect')).toBe(true);
+  });
+
+  it('does not match the bot-detection wall or unrelated HTTP errors', () => {
+    // 429 is a soft throttle, not the "prove you're human" challenge — kept
+    // distinct so each predicate stays single-purpose.
+    expect(isRateLimitError("Sign in to confirm you're not a bot")).toBe(false);
+    // 416 (stale-resume) must NOT arm the cooldown — only 429 does.
+    expect(isRateLimitError('yt-dlp exited with code 1\nHTTP Error 416')).toBe(false);
+    expect(isRateLimitError('ERROR: Video unavailable')).toBe(false);
+  });
+
+  it('is false for empty / null / undefined', () => {
+    expect(isRateLimitError('')).toBe(false);
+    expect(isRateLimitError(null)).toBe(false);
+    expect(isRateLimitError(undefined)).toBe(false);
+  });
+});
+
+describe('shouldEngageCooldown', () => {
+  it('is true for either throttle signal', () => {
+    expect(shouldEngageCooldown("Sign in to confirm you're not a bot")).toBe(true);
+    expect(shouldEngageCooldown('HTTP Error 429: Too Many Requests')).toBe(true);
+  });
+
+  it('is false for unrelated terminal errors', () => {
+    expect(shouldEngageCooldown('ERROR: This video is private')).toBe(false);
+    expect(shouldEngageCooldown('HTTP Error 416')).toBe(false);
+    expect(shouldEngageCooldown(null)).toBe(false);
   });
 });
 

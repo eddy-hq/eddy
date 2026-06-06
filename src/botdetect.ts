@@ -38,6 +38,27 @@ export function isBotDetectionError(text: string | null | undefined): boolean {
   return BOT_DETECTION_RE.test(text);
 }
 
+// YouTube's "you're going too fast" signal. Distinct from the bot-detection
+// challenge above: a 429 is a soft rate-limit, not a "prove you're human" wall,
+// and yt-dlp surfaces it as "HTTP Error 429: Too Many Requests". It does NOT
+// match BOT_DETECTION_RE, so before this it sailed past the cooldown and the
+// BullMQ retry hammered straight back into the throttle. Treat it as the same
+// stand-down trigger. Narrow on purpose — only 429 / explicit rate-limit text,
+// never 416/4xx generally — so an unrelated HTTP error can't park the queue.
+const RATE_LIMIT_RE = /HTTP Error 429|Too Many Requests|rate[ -]?limit(?:ed|ing|s)?/i;
+
+export function isRateLimitError(text: string | null | undefined): boolean {
+  if (!text) return false;
+  return RATE_LIMIT_RE.test(text);
+}
+
+// Either signal — a bot-detection challenge or a 429 throttle — should arm the
+// IP-wide cooldown (#185). Single predicate so every caller treats both the
+// same way and a new throttle signature only needs adding here.
+export function shouldEngageCooldown(text: string | null | undefined): boolean {
+  return isBotDetectionError(text) || isRateLimitError(text);
+}
+
 // Arm (or re-arm) the cooldown for `cooldownSecs`. Idempotent — a second call
 // inside an active window just resets the TTL, which is exactly right when more
 // than one in-flight job trips the block at once. `cooldownSecs <= 0` disables

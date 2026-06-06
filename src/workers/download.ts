@@ -344,9 +344,13 @@ async function processThumbJob(job: Job<ThumbJobData>): Promise<void> {
 async function start(): Promise<void> {
   logger.info('Eddy download worker starting');
 
+  // Concurrency 1: serialise downloads so the worker never runs two extractions
+  // at once on the shared residential IP. Throughput isn't the constraint here
+  // (household does ~3–15/day) — politeness is, and bursting parallel extractor
+  // passes is exactly what trips the throttle. Was 2.
   const worker = new Worker<DownloadJobData>('downloads', processJob, {
     connection: redis,
-    concurrency: 2,
+    concurrency: 1,
   });
 
   worker.on('completed', (job) => {

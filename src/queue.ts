@@ -13,7 +13,7 @@ export const redis = new IORedis(config.REDIS_URL, {
 // Actual errors surface via queue operation failures.
 redis.on('error', () => {});
 
-// Download queue — concurrency 2, 3 retries with exponential backoff (Phase 1)
+// Download queue — worker concurrency 1, 3 retries with exponential backoff (Phase 1)
 export const downloadQueue = new Queue('downloads', {
   connection: redis,
   defaultJobOptions: {

@@ -1,10 +1,11 @@
 import { execFile, spawn } from 'child_process';
 import { promisify } from 'util';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import { config } from '../../config';
 import { logger } from '../../logger';
-import { isBotDetectionError } from '../../botdetect';
+import { shouldEngageCooldown } from '../../botdetect';
 import { uploadDateToIso } from '../../date';
 
 const execFileAsync = promisify(execFile);
@@ -12,7 +13,8 @@ const execFileAsync = promisify(execFile);
 // An Error carrying a flag the worker reads off the rejection. `terminal` /
 // `isLive` already follow this shape; `botDetection` joins them so the worker
 // can engage the IP-wide cooldown (#185) on the way out without re-parsing
-// stderr.
+// stderr. It's armed for either throttle signal — a bot-detection challenge or
+// a 429 (see shouldEngageCooldown) — not just the literal bot wall.
 type FlaggedError = Error & { terminal?: boolean; isLive?: boolean; botDetection?: boolean };
 
 // True once a BullMQ job has spent its entire retry budget. The worker reads
@@ -38,7 +40,30 @@ function baseArgs(): string[] {
     '--js-runtimes', `node:${NODE_BIN}`,
     '--remote-components', 'ejs:github',
     '--extractor-args', 'youtube:player_client=mweb',
+    // Space out the player-API/extraction HTTP calls (the ones that trip the
+    // throttle), not the fragment transfer. Cheap politeness on the shared
+    // residential IP; applies to every extraction pass.
+    '--sleep-requests', '1.5',
   ];
+}
+
+// Where fetchMetadata parks the just-extracted info dict so downloadVideo can
+// reuse it via --load-info-json instead of re-extracting (a second full player-
+// API pass) on the same URL. Kept in the OS temp dir, NOT VIDEO_OUTPUT_PATH —
+// cleanStaleIntermediates would otherwise delete it at download start.
+function infoJsonPath(youtubeId: string): string {
+  return path.join(os.tmpdir(), `eddy-info-${youtubeId}.json`);
+}
+
+// Best-effort removal of the cached info-json. Absent file (never written, or
+// already cleaned) is the normal case, so swallow.
+function cleanupInfoJson(youtubeId: string): void {
+  if (!youtubeId) return;
+  try {
+    fs.unlinkSync(infoJsonPath(youtubeId));
+  } catch {
+    // never written / already gone — fine
+  }
 }
 
 // Matches a single yt-dlp progress line: "[download]  45.2% of ~  2.34GiB ..."
@@ -167,11 +192,11 @@ export function mapYtdlpError(stderr: string): string | null {
   if (/premieres? in|premieres? on|this live event will begin|scheduled (start )?time/i.test(stderr)) {
     return "This one hasn't aired yet. Try again once it's live.";
   }
-  // Bot detection is transient — return null so BullMQ retries with backoff.
-  // The worker also engages an IP-wide cooldown (#185) so the retry parks in
-  // BullMQ's delayed state instead of hammering a blocked IP. Detection itself
-  // lives in botdetect.isBotDetectionError (single source of truth).
-  if (isBotDetectionError(stderr)) {
+  // Throttles (bot-detection challenge or 429) are transient — return null so
+  // BullMQ retries with backoff. The worker also engages an IP-wide cooldown
+  // (#185) so the retry parks in BullMQ's delayed state instead of hammering a
+  // blocked IP. Detection itself lives in botdetect (single source of truth).
+  if (shouldEngageCooldown(stderr)) {
     return null;
   }
   return null;
@@ -193,9 +218,10 @@ export async function fetchMetadata(url: string): Promise<VideoMetadata> {
       terminalErr.terminal = true;
       throw terminalErr;
     }
-    // Non-terminal: flag bot-detection so the worker arms the cooldown (#185)
-    // before BullMQ retries. Still thrown (not terminal) — the retry parks.
-    if (isBotDetectionError(`${err.message ?? ''}\n${errOutput}`)) {
+    // Non-terminal: flag a throttle (bot-detection challenge or 429) so the
+    // worker arms the cooldown (#185) before BullMQ retries. Still thrown (not
+    // terminal) — the retry parks rather than hammering the block.
+    if (shouldEngageCooldown(`${err.message ?? ''}\n${errOutput}`)) {
       (err as FlaggedError).botDetection = true;
     }
     throw err;
@@ -251,8 +277,24 @@ export async function fetchMetadata(url: string): Promise<VideoMetadata> {
     ? rawChannelId
     : null;
 
+  const youtubeId = String(json['id'] ?? '');
+
+  // Cache the extracted info dict so downloadVideo can --load-info-json it
+  // instead of running a second full extraction on the same URL. Written last,
+  // after the live/terminal gates above, so we never leave a dangling cache for
+  // a video that won't be downloaded. Best-effort: a write failure just means
+  // downloadVideo re-extracts (the prior behaviour). `stdout` is exactly the
+  // --write-info-json format --load-info-json expects.
+  if (youtubeId) {
+    try {
+      fs.writeFileSync(infoJsonPath(youtubeId), stdout);
+    } catch (err) {
+      logger.debug({ err, youtubeId }, 'Could not cache info-json for download reuse');
+    }
+  }
+
   return {
-    youtubeId: String(json['id'] ?? ''),
+    youtubeId,
     title: String(json['title'] ?? ''),
     channel: String(json['uploader'] ?? json['channel'] ?? ''),
     youtubeChannelId,
@@ -298,51 +340,41 @@ export function cleanStaleIntermediates(outputDir: string, youtubeId: string): v
   }
 }
 
-export async function downloadVideo(
+// Assemble the yt-dlp download argv. `source` is the trailing positional: the
+// cached info dict (`--load-info-json <path>`) or the watch URL.
+function downloadArgs(outputPath: string, source: string[]): string[] {
+  return [
+    ...baseArgs(),
+    '--format', 'bestvideo[height<=1080][vcodec^=avc1]+bestaudio[ext=m4a]/best[height<=1080][vcodec^=avc1]',
+    '--concurrent-fragments', '4',
+    // No subtitle sidecar: the player mounts no <track> and nothing serves the
+    // .vtt, so --write-auto-sub only wrote a file we delete — and it was the
+    // one *fatal* subtitle fetch (a 429 on it exits yt-dlp 1, binning a good
+    // video). The transcript we actually use is fetched separately from the
+    // automatic_captions json3 URL, best-effort. So we don't fetch subs.
+    '--no-part',
+    '--no-playlist',
+    '--merge-output-format', 'mp4',
+    '--sleep-interval', '5',
+    '--max-sleep-interval', '10',
+    '--newline',
+    '--output', outputPath,
+    ...source,
+  ];
+}
+
+// Run one yt-dlp download invocation to completion. Resolves on exit 0; rejects
+// with a terminal Error (mapped kid-readable reason) or a FlaggedError
+// (non-terminal; `botDetection` set on a throttle so the worker arms the
+// cooldown). Stateless w.r.t. the info-json cache — downloadVideo owns that so
+// it can retry with a different source.
+function runYtDlpDownload(
+  args: string[],
   youtubeId: string,
-  url: string,
+  outputPath: string,
   onProgress?: (pct: number) => void,
-): Promise<string> {
-  const outputDir = config.VIDEO_OUTPUT_PATH;
-  const outputPath = path.join(outputDir, `${youtubeId}.mp4`);
-
-  // Idempotent: if the file already exists (e.g. M4 rebooted mid-callback),
-  // skip yt-dlp and return the path so the callback can be retried cheaply.
-  try {
-    const stat = fs.statSync(outputPath);
-    if (stat.size > 0) {
-      logger.info({ youtubeId, outputPath }, 'File already exists — skipping download');
-      onProgress?.(100);
-      return Promise.resolve(outputPath);
-    }
-  } catch {
-    // file does not exist — proceed with download
-  }
-
-  cleanStaleIntermediates(outputDir, youtubeId);
-
-  logger.info({ youtubeId, outputPath }, 'Starting yt-dlp download');
-
+): Promise<void> {
   return new Promise((resolve, reject) => {
-    const args = [
-      ...baseArgs(),
-      '--format', 'bestvideo[height<=1080][vcodec^=avc1]+bestaudio[ext=m4a]/best[height<=1080][vcodec^=avc1]',
-      '--concurrent-fragments', '4',
-      // No subtitle sidecar: the player mounts no <track> and nothing serves the
-      // .vtt, so --write-auto-sub only wrote a file we delete — and it was the
-      // one *fatal* subtitle fetch (a 429 on it exits yt-dlp 1, binning a good
-      // video). The transcript we actually use is fetched separately from the
-      // automatic_captions json3 URL below, best-effort. So we don't fetch subs.
-      '--no-part',
-      '--no-playlist',
-      '--merge-output-format', 'mp4',
-      '--sleep-interval', '5',
-      '--max-sleep-interval', '10',
-      '--newline',
-      '--output', outputPath,
-      url,
-    ];
-
     const proc = spawn(config.YTDLP_BIN, args);
     const stderrChunks: Buffer[] = [];
     const parser = makeUnifiedProgressParser(onProgress);
@@ -371,17 +403,82 @@ export async function downloadVideo(
           err.terminal = true;
           return reject(err);
         }
-        // Non-terminal yt-dlp failure. Flag bot-detection so the worker arms
-        // the IP-wide cooldown (#185); the error is still retryable, but the
-        // retry will park in delayed state rather than hammer the block.
+        // Non-terminal yt-dlp failure. Flag a throttle (bot-detection or 429) so
+        // the worker arms the IP-wide cooldown (#185); the error is still
+        // retryable, but the retry parks in delayed state rather than hammer the
+        // block.
         const err = new Error(`yt-dlp exited with code ${code}\n${stderr}`) as FlaggedError;
-        if (isBotDetectionError(stderr)) err.botDetection = true;
+        if (shouldEngageCooldown(stderr)) err.botDetection = true;
         return reject(err);
       }
       logger.info({ youtubeId, outputPath }, 'yt-dlp download complete');
-      resolve(outputPath);
+      resolve();
     });
 
     proc.on('error', reject);
   });
+}
+
+export async function downloadVideo(
+  youtubeId: string,
+  url: string,
+  onProgress?: (pct: number) => void,
+): Promise<string> {
+  const outputDir = config.VIDEO_OUTPUT_PATH;
+  const outputPath = path.join(outputDir, `${youtubeId}.mp4`);
+
+  // Idempotent: if the file already exists (e.g. M4 rebooted mid-callback),
+  // skip yt-dlp and return the path so the callback can be retried cheaply.
+  try {
+    const stat = fs.statSync(outputPath);
+    if (stat.size > 0) {
+      logger.info({ youtubeId, outputPath }, 'File already exists — skipping download');
+      cleanupInfoJson(youtubeId);
+      onProgress?.(100);
+      return outputPath;
+    }
+  } catch {
+    // file does not exist — proceed with download
+  }
+
+  cleanStaleIntermediates(outputDir, youtubeId);
+
+  // Reuse the info dict fetchMetadata already extracted (in tmp, untouched by
+  // cleanStaleIntermediates) so yt-dlp downloads from the cached formats instead
+  // of running a second full extractor pass — halving the player-API hits per
+  // download on the residential IP. The URLs are <1 min old, well inside their
+  // expiry. Absent (write failed, or a future direct caller) → extract from the
+  // URL exactly as before.
+  const infoPath = infoJsonPath(youtubeId);
+  const reuseInfoJson = fs.existsSync(infoPath);
+
+  try {
+    if (reuseInfoJson) {
+      logger.info({ youtubeId, outputPath, reuseInfoJson: true }, 'Starting yt-dlp download');
+      try {
+        await runYtDlpDownload(downloadArgs(outputPath, ['--load-info-json', infoPath]), youtubeId, outputPath, onProgress);
+        return outputPath;
+      } catch (err) {
+        const flagged = err as FlaggedError;
+        // A terminal verdict (private/unavailable/age) is real, and a throttle
+        // must stand the IP down — not retry into it. Only fall back when the
+        // cached-info path failed for some other non-terminal reason (e.g. a
+        // stale format URL → 403/416, or a video --load-info-json can't drive):
+        // re-extract fresh from the URL once, inline, so a bad cache can't burn
+        // the request's whole BullMQ retry budget. Clear partials first.
+        if (flagged.terminal || flagged.botDetection) throw err;
+        logger.warn({ youtubeId, err }, 'load-info-json download failed (non-terminal) — retrying via fresh URL extraction');
+        cleanStaleIntermediates(outputDir, youtubeId);
+      }
+    }
+
+    logger.info({ youtubeId, outputPath, reuseInfoJson: false }, 'Starting yt-dlp download');
+    await runYtDlpDownload(downloadArgs(outputPath, [url]), youtubeId, outputPath, onProgress);
+    return outputPath;
+  } finally {
+    // One cleanup point for every exit path (success, terminal, throttle,
+    // fallback): the cache has served its purpose or the next BullMQ attempt
+    // re-fetches a fresh one.
+    cleanupInfoJson(youtubeId);
+  }
 }
