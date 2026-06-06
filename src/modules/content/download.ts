@@ -328,7 +328,11 @@ export async function downloadVideo(
       ...baseArgs(),
       '--format', 'bestvideo[height<=1080][vcodec^=avc1]+bestaudio[ext=m4a]/best[height<=1080][vcodec^=avc1]',
       '--concurrent-fragments', '4',
-      '--write-auto-sub', '--sub-lang', 'en',
+      // No subtitle sidecar: the player mounts no <track> and nothing serves the
+      // .vtt, so --write-auto-sub only wrote a file we delete — and it was the
+      // one *fatal* subtitle fetch (a 429 on it exits yt-dlp 1, binning a good
+      // video). The transcript we actually use is fetched separately from the
+      // automatic_captions json3 URL below, best-effort. So we don't fetch subs.
       '--no-part',
       '--no-playlist',
       '--merge-output-format', 'mp4',
