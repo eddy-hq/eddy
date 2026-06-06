@@ -9,8 +9,10 @@ import {
   isRateLimitError,
   shouldEngageCooldown,
   engageBotDetectionCooldown,
+  clearBotDetectionEscalation,
   botDetectionCooldownMs,
   BOT_DETECTION_COOLDOWN_KEY,
+  BOT_DETECTION_LEVEL_KEY,
   type CooldownStore,
 } from './botdetect';
 
@@ -79,20 +81,41 @@ describe('shouldEngageCooldown', () => {
   });
 });
 
-// In-memory fake implementing just the slice botdetect uses. `ttl` is the value
-// pttl returns; tests set it directly to simulate an armed / expired key.
-function fakeStore(): CooldownStore & { calls: Array<[string, string, string, number]>; ttl: number } {
+// In-memory fake implementing just the slice botdetect uses — a real keyed map
+// so the escalation ladder (INCR level + per-key TTLs) is exercised honestly.
+// `calls` keeps the historical set-call log the older assertions read.
+function fakeStore(): CooldownStore & {
+  calls: Array<[string, string, string, number]>;
+  data: Map<string, { value: string; ttlMs: number }>;
+} {
+  const data = new Map<string, { value: string; ttlMs: number }>();
   return {
     calls: [],
-    ttl: -2,
+    data,
     async set(key, value, exMode, seconds) {
       this.calls.push([key, value, exMode, seconds]);
-      // Mimic SET EX: a positive TTL becomes readable by pttl.
-      this.ttl = seconds * 1000;
+      data.set(key, { value, ttlMs: seconds * 1000 });
       return 'OK';
     },
-    async pttl() {
-      return this.ttl;
+    async pttl(key) {
+      const e = data.get(key);
+      return e ? e.ttlMs : -2;
+    },
+    async incr(key) {
+      const e = data.get(key);
+      const n = (e ? parseInt(e.value, 10) || 0 : 0) + 1;
+      data.set(key, { value: String(n), ttlMs: e?.ttlMs ?? -1 });
+      return n;
+    },
+    async expire(key, seconds) {
+      const e = data.get(key);
+      if (e) e.ttlMs = seconds * 1000;
+      return 1;
+    },
+    async del(...keys) {
+      let count = 0;
+      for (const k of keys) if (data.delete(k)) count++;
+      return count;
     },
   };
 }
@@ -116,8 +139,55 @@ describe('engageBotDetectionCooldown', () => {
     const store: CooldownStore = {
       set: vi.fn().mockRejectedValue(new Error('NOAUTH')),
       pttl: vi.fn(),
+      incr: vi.fn().mockResolvedValue(1),
+      expire: vi.fn(),
+      del: vi.fn(),
     };
     await expect(engageBotDetectionCooldown(store, 2700, 'search')).resolves.toBeUndefined();
+  });
+});
+
+describe('engageBotDetectionCooldown — escalation ladder', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+
+  it('climbs the ladder on consecutive blocks, capped at the top rung', async () => {
+    const store = fakeStore();
+    await engageBotDetectionCooldown(store, 2700, 'metadata'); // rung 1
+    expect(await botDetectionCooldownMs(store)).toBe(2700 * 1000); // 45 min
+    await engageBotDetectionCooldown(store, 2700, 'metadata'); // rung 2
+    expect(await botDetectionCooldownMs(store)).toBe(2700 * 1000 * 4); // 3 h
+    await engageBotDetectionCooldown(store, 2700, 'metadata'); // rung 3
+    expect(await botDetectionCooldownMs(store)).toBe(2700 * 1000 * 16); // 12 h
+    await engageBotDetectionCooldown(store, 2700, 'metadata'); // beyond — capped
+    expect(await botDetectionCooldownMs(store)).toBe(2700 * 1000 * 16);
+  });
+
+  it('holds the strike counter for twice the cooldown so a prompt re-block still climbs', async () => {
+    const store = fakeStore();
+    await engageBotDetectionCooldown(store, 2700, 'metadata');
+    expect(store.data.get(BOT_DETECTION_LEVEL_KEY)?.ttlMs).toBe(2700 * 1000 * 2);
+  });
+
+  it('resets to rung 1 after a clean run clears the escalation', async () => {
+    const store = fakeStore();
+    await engageBotDetectionCooldown(store, 2700, 'metadata'); // rung 1
+    await engageBotDetectionCooldown(store, 2700, 'metadata'); // rung 2
+    expect(await botDetectionCooldownMs(store)).toBe(2700 * 1000 * 4);
+
+    await clearBotDetectionEscalation(store);
+    // Clearing drops the active cooldown too — queued jobs can proceed.
+    expect(await botDetectionCooldownMs(store)).toBe(0);
+
+    await engageBotDetectionCooldown(store, 2700, 'metadata'); // fresh strike → rung 1
+    expect(await botDetectionCooldownMs(store)).toBe(2700 * 1000);
+  });
+
+  it('clearBotDetectionEscalation is fail-open on Redis error', async () => {
+    const store: CooldownStore = {
+      set: vi.fn(), pttl: vi.fn(), incr: vi.fn(), expire: vi.fn(),
+      del: vi.fn().mockRejectedValue(new Error('connection refused')),
+    };
+    await expect(clearBotDetectionEscalation(store)).resolves.toBeUndefined();
   });
 });
 
@@ -130,16 +200,16 @@ describe('botDetectionCooldownMs', () => {
 
   it('returns 0 when no key is set (pttl -2) or no expiry (pttl -1)', async () => {
     const store = fakeStore();
-    store.ttl = -2;
-    expect(await botDetectionCooldownMs(store)).toBe(0);
-    store.ttl = -1;
-    expect(await botDetectionCooldownMs(store)).toBe(0);
+    expect(await botDetectionCooldownMs(store)).toBe(0); // absent → pttl -2
+    store.data.set(BOT_DETECTION_COOLDOWN_KEY, { value: 'x', ttlMs: -1 });
+    expect(await botDetectionCooldownMs(store)).toBe(0); // present but no expiry
   });
 
   it('returns 0 on Redis error (fail-open)', async () => {
     const store: CooldownStore = {
       set: vi.fn(),
       pttl: vi.fn().mockRejectedValue(new Error('connection refused')),
+      incr: vi.fn(), expire: vi.fn(), del: vi.fn(),
     };
     expect(await botDetectionCooldownMs(store)).toBe(0);
   });

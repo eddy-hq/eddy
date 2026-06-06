@@ -21,9 +21,23 @@ import { logger } from './logger';
 export interface CooldownStore {
   set(key: string, value: string, exMode: 'EX', seconds: number): Promise<unknown>;
   pttl(key: string): Promise<number>;
+  incr(key: string): Promise<number>;
+  expire(key: string, seconds: number): Promise<unknown>;
+  del(...keys: string[]): Promise<unknown>;
 }
 
 export const BOT_DETECTION_COOLDOWN_KEY = 'eddy:ytdlp:botdetect-cooldown';
+
+// Escalation level (#185 follow-on). A strike counter that survives the cooldown
+// window so consecutive blocks back off progressively harder instead of
+// re-trying into a deepening IP block every 45 min. INCR'd on each arm, decayed
+// by its own TTL, and reset to nothing by a clean extraction (clearEscalation).
+export const BOT_DETECTION_LEVEL_KEY = 'eddy:ytdlp:botdetect-level';
+
+// Multipliers of the base cooldown, indexed by (level - 1), capped at the last
+// rung. With the 2700s (45 min) base: 45 min → 3 h → 12 h. The base anchors the
+// whole ladder, so changing YTDLP_BOTDETECT_COOLDOWN_SECS scales every rung.
+export const COOLDOWN_LADDER = [1, 4, 16];
 
 // The signature yt-dlp surfaces when YouTube challenges a request as non-human.
 // Matches the canonical "Sign in to confirm you're not a bot" plus the nearby
@@ -59,21 +73,51 @@ export function shouldEngageCooldown(text: string | null | undefined): boolean {
   return isBotDetectionError(text) || isRateLimitError(text);
 }
 
-// Arm (or re-arm) the cooldown for `cooldownSecs`. Idempotent — a second call
-// inside an active window just resets the TTL, which is exactly right when more
-// than one in-flight job trips the block at once. `cooldownSecs <= 0` disables
-// the gate (config escape hatch). Fail-open.
+// Arm the cooldown, escalating its length on consecutive blocks. `baseCooldownSecs`
+// is rung 1; each block since the last clean extraction climbs the COOLDOWN_LADDER
+// (45 min → 3 h → 12 h with the default base), capped at the top rung. INCR is
+// atomic, so two in-flight jobs tripping the block at once bump the level rather
+// than racing a read-modify-write — at worst that over-escalates by one rung,
+// which errs safely toward backing off. The level key is held twice the cooldown
+// so a re-block shortly after the window lifts still counts as consecutive; a
+// clean run clears it (clearBotDetectionEscalation). `baseCooldownSecs <= 0`
+// disables the gate (config escape hatch). Fail-open.
 export async function engageBotDetectionCooldown(
   store: CooldownStore,
-  cooldownSecs: number,
+  baseCooldownSecs: number,
   reason: string,
 ): Promise<void> {
-  if (cooldownSecs <= 0) return;
+  if (baseCooldownSecs <= 0) return;
   try {
+    const level = await store.incr(BOT_DETECTION_LEVEL_KEY);
+    const rung = Math.min(level, COOLDOWN_LADDER.length);
+    const cooldownSecs = baseCooldownSecs * COOLDOWN_LADDER[rung - 1]!;
     await store.set(BOT_DETECTION_COOLDOWN_KEY, reason, 'EX', cooldownSecs);
-    logger.warn({ reason, cooldownSecs }, 'yt-dlp bot-detection cooldown engaged');
+    // Remember the strike longer than the cooldown itself, so a block that
+    // lands soon after the window lifts is still seen as consecutive and climbs.
+    await store.expire(BOT_DETECTION_LEVEL_KEY, cooldownSecs * 2);
+    const atTopRung = rung === COOLDOWN_LADDER.length;
+    logger.warn(
+      { reason, level, rung, cooldownSecs, atTopRung },
+      atTopRung
+        ? 'yt-dlp bot-detection cooldown at TOP rung — downloads paused for the long window (IP throttled)'
+        : 'yt-dlp bot-detection cooldown engaged (escalating)',
+    );
   } catch (err) {
     logger.debug({ err }, 'Could not engage bot-detection cooldown (Redis unavailable)');
+  }
+}
+
+// Reset the escalation after a clean extraction proves the IP recovered: drop
+// both the active cooldown and the strike counter, so the next block (if any)
+// starts again at rung 1 rather than inheriting stale strikes. Called by the
+// worker once metadata fetches successfully. Fail-open — a missed reset just
+// means the next block escalates one rung sooner, which is harmless.
+export async function clearBotDetectionEscalation(store: CooldownStore): Promise<void> {
+  try {
+    await store.del(BOT_DETECTION_COOLDOWN_KEY, BOT_DETECTION_LEVEL_KEY);
+  } catch (err) {
+    logger.debug({ err }, 'Could not clear bot-detection escalation (Redis unavailable)');
   }
 }
 

@@ -14,7 +14,7 @@ import { redis, closeQueues, thumbsQueue } from '../queue';
 import { config } from '../config';
 import { logger } from '../logger';
 import { fetchMetadata, downloadVideo, attemptsExhausted } from '../modules/content/download';
-import { botDetectionCooldownMs, engageBotDetectionCooldown } from '../botdetect';
+import { botDetectionCooldownMs, engageBotDetectionCooldown, clearBotDetectionEscalation } from '../botdetect';
 import { triggerPlexScan, updatePlexMetadata } from '../modules/content/plex';
 import { postSigned } from '../signed-channel';
 import { generateThumbnail } from './thumb';
@@ -116,6 +116,11 @@ async function processJob(job: Job<DownloadJobData>, token?: string): Promise<vo
     }
     throw err;
   }
+
+  // A clean extraction is proof the IP is healthy again — reset any escalation
+  // so the next block (if any) starts at rung 1 rather than inheriting strikes
+  // from an earlier rough patch (#185 follow-on). Fail-open, don't block the job.
+  await clearBotDetectionEscalation(redis);
 
   // Start guard score (skipped on restore) and download concurrently — guard
   // runs while video downloads.
