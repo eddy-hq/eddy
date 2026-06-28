@@ -354,15 +354,15 @@ async function start(): Promise<void> {
   // (household does ~3–15/day) — politeness is, and bursting parallel extractor
   // passes is exactly what trips the throttle. Was 2.
   //
-  // Rate limiter (max 6 / hour): concurrency 1 stops *parallel* extractions but
+  // Rate limiter (max 3 / hour): concurrency 1 stops *parallel* extractions but
   // not a fast *serial* burst — a large backlog (e.g. post-incident drain) would
   // otherwise empty as fast as jobs complete and re-earn the IP block we just
-  // escaped. At 6/hour the ceiling (144/day) never bites normal use; it only
+  // escaped. At 3/hour the ceiling (72/day) never bites normal use; it only
   // caps burst drains. Limiter state lives in Redis, so it survives a restart.
   const worker = new Worker<DownloadJobData>('downloads', processJob, {
     connection: redis,
     concurrency: 1,
-    limiter: { max: 6, duration: 3_600_000 },
+    limiter: { max: 3, duration: 3_600_000 },
   });
 
   worker.on('completed', (job) => {
