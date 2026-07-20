@@ -4,6 +4,7 @@ import { promisify } from 'util';
 import { db } from '../db/client';
 import { logger } from '../logger';
 import { config } from '../config';
+import { ipStackArgs } from '../ytdlp-ipstack';
 
 const execFileAsync = promisify(execFile);
 
@@ -22,6 +23,7 @@ async function fetchChannelId(youtubeId: string): Promise<string | null> {
       config.YTDLP_BIN_M4,
       [
         url,
+        ...ipStackArgs(config.YTDLP_IP_STACK),
         '--print', '%(.{id,channel_id})j',
         '--no-download',
         '--quiet',
