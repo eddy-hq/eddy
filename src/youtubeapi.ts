@@ -9,7 +9,13 @@
 // wrap with try/catch, exactly as with the yt-dlp adapter.
 import { config } from './config';
 import { logger } from './logger';
-import type { SearchVideoWithDate, PlaylistEntry, ChannelInfo } from './ytdlp';
+import type {
+  SearchVideoWithDate,
+  SearchVideoFlat,
+  SearchChannel,
+  PlaylistEntry,
+  ChannelInfo,
+} from './ytdlp';
 
 const API_BASE = 'https://www.googleapis.com/youtube/v3';
 
@@ -52,6 +58,19 @@ export interface VideoMetadata {
 
 interface SearchListResponse {
   items?: Array<{ id?: { videoId?: string } }>;
+}
+
+interface ChannelSearchListResponse {
+  items?: Array<{ id?: { channelId?: string } }>;
+}
+
+interface ChannelDetailItem {
+  id?: string;
+  snippet?: { title?: string; customUrl?: string };
+}
+
+interface ChannelDetailsResponse {
+  items?: ChannelDetailItem[];
 }
 
 interface VideoItem {
@@ -292,6 +311,131 @@ export async function searchVideosWithDates(
       thumbnailUrl: m.thumbnailUrl,
       liveStatus: m.liveStatus,
       url: `https://www.youtube.com/watch?v=${m.videoId}`,
+    });
+  }
+  return out;
+}
+
+// Interactive video search for the parent-facing UI (#189). Same two-step
+// search.list (100 units) → batched videos.list (1 unit) shape as
+// searchVideosWithDates, projecting to the flat search-card shape. Deliberately
+// omits the SEARCH_FRESHNESS_DAYS publishedAfter bound: a parent searching by
+// hand is looking for anything, including old videos, so the freshness window
+// that keeps discovery's slate current would wrongly hide results here.
+// Drop-in for yt-dlp's searchVideosFlat; preserves search.list relevance order.
+export async function searchVideosFlat(
+  query: string,
+  limit = 10,
+): Promise<SearchVideoFlat[]> {
+  const search = await apiGet<SearchListResponse>('search', {
+    part: 'snippet',
+    q: query,
+    type: 'video',
+    order: 'relevance',
+    maxResults: String(Math.min(Math.max(Math.trunc(limit), 1), 50)),
+  });
+
+  const ids: string[] = [];
+  for (const item of search.items ?? []) {
+    const id = item.id?.videoId;
+    if (typeof id === 'string') ids.push(id);
+  }
+  if (ids.length === 0) return [];
+
+  const meta = await fetchVideoMetadata(ids);
+
+  const out: SearchVideoFlat[] = [];
+  for (const id of ids) {
+    const m = meta.get(id);
+    if (!m) continue;
+    out.push({
+      videoId: m.videoId,
+      title: m.title,
+      channel: m.channel,
+      channelId: m.channelId,
+      durationSecs: m.durationSecs,
+      thumbnailUrl: m.thumbnailUrl,
+      url: `https://www.youtube.com/watch?v=${m.videoId}`,
+    });
+  }
+  return out;
+}
+
+// Batched channels.list (up to 50 ids, 1 unit). Returns a map of channel id →
+// title + canonical handle. Channels the API omits are absent, so a dead search
+// hit drops out just as videos.list omissions do on the video path.
+async function fetchChannelDetails(
+  ids: string[],
+): Promise<Map<string, { title: string; customUrl: string | null }>> {
+  const out = new Map<string, { title: string; customUrl: string | null }>();
+  for (let i = 0; i < ids.length; i += 50) {
+    const batch = ids.slice(i, i + 50);
+    if (batch.length === 0) continue;
+    const data = await apiGet<ChannelDetailsResponse>('channels', {
+      part: 'snippet',
+      id: batch.join(','),
+      maxResults: '50',
+    });
+    for (const item of data.items ?? []) {
+      if (typeof item.id !== 'string') continue;
+      const sn = item.snippet ?? {};
+      out.set(item.id, {
+        title: String(sn.title ?? ''),
+        customUrl: typeof sn.customUrl === 'string' && sn.customUrl ? sn.customUrl : null,
+      });
+    }
+  }
+  return out;
+}
+
+// customUrl is the channel's handle ("@name") on modern channels, or a legacy
+// vanity slug otherwise. Only the handle form maps cleanly onto a /@ URL; a
+// legacy slug falls back to the always-valid /channel/<id> canonical form,
+// matching yt-dlp's uploader_url ?? /channel/<id> contract.
+function channelUrlFor(channelId: string, customUrl: string | null): string {
+  if (customUrl && customUrl.startsWith('@')) {
+    return `https://www.youtube.com/${customUrl}`;
+  }
+  return `https://www.youtube.com/channel/${channelId}`;
+}
+
+// Interactive channel search for the people UI (#189). search.list type=channel
+// (100 units) yields relevance-ordered channel ids; one batched channels.list
+// (1 unit) fills the title and canonical handle URL. De-duplicates by channel id
+// and preserves relevance order, matching yt-dlp's searchChannelsFlat.
+export async function searchChannelsFlat(
+  query: string,
+  limit = 10,
+): Promise<SearchChannel[]> {
+  const search = await apiGet<ChannelSearchListResponse>('search', {
+    part: 'snippet',
+    q: query,
+    type: 'channel',
+    order: 'relevance',
+    maxResults: String(Math.min(Math.max(Math.trunc(limit), 1), 50)),
+  });
+
+  const ids: string[] = [];
+  const seen = new Set<string>();
+  for (const item of search.items ?? []) {
+    const id = item.id?.channelId;
+    if (typeof id === 'string' && !seen.has(id)) {
+      seen.add(id);
+      ids.push(id);
+    }
+  }
+  if (ids.length === 0) return [];
+
+  const details = await fetchChannelDetails(ids);
+
+  const out: SearchChannel[] = [];
+  for (const id of ids) {
+    const d = details.get(id);
+    if (!d) continue;
+    out.push({
+      channelId: id,
+      channelName: d.title,
+      channelUrl: channelUrlFor(id, d.customUrl),
     });
   }
   return out;

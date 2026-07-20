@@ -5,7 +5,7 @@ import { ValidationError } from '../../errors';
 import { resolveUserByIdOrName } from '../users';
 import { displayRejectionReason } from '../requests';
 import { toPublicMediaUrl } from '../media';
-import { searchVideosFlat, type SearchVideoFlat } from '../../ytdlp';
+import { searchVideosFlat, type SearchVideoFlat } from '../../discovery-metadata';
 
 export const searchRouter = Router();
 
@@ -49,7 +49,8 @@ searchRouter.get('/', (req: Request, res: Response) => {
 });
 
 // GET /search/videos?q=&userId=
-// Searches YouTube via yt-dlp, returns up to 10 results with in-library flag.
+// Searches YouTube (Data API or yt-dlp, per DISCOVERY_SOURCE), returns up to 10
+// results with in-library flag.
 searchRouter.get('/videos', async (req: Request, res: Response) => {
   const { q, userId, user } = req.query as { q?: string; userId?: string; user?: string };
   if (!q?.trim()) throw new ValidationError('q required');

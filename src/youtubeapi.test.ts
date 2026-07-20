@@ -14,6 +14,8 @@ import { logger } from './logger';
 import {
   parseIso8601Duration,
   searchVideosWithDates,
+  searchVideosFlat,
+  searchChannelsFlat,
   fetchVideoMetadata,
   flatPlaylistChannel,
   channelInfo,
@@ -195,6 +197,167 @@ describe('searchVideosWithDates', () => {
     mockConfig.YOUTUBE_API_KEY = undefined;
     await expect(searchVideosWithDates('x')).rejects.toBeInstanceOf(YoutubeApiError);
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('searchVideosFlat', () => {
+  function routeFetch(opts: { search: unknown; videos: unknown }) {
+    fetchMock.mockImplementation((url: URL) => {
+      const path = url.toString();
+      if (path.includes('/youtube/v3/search')) return Promise.resolve(fetchResult(opts.search));
+      if (path.includes('/youtube/v3/videos')) return Promise.resolve(fetchResult(opts.videos));
+      throw new Error(`unexpected url ${path}`);
+    });
+  }
+
+  it('projects the flat search-card shape and preserves relevance order', async () => {
+    routeFetch({
+      search: { items: [{ id: { videoId: 'b' } }, { id: { videoId: 'a' } }] },
+      videos: {
+        items: [
+          {
+            id: 'a',
+            snippet: {
+              title: 'Alpha',
+              channelTitle: 'Chan A',
+              channelId: 'UCa',
+              thumbnails: { high: { url: 'http://a/high' } },
+            },
+            contentDetails: { duration: 'PT10M' },
+          },
+          {
+            id: 'b',
+            snippet: {
+              title: 'Bravo',
+              channelTitle: 'Chan B',
+              channelId: 'UCb',
+              thumbnails: { maxres: { url: 'http://b/max' } },
+            },
+            contentDetails: { duration: 'PT1H' },
+          },
+        ],
+      },
+    });
+
+    const results = await searchVideosFlat('robots');
+    expect(results.map((r) => r.videoId)).toEqual(['b', 'a']);
+    expect(results[0]).toEqual({
+      videoId: 'b',
+      title: 'Bravo',
+      channel: 'Chan B',
+      channelId: 'UCb',
+      durationSecs: 3600,
+      thumbnailUrl: 'http://b/max',
+      url: 'https://www.youtube.com/watch?v=b',
+    });
+  });
+
+  it('does not apply a publishedAfter freshness bound', async () => {
+    routeFetch({ search: { items: [] }, videos: { items: [] } });
+    await searchVideosFlat('old documentary', 200);
+    const url = (fetchMock.mock.calls[0]![0] as URL).toString();
+    expect(url).toContain('type=video');
+    expect(url).toContain('maxResults=50');
+    expect(url).not.toContain('publishedAfter');
+  });
+
+  it('drops search ids the videos.list omits', async () => {
+    routeFetch({
+      search: { items: [{ id: { videoId: 'gone' } }, { id: { videoId: 'ok' } }] },
+      videos: { items: [{ id: 'ok', snippet: { title: 'OK' }, contentDetails: { duration: 'PT5M' } }] },
+    });
+    const results = await searchVideosFlat('x');
+    expect(results.map((r) => r.videoId)).toEqual(['ok']);
+  });
+
+  it('returns empty without calling videos.list when search yields no ids', async () => {
+    routeFetch({ search: { items: [] }, videos: { items: [] } });
+    const results = await searchVideosFlat('nothing');
+    expect(results).toEqual([]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('searchChannelsFlat', () => {
+  function routeFetch(opts: { search: unknown; channels: unknown }) {
+    fetchMock.mockImplementation((url: URL) => {
+      const path = url.toString();
+      if (path.includes('/youtube/v3/search')) return Promise.resolve(fetchResult(opts.search));
+      if (path.includes('/youtube/v3/channels')) return Promise.resolve(fetchResult(opts.channels));
+      throw new Error(`unexpected url ${path}`);
+    });
+  }
+
+  it('projects channel records, preserves order, and builds a handle URL from customUrl', async () => {
+    routeFetch({
+      search: { items: [{ id: { channelId: 'UCb' } }, { id: { channelId: 'UCa' } }] },
+      channels: {
+        items: [
+          { id: 'UCa', snippet: { title: 'Chan A', customUrl: '@chana' } },
+          { id: 'UCb', snippet: { title: 'Chan B', customUrl: '@chanb' } },
+        ],
+      },
+    });
+    const results = await searchChannelsFlat('robots');
+    expect(results).toEqual([
+      { channelId: 'UCb', channelName: 'Chan B', channelUrl: 'https://www.youtube.com/@chanb' },
+      { channelId: 'UCa', channelName: 'Chan A', channelUrl: 'https://www.youtube.com/@chana' },
+    ]);
+  });
+
+  it('falls back to the /channel/ URL when customUrl is absent or not a handle', async () => {
+    routeFetch({
+      search: { items: [{ id: { channelId: 'UCnone' } }, { id: { channelId: 'UClegacy' } }] },
+      channels: {
+        items: [
+          { id: 'UCnone', snippet: { title: 'No Handle' } },
+          { id: 'UClegacy', snippet: { title: 'Legacy', customUrl: 'legacyvanity' } },
+        ],
+      },
+    });
+    const results = await searchChannelsFlat('x');
+    expect(results).toEqual([
+      { channelId: 'UCnone', channelName: 'No Handle', channelUrl: 'https://www.youtube.com/channel/UCnone' },
+      { channelId: 'UClegacy', channelName: 'Legacy', channelUrl: 'https://www.youtube.com/channel/UClegacy' },
+    ]);
+  });
+
+  it('requests type=channel and caps maxResults at 50', async () => {
+    routeFetch({ search: { items: [] }, channels: { items: [] } });
+    await searchChannelsFlat('x', 200);
+    const url = (fetchMock.mock.calls[0]![0] as URL).toString();
+    expect(url).toContain('type=channel');
+    expect(url).toContain('maxResults=50');
+  });
+
+  it('de-duplicates repeated channel ids from the search page', async () => {
+    routeFetch({
+      search: { items: [{ id: { channelId: 'UCa' } }, { id: { channelId: 'UCa' } }, { id: { channelId: 'UCb' } }] },
+      channels: {
+        items: [
+          { id: 'UCa', snippet: { title: 'A', customUrl: '@a' } },
+          { id: 'UCb', snippet: { title: 'B', customUrl: '@b' } },
+        ],
+      },
+    });
+    const results = await searchChannelsFlat('x');
+    expect(results.map((c) => c.channelId)).toEqual(['UCa', 'UCb']);
+  });
+
+  it('drops channel ids the channels.list omits', async () => {
+    routeFetch({
+      search: { items: [{ id: { channelId: 'gone' } }, { id: { channelId: 'UCok' } }] },
+      channels: { items: [{ id: 'UCok', snippet: { title: 'OK', customUrl: '@ok' } }] },
+    });
+    const results = await searchChannelsFlat('x');
+    expect(results.map((c) => c.channelId)).toEqual(['UCok']);
+  });
+
+  it('returns empty without calling channels.list when search yields no ids', async () => {
+    routeFetch({ search: { items: [] }, channels: { items: [] } });
+    const results = await searchChannelsFlat('nothing');
+    expect(results).toEqual([]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
 
