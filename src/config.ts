@@ -40,6 +40,16 @@ const schema = z.object({
   VIDEO_OUTPUT_PATH: z.string().default('/home/steveu/eddy/videos'),
   NGINX_VIDEO_BASE_URL: z.string().optional(),
   YTDLP_COOKIES_FILE: z.string().optional(), // path to cookies.txt; enables age-restricted downloads
+  // Path (ON THE WORKER) to an aged, never-logged-in "guest visitor" cookie jar
+  // for the download path. Empty (default) keeps today's behaviour: a fresh
+  // anonymous session per yt-dlp invocation. When set to a Netscape cookie jar
+  // that exists on the worker, downloads and the resume probe reuse ONE aged
+  // guest identity — YouTube appears to score fresh anonymous sessions per IP
+  // (yt-dlp #14899/#15865), and an aged never-logged-in jar passes gates a fresh
+  // session fails (#15583). NOT an account cookie: no login, nothing to ban; if
+  // the identity is flagged, delete the file and mint a new one. A missing file
+  // disables the feature for that run — it must never fail a download.
+  YTDLP_GUEST_COOKIES: z.string().default(''),
   // yt-dlp binary paths — separate vars because the Ubuntu worker (auth/PO-token
   // download path) and the M4 (anonymous metadata calls) install yt-dlp in
   // different locations.

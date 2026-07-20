@@ -8,8 +8,14 @@ import { logger } from '../../logger';
 import { shouldEngageCooldown } from '../../botdetect';
 import { uploadDateToIso } from '../../date';
 import { ipStackArgs } from '../../ytdlp-ipstack';
+import { guestCookieArgs } from './util';
 
 const execFileAsync = promisify(execFile);
+
+// Warn at most once per process when a configured guest cookie jar is missing.
+// The jar is dropped (feature off for the run) but a missing jar must never
+// fail a download, so this is a warn, not a throw.
+let warnedMissingGuestCookies = false;
 
 // An Error carrying a flag the worker reads off the rejection. `terminal` /
 // `isLive` already follow this shape; `botDetection` joins them so the worker
@@ -37,10 +43,30 @@ const NODE_BIN = process.env['NODE_BIN'] ?? 'node';
 // HTTP server on 127.0.0.1:4416) handles bot-detection without cookies.
 // node JS runtime handles signature/n-challenges.
 function baseArgs(): string[] {
+  // Aged guest-visitor cookie jar (ADR-0012 amendment). When configured and
+  // present on disk, every worker yt-dlp invocation reuses one persisted
+  // never-logged-in identity instead of minting a fresh anonymous session per
+  // run. yt-dlp writes updated cookies back to the jar on exit; downloads run
+  // sequentially on the worker, so there is no write race. existsSync stays at
+  // the call site; the pure include/exclude decision lives in guestCookieArgs.
+  const guestCookiePath = config.YTDLP_GUEST_COOKIES;
+  let cookieArgs: string[] = [];
+  if (guestCookiePath) {
+    const exists = fs.existsSync(guestCookiePath);
+    if (!exists && !warnedMissingGuestCookies) {
+      warnedMissingGuestCookies = true;
+      logger.warn(
+        { path: guestCookiePath },
+        'YTDLP_GUEST_COOKIES set but file missing — continuing without guest cookie jar (fresh session per run)',
+      );
+    }
+    cookieArgs = guestCookieArgs(guestCookiePath, exists);
+  }
   return [
     // Pin the IP stack (default IPv4) so the worker download path shares one
     // reputation bucket with the M4 probe/metadata path (#185 follow-on).
     ...ipStackArgs(config.YTDLP_IP_STACK),
+    ...cookieArgs,
     '--js-runtimes', `node:${NODE_BIN}`,
     '--remote-components', 'ejs:github',
     '--extractor-args', 'youtube:player_client=mweb',

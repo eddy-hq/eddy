@@ -43,6 +43,10 @@ const WORKER_PROBE_CMD = [
   // Derived from the same config as the download path so the resume probe tests
   // the pinned IP stack, not an unpinned one.
   ...ipStackArgs(config.YTDLP_IP_STACK),
+  // Same aged guest-visitor identity the download path uses (ADR-0012
+  // amendment), so the probe exercises the real identity rather than a fresh
+  // session. The path is worker-side — fine, this command runs on the worker.
+  ...(config.YTDLP_GUEST_COOKIES ? ['--cookies', config.YTDLP_GUEST_COOKIES] : []),
   '--js-runtimes node:node',
   '--remote-components ejs:github',
   '--extractor-args youtube:player_client=mweb',
