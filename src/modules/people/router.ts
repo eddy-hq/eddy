@@ -8,7 +8,7 @@ import { logger } from '../../logger';
 import { ValidationError, NotFoundError } from '../../errors';
 import { inferChannelInterests } from '../interests';
 import { resolveUserById } from '../users';
-import { searchChannelsFlat, type SearchChannel } from '../../ytdlp';
+import { searchChannelsFlat, type SearchChannel } from '../../discovery-metadata';
 import { applyChannelInfoToPerson, ensurePersonForChannel } from './registry';
 import { getPersonView, getPersonSummaryByChannel } from './personView';
 import { pollChannel } from './poller';
