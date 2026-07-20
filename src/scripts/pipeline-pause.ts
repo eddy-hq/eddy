@@ -21,6 +21,8 @@
 import 'dotenv/config';
 import { spawnSync } from 'node:child_process';
 import { discoveryQueue, downloadQueue, closeQueues, redis } from '../queue';
+import { config } from '../config';
+import { ipStackArgs } from '../ytdlp-ipstack';
 import { videoDuration } from '../ytdlp';
 import { db } from '../db/client';
 import { getRequestsState } from '../modules/requests';
@@ -38,6 +40,9 @@ const PROBE_VIDEO = 'jNQXAC9IVRw';
 const WORKER_PROBE_HOST = 'eddy-mediaserver';
 const WORKER_PROBE_CMD = [
   '~/.local/bin/yt-dlp',
+  // Derived from the same config as the download path so the resume probe tests
+  // the pinned IP stack, not an unpinned one.
+  ...ipStackArgs(config.YTDLP_IP_STACK),
   '--js-runtimes node:node',
   '--remote-components ejs:github',
   '--extractor-args youtube:player_client=mweb',

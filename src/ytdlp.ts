@@ -10,8 +10,13 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { config } from './config';
 import { shouldEngageCooldown } from './botdetect';
+import { ipStackArgs } from './ytdlp-ipstack';
 
 const execFileAsync = promisify(execFile);
+
+// Prepended to every spawn below so the anonymous M4 path shares one IP-stack
+// reputation bucket with the worker download path (#185 follow-on).
+const IP_STACK_ARGS = ipStackArgs(config.YTDLP_IP_STACK);
 
 export class YtdlpError extends Error {
   // Set when the failure carries a throttle signal — YouTube's bot-detection
@@ -99,7 +104,7 @@ async function runYtdlpLines(
 ): Promise<Record<string, unknown>[]> {
   let stdout: string;
   try {
-    const result = await execFileAsync(config.YTDLP_BIN_M4, args, {
+    const result = await execFileAsync(config.YTDLP_BIN_M4, [...IP_STACK_ARGS, ...args], {
       maxBuffer: maxBufferMb * 1024 * 1024,
       timeout: timeoutMs,
     });
@@ -296,6 +301,7 @@ export async function videoDuration(videoId: string): Promise<number> {
     const result = await execFileAsync(
       config.YTDLP_BIN_M4,
       [
+        ...IP_STACK_ARGS,
         `https://www.youtube.com/watch?v=${videoId}`,
         '--print',
         '%(duration)s',

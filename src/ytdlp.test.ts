@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('./config', () => ({
-  config: { YTDLP_BIN_M4: '/fake/yt-dlp', YTDLP_BIN: '/fake/yt-dlp', NODE_ENV: 'test' },
+  config: { YTDLP_BIN_M4: '/fake/yt-dlp', YTDLP_BIN: '/fake/yt-dlp', YTDLP_IP_STACK: 'ipv4', NODE_ENV: 'test' },
 }));
 
 const execFileMock = vi.hoisted(() => vi.fn());
