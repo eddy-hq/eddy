@@ -111,6 +111,13 @@ export function surfaceForToday(userId: string, isKid: boolean, cap: number): Ve
   // why_text IS NOT NULL enforces brief §9a: every surfaced item must
   // carry a one-sentence explanation. If Gemma couldn't generate one,
   // the candidate doesn't surface.
+  //
+  // The requests NOT EXISTS excludes 'failed' rows so clear-parked
+  // (ADR-0012) can free a parked auto-download for re-selection: it marks the
+  // stuck row 'failed' and resets this candidate back to 'scored'. This is
+  // safe against genuinely-failed downloads because those leave their
+  // candidate_pool row at 'requested' (never re-set to 'scored'), so the
+  // status='scored' filter above keeps them out regardless.
   const rows = db.prepare(`
     SELECT c.candidate_id, c.url, c.external_id, c.title, c.published_at,
            c.connection_score, c.quality_score, c.time_sensitivity,
@@ -126,6 +133,7 @@ export function surfaceForToday(userId: string, isKid: boolean, cap: number): Ve
       AND NOT EXISTS (
         SELECT 1 FROM requests r
         WHERE r.user_id = c.user_id AND r.youtube_id = c.external_id
+          AND r.status != 'failed'
       )
   `).all(userId) as CandidateRow[];
 

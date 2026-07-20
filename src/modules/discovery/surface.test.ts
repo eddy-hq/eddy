@@ -463,6 +463,28 @@ describe('surfaceForToday — already-requested exclusion', () => {
 
     expect(ids).toContain('mine');
   });
+
+  it("does NOT exclude a candidate whose only request row is 'failed' (ADR-0012 clear-parked re-selection)", () => {
+    insertCandidate({ candidateId: 'reclaimed', guardVerdict: 'clear_yes', externalId: 'yt-parked' });
+    // clear-parked marked the stuck download 'failed' and reset the candidate
+    // to 'scored'; the slate must be able to re-select it under budget.
+    db.prepare(`
+      INSERT INTO requests
+        (request_id, user_id, source, url, youtube_id, status, requested_at)
+      VALUES (?, ?, 'channel_subscription', ?, ?, 'failed', ?)
+    `).run(
+      'req-parked',
+      KID_USER_ID,
+      'https://www.youtube.com/watch?v=yt-parked',
+      'yt-parked',
+      new Date().toISOString(),
+    );
+
+    const verdicts = surfaceForToday(KID_USER_ID, true, CAP);
+    const ids = verdicts.map((v) => v.candidate.candidateId);
+
+    expect(ids).toContain('reclaimed');
+  });
 });
 
 describe('readScoredCandidatesByBucket — kid guard recheck covers every bucket', () => {

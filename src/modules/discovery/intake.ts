@@ -35,8 +35,11 @@ function isDuplicateCandidate(userId: string, videoId: string): boolean {
   ).get(userId, videoId);
   if (inPool) return true;
 
+  // 'failed' rows don't block re-intake: clear-parked (ADR-0012) marks parked
+  // auto-downloads 'failed' so the slate can re-select them, and a genuinely
+  // failed download shouldn't permanently exclude a video from a later run.
   const inRequests = db.prepare(
-    'SELECT 1 FROM requests WHERE user_id = ? AND youtube_id = ? LIMIT 1'
+    "SELECT 1 FROM requests WHERE user_id = ? AND youtube_id = ? AND status != 'failed' LIMIT 1"
   ).get(userId, videoId);
   return !!inRequests;
 }
