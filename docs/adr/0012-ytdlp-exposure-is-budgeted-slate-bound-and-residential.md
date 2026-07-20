@@ -21,5 +21,13 @@ The decision is a cluster that only makes sense together — **downloads are dem
 
 - **VPN / residential proxy / VPS egress for yt-dlp.** Trades occasional residential blocks for constant datacenter-range flagging, adds cost and an infra dependency, and protects nothing the block actually threatens (family YouTube use is unaffected).
 - **Autonomous exponential probe backoff (24h → 48h → 96h).** Stays hands-off but keeps spending probes against a flag whose TTL is unknown; the probes themselves are the suspected flag-refresher. Manual resume with a good alert is cheaper and safer.
-- **Throwaway-account cookies as a blocked-state fallback.** Rejected above; also explicitly deferred territory in the brief and it would be load-bearing infrastructure the moment it existed.
+- **Throwaway-*account* cookies as a blocked-state fallback.** A *logged-in* account under bot suspicion gets banned rather than rate-limited, and account cookies on the kids' download path cross the anonymity line the brief draws (§256). Still rejected. (This is distinct from the anonymous guest-visitor jar adopted in the 2026-07-20 amendment below, which involves no login and nothing to ban.)
 - **Keep eager follow downloads, budget only discovery.** The parked-queue autopsy showed follows *are* the volume; budgeting around them is fiction.
+
+## Amendment — 2026-07-20: guest-visitor cookie jar narrows rule 5
+
+Rule 5 ("No cookies, ever, including as break-glass") was written about **account** cookies — a logged-in credential that gets *banned* under bot suspicion, converting a self-healing outage into a dead credential with a maintenance burden, and that crosses the anonymity line the brief draws (§256). That reasoning is sound and **unchanged**: logged-in / account cookies remain forbidden on every yt-dlp path, for exactly those reasons.
+
+It does not, however, cover an **anonymous guest-visitor cookie jar** — an aged, *never-logged-in* identity minted by a single yt-dlp touch of one video, deletable at will. YouTube appears to score fresh anonymous sessions per IP (yt-dlp issues #14899 / #15865), and an aged never-logged-in guest cookiefile passes gates that fresh-per-invocation sessions fail (#15583). There is no account, so there is nothing to ban: if the identity is flagged, you delete the jar (behaviour reverts to fresh-session-per-run) and mint a new one after the block clears.
+
+**Decision:** rule 5 is narrowed. An anonymous guest-visitor jar is **adopted** for the worker download path (and the worker resume probe, so the probe exercises the same identity downloads use), gated behind `YTDLP_GUEST_COOKIES` (empty default = prior fresh-session behaviour). Logged-in / account cookies stay forbidden. The jar is worker-side, outside the repo, and never committed. See docs/ops.md for minting, ageing, and rotation.

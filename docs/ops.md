@@ -236,6 +236,31 @@ Keep those addresses **in your incident notes, never in this repo** — no real 
 
 YouTube appears to score **fresh anonymous sessions per IP**, not bytes transferred or download counts (yt-dlp maintainers, issues #14899 / #15865). That's why the fix direction is **fewer yt-dlp touch-points** — video and channel search now go through the Data API (`DISCOVERY_SOURCE=api`, see *Discovery metadata source* above) — rather than shrinking downloads. A smaller download is still one more anonymous session; a search that never touches yt-dlp is zero.
 
+### `YTDLP_GUEST_COOKIES` — the aged guest-visitor jar
+
+The download path can reuse **one persisted anonymous "guest visitor" identity** instead of minting a fresh session every run — an aged never-logged-in cookie jar passes gates that fresh sessions fail (yt-dlp #15583; per-IP session scoring #14899 / #15865). This is **not an account login** — nothing to ban; ADR-0012's 2026-07-20 amendment narrows rule 5 to permit exactly this.
+
+**What / where.** A Netscape cookie jar **on the worker**, outside the repo — e.g. `~/.local/state/eddy/guest-cookies.txt`. Point `YTDLP_GUEST_COOKIES` (`.env`) at it. Empty/unset (default) = fresh anonymous session per run, prior behaviour. A configured-but-missing file logs a warn and reverts to fresh-per-run — it never fails a download. Applies to worker downloads and the `resume-if-clear` worker probe (so the probe tests the identity downloads use); the M4 anonymous probe stays cookieless by design.
+
+**Mint one** (on the worker). Run the same invocation the resume probe uses, adding `--cookies <path>` against a known-good video — one YouTube touch creates and populates the jar:
+
+```bash
+# on the worker
+mkdir -p ~/.local/state/eddy
+~/.local/bin/yt-dlp --force-ipv4 \
+  --cookies ~/.local/state/eddy/guest-cookies.txt \
+  --js-runtimes node:node --remote-components ejs:github \
+  --extractor-args youtube:player_client=mweb --sleep-requests 1.5 \
+  --dump-json --no-playlist --skip-download --no-write-playlist-metafiles \
+  'https://www.youtube.com/watch?v=jNQXAC9IVRw' >/dev/null
+```
+
+**Age it.** Leave the jar unused ideally **3+ days** before it drives real downloads — a brand-new jar reads much like a fresh session. Do NOT log in to anything with it; a single anonymous touch is the whole point.
+
+**Rotate.** If blocks recur while the jar is in use, **delete the file** (behaviour reverts to fresh-session-per-run) and, once the block has cleared, mint a fresh one and age it again. The jar is disposable — that is why this is safe.
+
+**Hard rule.** Never use a **logged-in account's** cookies here. Guest-visitor (never-logged-in) only. An account under bot suspicion gets banned, not rate-limited, and crosses the brief's anonymity line (§256).
+
 ---
 
 ## Plex — Eddy Videos library prefs
