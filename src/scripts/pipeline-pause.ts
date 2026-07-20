@@ -14,6 +14,7 @@
 import 'dotenv/config';
 import { discoveryQueue, downloadQueue, closeQueues } from '../queue';
 import { videoDuration } from '../ytdlp';
+import { resetCircuitBreaker } from '../circuit-breaker';
 
 // "Me at the zoo" — the first YouTube video, reliably available. A successful
 // anonymous duration probe means the IP-wide bot block has lifted.
@@ -27,6 +28,10 @@ async function pauseBoth(): Promise<void> {
 async function resumeBoth(): Promise<void> {
   await discoveryQueue.resume();
   await downloadQueue.resume();
+  // Clear the circuit-breaker open flag + escalation strikes so the pipeline
+  // starts clean after a manual resume — otherwise the next arm would re-trip
+  // instantly on inherited strikes (ADR-0012, change B).
+  await resetCircuitBreaker();
 }
 
 async function statusLine(): Promise<string> {

@@ -75,6 +75,17 @@ export function createNotifications(opts: CreateNotificationsOptions): Notificat
         };
       }
 
+      case 'circuit_open':
+        return {
+          title: 'yt-dlp pipeline auto-paused',
+          message:
+            `The download + discovery queues auto-paused after ${event.consecutiveTrips} consecutive bot-detection trips.\n` +
+            'Resume is manual: run `pipeline-pause.ts resume-if-clear` once the IP block has cleared.',
+          priority: 'high',
+          tags: ['rotating_light'],
+          clickUrl: pwaUrl('/admin/requests'),
+        };
+
       case 'parent_review':
         return {
           title: `${event.requesterName} wants to watch something`,
@@ -128,7 +139,12 @@ export function createNotifications(opts: CreateNotificationsOptions): Notificat
     });
 
     logger.info(
-      { recipient, kind: event.kind, requestId: event.requestId },
+      {
+        recipient,
+        kind: event.kind,
+        // Not every event carries a requestId (e.g. circuit_open is pipeline-wide).
+        requestId: 'requestId' in event ? event.requestId : undefined,
+      },
       'Notification sent',
     );
   }

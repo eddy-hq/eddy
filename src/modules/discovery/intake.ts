@@ -12,6 +12,7 @@ import {
 } from '../../discovery-metadata';
 import { type YtdlpError } from '../../ytdlp';
 import { botDetectionCooldownMs, engageBotDetectionCooldown } from '../../botdetect';
+import { tripCircuitIfNeeded } from '../../circuit-breaker';
 import { getDeclaredChannelInterest } from '../interests';
 import { daysSince, uploadDateToIso, sleep, jitteredDelayMs } from './util';
 
@@ -171,7 +172,8 @@ export async function refreshCandidatePool(
       // A bot-detection block won't clear by trying the next term — arm the
       // cooldown and abandon the rest of this run's searches (#185).
       if ((err as YtdlpError).botDetection) {
-        await engageBotDetectionCooldown(redis, config.YTDLP_BOTDETECT_COOLDOWN_SECS, 'search');
+        const level = await engageBotDetectionCooldown(redis, config.YTDLP_BOTDETECT_COOLDOWN_SECS, 'search');
+        await tripCircuitIfNeeded(level);
         logger.warn(
           { userId },
           'Discovery: bot-detection during interest search — cooldown engaged, aborting remaining searches',
@@ -311,7 +313,8 @@ export async function seedBackCatalogCandidates(userId: string): Promise<number>
         break;
       }
       if ((err as YtdlpError).botDetection) {
-        await engageBotDetectionCooldown(redis, config.YTDLP_BOTDETECT_COOLDOWN_SECS, 'backcatalog');
+        const level = await engageBotDetectionCooldown(redis, config.YTDLP_BOTDETECT_COOLDOWN_SECS, 'backcatalog');
+        await tripCircuitIfNeeded(level);
         logger.warn({ userId }, 'Discovery: bot-detection during back-catalogue seed — cooldown engaged, aborting');
         break;
       }

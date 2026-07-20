@@ -82,12 +82,18 @@ export function shouldEngageCooldown(text: string | null | undefined): boolean {
 // so a re-block shortly after the window lifts still counts as consecutive; a
 // clean run clears it (clearBotDetectionEscalation). `baseCooldownSecs <= 0`
 // disables the gate (config escape hatch). Fail-open.
+//
+// Returns the escalation `level` (the running consecutive-strike count) so a
+// caller can act on the threshold — the circuit breaker trips once this reaches
+// a fixed number of consecutive re-trips (see `src/circuit-breaker.ts`). Returns
+// 0 when the gate is disabled or Redis is unavailable, so a fail-open path never
+// looks like a strike.
 export async function engageBotDetectionCooldown(
   store: CooldownStore,
   baseCooldownSecs: number,
   reason: string,
-): Promise<void> {
-  if (baseCooldownSecs <= 0) return;
+): Promise<number> {
+  if (baseCooldownSecs <= 0) return 0;
   try {
     const level = await store.incr(BOT_DETECTION_LEVEL_KEY);
     const rung = Math.min(level, COOLDOWN_LADDER.length);
@@ -103,8 +109,10 @@ export async function engageBotDetectionCooldown(
         ? 'yt-dlp bot-detection cooldown at TOP rung — downloads paused for the long window (IP throttled)'
         : 'yt-dlp bot-detection cooldown engaged (escalating)',
     );
+    return level;
   } catch (err) {
     logger.debug({ err }, 'Could not engage bot-detection cooldown (Redis unavailable)');
+    return 0;
   }
 }
 
