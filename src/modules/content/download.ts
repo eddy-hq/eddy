@@ -7,6 +7,7 @@ import { config } from '../../config';
 import { logger } from '../../logger';
 import { shouldEngageCooldown } from '../../botdetect';
 import { uploadDateToIso } from '../../date';
+import { ipStackArgs } from '../../ytdlp-ipstack';
 
 const execFileAsync = promisify(execFile);
 
@@ -37,6 +38,9 @@ const NODE_BIN = process.env['NODE_BIN'] ?? 'node';
 // node JS runtime handles signature/n-challenges.
 function baseArgs(): string[] {
   return [
+    // Pin the IP stack (default IPv4) so the worker download path shares one
+    // reputation bucket with the M4 probe/metadata path (#185 follow-on).
+    ...ipStackArgs(config.YTDLP_IP_STACK),
     '--js-runtimes', `node:${NODE_BIN}`,
     '--remote-components', 'ejs:github',
     '--extractor-args', 'youtube:player_client=mweb',

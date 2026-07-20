@@ -45,6 +45,12 @@ const schema = z.object({
   // different locations.
   YTDLP_BIN: z.string().default('yt-dlp'),
   YTDLP_BIN_M4: z.string().default('/opt/homebrew/bin/yt-dlp'),
+  // IP stack every yt-dlp invocation is pinned to (probes and downloads alike).
+  // YouTube's bot-detection blocks are per-IP-stack and IPv6 reputation is
+  // per-/64, so an unpinned mix lets one stack's block hide behind the other or
+  // spread across both. 'ipv4' keeps the fleet in one known reputation bucket;
+  // 'ipv6' / 'auto' exist for diagnosis. Maps to argv in ytdlp-ipstack.
+  YTDLP_IP_STACK: z.enum(['ipv4', 'ipv6', 'auto']).default('ipv4'),
   // Thumbnails — generated post-download, served by nginx alongside videos
   THUMB_OUTPUT_PATH: z.string().default('/mnt/ssd/eddy/thumbs'),
   NGINX_THUMB_BASE_URL: z.string().optional(),
