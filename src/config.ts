@@ -115,6 +115,20 @@ const schema = z.object({
   // this is the dominant volume cut on the people path (#185). 0 disables the
   // gate (refetch every pass, pre-#185 behaviour).
   PERSON_CHANNEL_INFO_TTL_DAYS: z.coerce.number().int().nonnegative().default(30),
+  // Global daily download budget (ADR-0012). Caps AUTOMATED downloads — the
+  // slate-selected delighters plus follow-sourced subscription / back-catalogue
+  // picks — across ALL users for one UTC day. Slate-bound (delighter) downloads
+  // are funded first, follow-sourced ones second; once the budget is spent the
+  // remaining automated candidates simply wait and stay selectable on a later
+  // day (no failure state). Explicit share-sheet / on-demand kid/parent requests
+  // count toward the day's tally but are NEVER refused by this gate. Default 10.
+  DOWNLOAD_DAILY_BUDGET: z.coerce.number().int().nonnegative().default(10),
+  // Back-catalogue moratorium kill-switch (ADR-0012). When false, the daily
+  // slate stops mining followed channels' back catalogues (the largest non-slate
+  // yt-dlp fan-out); new-upload subscription candidates and interest search are
+  // unaffected. Enum-transform rather than z.coerce.boolean() — the latter treats
+  // the string "false" as truthy.
+  BACK_CATALOGUE_ENABLED: z.enum(['true', 'false']).default('true').transform((v) => v === 'true'),
   // ── Discovery metadata source (#189) ─────────────────────────────────────
   // Where discovery reads its metadata from. 'ytdlp' (default) scrapes via
   // yt-dlp on the M4; 'api' uses the YouTube Data API v3 (a plain API key,

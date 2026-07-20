@@ -14,6 +14,9 @@ const { mockConfig } = vi.hoisted(() => ({
     DISCOVERY_SEARCH_DELAY_MS: 0,
     DISCOVERY_SEARCH_JITTER_MS: 0,
     YTDLP_BOTDETECT_COOLDOWN_SECS: 2700,
+    // Back-catalogue moratorium kill-switch (ADR-0012); enabled by default so
+    // the seeder's existing behaviour is exercised. A dedicated test flips it.
+    BACK_CATALOGUE_ENABLED: true,
   },
 }));
 
@@ -714,5 +717,23 @@ describe('seedBackCatalogCandidates — dedup switch to isDuplicateCandidate', (
     expect(added).toBe(0);
     // The cooldown short-circuits before any flat-playlist fetch.
     expect(mockedPlaylist).not.toHaveBeenCalled();
+  });
+
+  it('halts entirely under the back-catalogue moratorium (ADR-0012)', async () => {
+    setupFollowedChannel();
+    mockConfig.BACK_CATALOGUE_ENABLED = false;
+    mockedPlaylist.mockResolvedValue([
+      { videoId: 'would-be-mined', title: 'Blocked by moratorium', durationSecs: 600, liveStatus: null },
+    ]);
+
+    try {
+      const added = await seedBackCatalogCandidates(USER_ID);
+      expect(added).toBe(0);
+      // The kill-switch short-circuits before any flat-playlist fetch (and
+      // before the cooldown check), so no yt-dlp fan-out occurs.
+      expect(mockedPlaylist).not.toHaveBeenCalled();
+    } finally {
+      mockConfig.BACK_CATALOGUE_ENABLED = true;
+    }
   });
 });
