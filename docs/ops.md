@@ -193,6 +193,41 @@ Discovery's **metadata** reads (search, channel uploads, durations, channel bio/
 
 ---
 
+## Block incidents — diagnostics & IP-stack discipline
+
+When a "Sign in to confirm you're not a bot" wall hits, the first job is to tell a **real IP-level botgate** apart from an **extractor/client problem** — they have opposite fixes and the wrong guess wastes days.
+
+**Step zero — the incognito test.** From a browser on the **same public IP** as the boxes, open an incognito/private window (logged out, no cookies) and try to play any YouTube video.
+
+- **Incognito playback also fails** → the IP itself is gated. yt-dlp can't out-clever this; quiet time or an egress change is the only fix. Stand down (let the cooldown/breaker do their thing) and wait.
+- **Incognito plays fine but yt-dlp still fails** → it's an extractor/client problem, not the IP. Update yt-dlp (nightly), check the POT stack. **Quiet time will not fix this** — don't sit out a block that isn't there.
+
+This split is the yt-dlp maintainers' own first-line triage (issue #15583). Do it before touching any knob.
+
+### IP-stack awareness
+
+Blocks are scored **per stack** — IPv4 and IPv6 are separate reputation buckets — and IPv6 reputation is scored per **/64 delegated prefix**, not per address. On UK residential ISPs that /64 often stays **sticky across an IPv4 WAN change**, so rotating the public IPv4 can leave a blocked IPv6 /64 untouched. This is the leading hypothesis for why the July 2026 block survived a WAN IPv4 change: both boxes were egressing IPv6 on the same sticky delegated /64.
+
+At incident time, record **both stacks' egress** in your incident notes so you can see which one moved:
+
+```bash
+# from the worker
+curl -4 https://ifconfig.co
+curl -6 https://ifconfig.co
+```
+
+Keep those addresses **in your incident notes, never in this repo** — no real IPs in git, ever.
+
+### `YTDLP_IP_STACK` — pin one stack
+
+**`YTDLP_IP_STACK`** (`.env`, enum `ipv4` | `ipv6` | `auto`, default `ipv4`) forces every yt-dlp invocation on **both boxes** — downloads **and** the resume-if-clear probes — onto one stack, so probes and downloads share a single reputation bucket rather than splitting across two and muddying which stack is actually blocked. Flipping the var (e.g. `ipv4` → `ipv6`) is the cheap first move when the pinned stack is blocked but the incognito test shows the other stack is clean.
+
+### Why fewer touch-points, not smaller downloads
+
+YouTube appears to score **fresh anonymous sessions per IP**, not bytes transferred or download counts (yt-dlp maintainers, issues #14899 / #15865). That's why the fix direction is **fewer yt-dlp touch-points** — video and channel search now go through the Data API (`DISCOVERY_SOURCE=api`, see *Discovery metadata source* above) — rather than shrinking downloads. A smaller download is still one more anonymous session; a search that never touches yt-dlp is zero.
+
+---
+
 ## Plex — Eddy Videos library prefs
 
 Plex's per-library credit-marker detection (`enableCreditsMarkerGeneration`) runs ffmpeg analysis over every clip. Pointless on the Eddy Videos library — YouTube clips have no credits — and it pegs ~10 cores for hours per sweep. Disable it once on the mediaserver:
