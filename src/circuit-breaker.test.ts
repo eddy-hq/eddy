@@ -39,6 +39,7 @@ function makeDeps(overrides: Partial<CircuitBreakerDeps> = {}): CircuitBreakerDe
   return {
     pauseQueues: vi.fn(async () => {}),
     claimAlert: vi.fn(async () => true),
+    releaseAlert: vi.fn(async () => {}),
     sendAlert: vi.fn(async () => {}),
     ...overrides,
   };
@@ -80,5 +81,19 @@ describe('tripCircuitIfNeeded', () => {
     });
     await expect(tripCircuitIfNeeded(CIRCUIT_BREAKER_THRESHOLD, deps)).resolves.toBe(false);
     expect(deps.sendAlert).not.toHaveBeenCalled();
+  });
+
+  it('releases the alert claim when the send fails, so a later trip can re-alert', async () => {
+    const deps = makeDeps({
+      sendAlert: vi.fn(async () => { throw new Error('ntfy unreachable'); }),
+    });
+    await expect(tripCircuitIfNeeded(CIRCUIT_BREAKER_THRESHOLD, deps)).resolves.toBe(false);
+    expect(deps.releaseAlert).toHaveBeenCalledTimes(1);
+
+    // The retry: a later trip wins the claim again and the alert goes out.
+    const retry = makeDeps({ claimAlert: vi.fn(async () => true) });
+    await expect(tripCircuitIfNeeded(CIRCUIT_BREAKER_THRESHOLD + 1, retry)).resolves.toBe(true);
+    expect(retry.sendAlert).toHaveBeenCalledTimes(1);
+    expect(retry.releaseAlert).not.toHaveBeenCalled();
   });
 });

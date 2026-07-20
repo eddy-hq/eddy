@@ -50,6 +50,9 @@ export interface CircuitBreakerDeps {
   // circuit (SET NX succeeded), so exactly one caller across both processes
   // sends the alert.
   claimAlert: () => Promise<boolean>;
+  // Release the single-alert slot after a failed send, so a later trip can
+  // retry the alert instead of the claim being burned forever.
+  releaseAlert: () => Promise<void>;
   // Send the one ntfy alert to Steve's adult topic.
   sendAlert: (consecutiveTrips: number) => Promise<void>;
 }
@@ -62,6 +65,9 @@ const defaultDeps: CircuitBreakerDeps = {
   claimAlert: async () => {
     const res = await redis.set(CIRCUIT_OPEN_KEY, new Date().toISOString(), 'NX');
     return res === 'OK';
+  },
+  releaseAlert: async () => {
+    await redis.del(CIRCUIT_OPEN_KEY);
   },
   sendAlert: async (consecutiveTrips) => {
     await getNotifications().notify(
@@ -85,7 +91,16 @@ export async function tripCircuitIfNeeded(
     await deps.pauseQueues();
     const opened = await deps.claimAlert();
     if (opened) {
-      await deps.sendAlert(level);
+      try {
+        await deps.sendAlert(level);
+      } catch (err) {
+        // A failed send must not burn the only alert: give back the claim so
+        // the next trip (from either process) retries the notification. The
+        // queues stay paused either way — going dark quietly is the failure
+        // mode this exists to prevent.
+        await deps.releaseAlert();
+        throw err;
+      }
       logger.warn(
         { consecutiveTrips: level, threshold: CIRCUIT_BREAKER_THRESHOLD },
         'yt-dlp circuit breaker OPEN — paused discovery+download queues after consecutive bot-detection trips; manual resume required',

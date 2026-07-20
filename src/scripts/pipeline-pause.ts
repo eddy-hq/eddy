@@ -26,16 +26,11 @@ import { db } from '../db/client';
 import { getRequestsState } from '../modules/requests';
 import { BOT_DETECTION_COOLDOWN_KEY, BOT_DETECTION_LEVEL_KEY } from '../botdetect';
 import { deriveRequestId, parseWorkerProbe, bothProbesClear } from './pipeline-pause-lib';
-import { resetCircuitBreaker } from '../circuit-breaker';
+import { resetCircuitBreaker, CIRCUIT_OPEN_KEY } from '../circuit-breaker';
 
 // "Me at the zoo" — the first YouTube video, reliably available. A successful
 // duration probe means the IP-wide bot block has lifted for that path.
 const PROBE_VIDEO = 'jNQXAC9IVRw';
-
-// Idempotency flag set by the circuit breaker (ADR-0012) so a re-trip from
-// either process doesn't re-alert. Manual resume must clear it, alongside the
-// escalating-cooldown keys, or the next yt-dlp arm re-escalates instantly.
-const CIRCUIT_OPEN_KEY = 'eddy:ytdlp:circuit-open';
 
 // The worker's download path is a different binary on a different host, so it
 // can't be probed from the M4 process — SSH into the worker and run the same
