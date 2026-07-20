@@ -194,6 +194,10 @@ _Avoid_: server, host
 The Node process on the Ubuntu box that runs yt-dlp, ffmpeg, and reports back to the M4 via the internal callback endpoint. Moves bytes but doesn't think.
 _Avoid_: downloader, agent
 
+**Slate-bound download**:
+The only time bytes move: a video is downloaded when the daily slate selects it (or a kid explicitly requests it), never eagerly on discovery or RSS poll. Follow uploads enter the candidate pool without downloading. ADR-0012.
+_Avoid_: pre-fetch, eager download (the rejected behaviours)
+
 **Recycler**:
 The module that reclaims SSD space by deleting **Live** video files and flipping their cards to **Recycled**. Per-user budgets; **Saved** items immune.
 _Avoid_: garbage collector, cleaner
