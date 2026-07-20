@@ -47,7 +47,11 @@ const WORKER_PROBE_CMD = [
   // amendment), so the probe exercises the real identity rather than a fresh
   // session. The path is worker-side — fine, this command runs on the worker.
   ...(config.YTDLP_GUEST_COOKIES ? ['--cookies', config.YTDLP_GUEST_COOKIES] : []),
-  '--js-runtimes node:node',
+  // Non-interactive SSH doesn't source nvm, so bare `node` is not on PATH and
+  // the n-challenge solver silently fails ("No video formats found") — which
+  // reads as blocked and would keep resume-if-clear paused forever. Resolve the
+  // newest nvm node on the worker at probe time instead.
+  '--js-runtimes "node:$(ls ~/.nvm/versions/node/*/bin/node | sort -V | tail -1)"',
   '--remote-components ejs:github',
   '--extractor-args youtube:player_client=mweb',
   '--sleep-requests 1.5',
