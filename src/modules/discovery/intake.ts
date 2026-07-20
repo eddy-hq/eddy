@@ -271,6 +271,16 @@ function shuffleInPlace<T>(arr: T[]): T[] {
 }
 
 export async function seedBackCatalogCandidates(userId: string): Promise<number> {
+  // Back-catalogue moratorium (ADR-0012): a global kill-switch to halt mining
+  // followed channels' back catalogues — the largest non-slate yt-dlp fan-out.
+  // Guarded here at the function head, not at the call site, so no present or
+  // future caller (including preview / test paths) can bypass the moratorium.
+  // New-upload subscription candidates and interest search are unaffected.
+  if (!config.BACK_CATALOGUE_ENABLED) {
+    logger.info({ userId }, 'Discovery: back-catalogue seeding disabled — skipping');
+    return 0;
+  }
+
   // Same bot-detection cooldown gate as the interest search (#185): during a
   // cooldown, don't mine back catalogues — that's another yt-dlp fan-out into
   // a blocked IP.

@@ -15,7 +15,7 @@ import {
 } from './intake';
 import { scoreCandidates } from './scoring';
 import { bucketFor, isPicked } from './ranker';
-import { buildDiscoverySchedule, cronAt } from './util';
+import { buildDiscoverySchedule, cronAt, utcDayStartIso, planAutomatedDownloads } from './util';
 import {
   surfaceForToday,
   readScoredCandidatesByBucket,
@@ -65,6 +65,22 @@ export function selectDeclaredInterests(userId: string): UserInterestRow[] {
     WHERE ut.user_id = ?
     ORDER BY ut.rank ASC
   `).all(userId) as UserInterestRow[];
+}
+
+// Count every download that entered today (UTC), across all users. The global
+// daily budget (ADR-0012) is a running cross-run tally, not a per-run number:
+// per-user slate jobs fire at their own hours through the day, so each run must
+// read the shared spend so far rather than assume a fresh allowance. Every
+// requests row is a download (all three creators insert status='downloading'),
+// so a plain COUNT over today's `requested_at` captures the lot — including the
+// explicit share-sheet / on-demand requests that count toward the tally but are
+// never themselves refused (they don't route through the budget gate below).
+export function countDownloadsToday(now: Date = new Date()): number {
+  const dayStart = utcDayStartIso(now);
+  const row = db.prepare(
+    'SELECT COUNT(*) AS n FROM requests WHERE requested_at >= ?',
+  ).get(dayStart) as { n: number };
+  return row.n;
 }
 
 export async function runDiscoveryForUser(user: UserRow, options: { force?: boolean } = {}): Promise<DiscoveryRunResult> {
@@ -161,7 +177,46 @@ export async function runDiscoveryForUser(user: UserRow, options: { force?: bool
   const markRequested = db.prepare(
     `UPDATE candidate_pool SET status = 'requested' WHERE candidate_id = ?`,
   );
-  await Promise.all(picks.map(async (v) => {
+
+  // Global daily download budget (ADR-0012). Automated downloads (slate-selected
+  // delighters + follow-sourced subscription / back-catalogue picks) share one
+  // budget per UTC day across the whole fleet; slate-bound picks are funded
+  // first, follows second. Once the budget is spent, the remaining picks are
+  // deferred — reverted to 'scored' so a later slate can re-select them (no
+  // failure state). Explicit share-sheet / on-demand requests never pass through
+  // here, so they are never refused, though they do consume the same tally.
+  const spentToday = countDownloadsToday();
+  const remaining = config.DOWNLOAD_DAILY_BUDGET - spentToday;
+  const plan = planAutomatedDownloads(
+    picks,
+    (v) => bucketFor(v.candidate.sourceType) === 'delighter',
+    remaining,
+  );
+
+  if (plan.toDefer.length > 0) {
+    // surfaceForToday already flipped these scored→surfaced with today's
+    // surfaced_date; revert so they neither block re-selection (surface requires
+    // status='scored' AND surfaced_date IS NULL) nor linger in today's feed
+    // without a download. They re-compete in a future slate under fresh budget.
+    const revertSurfaced = db.prepare(
+      `UPDATE candidate_pool
+         SET status = 'scored', surfaced_date = NULL, surfaced_at = NULL
+       WHERE candidate_id = ?`,
+    );
+    for (const v of plan.toDefer) revertSurfaced.run(v.candidate.candidateId);
+    logger.info(
+      {
+        userId: user.user_id,
+        budget: config.DOWNLOAD_DAILY_BUDGET,
+        spentToday,
+        deferred: plan.toDefer.length,
+        downloading: plan.toDownload.length,
+      },
+      'Discovery: daily download budget spent — deferring automated candidates to a later day',
+    );
+  }
+
+  await Promise.all(plan.toDownload.map(async (v) => {
     if (!v.candidate.url) {
       logger.warn(
         { userId: user.user_id, candidateId: v.candidate.candidateId },
@@ -189,12 +244,12 @@ export async function runDiscoveryForUser(user: UserRow, options: { force?: bool
     markRequested.run(v.candidate.candidateId);
   }));
 
-  // Verdicts are already in weighted-desc order. Build response payload
-  // straight off the picks — no re-query, no recomputation. gemma_score
-  // is connection × quality / 10 (0–10 range), kept in the response for
-  // legacy callers that still display it; preserve null when either axis
-  // is missing to match the DB column's nullable contract.
-  const items = picks.map((v) => {
+  // Build response payload off the picks that actually landed a download —
+  // budget-deferred picks were reverted to 'scored' above and did not surface.
+  // gemma_score is connection × quality / 10 (0–10 range), kept in the response
+  // for legacy callers that still display it; preserve null when either axis is
+  // missing to match the DB column's nullable contract.
+  const items = plan.toDownload.map((v) => {
     const conn = v.candidate.connectionScore;
     const qual = v.candidate.qualityScore;
     return {
@@ -210,7 +265,7 @@ export async function runDiscoveryForUser(user: UserRow, options: { force?: bool
     skipped: false,
     interestsChecked: userInterests.length,
     candidatesAdded: added,
-    surfaced: picks.length,
+    surfaced: plan.toDownload.length,
     items,
   };
 }

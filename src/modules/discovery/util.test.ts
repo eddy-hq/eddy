@@ -8,6 +8,8 @@ import {
   jitteredDelayMs,
   buildDiscoverySchedule,
   cronAt,
+  utcDayStartIso,
+  planAutomatedDownloads,
 } from './util';
 
 describe('uploadDateToIso', () => {
@@ -195,5 +197,93 @@ describe('sleep', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe('utcDayStartIso', () => {
+  it('returns midnight UTC for the given instant, ISO-shaped', () => {
+    expect(utcDayStartIso(new Date('2026-07-20T14:37:12.482Z'))).toBe(
+      '2026-07-20T00:00:00.000Z',
+    );
+  });
+
+  it('uses the UTC calendar day, not local time', () => {
+    // 23:30 in a UTC+ zone is still the same UTC day here (input is UTC).
+    expect(utcDayStartIso(new Date('2026-01-01T00:00:00.000Z'))).toBe(
+      '2026-01-01T00:00:00.000Z',
+    );
+  });
+
+  it('sorts lexically against requested_at timestamps for a day-boundary count', () => {
+    const start = utcDayStartIso(new Date('2026-07-20T09:00:00.000Z'));
+    expect('2026-07-20T00:00:00.000Z' >= start).toBe(true); // exactly midnight counts
+    expect('2026-07-20T23:59:59.999Z' >= start).toBe(true); // later same day counts
+    expect('2026-07-19T23:59:59.999Z' >= start).toBe(false); // yesterday excluded
+  });
+});
+
+describe('planAutomatedDownloads', () => {
+  interface Pick {
+    id: string;
+    slateBound: boolean;
+  }
+  const slate = (id: string): Pick => ({ id, slateBound: true });
+  const follow = (id: string): Pick => ({ id, slateBound: false });
+  const isSlate = (p: Pick) => p.slateBound;
+  const ids = (arr: Pick[]) => arr.map((p) => p.id);
+
+  it('funds slate-bound picks before follow-sourced ones', () => {
+    const picks = [follow('f1'), slate('s1'), follow('f2'), slate('s2')];
+    const plan = planAutomatedDownloads(picks, isSlate, 2);
+    expect(ids(plan.toDownload)).toEqual(['s1', 's2']);
+    expect(ids(plan.toDefer)).toEqual(['f1', 'f2']);
+  });
+
+  it('spills into follows once slate-bound picks are funded', () => {
+    const picks = [slate('s1'), follow('f1'), follow('f2')];
+    const plan = planAutomatedDownloads(picks, isSlate, 2);
+    expect(ids(plan.toDownload)).toEqual(['s1', 'f1']);
+    expect(ids(plan.toDefer)).toEqual(['f2']);
+  });
+
+  it('preserves input order within each priority group (stable)', () => {
+    const picks = [slate('s1'), slate('s2'), slate('s3')];
+    const plan = planAutomatedDownloads(picks, isSlate, 2);
+    expect(ids(plan.toDownload)).toEqual(['s1', 's2']);
+    expect(ids(plan.toDefer)).toEqual(['s3']);
+  });
+
+  it('downloads everything when budget exceeds pick count', () => {
+    const picks = [slate('s1'), follow('f1')];
+    const plan = planAutomatedDownloads(picks, isSlate, 10);
+    expect(ids(plan.toDownload)).toEqual(['s1', 'f1']);
+    expect(plan.toDefer).toEqual([]);
+  });
+
+  it('defers everything when the budget is zero', () => {
+    const picks = [slate('s1'), follow('f1')];
+    const plan = planAutomatedDownloads(picks, isSlate, 0);
+    expect(plan.toDownload).toEqual([]);
+    expect(ids(plan.toDefer)).toEqual(['s1', 'f1']);
+  });
+
+  it('treats a negative remaining budget as zero', () => {
+    const picks = [slate('s1')];
+    const plan = planAutomatedDownloads(picks, isSlate, -5);
+    expect(plan.toDownload).toEqual([]);
+    expect(ids(plan.toDefer)).toEqual(['s1']);
+  });
+
+  it('floors a fractional budget', () => {
+    const picks = [slate('s1'), slate('s2'), slate('s3')];
+    const plan = planAutomatedDownloads(picks, isSlate, 2.9);
+    expect(ids(plan.toDownload)).toEqual(['s1', 's2']);
+    expect(ids(plan.toDefer)).toEqual(['s3']);
+  });
+
+  it('returns two empty lists for no picks', () => {
+    const plan = planAutomatedDownloads([] as Pick[], isSlate, 5);
+    expect(plan.toDownload).toEqual([]);
+    expect(plan.toDefer).toEqual([]);
   });
 });

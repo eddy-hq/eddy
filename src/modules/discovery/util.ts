@@ -72,3 +72,41 @@ export function buildDiscoverySchedule(
 export function cronAt(hour: number, minute: number): string {
   return `${minute} ${hour} * * *`;
 }
+
+// Start-of-UTC-day as an ISO 8601 string, matching the shape requests writes to
+// `requested_at` (`new Date().toISOString()`). A lexical `requested_at >= this`
+// therefore selects every download that entered today. The global download
+// budget (ADR-0012) counts against the UTC day, not local time, so a per-user
+// slate run at any hour spends against one shared, day-aligned tally.
+export function utcDayStartIso(now: Date = new Date()): string {
+  return `${now.toISOString().slice(0, 10)}T00:00:00.000Z`;
+}
+
+// Pure planner for the global daily download budget (ADR-0012). Splits an
+// already-picked set of automated candidates into the ones to download now and
+// the ones to defer, given the remaining budget for the UTC day.
+//
+// Spend priority: slate-bound (delighter) picks are funded before follow-sourced
+// (subscription / back-catalogue) picks. Ordering is otherwise stable, so a
+// weighted-desc input stays weighted-desc within each priority group. Deferred
+// picks are not failures — the caller leaves them re-selectable for a later day.
+export interface DownloadBudgetPlan<T> {
+  toDownload: T[];
+  toDefer: T[];
+}
+
+export function planAutomatedDownloads<T>(
+  picks: readonly T[],
+  isSlateBound: (pick: T) => boolean,
+  remaining: number,
+): DownloadBudgetPlan<T> {
+  const ordered = [
+    ...picks.filter((p) => isSlateBound(p)),
+    ...picks.filter((p) => !isSlateBound(p)),
+  ];
+  const budget = Math.max(0, Math.floor(remaining));
+  return {
+    toDownload: ordered.slice(0, budget),
+    toDefer: ordered.slice(budget),
+  };
+}
