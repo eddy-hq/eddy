@@ -15,6 +15,7 @@ import { config } from '../config';
 import { logger } from '../logger';
 import { fetchMetadata, downloadVideo, attemptsExhausted } from '../modules/content/download';
 import { botDetectionCooldownMs, engageBotDetectionCooldown, clearBotDetectionEscalation } from '../botdetect';
+import { tripCircuitIfNeeded } from '../circuit-breaker';
 import { triggerPlexScan, updatePlexMetadata } from '../modules/content/plex';
 import { postSigned } from '../signed-channel';
 import { generateThumbnail } from './thumb';
@@ -112,7 +113,8 @@ async function processJob(job: Job<DownloadJobData>, token?: string): Promise<vo
     // PWA's bar holds steady instead of flickering back to a spinner. If this
     // was bot-detection, arm the cooldown first so the retry parks (#185).
     if ((err as { botDetection?: boolean }).botDetection) {
-      await engageBotDetectionCooldown(redis, config.YTDLP_BOTDETECT_COOLDOWN_SECS, 'metadata');
+      const level = await engageBotDetectionCooldown(redis, config.YTDLP_BOTDETECT_COOLDOWN_SECS, 'metadata');
+      await tripCircuitIfNeeded(level);
     }
     throw err;
   }
@@ -169,7 +171,8 @@ async function processJob(job: Job<DownloadJobData>, token?: string): Promise<vo
     // Non-terminal download failure. Arm the cooldown on bot-detection so the
     // BullMQ retry parks rather than hammers the blocked IP (#185).
     if ((err as { botDetection?: boolean }).botDetection) {
-      await engageBotDetectionCooldown(redis, config.YTDLP_BOTDETECT_COOLDOWN_SECS, 'download');
+      const level = await engageBotDetectionCooldown(redis, config.YTDLP_BOTDETECT_COOLDOWN_SECS, 'download');
+      await tripCircuitIfNeeded(level);
     }
     throw err;
   }

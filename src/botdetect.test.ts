@@ -143,7 +143,20 @@ describe('engageBotDetectionCooldown', () => {
       expire: vi.fn(),
       del: vi.fn(),
     };
-    await expect(engageBotDetectionCooldown(store, 2700, 'search')).resolves.toBeUndefined();
+    // Fail-open reports level 0 so a Redis outage never looks like a strike.
+    await expect(engageBotDetectionCooldown(store, 2700, 'search')).resolves.toBe(0);
+  });
+
+  it('returns the escalation level so the caller can act on the threshold', async () => {
+    const store = fakeStore();
+    expect(await engageBotDetectionCooldown(store, 2700, 'metadata')).toBe(1);
+    expect(await engageBotDetectionCooldown(store, 2700, 'metadata')).toBe(2);
+    expect(await engageBotDetectionCooldown(store, 2700, 'metadata')).toBe(3);
+  });
+
+  it('returns 0 when the gate is disabled (secs <= 0)', async () => {
+    const store = fakeStore();
+    expect(await engageBotDetectionCooldown(store, 0, 'metadata')).toBe(0);
   });
 });
 

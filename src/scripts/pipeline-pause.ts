@@ -26,6 +26,7 @@ import { db } from '../db/client';
 import { getRequestsState } from '../modules/requests';
 import { BOT_DETECTION_COOLDOWN_KEY, BOT_DETECTION_LEVEL_KEY } from '../botdetect';
 import { deriveRequestId, parseWorkerProbe, bothProbesClear } from './pipeline-pause-lib';
+import { resetCircuitBreaker } from '../circuit-breaker';
 
 // "Me at the zoo" — the first YouTube video, reliably available. A successful
 // duration probe means the IP-wide bot block has lifted for that path.
@@ -61,6 +62,10 @@ async function pauseBoth(): Promise<void> {
 async function resumeBoth(): Promise<void> {
   await discoveryQueue.resume();
   await downloadQueue.resume();
+  // Clear the circuit-breaker open flag + escalation strikes so the pipeline
+  // starts clean after a manual resume — otherwise the next arm would re-trip
+  // instantly on inherited strikes (ADR-0012, change B).
+  await resetCircuitBreaker();
 }
 
 // Drop the escalating-cooldown strike counter, its active cooldown, and the

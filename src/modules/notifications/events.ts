@@ -10,7 +10,8 @@
 export type NotificationEvent =
   | VideoReadyEvent
   | DownloadAlertEvent
-  | ParentReviewEvent;
+  | ParentReviewEvent
+  | CircuitOpenEvent;
 
 // Sent to a kid when their video is downloaded and ready to watch.
 export interface VideoReadyEvent {
@@ -26,6 +27,14 @@ export interface DownloadAlertEvent {
   title: string;
   stuckMins: number;
   action: 'alert' | 're-enqueued' | 'failed';
+}
+
+// Sent to Steve when the yt-dlp circuit breaker trips: both queues have been
+// auto-paused after consecutive bot-detection blocks and resume is manual
+// (ADR-0012). Not addressed to a kid — the adult (Steve) topic only.
+export interface CircuitOpenEvent {
+  kind: 'circuit_open';
+  consecutiveTrips: number;
 }
 
 // Sent to a parent when a kid's request needs a decision.

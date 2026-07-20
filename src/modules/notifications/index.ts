@@ -17,6 +17,7 @@ export type {
   VideoReadyEvent,
   DownloadAlertEvent,
   ParentReviewEvent,
+  CircuitOpenEvent,
 } from './events';
 export { generateActionToken, validateActionToken } from './tokens';
 
