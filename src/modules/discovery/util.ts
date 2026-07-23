@@ -110,3 +110,18 @@ export function planAutomatedDownloads<T>(
     toDefer: ordered.slice(budget),
   };
 }
+
+// Automated-download allowance for one user's slate run (ADR-0012, 2026-07-23
+// amendment). Bounded by BOTH the fleet-wide daily ceiling (bot-detection volume
+// guard) and the per-user daily cap (fairness — a heavy-follow user whose slate
+// job fires early must not drain the shared pool before later-scheduled users,
+// e.g. the kids, get their turn). The tighter of the two governs. Result may be
+// negative or fractional; planAutomatedDownloads floors and clamps it.
+export function automatedDownloadAllowance(
+  globalBudget: number,
+  globalSpent: number,
+  perUserBudget: number,
+  perUserSpent: number,
+): number {
+  return Math.min(globalBudget - globalSpent, perUserBudget - perUserSpent);
+}

@@ -10,6 +10,7 @@ import {
   cronAt,
   utcDayStartIso,
   planAutomatedDownloads,
+  automatedDownloadAllowance,
 } from './util';
 
 describe('uploadDateToIso', () => {
@@ -285,5 +286,34 @@ describe('planAutomatedDownloads', () => {
     const plan = planAutomatedDownloads([] as Pick[], isSlate, 5);
     expect(plan.toDownload).toEqual([]);
     expect(plan.toDefer).toEqual([]);
+  });
+});
+
+describe('automatedDownloadAllowance', () => {
+  // globalBudget=30, perUserBudget=10 — the ADR-0012 (2026-07-23) defaults.
+  it('returns the per-user headroom when it is the tighter limit', () => {
+    // Global pool barely touched, but this user has already taken 8 of 10.
+    expect(automatedDownloadAllowance(30, 4, 10, 8)).toBe(2);
+  });
+
+  it('returns the global headroom when the fleet ceiling is the tighter limit', () => {
+    // Fleet has spent 28/30; this user has taken none — global caps them at 2.
+    expect(automatedDownloadAllowance(30, 28, 10, 0)).toBe(2);
+  });
+
+  it('gives a fresh user their full per-user cap while the pool has room', () => {
+    // The bug this fixes: an early heavy-follow user spent 10, but the fleet
+    // pool still has 20 left, so a later kid gets a full allowance of 10.
+    expect(automatedDownloadAllowance(30, 10, 10, 0)).toBe(10);
+  });
+
+  it('is zero once the user has spent their per-user cap', () => {
+    expect(automatedDownloadAllowance(30, 10, 10, 10)).toBe(0);
+  });
+
+  it('goes negative when a limit is overspent (planner clamps to zero)', () => {
+    // Share-sheet fetches can push a user past their cap; the allowance goes
+    // negative and planAutomatedDownloads floors it to a zero budget.
+    expect(automatedDownloadAllowance(30, 30, 10, 12)).toBe(-2);
   });
 });

@@ -15,7 +15,7 @@ import {
 } from './intake';
 import { scoreCandidates } from './scoring';
 import { bucketFor, isPicked } from './ranker';
-import { buildDiscoverySchedule, cronAt, utcDayStartIso, planAutomatedDownloads } from './util';
+import { buildDiscoverySchedule, cronAt, utcDayStartIso, planAutomatedDownloads, automatedDownloadAllowance } from './util';
 import {
   surfaceForToday,
   readScoredCandidatesByBucket,
@@ -80,6 +80,18 @@ export function countDownloadsToday(now: Date = new Date()): number {
   const row = db.prepare(
     'SELECT COUNT(*) AS n FROM requests WHERE requested_at >= ?',
   ).get(dayStart) as { n: number };
+  return row.n;
+}
+
+// As countDownloadsToday, but scoped to one user — the spend against that user's
+// per-user daily cap (ADR-0012, 2026-07-23 amendment). Same "every requests row
+// is a download" reasoning, so a user's share-sheet / on-demand fetches count
+// toward their own cap too (they are still never refused by the gate below).
+export function countDownloadsTodayForUser(userId: string, now: Date = new Date()): number {
+  const dayStart = utcDayStartIso(now);
+  const row = db.prepare(
+    'SELECT COUNT(*) AS n FROM requests WHERE user_id = ? AND requested_at >= ?',
+  ).get(userId, dayStart) as { n: number };
   return row.n;
 }
 
@@ -186,7 +198,13 @@ export async function runDiscoveryForUser(user: UserRow, options: { force?: bool
   // failure state). Explicit share-sheet / on-demand requests never pass through
   // here, so they are never refused, though they do consume the same tally.
   const spentToday = countDownloadsToday();
-  const remaining = config.DOWNLOAD_DAILY_BUDGET - spentToday;
+  const spentTodayUser = countDownloadsTodayForUser(user.user_id);
+  const remaining = automatedDownloadAllowance(
+    config.DOWNLOAD_DAILY_BUDGET,
+    spentToday,
+    config.PER_USER_DOWNLOAD_DAILY_BUDGET,
+    spentTodayUser,
+  );
   const plan = planAutomatedDownloads(
     picks,
     (v) => bucketFor(v.candidate.sourceType) === 'delighter',
@@ -207,12 +225,14 @@ export async function runDiscoveryForUser(user: UserRow, options: { force?: bool
     logger.info(
       {
         userId: user.user_id,
-        budget: config.DOWNLOAD_DAILY_BUDGET,
+        globalBudget: config.DOWNLOAD_DAILY_BUDGET,
         spentToday,
+        perUserBudget: config.PER_USER_DOWNLOAD_DAILY_BUDGET,
+        spentTodayUser,
         deferred: plan.toDefer.length,
         downloading: plan.toDownload.length,
       },
-      'Discovery: daily download budget spent — deferring automated candidates to a later day',
+      'Discovery: download budget spent — deferring automated candidates to a later day',
     );
   }
 
