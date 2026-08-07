@@ -122,10 +122,11 @@ export function Card({
   const isFailed      = data.status === 'failed';
   const isInProgress  = ['downloading', 'guard_review', 'parent_review', 'pending', 'approved'].includes(data.status);
 
-  // Manual download for a failed row. While the retry is in flight the card's
-  // own data stays stale ('failed') — see useRetryDownload for why the feed is
-  // deliberately NOT invalidated — so the download-progress poll below is the
-  // thing that walks the card through progress → done → playable in place.
+  // Manual download for a failed row. The retry POST stamps `retried_at`,
+  // which keeps the row in the feed payload while it downloads (migration
+  // 040); refetched cards arrive as status='downloading' and the native
+  // progress UI takes over. The retryPhase gates below only cover the window
+  // between the tap and that refetch landing.
   const { retry: retryDownload, phase: retryPhase, errorMsg: retryError } = useRetryDownload(data.requestId);
   const retryActive = retryPhase === 'pending' || retryPhase === 'polling';
 

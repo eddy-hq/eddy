@@ -970,9 +970,12 @@ describe('retry', () => {
 
     expect(result).toEqual({ transitioned: true, userId: USER_ID });
     const row = db
-      .prepare('SELECT status FROM requests WHERE request_id = ?')
-      .get('req-r1') as { status: string };
+      .prepare('SELECT status, retried_at FROM requests WHERE request_id = ?')
+      .get('req-r1') as { status: string; retried_at: string | null };
     expect(row.status).toBe('downloading');
+    // Stamped so the feed's follow-source exclusion keeps retried rows
+    // visible while they re-download (migration 040).
+    expect(row.retried_at).not.toBeNull();
 
     expect(fakePorts.cancelDownloadJob).toHaveBeenCalledWith('req-r1');
     expect(fakePorts.enqueueDownload).toHaveBeenCalledWith(

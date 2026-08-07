@@ -1,24 +1,20 @@
 // Manually download a request whose download failed. Returns `{ retry, phase,
 // errorMsg }`:
 //   - `retry()` POSTs to /requests/:id/retry (failed → downloading + fresh
-//     BullMQ job).
+//     BullMQ job) and kicks the card-rendering queries.
 //   - `phase` drives the card UI: 'idle' → tap affordance, 'pending' →
 //     optimistic spinner while the POST is in flight, 'polling' → the request
 //     is downloading again, 'error' → inline message, tap to re-attempt.
 //
 // Unlike restore there is no global store: the server flips status to
-// 'downloading' synchronously inside the POST, so any later fetch of the row
-// tells the truth. The deliberate quirk is that we do NOT invalidate the feed
-// query on success — follow-sourced rows are excluded from /requests/feed
-// while status='downloading' (they normally arrive only when ready), so a
-// refetch would unmount the card mid-download. Instead the card stays mounted
-// on stale data and Card's useDownloadProgress poll (activated by
-// phase === 'polling') carries it through progress → done → playable in place.
-// Local state means the affordance resets on navigation — acceptable: the
-// server state is already 'downloading', and a remounted card shows the plain
-// downloading treatment via the next feed fetch.
+// 'downloading' synchronously inside the POST and stamps `retried_at`, which
+// keeps the row in the /requests/feed payload while it downloads (the feed's
+// follow-source exclusion skips retried rows — see migration 040). Refetched
+// cards arrive as status='downloading' and Card's native progress UI takes
+// over; `phase` only has to cover the tap-to-refetch gap.
 
 import { useCallback, useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 
 export type RetryPhase = 'idle' | 'pending' | 'polling' | 'error';
 
@@ -27,6 +23,7 @@ export function useRetryDownload(requestId: string): {
   phase: RetryPhase;
   errorMsg: string | null;
 } {
+  const queryClient = useQueryClient();
   const [phase, setPhase] = useState<RetryPhase>('idle');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
@@ -43,6 +40,10 @@ export function useRetryDownload(requestId: string): {
     }
     if (resp.ok) {
       setPhase('polling');
+      // Same query set restore kicks — every view that renders this card.
+      void queryClient.invalidateQueries({ queryKey: ['feed'] });
+      void queryClient.invalidateQueries({ queryKey: ['search-library'] });
+      void queryClient.invalidateQueries({ queryKey: ['person-view'] });
       return;
     }
     // 400 = not retryable from its current status (e.g. another device already
@@ -50,7 +51,7 @@ export function useRetryDownload(requestId: string): {
     // this inline where the timestamp normally sits.
     setPhase('error');
     setErrorMsg(resp.status === 404 ? 'No longer available.' : "Couldn't start. Try again.");
-  }, [requestId]);
+  }, [requestId, queryClient]);
 
   return { retry, phase, errorMsg };
 }

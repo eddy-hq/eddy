@@ -153,13 +153,14 @@ function insertRequestRow(opts: {
   requested_at?: string;
   rejection_reason?: string | null;
   file_state?: string;
+  retried_at?: string;
 }): void {
   const now = new Date().toISOString();
   db.prepare(
     `INSERT INTO requests
        (request_id, user_id, source, url, youtube_id, title, channel, status,
-        rejection_reason, requested_at, added_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        rejection_reason, requested_at, added_at, retried_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     opts.request_id,
     opts.user_id ?? USER_ID,
@@ -172,6 +173,7 @@ function insertRequestRow(opts: {
     opts.rejection_reason ?? null,
     opts.requested_at ?? now,
     opts.added_at ?? now,
+    opts.retried_at ?? null,
   );
   if (opts.file_state !== undefined) {
     db.prepare('UPDATE requests SET file_state = ? WHERE request_id = ?')
@@ -573,6 +575,41 @@ describe('GET /requests/feed', () => {
 
     expect(yesterday!.cards.map((c) => c.request_id)).toEqual(['yesterday-share']);
     expect(older!.cards.map((c) => c.request_id)).toEqual(['older-share']);
+  });
+
+  it('hides first-time follow downloads but keeps retried ones visible while downloading', async () => {
+    // Fresh follow upload mid-auto-download: hidden until ready (ADR-0009).
+    insertRequestRow({
+      request_id: 'sub-fresh',
+      status: 'downloading',
+      source: 'channel_subscription',
+      added_at: isoAt(0),
+    });
+    // Manually retried follow row (was visible as 'failed'): must stay in the
+    // feed while it re-downloads, or the card vanishes on tap (migration 040).
+    insertRequestRow({
+      request_id: 'sub-retried',
+      status: 'downloading',
+      source: 'channel_subscription',
+      added_at: isoAt(0, 10),
+      retried_at: isoAt(0, 11),
+    });
+
+    const resp = await request('GET', '/requests/feed?user=Boy1');
+    expect(resp.status).toBe(200);
+    const body = resp.json<{
+      days: Array<{
+        cards: Array<{ request_id: string }>;
+        sections?: Array<{ cards: Array<{ request_id: string }> }>;
+      }>;
+    }>();
+
+    const ids = body.days.flatMap((d) => [
+      ...d.cards.map((c) => c.request_id),
+      ...(d.sections ?? []).flatMap((s) => s.cards.map((c) => c.request_id)),
+    ]);
+    expect(ids).toContain('sub-retried');
+    expect(ids).not.toContain('sub-fresh');
   });
 
   it('excludes dismissed and deleted rows from the feed', async () => {

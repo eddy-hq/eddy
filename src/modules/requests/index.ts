@@ -263,7 +263,11 @@ requestsRouter.get('/feed', (req: Request, res: Response) => {
     FROM requests
     WHERE user_id = ?
       AND status NOT IN ('dismissed', 'deleted')
-      AND NOT (source = 'channel_subscription' AND status IN ('pending', 'downloading'))
+      -- Fresh follow uploads stay hidden until they arrive ready (ADR-0009) —
+      -- but only FIRST-TIME downloads (retried_at IS NULL). A retried row was
+      -- already visible as 'failed'; hiding it the moment a kid taps its
+      -- manual download would make the card vanish mid-flight.
+      AND NOT (source = 'channel_subscription' AND status IN ('pending', 'downloading') AND retried_at IS NULL)
     ORDER BY added_at DESC
     LIMIT ?
   `).all(found.user_id, FEED_LIMIT) as Array<{

@@ -517,13 +517,19 @@ export const TRANSITIONS = {
   retry: {
     sources: RETRY_SOURCES,
     target: 'downloading',
-    buildSql: (event) => {
+    // `retried_at` marks the row as a manual/admin retry rather than a
+    // first-time auto-download: the feed's follow-source exclusion (hide
+    // pending/downloading subscription rows until they arrive ready) skips
+    // retried rows, so a failed card a kid taps stays visible with its
+    // progress UI instead of vanishing mid-download. Never cleared — see
+    // migration 040.
+    buildSql: (event, now) => {
       const placeholders = RETRY_SOURCES.map(() => '?').join(', ');
       return {
-        sql: `UPDATE requests SET status = 'downloading'
+        sql: `UPDATE requests SET status = 'downloading', retried_at = ?
               WHERE request_id = ? AND status IN (${placeholders})
               RETURNING user_id, youtube_id, url`,
-        params: [event.requestId, ...RETRY_SOURCES],
+        params: [now, event.requestId, ...RETRY_SOURCES],
       };
     },
     effects: (event, result) => {
