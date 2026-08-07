@@ -526,6 +526,29 @@ requestsRouter.delete('/:id/save', (req: Request, res: Response) => {
   res.status(204).end();
 });
 
+// POST /requests/:id/retry — kid-facing manual download for a request whose
+// download failed. Same 'retry' state event as the admin route above (failed →
+// downloading, cancel any stale job, enqueue fresh), exposed on the standard
+// /:id/<action> path the PWA uses (restore/save/delete) so a tap on an
+// undownloaded card can start the fetch. Safe without a guard re-pass: 'failed'
+// is only reachable from 'downloading', which is only reachable post-approval —
+// retrying cannot bypass the guard. Like all explicit on-demand requests it
+// counts toward the daily download tally but is never refused by the budget
+// gate (ADR-0012).
+requestsRouter.post('/:id/retry', async (req: Request, res: Response) => {
+  const requestId = req.params['id']!;
+  const { result, settled } = getRequestsState().apply({ kind: 'retry', requestId });
+  await settled;
+
+  if (!result.transitioned) {
+    if (result.currentStatus === null) throw new NotFoundError('request');
+    throw new ValidationError(`Cannot retry a request in status '${result.currentStatus}'`);
+  }
+
+  logger.info({ requestId }, 'Manual retry — request returned to downloading');
+  res.status(202).json({ requestId, status: 'downloading' });
+});
+
 // POST /requests/:id/restore — re-download a recycled video (issue #116).
 // Gate is `file_state = 'recycled'` regardless of `status`: the recycler
 // preserves status, so the row that needs restoring may be `ready`, `watched`

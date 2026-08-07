@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion, useDragControls } from 'framer-motion';
 import { useQueryClient, useMutation, useQuery } from '@tanstack/react-query';
-import { X, Bookmark, BookmarkCheck, Trash2, Share } from 'lucide-react';
+import { X, Bookmark, BookmarkCheck, Trash2, Share, Download as DownloadIcon } from 'lucide-react';
 import { readProgress, writeProgress, clearProgress } from '../lib/videoProgress';
 import { useWatchEventTracker, type WatchSource } from '../lib/watchEvents';
 import { canShare, shareVideo } from '../lib/webShare';
@@ -239,6 +239,20 @@ function SheetBody({
     },
   });
 
+  // Manual download for a failed row (mirrors Card's tap-to-download). Only
+  // reachable in id-mode — card-mode sheets open on playable rows only. On
+  // success, invalidating the request query flips the sheet to 'downloading'
+  // and its 3s poll carries it through progress → ready → playback.
+  const retryMutation = useMutation({
+    mutationFn: async () => {
+      const res = await fetch(`/requests/${requestId}/retry`, { method: 'POST' });
+      if (!res.ok) throw new Error('Retry failed');
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['request', requestId] });
+    },
+  });
+
   async function toggleSave() {
     if (saving) return;
     setSaving(true);
@@ -419,6 +433,9 @@ function SheetBody({
               progress={progress}
               rejectionReason={rejectionReason}
               thumbnail={thumbnail}
+              onRetry={() => retryMutation.mutate()}
+              retryPending={retryMutation.isPending}
+              retryErrored={retryMutation.isError}
             />
           )}
 
@@ -508,15 +525,20 @@ function SheetBody({
 
 function UnreadyOverlay({
   status, progress, rejectionReason, thumbnail,
+  onRetry, retryPending, retryErrored,
 }: {
   status: string;
   progress: number | null;
   rejectionReason: string | null;
   thumbnail: string | null;
+  onRetry: () => void;
+  retryPending: boolean;
+  retryErrored: boolean;
 }) {
   const isRejected = status === 'rejected';
   const isDeleted = status === 'deleted';
   const isDownloading = status === 'downloading';
+  const isFailed = status === 'failed';
 
   const message =
     isRejected ? (rejectionReason ?? "Eddy can't get this one.") :
@@ -550,6 +572,30 @@ function UnreadyOverlay({
       }}>
         {message}
       </p>
+      {isFailed && (
+        <button
+          type="button"
+          onClick={onRetry}
+          disabled={retryPending}
+          style={{
+            position: 'relative',
+            display: 'flex', alignItems: 'center', gap: 8,
+            padding: '10px 18px', minHeight: 44,
+            borderRadius: 22, border: '1.5px solid rgba(255,255,255,0.4)',
+            background: 'rgba(0,0,0,0.55)',
+            backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)',
+            color: '#F4F1EA', fontFamily: 'inherit',
+            fontSize: 12, fontWeight: 700, letterSpacing: '0.06em',
+            textTransform: 'uppercase',
+            cursor: retryPending ? 'default' : 'pointer',
+            opacity: retryPending ? 0.6 : 1,
+            WebkitTapHighlightColor: 'transparent',
+          }}
+        >
+          <DownloadIcon size={16} strokeWidth={2.4} />
+          {retryPending ? 'Starting…' : retryErrored ? 'Try again' : 'Download'}
+        </button>
+      )}
       {isDownloading && progress !== null && (
         <div style={{
           position: 'relative',
@@ -573,6 +619,7 @@ function statusLabel(status: string): string {
     parent_review: 'Waiting for a grown-up…',
     approved: 'Approved, starting soon…',
     downloading: 'Downloading…',
+    failed: 'Not downloaded',
   };
   return labels[status] ?? 'Working on it…';
 }

@@ -1,11 +1,13 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { RotateCw } from 'lucide-react';
+import { RotateCw, Download } from 'lucide-react';
 import { readProgress, onProgressChange } from '../lib/videoProgress';
 import { relativeTimeAgo } from '../lib/relativeTime';
+import { cardTapAction } from '../lib/cardTapAction';
 import { useResolvePersonId } from '../hooks/useResolvePersonId';
 import { useRestoreRequest } from '../hooks/useRestoreRequest';
+import { useRetryDownload } from '../hooks/useRetryDownload';
 import { useRestoreStore } from '../store/restore';
 import { EddySpinner } from './EddySpinner';
 
@@ -117,9 +119,20 @@ export function Card({
   const isRejected    = data.status === 'rejected';
   const isWatched     = !!data.watchedAt;
   const isDownloading = data.status === 'downloading';
+  const isFailed      = data.status === 'failed';
   const isInProgress  = ['downloading', 'guard_review', 'parent_review', 'pending', 'approved'].includes(data.status);
 
-  const { pct, done: downloadDone } = useDownloadProgress(data.requestId, isDownloading);
+  // Manual download for a failed row. While the retry is in flight the card's
+  // own data stays stale ('failed') — see useRetryDownload for why the feed is
+  // deliberately NOT invalidated — so the download-progress poll below is the
+  // thing that walks the card through progress → done → playable in place.
+  const { retry: retryDownload, phase: retryPhase, errorMsg: retryError } = useRetryDownload(data.requestId);
+  const retryActive = retryPhase === 'pending' || retryPhase === 'polling';
+
+  const { pct, done: downloadDone } = useDownloadProgress(
+    data.requestId,
+    isDownloading || retryPhase === 'polling',
+  );
 
   // Restore flow — only meaningful when the row is recycled (or just was).
   // We hold the entry from the global restore store so the spinner persists
@@ -153,12 +166,25 @@ export function Card({
   const effectiveThumbnailUrl = data.thumbnailUrl
     ?? (data.youtubeId ? `https://i.ytimg.com/vi/${data.youtubeId}/hqdefault.jpg` : null);
 
+  const tapAction = cardTapAction({
+    status: data.status,
+    fileState: data.fileState,
+    nginxUrl: data.nginxUrl,
+    downloadDone,
+    isRestoring,
+    retryInFlight: retryActive,
+  });
+
   function handleTap() {
-    if (isRecycled && !isRestoring) {
+    if (tapAction === 'restore') {
       void restore();
       return;
     }
-    if (!effectivelyLive) return;
+    if (tapAction === 'retry') {
+      void retryDownload();
+      return;
+    }
+    if (tapAction !== 'play') return;
     if (onSelect) onSelect(data);
     else navigate(`/watch/${data.requestId}`);
   }
@@ -169,6 +195,7 @@ export function Card({
     : restoreError ? restoreError
     : isRestoring ? 'Restoring…'
     : isRecycled ? 'Tap to restore'
+    : isFailed && !downloadDone ? (retryError ?? (retryActive ? 'Getting it…' : 'Not downloaded'))
     : isWatched && data.watchedAt ? watchedAgo(data.watchedAt)
     // Prefer the video's own publish date — it distinguishes a back-catalogue
     // pull from a fresh upload. Falls back to requested_at for rows that
@@ -182,14 +209,14 @@ export function Card({
       animate={{ opacity: isSelected ? 0 : (isGone ? 0.65 : 1), y: 0 }}
       exit={{ opacity: 0, y: -8, scale: 0.97 }}
       transition={{ duration: 0.3, ease: [0.33, 1, 0.68, 1] }}
-      whileTap={(effectivelyLive || (isRecycled && !isRestoring)) ? { scale: 0.97 } : undefined}
+      whileTap={tapAction ? { scale: 0.97 } : undefined}
       onClick={handleTap}
       style={{
         display: 'flex',
         flexDirection: 'column',
         borderRadius: 16,
         overflow: 'hidden',
-        cursor: (effectivelyLive || (isRecycled && !isRestoring)) ? 'pointer' : 'default',
+        cursor: tapAction ? 'pointer' : 'default',
         background: 'var(--bg-surface)',
         boxShadow: 'var(--shadow-card)',
         border: '1px solid var(--border-subtle)',
@@ -214,8 +241,10 @@ export function Card({
                 width: '100%', height: '100%', objectFit: 'cover',
                 filter: isRecycled
                   ? 'grayscale(1) opacity(0.5)'
-                  : (isDownloading && !downloadDone)
+                  : ((isDownloading || retryActive) && !downloadDone)
                   ? 'grayscale(1) opacity(0.3)'
+                  : (isFailed && !downloadDone)
+                  ? 'grayscale(1) opacity(0.5)'
                   : isGone ? 'grayscale(1) opacity(0.12)'
                   : 'none',
                 transition: 'filter 0.6s ease',
@@ -258,8 +287,9 @@ export function Card({
           )}
         </AnimatePresence>
 
-        {/* Download progress badge */}
-        {isDownloading && !downloadDone && pct !== null && (
+        {/* Download progress badge — also live during a manual retry, where
+            the row's own status is stale 'failed' but the poll is active */}
+        {(isDownloading || retryActive) && !downloadDone && pct !== null && (
           <span style={{
             position: 'absolute', top: 10, left: 10, zIndex: 3,
             fontSize: 9, fontWeight: 700, color: '#fff',
@@ -324,6 +354,48 @@ export function Card({
           </div>
         )}
 
+        {/* Failed overlay — the manual-download affordance. Whole card is the
+            tap target (handleTap → retry), so this is purely visual, same
+            shape as the recycled/restore overlay. Hidden once the poll
+            reports a percentage (the progress badge + bar take over) and
+            once the download completes (card reads as live). */}
+        {isFailed && !downloadDone && pct === null && (
+          <div
+            aria-hidden
+            style={{
+              position: 'absolute', inset: 0, zIndex: 2,
+              display: 'flex', flexDirection: 'column',
+              alignItems: 'center', justifyContent: 'center', gap: 8,
+              pointerEvents: 'none',
+              color: '#F4F1EA',
+            }}
+          >
+            {retryActive ? (
+              <EddySpinner size={44} />
+            ) : (
+              <div
+                style={{
+                  width: 56, height: 56, borderRadius: '50%',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  background: 'rgba(0,0,0,0.55)',
+                  backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)',
+                  border: '1.5px solid rgba(255,255,255,0.4)',
+                }}
+              >
+                <Download size={24} strokeWidth={2.2} />
+              </div>
+            )}
+            <span style={{
+              fontSize: 9, fontWeight: 700,
+              letterSpacing: '0.1em', textTransform: 'uppercase',
+              padding: '3px 8px', borderRadius: 4,
+              background: 'rgba(0,0,0,0.55)',
+            }}>
+              {retryError ? 'Tap again' : retryActive ? 'Getting it' : 'Tap to download'}
+            </span>
+          </div>
+        )}
+
         {/* Gone overlay */}
         {isGone && (
           <div style={{
@@ -347,7 +419,7 @@ export function Card({
             <div style={{ height: '100%', width: `${progressFraction * 100}%`, background: 'var(--accent)', transition: 'width 0.5s ease' }} />
           </div>
         )}
-        {isDownloading && !downloadDone && pct !== null && (
+        {(isDownloading || retryActive) && !downloadDone && pct !== null && (
           <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, height: 3, zIndex: 4, background: 'rgba(255,255,255,0.08)' }}>
             <div style={{ height: '100%', width: `${pct}%`, background: 'var(--accent)', transition: 'width 0.8s ease' }} />
           </div>

@@ -255,6 +255,52 @@ describe('POST /requests/admin/:id/retry', () => {
   });
 });
 
+// ─── POST /requests/:id/retry — kid-facing manual download of a failed row ───
+//
+// Same 'retry' event as the admin route; the PWA calls this from the failed
+// card / sheet tap. 202 mirrors the other accepted-async actions (restore,
+// share-sheet create).
+
+describe('POST /requests/:id/retry', () => {
+  it('applies a `retry` event and returns 202 with the downloading status', async () => {
+    const resp = await request('POST', '/requests/failed-1/retry');
+
+    expect(resp.status).toBe(202);
+    expect(applyMock).toHaveBeenCalledTimes(1);
+    const event = applyMock.mock.calls[0]![0];
+    expect(event.kind).toBe('retry');
+    expect(event.requestId).toBe('failed-1');
+    expect(resp.json<{ requestId: string; status: string }>()).toEqual({
+      requestId: 'failed-1',
+      status: 'downloading',
+    });
+  });
+
+  it('returns 400 when the request is in a non-retryable status', async () => {
+    applyMock.mockReturnValue({
+      result: { transitioned: false, currentStatus: 'ready' },
+      settled: Promise.resolve(),
+    });
+
+    const resp = await request('POST', '/requests/ready-1/retry');
+
+    expect(resp.status).toBe(400);
+    expect(resp.json<{ error: string }>().error).toBe('VALIDATION_ERROR');
+  });
+
+  it('returns 404 when the request does not exist', async () => {
+    applyMock.mockReturnValue({
+      result: { transitioned: false, currentStatus: null },
+      settled: Promise.resolve(),
+    });
+
+    const resp = await request('POST', '/requests/missing/retry');
+
+    expect(resp.status).toBe(404);
+    expect(resp.json<{ error: string }>().error).toBe('NOT_FOUND');
+  });
+});
+
 // ─── POST /requests — share-sheet entry point ────────────────────────────────
 
 describe('POST /requests', () => {
