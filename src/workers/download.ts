@@ -16,6 +16,7 @@ import { logger } from '../logger';
 import { fetchMetadata, downloadVideo, attemptsExhausted } from '../modules/content/download';
 import { botDetectionCooldownMs, engageBotDetectionCooldown, clearBotDetectionEscalation } from '../botdetect';
 import { tripCircuitIfNeeded } from '../circuit-breaker';
+import { recordDownloadFailure, recordDownloadSuccess } from '../failure-streak';
 import { triggerPlexScan, updatePlexMetadata } from '../modules/content/plex';
 import { postSigned } from '../signed-channel';
 import { generateThumbnail } from './thumb';
@@ -372,6 +373,8 @@ async function start(): Promise<void> {
 
   worker.on('completed', (job) => {
     logger.info({ jobId: job.id, requestId: job.data.requestId }, 'Job completed');
+    // A success ends any failure streak and re-arms its one-alert claim.
+    void recordDownloadSuccess();
   });
 
   worker.on('failed', (job, err) => {
@@ -386,6 +389,10 @@ async function start(): Promise<void> {
     // parks instead of exhausting — this fires for genuinely failing downloads.
     if (job && attemptsExhausted(job.attemptsMade, job.opts.attempts)) {
       const { requestId } = job.data;
+      // Signature-blind failure-streak tally (one ntfy alert per streak once
+      // the threshold is crossed) — counts TERMINAL failures only, so retry
+      // attempts don't inflate the streak.
+      void recordDownloadFailure(err?.message ?? 'unknown error');
       void postSigned(`/internal/requests/${requestId}/failed`, {
         requestId,
         reason: 'Download attempts exhausted',

@@ -86,6 +86,18 @@ export function createNotifications(opts: CreateNotificationsOptions): Notificat
           clickUrl: pwaUrl('/admin/requests'),
         };
 
+      case 'download_failure_streak':
+        return {
+          title: 'Downloads failing repeatedly',
+          message:
+            `${event.consecutiveFailures} downloads in a row have failed.\n` +
+            `Last error: ${event.lastError}\n` +
+            'Mid-transfer 403s suggest a flagged guest cookie jar — move it aside (ops.md "Rotate"). Queues are NOT paused.',
+          priority: 'high',
+          tags: ['warning'],
+          clickUrl: pwaUrl('/admin/requests'),
+        };
+
       case 'parent_review':
         return {
           title: `${event.requesterName} wants to watch something`,

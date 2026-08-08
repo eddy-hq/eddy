@@ -11,7 +11,8 @@ export type NotificationEvent =
   | VideoReadyEvent
   | DownloadAlertEvent
   | ParentReviewEvent
-  | CircuitOpenEvent;
+  | CircuitOpenEvent
+  | DownloadFailureStreakEvent;
 
 // Sent to a kid when their video is downloaded and ready to watch.
 export interface VideoReadyEvent {
@@ -35,6 +36,17 @@ export interface DownloadAlertEvent {
 export interface CircuitOpenEvent {
   kind: 'circuit_open';
   consecutiveTrips: number;
+}
+
+// Sent to Steve when consecutive terminal download failures cross the
+// threshold — the signature-blind safety net behind the bot-detection
+// regex (2026-07-31 flagged-jar incident: a week of mid-transfer 403s
+// tripped nothing). One alert per streak; a successful download re-arms.
+export interface DownloadFailureStreakEvent {
+  kind: 'download_failure_streak';
+  consecutiveFailures: number;
+  // First line of the last failure's error — the signature, not a stack.
+  lastError: string;
 }
 
 // Sent to a parent when a kid's request needs a decision.

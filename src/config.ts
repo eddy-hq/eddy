@@ -148,6 +148,11 @@ const schema = z.object({
   // at hours 10 and 14) run. Each slate run is bounded by whichever of the two is
   // tighter. Default 10.
   PER_USER_DOWNLOAD_DAILY_BUDGET: z.coerce.number().int().nonnegative().default(10),
+  // Consecutive terminal download failures before the worker sends one ntfy
+  // alert (signature-blind safety net behind the bot-detect regex — the
+  // 2026-07-31 flagged-jar 403s ran silent for 8 days). One alert per streak;
+  // a successful download resets. Alert-only: queues are never paused by this.
+  DOWNLOAD_FAILURE_STREAK_THRESHOLD: z.coerce.number().int().positive().default(5),
   // Back-catalogue moratorium kill-switch (ADR-0012). When false, the daily
   // slate stops mining followed channels' back catalogues (the largest non-slate
   // yt-dlp fan-out); new-upload subscription candidates and interest search are

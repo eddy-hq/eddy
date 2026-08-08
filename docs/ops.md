@@ -257,7 +257,9 @@ mkdir -p ~/.local/state/eddy
 
 **Age it.** Leave the jar unused ideally **3+ days** before it drives real downloads — a brand-new jar reads much like a fresh session. Do NOT log in to anything with it; a single anonymous touch is the whole point.
 
-**Rotate.** If blocks recur while the jar is in use, **delete the file** (behaviour reverts to fresh-session-per-run) and, once the block has cleared, mint a fresh one and age it again. The jar is disposable — that is why this is safe.
+**Rotate.** If blocks recur while the jar is in use, **delete the file** (behaviour reverts to fresh-session-per-run) and, once the block has cleared, mint a fresh one and age it again. The jar is disposable — that is why this is safe. Keep one aged spare staged (e.g. `guest-cookies.next.txt`, minted at rotation time) so the swap is a single `mv`.
+
+**How a flagged jar announces itself** (2026-07-31 incident): every download dies **mid-transfer** with `HTTP Error 403: Forbidden` at a consistent byte offset — extraction, PO token and JS-challenge solving all succeed first. This does NOT match the bot-detect regex, so no cooldown or circuit breaker fires; the signature-blind failure-streak alert (`DOWNLOAD_FAILURE_STREAK_THRESHOLD`, ntfy after N consecutive terminal failures) is what catches it. Confirm with an A/B: run the worker's exact yt-dlp invocation manually with and without `--cookies` — jar-only failure = flagged jar, rotate it.
 
 **Hard rule.** Never use a **logged-in account's** cookies here. Guest-visitor (never-logged-in) only. An account under bot suspicion gets banned, not rate-limited, and crosses the brief's anonymity line (§256).
 
