@@ -151,7 +151,7 @@ No worker restart needed — yt-dlp is shelled out per job, so the next download
 
 **Footgun:** `pip install yt-dlp` *without* `--pre` silently reverts to stable. Always include `--pre`.
 
-**PO-token stack** (clears bot-detection without cookies, on the worker): the `bgutil-ytdlp-pot-provider` pip plugin + the `bgutil-pot-server.service` Node server on `127.0.0.1:4416`. Plugin and server must stay version-matched (both 1.3.1 as of 2026-05-31). The worker passes `--extractor-args youtube:player_client=mweb` + the POT plugin via `baseArgs()` in `src/modules/content/download.ts`; the M4 **search** path (`src/ytdlp.ts`) is deliberately anonymous and gets none of this.
+**PO-token stack — DORMANT since 2026-08-13** (was: clears bot-detection without cookies, on the worker): the `bgutil-ytdlp-pot-provider` pip plugin + the `bgutil-pot-server.service` Node server on `127.0.0.1:4416`. Plugin and server must stay version-matched (both 1.3.1 as of 2026-05-31). On **2026-08-11** YouTube bound PO tokens to the video ID (yt-dlp #17404): every `mweb` data download 403s mid-transfer regardless of identity (fresh session, aged jar — all fail identically; extraction still passes, so listings keep arriving), and bgutil 1.3.1 cannot mint per-video tokens. The worker therefore dropped the `--extractor-args youtube:player_client=mweb` pin from `baseArgs()` in `src/modules/content/download.ts` (and from the `pipeline-pause.ts` worker probe) and runs yt-dlp's **default clients, which currently need no PO tokens**. The bgutil plugin + server stay installed but idle — restore the mweb pin only once bgutil supports video-bound tokens. The M4 **search** path (`src/ytdlp.ts`) is deliberately anonymous and gets none of this. Diagnostic for a recurrence: all-identity data 403 with clean extraction = token/client problem (check #17404-class upstream issues), NOT jar reputation — don't burn the spare jar on it.
 
 **M4** runs yt-dlp for anonymous metadata *search* only — it does **not** download. (When `DISCOVERY_SOURCE=api`, metadata comes from the YouTube Data API instead and the M4's yt-dlp goes idle except as the fallback — see *Discovery metadata source* below.) Pinned to nightly on 2026-05-31 to match the worker, via a standalone universal build at `~/.local/bin/yt-dlp` (Homebrew's build blocks self-update, so brew can't follow nightly). `config.YTDLP_BIN_M4` points there explicitly because launchd's PATH wouldn't include `~/.local/bin`. To upgrade:
 
@@ -250,7 +250,7 @@ mkdir -p ~/.local/state/eddy
 ~/.local/bin/yt-dlp --force-ipv4 \
   --cookies ~/.local/state/eddy/guest-cookies.txt \
   --js-runtimes node:node --remote-components ejs:github \
-  --extractor-args youtube:player_client=mweb --sleep-requests 1.5 \
+  --sleep-requests 1.5 \
   --dump-json --no-playlist --skip-download --no-write-playlist-metafiles \
   'https://www.youtube.com/watch?v=jNQXAC9IVRw' >/dev/null
 ```

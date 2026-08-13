@@ -36,7 +36,8 @@ const PROBE_VIDEO = 'jNQXAC9IVRw';
 
 // The worker's download path is a different binary on a different host, so it
 // can't be probed from the M4 process — SSH into the worker and run the same
-// mweb+POT yt-dlp invocation the download path uses.
+// default-client yt-dlp invocation the download path uses (mweb+POT dropped
+// 2026-08-13, see baseArgs in content/download.ts).
 const WORKER_PROBE_HOST = 'eddy-mediaserver';
 const WORKER_PROBE_CMD = [
   '~/.local/bin/yt-dlp',
@@ -53,7 +54,6 @@ const WORKER_PROBE_CMD = [
   // newest nvm node on the worker at probe time instead.
   '--js-runtimes "node:$(ls ~/.nvm/versions/node/*/bin/node | sort -V | tail -1)"',
   '--remote-components ejs:github',
-  '--extractor-args youtube:player_client=mweb',
   '--sleep-requests 1.5',
   '--dump-json',
   '--no-playlist',

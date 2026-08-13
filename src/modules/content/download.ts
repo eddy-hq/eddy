@@ -39,8 +39,11 @@ export function attemptsExhausted(attemptsMade: number, maxAttempts: number | un
 const NODE_BIN = process.env['NODE_BIN'] ?? 'node';
 
 // Args shared across all yt-dlp invocations.
-// mweb client + bgutil PO token provider (bgutil-ytdlp-pot-provider pip plugin +
-// HTTP server on 127.0.0.1:4416) handles bot-detection without cookies.
+// Default player clients — no PO tokens required. The mweb+POT stack (#185) died
+// on 2026-08-11 when YouTube bound PO tokens to the video ID (yt-dlp #17404):
+// every mweb data download 403s, and the bgutil provider can't mint per-video
+// tokens. The bgutil server on 127.0.0.1:4416 stays installed but dormant;
+// restore the mweb pin only once bgutil supports video-bound tokens.
 // node JS runtime handles signature/n-challenges.
 function baseArgs(): string[] {
   // Aged guest-visitor cookie jar (ADR-0012 amendment). When configured and
@@ -69,7 +72,6 @@ function baseArgs(): string[] {
     ...cookieArgs,
     '--js-runtimes', `node:${NODE_BIN}`,
     '--remote-components', 'ejs:github',
-    '--extractor-args', 'youtube:player_client=mweb',
     // Space out the player-API/extraction HTTP calls (the ones that trip the
     // throttle), not the fragment transfer. Cheap politeness on the shared
     // residential IP; applies to every extraction pass.
