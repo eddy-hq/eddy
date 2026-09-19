@@ -21,23 +21,34 @@ final class KeychainIdentityStore: IdentityStore {
     /// Hard-coded rather than derived from `Bundle.main.bundleIdentifier`:
     /// inside an app extension that bundle is the extension's own, so the
     /// share and notification extensions would look under a different service
-    /// and find nothing. (They will also need a keychain access group before
-    /// they can read this at all — stage 2 work, not stage 1.)
+    /// and find nothing.
     static let defaultService = "app.eddyhq.Eddy.identity"
 
     private let service: String
+    private let accessGroup: String?
     private let account = "userId"
 
-    init(service: String = KeychainIdentityStore.defaultService) {
+    /// `accessGroup` nil means the target's default group. The app and the
+    /// share extension both pass the shared group so the extension can read
+    /// the identity the app stored — see `KeychainAccessGroup`.
+    init(
+        service: String = KeychainIdentityStore.defaultService,
+        accessGroup: String? = KeychainAccessGroup.resolve()
+    ) {
         self.service = service
+        self.accessGroup = accessGroup
     }
 
     private var baseQuery: [String: Any] {
-        [
+        var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
         ]
+        if let accessGroup {
+            query[kSecAttrAccessGroup as String] = accessGroup
+        }
+        return query
     }
 
     func load() -> String? {

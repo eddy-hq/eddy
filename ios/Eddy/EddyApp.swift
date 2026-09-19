@@ -49,15 +49,22 @@ struct EddyApp: App {
 
     @MainActor
     private static func makeIdentityStore() -> any IdentityStore {
+        let store = KeychainIdentityStore()
         #if DEBUG
         // `-eddyUserId <uuid>` drives the app in the simulator without the
-        // setup screen. Deliberately in-memory: a debugging aid shouldn't
-        // leave anything in the Keychain.
+        // setup screen. It writes through to the shared keychain rather than
+        // an in-memory store: the share extension is a separate process and
+        // can only see what is really there.
         if let seeded = UserDefaults.standard.string(forKey: "eddyUserId"),
            let userId = UUIDValidator.normalise(seeded) {
-            return InMemoryIdentityStore(seed: userId)
+            do {
+                try store.save(userId)
+            } catch {
+                Log.identity.error("Couldn't seed the debug identity: \(String(describing: error), privacy: .public)")
+                return InMemoryIdentityStore(seed: userId)
+            }
         }
         #endif
-        return KeychainIdentityStore()
+        return store
     }
 }

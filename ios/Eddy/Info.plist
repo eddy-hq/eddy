@@ -35,6 +35,8 @@
 	</array>
 	<key>EddyBaseURL</key>
 	<string>$(EDDY_BASE_URL)</string>
+	<key>EddyKeychainAccessGroup</key>
+	<string>$(AppIdentifierPrefix)app.eddyhq.Eddy.shared</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
 	<key>UILaunchScreen</key>
