@@ -36,6 +36,24 @@ if [[ -z "$TEAM_ID" || "$TEAM_ID" == "XXXXXXXXXX" ]]; then
   exit 1
 fi
 
+# xcodebuild cannot always see the Apple ID that Xcode.app is signed in to
+# ("exportArchive No Accounts"). An App Store Connect API key sidesteps the
+# account entirely. Optional: Config/release.env, gitignored, sets
+# ASC_KEY_PATH (the .p8, kept outside the repo), ASC_KEY_ID and ASC_ISSUER_ID.
+RELEASE_ENV="$PROJECT_DIR/Config/release.env"
+if [[ -f "$RELEASE_ENV" ]]; then
+  set -a; source "$RELEASE_ENV"; set +a
+fi
+AUTH_ARGS=()
+if [[ -n "${ASC_KEY_PATH:-}" ]]; then
+  if [[ ! -f "$ASC_KEY_PATH" || -z "${ASC_KEY_ID:-}" || -z "${ASC_ISSUER_ID:-}" ]]; then
+    echo "Config/release.env needs a readable ASC_KEY_PATH plus ASC_KEY_ID and ASC_ISSUER_ID." >&2
+    exit 1
+  fi
+  AUTH_ARGS=(-authenticationKeyPath "$ASC_KEY_PATH" -authenticationKeyID "$ASC_KEY_ID" -authenticationKeyIssuerID "$ASC_ISSUER_ID")
+  echo "Signing in with the App Store Connect API key"
+fi
+
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/eddy-release.XXXXXX")"
 trap 'rm -rf "$WORK_DIR"' EXIT
 
@@ -54,6 +72,7 @@ xcodebuild archive \
   -destination 'generic/platform=iOS' \
   -archivePath "$WORK_DIR/Eddy.xcarchive" \
   -allowProvisioningUpdates \
+  ${AUTH_ARGS[@]+"${AUTH_ARGS[@]}"} \
   CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
   -quiet
 
@@ -80,6 +99,7 @@ xcodebuild -exportArchive \
   -exportOptionsPlist "$WORK_DIR/ExportOptions.plist" \
   -exportPath "$WORK_DIR/export" \
   -allowProvisioningUpdates \
+  ${AUTH_ARGS[@]+"${AUTH_ARGS[@]}"} \
   -quiet
 
 IPA="$WORK_DIR/export/Eddy.ipa"

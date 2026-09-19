@@ -75,6 +75,14 @@ Before the first run:
    attempted or the device has been connected to Xcode. On the boys' devices,
    Screen Time's *Installing Apps* must be allowed for the install itself.
 
+If the export stops with `exportArchive No Accounts`, `xcodebuild` cannot see
+the Apple ID that Xcode.app is signed in to — it happened on the first real
+run, with the account fine in Xcode, the team id right and a normal desktop
+session. Give it an App Store Connect API key instead: copy
+`Config/release.env.example` to `Config/release.env` (gitignored), fill in the
+three values, and keep the `.p8` outside the repo. The script picks it up by
+itself.
+
 The archive is signed for development and re-signed for distribution at
 export; that is why Release names a development identity in `project.yml`.
 The build number is the UTC timestamp of the run, shown on the install page.
@@ -285,9 +293,9 @@ By hand, the same thing without the test: install the app, launch it once with
   intent itself is wrong. Making `link` optional (the documented shape for a
   parameter an App Shortcut can't be given) did not change it. Try it on a
   device before assuming the code is at fault.
-- **The release script has never produced an ipa.** It was written without a
-  team id to hand, so the archive, the export and an install on a device are
-  all unproven. APNs is stages 4–5. Nothing in the repo carries a team id —
+- **The release script has never produced an ipa.** The archive step works;
+  the export has only ever failed with `No Accounts` (see *Releasing*), so the
+  API-key route, the ipa and an install from the page are all unproven. APNs is stages 4–5. Nothing in the repo carries a team id —
   `Local.xcconfig` stays gitignored and is still the only place
   `DEVELOPMENT_TEAM` lives.
 - Every simulator build prints one `appintentsmetadataprocessor` notice —

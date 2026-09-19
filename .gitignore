@@ -16,6 +16,7 @@ logs/
 # iOS shell — project.yml is the source of truth, the xcodeproj is generated
 ios/Eddy.xcodeproj/
 ios/Config/Local.xcconfig
+ios/Config/release.env
 ios/build/
 ios/DerivedData/
 **/xcuserdata/
