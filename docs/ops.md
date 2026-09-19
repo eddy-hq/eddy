@@ -28,9 +28,10 @@ Runs every 60 seconds via launchd (`launchd/com.eddy.watchdog.plist`). Self-heal
 **What it checks and fixes:**
 
 1. **M4 Express server** — curls `http://localhost:3737/health`. If unreachable, runs `launchctl kickstart -k gui/$(id -u)/com.eddy.server` and rechecks. launchd's `KeepAlive` is the primary recovery path; the watchdog is defence-in-depth and the alerting path.
-2. **Tailscale** — if state is not `Running`, runs `tailscale up`. If state is `NeedsLogin`, alerts and aborts (can't auto-fix).
-3. **SSH to Ubuntu** — if unreachable despite Tailscale being up, alerts. All remote checks are skipped.
-4. **eddy-worker** — checks `systemctl --user is-active eddy-worker`. If not active, restarts it and rechecks.
+2. **iOS provisioning profile** — reads `~/data/eddy/ios/profile-expiry` (written by `ios/scripts/release-adhoc.sh`) and writes one `ALERT` a day from 30 days before the ad hoc profile lapses. No file, no check. The fix is in `ios/README.md` → *Releasing to the family's devices*.
+3. **Tailscale** — if state is not `Running`, runs `tailscale up`. If state is `NeedsLogin`, alerts and aborts (can't auto-fix).
+4. **SSH to Ubuntu** — if unreachable despite Tailscale being up, alerts. All remote checks are skipped.
+5. **eddy-worker** — checks `systemctl --user is-active eddy-worker`. If not active, restarts it and rechecks.
 
 Records every corrective action and unrecoverable failure to the watchdog log. It used to push these to Steve's phone; since ntfy's removal the log is the only place they surface, so a failure it can't self-heal (Tailscale `NeedsLogin`, Ubuntu unreachable) will sit there unread until someone looks. Restoring the push is stage 4–5 of the native shell.
 

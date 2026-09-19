@@ -50,13 +50,15 @@ targets:
         ENABLE_PREVIEWS: YES
         SWIFT_EMIT_LOC_STRINGS: YES
       # XcodeGen's iOS target preset injects the legacy "iPhone Developer" into
-      # both configs, which would pin a Release archive to a development
-      # identity — ad hoc distribution (stage 3) needs a distribution one.
+      # both configs. Release stays on a development identity too: automatic
+      # signing refuses a manually named distribution identity at archive
+      # time. The distribution certificate and ad hoc profile are applied at
+      # export, by scripts/release-adhoc.sh.
       configs:
         Debug:
           CODE_SIGN_IDENTITY: Apple Development
         Release:
-          CODE_SIGN_IDENTITY: Apple Distribution
+          CODE_SIGN_IDENTITY: Apple Development
 
   EddyShare:
     type: app-extension
@@ -86,7 +88,7 @@ targets:
         Debug:
           CODE_SIGN_IDENTITY: Apple Development
         Release:
-          CODE_SIGN_IDENTITY: Apple Distribution
+          CODE_SIGN_IDENTITY: Apple Development
 
   EddyTests:
     type: bundle.unit-test

@@ -1,3 +1,5 @@
+import os from 'os';
+import path from 'path';
 import { z } from 'zod';
 
 const schema = z.object({
@@ -62,6 +64,10 @@ const schema = z.object({
   // mixed-content blocking. See toPublicMediaUrl in modules/media.
   PUBLIC_VIDEO_BASE_URL: z.string().optional(),
   PUBLIC_THUMB_BASE_URL: z.string().optional(),
+  // iOS shell ad hoc releases (brief §21). ios/scripts/release-adhoc.sh writes
+  // the ipa, manifest and install page here; the M4 serves it at /ios. Outside
+  // the repo because the ipa's embedded profile carries device identifiers.
+  IOS_DIST_PATH: z.string().default(path.join(os.homedir(), 'data/eddy/ios')),
   // Internal M4 ↔ Ubuntu worker callback
   INTERNAL_HMAC_SECRET: z.string().min(32, 'INTERNAL_HMAC_SECRET must be at least 32 characters'),
   M4_INTERNAL_URL: z.string().optional(), // set on Ubuntu worker; not required on M4

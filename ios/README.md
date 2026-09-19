@@ -48,6 +48,43 @@ team prefix in both targets' entitlements and Info.plists (see *Keychain access
 group*), so the app and the extension land on the same group with nothing else
 to fill in.
 
+## Releasing to the family's devices
+
+Ad hoc, not TestFlight (ADR-0013). One script builds, signs and publishes:
+
+```sh
+ios/scripts/release-adhoc.sh
+```
+
+It writes `Eddy.ipa`, `manifest.plist`, an install page and `profile-expiry`
+to `~/data/eddy/ios/` (`IOS_DIST_PATH`), which the M4 server serves at `/ios`.
+On each device, with Tailscale up, open `https://eddyhq.app/ios/` in Safari and
+tap Install. No deploy is needed after a release — the server reads the
+directory as it is.
+
+Before the first run:
+
+1. `Config/Local.xcconfig` has `DEVELOPMENT_TEAM`, and Xcode is signed in to
+   that team (Settings → Accounts).
+2. Every device is registered in the developer portal (Devices → +, by UDID).
+   An ad hoc profile only covers devices that existed when it was generated,
+   so **a new device means registering it and running the script again**. The
+   script prints how many devices the profile covers — check it matches.
+3. iOS 16+ wants Developer Mode on for an ad hoc build: Settings → Privacy &
+   Security → Developer Mode, which only appears after an install has been
+   attempted or the device has been connected to Xcode. On the boys' devices,
+   Screen Time's *Installing Apps* must be allowed for the install itself.
+
+The archive is signed for development and re-signed for distribution at
+export; that is why Release names a development identity in `project.yml`.
+The build number is the UTC timestamp of the run, shown on the install page.
+
+The profile lasts twelve months and the app stops launching the day it lapses.
+The watchdog reads `profile-expiry` and writes an `ALERT` line daily from
+thirty days out; the fix is to run the script again and reinstall on each
+device. Installing over the top keeps the keychain identity, so nobody has to
+pair again.
+
 ## Build, test, run
 
 ```sh
@@ -252,9 +289,11 @@ By hand, the same thing without the test: install the app, launch it once with
 - **Only a web page has been shared, not the YouTube app's text.** Safari
   hands over a URL attachment; the YouTube app hands over text with a link in
   it. The text path is unit-tested but has never come from the real app.
-- Signing and OTA distribution are stage 3; APNs is stages 4–5. Nothing in the
-  repo carries a team id — `Local.xcconfig` stays gitignored and is still the
-  only place `DEVELOPMENT_TEAM` lives.
+- **The release script has never produced an ipa.** It was written without a
+  team id to hand, so the archive, the export and an install on a device are
+  all unproven. APNs is stages 4–5. Nothing in the repo carries a team id —
+  `Local.xcconfig` stays gitignored and is still the only place
+  `DEVELOPMENT_TEAM` lives.
 - Every simulator build prints one `appintentsmetadataprocessor` notice —
   "Metadata extraction skipped. No AppIntents.framework dependency found" —
   for the `EddyShare` target, which has no App Intents and needs none.

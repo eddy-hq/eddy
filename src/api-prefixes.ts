@@ -13,4 +13,5 @@ export const API_PREFIXES = [
   '/watch-events',
   '/health',
   '/action',
+  '/ios',
 ] as const;

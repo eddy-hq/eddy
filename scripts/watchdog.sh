@@ -75,6 +75,32 @@ capture_diag() {
 
 # Run all checks once. Uses a subshell so any `exit` inside a stage only
 # aborts this iteration — the outer daemon loop keeps running.
+IOS_EXPIRY_FILE="${IOS_DIST_PATH:-$HOME/data/eddy/ios}/profile-expiry"
+IOS_EXPIRY_STAMP="${SCRIPT_DIR}/../logs/.ios-expiry-alerted"
+IOS_EXPIRY_WARN_DAYS=30
+
+check_ios_profile_expiry() {
+  [[ -f "$IOS_EXPIRY_FILE" ]] || return 0
+  local expiry expiry_epoch days_left today
+  expiry="$(head -1 "$IOS_EXPIRY_FILE")"
+  expiry_epoch="$(date -j -u -f "%Y-%m-%dT%H:%M:%SZ" "$expiry" +%s 2>/dev/null)" || {
+    log "WARN" "iOS profile expiry unreadable: ${IOS_EXPIRY_FILE}"
+    return 0
+  }
+  days_left=$(( (expiry_epoch - $(date -u +%s)) / 86400 ))
+  (( days_left <= IOS_EXPIRY_WARN_DAYS )) || return 0
+
+  today="$(date -u +%Y-%m-%d)"
+  [[ "$(cat "$IOS_EXPIRY_STAMP" 2>/dev/null)" == "$today" ]] && return 0
+  echo "$today" > "$IOS_EXPIRY_STAMP"
+
+  if (( days_left < 0 )); then
+    notify "Eddy watchdog — action needed" "iOS provisioning profile has expired — the app will not launch. Run ios/scripts/release-adhoc.sh and reinstall"
+  else
+    notify "Eddy watchdog — action needed" "iOS provisioning profile expires in ${days_left} days. Run ios/scripts/release-adhoc.sh and reinstall"
+  fi
+}
+
 run_checks() (
   # ── M4 Express server ──────────────────────────────────────────────────────
   # Local check, independent of Tailscale/SSH. launchd's KeepAlive is the
@@ -93,6 +119,13 @@ run_checks() (
       notify "Eddy watchdog — action needed" "Express server down, kickstart did not recover it"
     fi
   fi
+
+  # ── iOS provisioning profile ───────────────────────────────────────────────
+  # Ad hoc profiles last a year and the app stops launching the day one
+  # lapses. ios/scripts/release-adhoc.sh records the expiry; say so once a day
+  # from 30 days out. Here rather than last because the checks below exit
+  # early when the tailnet is down.
+  check_ios_profile_expiry
 
   # ── Tailscale ──────────────────────────────────────────────────────────────
   STATE=$(ts_state)

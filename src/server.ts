@@ -1,6 +1,7 @@
 import path from 'path';
 import 'express-async-errors';
 import express, { NextFunction, Request, Response } from 'express';
+import { config } from './config';
 import { logger } from './logger';
 import { ollamaHealthCheck } from './ollama';
 import { downloadQueue, deleteQueue, redis } from './queue';
@@ -107,6 +108,21 @@ app.get('/health', async (_req: Request, res: Response) => {
     downloads: redisOk ? downloadCounts : null,
   });
 });
+
+// iOS shell releases — the over-the-air install page, manifest and ipa written
+// by ios/scripts/release-adhoc.sh. iOS is particular about the manifest being
+// XML, and the ipa must never be served stale after a re-sign.
+app.use(
+  '/ios',
+  express.static(config.IOS_DIST_PATH, {
+    index: 'index.html',
+    setHeaders: (res, filePath) => {
+      res.setHeader('Cache-Control', 'no-store');
+      if (filePath.endsWith('.plist')) res.setHeader('Content-Type', 'text/xml');
+      if (filePath.endsWith('.ipa')) res.setHeader('Content-Type', 'application/octet-stream');
+    },
+  })
+);
 
 // PWA — serve built assets; fall back to index.html for client-side routing.
 // API prefixes are excluded so unknown API paths reach the 404 handler below

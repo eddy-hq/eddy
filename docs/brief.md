@@ -1286,7 +1286,7 @@ Roughly 7–9 sessions. Sharing is the feature the household actually wants, so 
 
 1. **Xcode project** ✅ (simulator-verified) — WKWebView shell, `eddy://` deep links, Keychain identity, Tailscale fallback screen. Lives in `ios/`; see `ios/README.md`.
 2. **Share extension + App Intent** ✅ (simulator-verified; extension proven against the live server, the Shortcuts action not yet seen running) — the Shortcut's replacement. Same `POST /requests`, shows `message` inline (§5).
-3. **Signing + OTA distribution** — onto Steve's device, then the boys'. The Shortcut is retired per device once the extension is proven.
+3. **Signing + OTA distribution** — onto Steve's device, then the boys'. *Tooling built (`ios/scripts/release-adhoc.sh`, `/ios` on the server, watchdog expiry warning); no release cut or device install yet.* The Shortcut is retired per device once the extension is proven.
 4. **Server push** — device registration + APNs sender behind `notify()`.
 5. **APNs client + Notification Service Extension**, device-tested against a backgrounded VPN, then rolled out — Steve first, then the boys.
 
