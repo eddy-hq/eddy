@@ -147,11 +147,31 @@ private struct WebView: UIViewRepresentable {
             webView.load(URLRequest(url: request.url))
         }
 
+        /// WebKit zooms the page when an input with a font size under 16px
+        /// takes focus (the PWA's search box is 15px and autofocuses). A zoomed
+        /// page strands `position: fixed` elements — the bottom nav slides off
+        /// the screen until it is scrolled back. An app shell has no use for
+        /// page zoom, so the viewport is pinned at 1x.
+        private static let lockZoomScript = """
+            (function () {
+              var meta = document.querySelector('meta[name="viewport"]');
+              if (!meta) {
+                meta = document.createElement('meta');
+                meta.name = 'viewport';
+                document.head.appendChild(meta);
+              }
+              meta.content = 'width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no';
+            })();
+            """
+
         func apply(bridgeScript: String?, to webView: WKWebView) {
             guard bridgeScript != injectedScript else { return }
             injectedScript = bridgeScript
             let controller = webView.configuration.userContentController
             controller.removeAllUserScripts()
+            controller.addUserScript(
+                WKUserScript(source: Self.lockZoomScript, injectionTime: .atDocumentEnd, forMainFrameOnly: true)
+            )
             guard let bridgeScript else { return }
             controller.addUserScript(
                 WKUserScript(source: bridgeScript, injectionTime: .atDocumentStart, forMainFrameOnly: true)
