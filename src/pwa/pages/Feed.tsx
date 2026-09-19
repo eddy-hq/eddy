@@ -206,10 +206,31 @@ export function Feed() {
       {/* Feed content — capped + centred so wide iPads settle at three
           columns rather than sprawling; phones stay full-bleed. */}
       <main style={{ paddingBottom: 100, maxWidth: FEED_MAX_WIDTH, margin: '0 auto' }}>
+        {/* Cold start (brief § Cold start). `showEmpty` only means "no cards in
+            any tier" — it says nothing about whether the user has follows or
+            declared interests. A kid who has just followed people and added
+            interests still sees this until the nightly discovery pass runs and
+            the downloads land (picks can also be budget-deferred back to
+            'scored', or held back by the kid guard). So the copy names the
+            inputs and the timing without issuing imperatives the user may
+            already have carried out — don't rewrite it back to "follow a few
+            people, add an interest", which reads as a user-side failure when
+            the cause is server-side. */}
         {showEmpty ? (
           <div style={{ paddingTop: 64, textAlign: 'center', padding: '64px 32px 0' }}>
             <p style={{ color: 'var(--text-secondary)', fontSize: 'var(--text-base)', margin: 0 }}>
-              Nothing here yet. Share a YouTube link to get started.
+              Eddy is still figuring out what you like.
+            </p>
+            <p
+              style={{
+                color: 'var(--text-tertiary)',
+                fontSize: 'var(--text-sm)',
+                margin: '10px 0 0',
+                lineHeight: 1.5,
+              }}
+            >
+              It builds your feed overnight from the people you follow and the interests on
+              your profile. Share a YouTube link to get something now.
             </p>
           </div>
         ) : (

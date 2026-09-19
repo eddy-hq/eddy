@@ -1,6 +1,6 @@
 # Eddy — Implementation Document
 
-**Status:** Phase 5 in progress. Phases 0–4 shipped (feed, guard shadow mode, RSS poller, channel follow, search). Discovery engine, interest picker, balance prompts, channel→interest inference, profile-editing surface (Interests + People), freeform-interest input, person bio/photo capture, topic→interest schema rename, and "why this?" UI affordance all live; recommendation extraction still to come.
+**Status:** Phases 0–5 shipped (feed, guard shadow mode, RSS poller, channel follow, search, discovery). Discovery engine, interest picker, balance prompts, channel→interest inference, profile-editing surface (Interests + People), freeform-interest input, person bio/photo capture, topic→interest schema rename, "why this?" hard filter plus inline explanation, and kid interest-add through the guard are all live. Recommendation extraction and related-people expansion are deferred to Phase 7. Phase 6 (guard live) is next.
 
 Load-bearing decisions live in `docs/adr/`; prose-form design rationale lives in `docs/design-notes.md`; domain vocabulary lives in `CONTEXT.md`. This document is the spec.
 
@@ -674,7 +674,11 @@ Adults see everything about their own profile. Parents see full detail of kid pr
 
 ### Cold start
 
-First 3-4 weeks, behavioural signal is thin. "Picked for you" shows *"Eddy is still figuring out what you like — tell it more"* with a prompt to follow people and rate. Aligns with Drift's "Getting to know you" baseline.
+First 3-4 weeks, behavioural signal is thin. The cold-start surface is the **whole-feed empty state** — there is no separate "Picked for you" cluster to hang it on (ADR-0009 collapsed Today into one unified stream). When the feed has no cards in any tier it shows *"Eddy is still figuring out what you like."* over a second line naming the inputs and the timing: the feed is built overnight from the people you follow and the interests on your profile, and a shared YouTube link gets something now. Aligns with Drift's "Getting to know you" baseline.
+
+The copy is deliberately **not** imperative. The empty state means "no cards", not "no inputs" — a kid who has just followed people and declared interests still sees it until the nightly discovery pass runs and the downloads land, so telling them to follow someone and add an interest would name the two things they have already done and blame them for a server-side wait.
+
+There is no rating prompt, and no rating affordance anywhere in the PWA. Watch is the positive signal; deleting from the player is the strong negative one. Nothing asks the user to score a video.
 
 There is no mandatory gate. An empty "Picked for you" is a valid state — a user with no follows and no declared interests is carried by the request flow until follows accumulate and inferred proposals appear. Following someone is the cheapest path into discovery; declaring an interest is the forward-looking one. Neither is required to proceed.
 
@@ -1025,7 +1029,7 @@ A session is a focused working block of a few hours ending with the system runna
 - **Phase 2 ✅** — Feed (core)
 - **Phase 3 ✅** — Guard in shadow mode
 - **Phase 4 ✅** — Channels, subscriptions, search
-- **Phase 5 🔨** — Discovery
+- **Phase 5 ✅** — Discovery
 - **Phase 6** — Guard live
 - **Phase 7** — Adult sources
 - **Phase 8** — Drift
@@ -1092,7 +1096,7 @@ Specs in Sections 4a and 8. ~3 sessions.
 
 **Ends with:** kids follow channels, new videos appear automatically, search works across the whole library.
 
-### Phase 5 — Discovery
+### Phase 5 ✅ — Discovery
 
 Specs in Sections 4a and 9a. ~2-3 sessions.
 
@@ -1116,19 +1120,16 @@ Specs in Sections 4a and 9a. ~2-3 sessions.
 - Layer 3 per-person trust weights inlined in discovery scoring (#79)
 - Layer 4 statement-shaped `inferred_affinities` with weekly Gemma run; `affinity_evidence` rows link each statement to its source content_item / person / interest (migration 027, #81)
 - Cleanup job — `pruneStalePool` deletes pending/scored candidates older than 30 days, runs at the end of every daily discovery pass
-
-**Remaining:**
-
-- Kid interest-add routed through the guard as a distinct `request_type` (so the eval set per type stays clean). Guard side already accepts `kid_interest`; `/interests/user-add` needs to route through `guard_eval` for kids and log a shadow verdict
-- "Why this?" — two parts: enforce the brief's hard filter at surface time (drop candidates with `why_text IS NULL`), and add a tap-to-reveal affordance on discovery cards that shows the one-sentence Gemma explanation
-- Cold start — rewrite the existing empty-state copy in `Feed.tsx` from passive ("check back soon") to directive ("follow a few people and rate what you watch"). No new trigger logic; the existing empty-state condition is the cold-start moment
+- Kid interest-add routed through the guard as a distinct `request_type` `kid_interest` (migration 023 adds `request_type`/`subject_text`/`interest_id` to `guard_eval`). `/interests/user-add` enqueues the eval for kids only — after search-term generation for new interests, directly for existing ones — and the verdict is logged shadow-only
+- "Why this?" — hard filter at surface time (`why_text IS NOT NULL` in both the surfacing and preview queries, with blank/title-echoing text normalised to `null` at scoring), plus the explanation rendered inline: a voice line above each Today card that carries a `why_text` (share-sheet requests have none) and a "Why this video" block in the detail sheet
+- Cold start — whole-feed empty-state copy in `Feed.tsx` names the inputs (follows, declared interests, a shared link) and the overnight timing, under the brief's framing line. No new trigger logic; the existing empty-state condition is the cold-start moment, which means it also fires for a user who *has* inputs but no content yet — hence non-imperative copy. Spec rewritten to match in § Cold start, including the no-rating-affordance decision
 
 **Deferred to Phase 7** (need richer text outputs than YouTube descriptions to be worth the build):
 
 - Recommendation extraction — Gemma reading followed people's text outputs to populate `person_recommendations`. YT-only descriptions yield too little signal; lands naturally alongside Substack/podcast/book ingestion
 - Related-people expansion (for follow suggestions, not direct surfacing) — same reason; also gets a natural home when Phase 7 introduces new card types and surfaces
 
-**Ends with:** Today has a populated "Picked for you" with visible reasoning, mostly naming a specific person. Kids follow people via YouTube channels (v1). Scarcity principle honoured. Guard still shadow-mode.
+**Ends with:** Today carries discovery picks (in the unified stream, per ADR-0009 — no separate "Picked for you" cluster) with visible reasoning, mostly naming a specific person. Kids follow people via YouTube channels (v1). Scarcity principle honoured. Guard still shadow-mode.
 
 ### Phase 6 — Guard live
 
