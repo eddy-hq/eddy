@@ -175,10 +175,12 @@ No case is silent. No case is punitive.
 
 Shortcut structure:
 1. Receive shared URL
-2. `POST [base]/requests` with the URL — response includes `{ "path": "/request/{id}" }`
-3. `Open URL [base][path]`
+2. `POST [base]/requests` with the URL — responds `202` with `{ requestId, status, message, pwaUrl }`. `message` is the kid-facing confirmation (*"Got it, Boy1. Working on it."*); `pwaUrl` is an absolute link to the user's feed
+3. `Open URL pwaUrl`
 
 `[base]` is a Shortcut variable. Today: `https://eddyhq.app`. The native shell replaces this route with a real share extension and keeps an App Intent for anyone who prefers the Shortcut (Section 21).
+
+The share extension uses the same endpoint and the same response, and needs nothing more from it: it shows `message` inline in the share sheet and dismisses — the kid stays in YouTube, which is the point. It never opens a URL, so there is no per-request landing route and none is planned. `pwaUrl` exists only for the Shortcut (it is an absolute LAN address, which a client-agnostic API shouldn't hand out) and is removed when the Shortcut is retired.
 
 **Safety net (Phase 9): DNS-block landing page.** Blocked YouTube domains resolve to a local page: *"Looks like you're trying to watch something. Open in Eddy?"* URL prefilled, one tap submits. Every block becomes a redirect, not a wall.
 
@@ -1284,15 +1286,15 @@ APNs buttons hit the same `/action/{handler}?token=` signed-token URLs as ntfy a
 
 ### Build order
 
-Roughly 7–9 sessions. Stages 2–3 stand alone and can ship before any push work.
+Roughly 7–9 sessions. Sharing is the feature the household actually wants, so it ships first: stages 1–3 put the share extension on every device before any push work starts.
 
-1. **Server** — device registration + APNs sender behind `notify()`. No client yet.
-2. **Xcode project** — WKWebView shell, `eddy://` deep links, Keychain identity, Tailscale fallback screen.
-3. **Share extension + App Intent** — the Shortcut's replacement.
-4. **APNs client + Notification Service Extension**, device-tested against a backgrounded VPN before anyone is cut over.
-5. **Signing + OTA distribution + per-user cutover** — Steve first, then the boys, retiring each ntfy topic as APNs is proven.
+1. **Xcode project** — WKWebView shell, `eddy://` deep links, Keychain identity, Tailscale fallback screen.
+2. **Share extension + App Intent** — the Shortcut's replacement. Same `POST /requests`, shows `message` inline (§5).
+3. **Signing + OTA distribution** — onto Steve's device, then the boys'. The Shortcut is retired per device once the extension is proven.
+4. **Server push** — device registration + APNs sender behind `notify()`.
+5. **APNs client + Notification Service Extension**, device-tested against a backgrounded VPN, then per-user cutover — Steve first, then the boys, retiring each ntfy topic as APNs is proven.
 
-APNs earns its keep once Phase 6 (guard live) starts producing parent-approval notifications; before that the shell is mostly about the share extension.
+Stages 4–5 wait for Phase 6 (guard live): until parent-approval notifications exist, ntfy is doing the job and APNs has nothing to earn.
 
 ### Distribution
 
@@ -1306,6 +1308,6 @@ Ad hoc provisioning, not TestFlight (ADR-0013 for why).
 ### Open questions
 
 1. **Will the kids' devices install it?** Screen Time's "Installing Apps" restriction, and whether iOS 16+ demands Developer Mode for an ad hoc build. Both untested.
-2. **Video inside `WKWebView`** — inline vs forced fullscreen, and whether the player's state machine survives it. Device test in stage 2.
+2. **Video inside `WKWebView`** — inline vs forced fullscreen, and whether the player's state machine survives it. Device test in stage 1.
 3. **Where the Swift lives** — `ios/` in this repo, or a separate repo. Separate keeps the Node toolchain clean; same repo keeps the API contract and its client honest in one diff.
-4. **Service extension over a backgrounded VPN** — the load-bearing unknown; stage 4 answers it before any cutover.
+4. **Service extension over a backgrounded VPN** — the load-bearing unknown; stage 5 answers it before any cutover.
