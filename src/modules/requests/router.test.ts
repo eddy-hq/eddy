@@ -552,8 +552,9 @@ describe('GET /requests/feed', () => {
     const [today, yesterday, older] = body.days;
     expect(today!.label).toBe('Today');
     expect(yesterday!.label).toBe('Yesterday');
-    // "Mon 7 Apr"-style: short weekday, numeric day, short month.
-    expect(older!.label).toMatch(/^[A-Z][a-z]{2} \d{1,2} [A-Z][a-z]{2}$/);
+    // "Mon 7 Apr"-style: short weekday, numeric day, short month (en-GB
+    // abbreviates September to the four-letter "Sept").
+    expect(older!.label).toMatch(/^[A-Z][a-z]{2} \d{1,2} [A-Z][a-z]{2,3}$/);
 
     // Today collapses to two sections (ADR-0009): "You asked" (share_sheet)
     // and a unified "Today" mixing channel_subscription + recommended; prior
