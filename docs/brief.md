@@ -1304,6 +1304,6 @@ Ad hoc provisioning, not TestFlight (ADR-0013 for why).
 ### Open questions
 
 1. **Will the kids' devices install it?** Screen Time's "Installing Apps" restriction, and whether iOS 16+ demands Developer Mode for an ad hoc build. Both untested.
-2. **Video inside `WKWebView`** — inline vs forced fullscreen, and whether the player's state machine survives it. Device test in stage 1.
+2. ~~Video inside `WKWebView`~~ — plays fine on a device (2026-09-19).
 3. ~~Where the Swift lives~~ — decided: `ios/` in this repo, so the API contract and its client change in one diff.
 4. **Service extension over a backgrounded VPN** — the load-bearing unknown; stage 5 answers it before any cutover.
