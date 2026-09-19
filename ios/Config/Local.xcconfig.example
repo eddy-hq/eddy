@@ -1,0 +1,11 @@
+// Copy to Local.xcconfig (gitignored) to build for a device.
+// Simulator builds do not need this file at all.
+
+// Your Apple Developer team id — the 10-character string from
+// Xcode > Settings > Accounts, or developer.apple.com > Membership.
+DEVELOPMENT_TEAM = XXXXXXXXXX
+
+// Optional: point the shell at your own Eddy host instead of eddyhq.app.
+// EDDY_URL_SLASH is defined in Shared.xcconfig and exists only to smuggle the
+// "//" past xcconfig's comment stripper.
+// EDDY_BASE_URL = https:$(EDDY_URL_SLASH)$(EDDY_URL_SLASH)eddy.example.ts.net

@@ -1,0 +1,71 @@
+name: Eddy
+
+options:
+  bundleIdPrefix: app.eddyhq
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+  groupSortPosition: top
+
+configFiles:
+  Debug: Config/Shared.xcconfig
+  Release: Config/Shared.xcconfig
+
+settings:
+  base:
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+    SWIFT_STRICT_CONCURRENCY: complete
+    CLANG_ENABLE_MODULES: YES
+
+targets:
+  Eddy:
+    type: application
+    platform: iOS
+    sources:
+      - path: Eddy
+        excludes:
+          - Info.plist
+    settings:
+      base:
+        PRODUCT_NAME: Eddy
+        PRODUCT_BUNDLE_IDENTIFIER: app.eddyhq.Eddy
+        INFOPLIST_FILE: Eddy/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        CURRENT_PROJECT_VERSION: 1
+        MARKETING_VERSION: "1.0"
+        ENABLE_PREVIEWS: YES
+        SWIFT_EMIT_LOC_STRINGS: YES
+      # XcodeGen's iOS target preset injects the legacy "iPhone Developer" into
+      # both configs, which would pin a Release archive to a development
+      # identity — ad hoc distribution (stage 3) needs a distribution one.
+      configs:
+        Debug:
+          CODE_SIGN_IDENTITY: Apple Development
+        Release:
+          CODE_SIGN_IDENTITY: Apple Distribution
+
+  EddyTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: EddyTests
+    dependencies:
+      - target: Eddy
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.eddyhq.EddyTests
+        GENERATE_INFOPLIST_FILE: YES
+
+schemes:
+  Eddy:
+    build:
+      targets:
+        Eddy: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+      gatherCoverageData: false
+      targets:
+        - EddyTests

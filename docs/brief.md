@@ -1288,7 +1288,7 @@ APNs buttons hit the same `/action/{handler}?token=` signed-token URLs as ntfy a
 
 Roughly 7–9 sessions. Sharing is the feature the household actually wants, so it ships first: stages 1–3 put the share extension on every device before any push work starts.
 
-1. **Xcode project** — WKWebView shell, `eddy://` deep links, Keychain identity, Tailscale fallback screen.
+1. **Xcode project** — WKWebView shell, `eddy://` deep links, Keychain identity, Tailscale fallback screen. Lives in `ios/`; see `ios/README.md`.
 2. **Share extension + App Intent** — the Shortcut's replacement. Same `POST /requests`, shows `message` inline (§5).
 3. **Signing + OTA distribution** — onto Steve's device, then the boys'. The Shortcut is retired per device once the extension is proven.
 4. **Server push** — device registration + APNs sender behind `notify()`.
@@ -1309,5 +1309,5 @@ Ad hoc provisioning, not TestFlight (ADR-0013 for why).
 
 1. **Will the kids' devices install it?** Screen Time's "Installing Apps" restriction, and whether iOS 16+ demands Developer Mode for an ad hoc build. Both untested.
 2. **Video inside `WKWebView`** — inline vs forced fullscreen, and whether the player's state machine survives it. Device test in stage 1.
-3. **Where the Swift lives** — `ios/` in this repo, or a separate repo. Separate keeps the Node toolchain clean; same repo keeps the API contract and its client honest in one diff.
+3. ~~Where the Swift lives~~ — decided: `ios/` in this repo, so the API contract and its client change in one diff.
 4. **Service extension over a backgrounded VPN** — the load-bearing unknown; stage 5 answers it before any cutover.

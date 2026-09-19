@@ -1,0 +1,18 @@
+// Eddy iOS shell — shared build settings. Committed.
+// Nothing machine-specific belongs here: no team id, no account, no IP.
+
+SWIFT_VERSION = 6.0
+IPHONEOS_DEPLOYMENT_TARGET = 17.0
+TARGETED_DEVICE_FAMILY = 1,2
+
+// xcconfig treats "//" as a comment wherever it appears, including inside a
+// value, so the scheme separator has to be spliced in from a variable.
+EDDY_URL_SLASH = /
+EDDY_BASE_URL = https:$(EDDY_URL_SLASH)$(EDDY_URL_SLASH)eddyhq.app
+
+CODE_SIGN_STYLE = Automatic
+
+// Optional, gitignored, and included last so it wins: DEVELOPMENT_TEAM, and an
+// EDDY_BASE_URL override for a household running Eddy on its own host.
+// Simulator builds work with no Local.xcconfig present.
+#include? "Local.xcconfig"
