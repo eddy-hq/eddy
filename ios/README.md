@@ -272,13 +272,12 @@ By hand, the same thing without the test: install the app, launch it once with
   tap-through has never been confirmed by hand: `simctl openurl` raises an
   "Open in Eddy?" confirmation that can't be dismissed without a human. Tap
   **Open** once on the simulator to close that gap.
-- **The YouTube app's own share has never been tried** — see below. Everything
-  else about sharing has now been watched on the simulator against the live
-  server: Eddy in Safari's share sheet, the extension reading the app's
-  keychain item across the process boundary, the server's "Got it. Working on
-  it." on the card, and the card dismissing itself at ~1.5s, for both a
-  duplicate of a video already held (no new download) and a genuinely new
-  request.
+- Sharing is proven on a device (2026-09-19, cable install): the YouTube
+  app's share — text with a link in it, not a URL attachment — reaches the
+  extension and the request lands, which also proves the app and the extension
+  read the same keychain item under a real team prefix. On the simulator the
+  same path was watched from Safari against the live server, for both a
+  duplicate of a video already held and a genuinely new request.
 - **The App Intent has never run.** It is in Shortcuts, correctly, but tapping
   its tile in the simulator answers "Unable to run App Shortcut" with nothing
   useful in the logs. Two candidates, neither confirmed: App Shortcuts often
@@ -286,9 +285,6 @@ By hand, the same thing without the test: install the app, launch it once with
   intent itself is wrong. Making `link` optional (the documented shape for a
   parameter an App Shortcut can't be given) did not change it. Try it on a
   device before assuming the code is at fault.
-- **Only a web page has been shared, not the YouTube app's text.** Safari
-  hands over a URL attachment; the YouTube app hands over text with a link in
-  it. The text path is unit-tested but has never come from the real app.
 - **The release script has never produced an ipa.** It was written without a
   team id to hand, so the archive, the export and an install on a device are
   all unproven. APNs is stages 4–5. Nothing in the repo carries a team id —
