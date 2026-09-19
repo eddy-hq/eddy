@@ -29,7 +29,12 @@ struct WebHostView: View {
             // the status bar leaves a strip above the header where scrolling
             // content shows through. Stopping at the top safe area clips it;
             // RootView's background fills the strip.
-            .ignoresSafeArea(.all, edges: .bottom)
+            //
+            // `.container` only, so the keyboard still resizes the web view.
+            // Left to itself WKWebView copes with the keyboard by shifting its
+            // scroll position, which `position: fixed` elements don't follow —
+            // the PWA's bottom nav ends up stranded mid-screen.
+            .ignoresSafeArea(.container, edges: .bottom)
 
             // The PWA's own first paint is behind a network round trip, so
             // without this the shell shows a plain colour and nothing else.
@@ -84,6 +89,16 @@ private struct WebView: UIViewRepresentable {
         webView.backgroundColor = .clear
         webView.scrollView.backgroundColor = .clear
         webView.underPageBackgroundColor = UIColor(Color.eddyBackground)
+
+        // The PWA's bottom nav is `position: fixed; bottom: 0` and already
+        // leaves room for the home indicator. An automatic safe-area inset on
+        // top of that makes the page scroll further than its layout, and the
+        // nav drifts off the bottom edge.
+        webView.scrollView.contentInsetAdjustmentBehavior = .never
+        // With the accessory bar gone there is no Done button; dragging the
+        // results is how the keyboard goes away.
+        webView.scrollView.keyboardDismissMode = .onDrag
+        webView.removeInputAccessoryView()
 
         context.coordinator.attachResetGesture(to: webView)
         context.coordinator.apply(bridgeScript: bridgeScript, to: webView)
