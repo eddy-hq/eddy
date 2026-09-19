@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 
-// Keep module load free of real Redis / config / ntfy — same harness shape as
+// Keep module load free of real Redis / config / notifications — same harness shape as
 // circuit-breaker.test.ts. The unit under test takes its I/O via injected deps.
 vi.mock('./logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
@@ -85,7 +85,7 @@ describe('recordDownloadFailure', () => {
 
   it('releases the claim when the send fails, so a later failure can retry', async () => {
     const deps = makeDeps(THRESHOLD, {
-      sendAlert: vi.fn(async () => { throw new Error('ntfy down'); }),
+      sendAlert: vi.fn(async () => { throw new Error('notify failed'); }),
     });
     const alerted = await recordDownloadFailure('ERROR: 403', deps);
     expect(alerted).toBe(false); // fail-open

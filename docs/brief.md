@@ -66,7 +66,7 @@ Partner's profile and the Pi-hole blocker both wait for her explicit buy-in.
 
 **M4 Mac Mini (16GB, macOS, WiFi)** — Eddy API, PWA, SQLite, Ollama with Gemma 4 E4B.
 
-**2012 Mac Mini (16GB i7, Ubuntu Server 24.04, Ethernet next to router)** — existing Plex + arr stack (untouched by Eddy). Adds: download worker, Redis, nginx, ntfy, Pi-hole (later).
+**2012 Mac Mini (16GB i7, Ubuntu Server 24.04, Ethernet next to router)** — existing Plex + arr stack (untouched by Eddy). Adds: download worker, Redis, nginx, Pi-hole (later).
 
 **Storage on Ubuntu:**
 - HDD — existing Plex library, untouched
@@ -103,7 +103,6 @@ One codebase, two Node processes, one database.
 │  Redis  — BullMQ queue (on Ethernet for low-latency pulls)   │
 │  nginx  — serves /mnt/ssd/eddy/videos/ to PWA                │
 │  Plex   — scans same directory, serves to TVs                │
-│  ntfy   — notification delivery to all family devices        │
 │  Pi-hole (later) — DNS blocking for Tailscale clients        │
 └──────────────────────────────────────────────────────────────┘
 ```
@@ -196,7 +195,7 @@ Guard triage:
   ├── clear-no    → reject with reason, appeal button
   └── uncertain   → escalate to parent, kid sees "waiting"
         ↓
-Parent approve/deny via ntfy notification (if escalated)
+Parent approve/deny via notification (if escalated)
         ↓
 Download → $VIDEO_OUTPUT_PATH/{youtube_id}.mp4, H.264
         ↓
@@ -311,7 +310,7 @@ YouTube is in an active arms race with download tools. Three failure modes, all 
 **Mitigations:**
 
 - Weekly cron on Ubuntu: `pip install -U yt-dlp bgutil-ytdlp-pot-provider`
-- Pipeline health check BullMQ job every 15min. If >50% of last 10 downloads failed, send one ntfy notification to Steve with actions: `[Update & retry]` and `[Investigate]`. One alert per failure cluster.
+- Pipeline health check BullMQ job every 15min. If >50% of last 10 downloads failed, send one notification to Steve with actions: `[Update & retry]` and `[Investigate]`. One alert per failure cluster.
 - Rate-limit detection: on consecutive "try again later" responses, pause queue for an hour and notify Steve.
 - Manual retry button in PWA admin view.
 
@@ -537,7 +536,7 @@ For every kid request (Shortcut, output drop, search-and-request):
 
 - **Clear-yes** → approve, queue download
 - **Clear-no** → reject with one-sentence reason + appeal button
-- **Uncertain** → escalate to parent via ntfy. Kid sees "waiting for a grown-up."
+- **Uncertain** → escalate to parent via notification. Kid sees "waiting for a grown-up."
 
 ### Signals Gemma considers
 
@@ -785,7 +784,7 @@ This is the reason blocking is worth doing — every block becomes a redirect, n
 Livestreams, football, time-sensitive moments. Parent grants temporary YouTube access per device for N minutes:
 
 - Kid taps "Request YouTube time" in PWA
-- ntfy to both parents with actions: `[30 min] [1 hour] [Deny]` (priority `max`, bypasses DND)
+- Notification to both parents with actions: `[30 min] [1 hour] [Deny]` (top priority, bypasses DND)
 - First parent to tap wins. Pi-hole whitelists kid's Tailscale IP for the duration.
 - 10-min warning notification. Expiry auto-revokes. Notification to kid + parent.
 
@@ -802,26 +801,19 @@ TVs: parent grants by device name from phone.
 
 ## 12. Notifications
 
-One system for everyone, every event class: **ntfy, self-hosted on the Ubuntu box.**
+One system for everyone, every event class. Everything in the codebase calls `notify()`, and that narrow interface is the decision (ADR-0003): no email, no SMS, no Web Push, no Pushover, no per-event-class routing. One channel, whatever technology is behind it.
 
-### iOS delivery model
+### Transport
 
-ntfy forwards tiny poll-request messages (message ID only, no content) to upstream `ntfy.sh` for APNs delivery. iOS app fetches actual message content from your self-hosted server.
+**Today: log-only.** ntfy was removed on 2026-09-19 — unused after the first week, and its certificate had been expired since 2026-07-12, so every send had been failing for ten weeks without anyone noticing (ADR-0003 amendment). `notify()` still fires on every event and writes it to the structured log; nothing reaches a device. Every event below is specified, none is delivered.
 
-Content stays on Ubuntu; only opaque IDs transit ntfy.sh. If ntfy.sh has an outage, instant push pauses until recovery or iOS app foregrounds.
+**Next: APNs, through the native iOS shell** (Section 21, ADR-0013). Not a second channel alongside anything — the first real transport behind `notify()`. Payloads that transit Apple carry an opaque message id and placeholder copy only; the Notification Service Extension fetches the real content from the M4 over Tailscale (Section 14, ADR-0004).
 
-### Topics
-
-One topic per user, UUID-suffixed so guessing is infeasible:
-
-- `eddy-steve-{uuid}`
-- `eddy-partner-{uuid}`
-- `eddy-boy1-{uuid}`
-- `eddy-boy2-{uuid}`
-
-Basic auth + ACL per user. Each iOS app stores credentials for its own topic only.
+Phase 6 (guard live) depends on it: an uncertain verdict has to reach a parent to be adjudicated.
 
 ### Events and priorities
+
+Priorities are relative, and map onto whatever the transport offers — `max` is the class that must break through Do Not Disturb.
 
 | Event | Recipient | Priority | Actions |
 |---|---|---|---|
@@ -834,6 +826,8 @@ Basic auth + ACL per user. Each iOS app stores credentials for its own topic onl
 | Request rejected with appeal | kid | `default` | `[Ask a grown-up]` |
 | Pipeline failure cluster | Steve | `high` | `[Update & retry] [Investigate]` |
 | Weekly Drift ready | per-user | `low` | Tap → open Drift view |
+
+Events land with their phases. Five kinds exist in code today — `video_ready`, `parent_review`, and three ops alerts to Steve: `download_alert`, `circuit_open`, `download_failure_streak`. Override events arrive with Phase 9, Drift with Phase 8.
 
 ### Signed-token action endpoints
 
@@ -858,7 +852,7 @@ Applies to every action that grants something to a kid or changes their profile:
 
 Not applied to kid-facing actions (tap to play, save, dismiss) or parents' own informational notifications (video ready, weekly Drift).
 
-One PIN per parent, stored as scrypt hash. Same PIN across every approval surface — ntfy action URLs and direct PWA (e.g. `/admin/guard-review`) — so there is one mental model, not two. Rate-limit wrong attempts. Reset via SSH-only CLI; no over-network recovery flow.
+One PIN per parent, stored as scrypt hash. Same PIN across every approval surface — notification action URLs and direct PWA (e.g. `/admin/guard-review`) — so there is one mental model, not two. Rate-limit wrong attempts. Reset via SSH-only CLI; no over-network recovery flow.
 
 ### Module interface
 
@@ -866,7 +860,7 @@ One PIN per parent, stored as scrypt hash. Same PIN across every approval surfac
 notify(user_id: string, event: EventType, payload: EventPayload): Promise<void>
 ```
 
-Everything else in the codebase calls this. Today it's ntfy; the native shell swaps in APNs *behind this interface*, one user at a time — never both for one user, and ntfy comes out once the last user has moved (Section 21). Narrow interface, not a plugin abstraction.
+Everything else in the codebase calls this. Today it logs; the native shell adds APNs *behind this interface* (Section 21). Narrow interface, not a plugin abstraction — swapping the transport touches one module and nothing else.
 
 > The implemented signature is `notify(event: NotificationEvent, recipient: string)` — event-first, with the payload folded into a discriminated union on `event.kind`. Treat the code as canonical.
 
@@ -1041,15 +1035,15 @@ A session is a focused working block of a few hours ending with the system runna
 - **Phase 10** — MCP
 - **Phase 11** — Frontier escalation (optional)
 
-Outside the numbered phases: the **native iOS shell** (Section 21) is a separate track, not a phase. It gates nothing and nothing gates it.
+Outside the numbered phases: the **native iOS shell** (Section 21) is a separate track, not a phase. Nothing gates it, and it gates one thing — **Phase 6**, which needs the shell's APNs push to get an uncertain verdict in front of a parent (ADR-0013). Since ntfy's removal there is no other way to reach a device.
 
 ### Phase 0 ✅ — Foundation
 
-Monorepo, TypeScript strict, two Node entry points (M4 API, Ubuntu worker), shared modules, SQLite bootstrap, BullMQ + Redis, ntfy self-hosted, HMAC-auth'd internal callback, `.env` validation, Tailscale wiring end-to-end.
+Monorepo, TypeScript strict, two Node entry points (M4 API, Ubuntu worker), shared modules, SQLite bootstrap, BullMQ + Redis, the notifications module behind `notify()`, HMAC-auth'd internal callback, `.env` validation, Tailscale wiring end-to-end.
 
 ### Phase 1 ✅ — Request flow
 
-Kid shares a YouTube link via iOS share sheet → Shortcut POSTs to M4 → job enqueued → Ubuntu worker pulls, yt-dlp downloads to `/mnt/ssd/eddy/videos/` → callback to M4 marks ready → kid gets ntfy → opens PWA, plays.
+Kid shares a YouTube link via iOS share sheet → Shortcut POSTs to M4 → job enqueued → Ubuntu worker pulls, yt-dlp downloads to `/mnt/ssd/eddy/videos/` → callback to M4 marks ready → kid gets a "ready" notification → opens PWA, plays.
 
 No feed yet. No guard — everything auto-approves. Signed-token pattern in place for notification actions.
 
@@ -1084,7 +1078,7 @@ Gemma scores every request. Verdicts are logged, not acted on. Downloads still a
 - Guard runs **before download** — same position it'll occupy in Phase 6, so Phase 6 is a default flip not a refactor
 - Prompt designed properly now, not as throwaway scaffolding. Phase 6 tunes against the dataset Phase 3 builds, so the prompt needs to be close to the one that ships.
 - CLI labelling tool (`npm run label-guard`): iterates unlabelled verdicts, shows URL + title + channel + Gemma's verdict + reasoning, accepts `a`/`d`/`s`/`q`. If disagree, follow-up for correct verdict. Writes `human_verdict` and `human_labelled_at`.
-- No kid-facing change. No parent ntfy. No review surface. Downloads still auto-approve regardless of verdict.
+- No kid-facing change. No parent notification. No review surface. Downloads still auto-approve regardless of verdict.
 
 **Ends with:** every request scored by Gemma. Steve labels verdicts periodically via CLI. After a few months, a real eval set exists. Family sees no change.
 
@@ -1114,7 +1108,7 @@ Specs in Sections 4a and 9a. ~2-3 sessions.
 - Shadow guard runs on discovered items the same way it runs on requested items
 - "Picked for you" cluster in Today, with end-of-list state (*"That's Today."*)
 - Balance prompt (>70% concentration, max once per 1-2 weeks)
-- Schema rename: topics → interests across tables and columns (migration 014). ntfy-topic naming in §12 is unrelated and unchanged
+- Schema rename: topics → interests across tables and columns (migration 014)
 - `age_gate` flag and `emoji` column dropped from interests (migrations 016, 017)
 - Standalone `/interests` PWA route removed — Profile is the only edit surface; `/interests/*` API endpoints retained
 - Freeform interest creation is the only path (Gemma generates `search_terms` from typed input)
@@ -1143,10 +1137,12 @@ Spec in Section 9. ~2 sessions.
 
 By now the eval set from Phases 3–5 is substantial. This phase puts the guard in the critical path.
 
+**Prerequisite: push (APNs) is live.** Uncertain verdicts have to reach a parent, and since ntfy's removal notifications are log-only — so stages 4–5 of the native shell (Section 21) ship before this phase does. A guard that escalates into a log file is a guard that blocks kids indefinitely.
+
 - Tune prompts against the labelled dataset until thresholds hit (95% clear-yes precision, 90% clear-no precision, 10–30% uncertain rate)
 - Flip `decided_by` default: clear_yes auto-approves, clear_no auto-rejects with reason, uncertain escalates
 - `/admin/guard-review` surface — lists uncertain items plus recent clear-yes/clear-no for spot-checking, one-tap labelling continues to feed the eval set
-- Parent ntfy for uncertain verdicts with approve/deny actions (signed-token pattern)
+- Parent push for uncertain verdicts with approve/deny actions (signed-token pattern)
 - Appeal flow — kid taps "ask again" on a rejection, Gemma re-evaluates with the appeal context, still-uncertain escalates to parent
 - Kid-facing rejection reasons (age-appropriate phrasing, not raw Gemma output)
 - First month: parent reviews a sample of clear-yes too via admin view
@@ -1186,7 +1182,7 @@ Spec in Section 11. ~1-2 sessions. **Gated on partner buy-in.**
 
 - Pi-hole Docker, configured but disabled
 - Override lifecycle (request → grant → expiry)
-- ntfy actions for parent approval
+- Notification actions for parent approval
 - DNS-block landing page on Ubuntu nginx
 - Go-live checklist
 
@@ -1239,7 +1235,7 @@ Resolve before or during the relevant phase.
 
 ### Known dependencies
 
-- **ntfy.sh upstream** — required for instant iOS push (poll-request forwarding). Single point of failure outside our control. Uptime has been good. The native shell drops this dependency user by user as each is cut over to APNs (Section 21) — Apple's push infrastructure in place of ntfy.sh's, not alongside it.
+- **APNs** — once the native shell ships (Section 21), Apple's push infrastructure is the only path from Eddy to a device. Single point of failure outside our control, and deliberately the only one: no fallback channel (ADR-0003). Until then there is no push dependency, because there is no push.
 - **yt-dlp + bgutil-ytdlp-pot-provider** — active arms race with YouTube. Both well-maintained, typical fix times 24-48h. Mitigation is operational (Section 6 Reliability). No credible architectural alternative.
 
 ---
@@ -1277,12 +1273,12 @@ No native feed. No native player. No second design system.
 Three additions, all on the M4. Shapes only; implementing agents fill in the detail.
 
 - **`POST /devices`** — device registration carrying the APNs token. Upserts into the existing (currently unused) `devices` table, which gains a token column and a `last_seen_at`. `DELETE /devices/:id` on sign-out or token invalidation.
-- **APNs sender behind `notify()`** — selected per user. A user is on ntfy *or* APNs, never both, and the ntfy transport comes out of the codebase once the last user has moved (§12, ADR-0003). Event types, priorities and action URLs are unchanged.
+- **APNs sender behind `notify()`** — the first real transport behind the interface; notifications are log-only until it lands (§12, ADR-0003). Event types, priorities and action URLs are unchanged.
 - **`GET /notifications/:messageId`** — what the Notification Service Extension calls to turn an opaque push into real content. Tailnet-only, and authenticated as the device's own user: a message is readable only by its recipient.
 
 Payloads that transit Apple carry the opaque message id and generic placeholder copy, nothing else — no titles, no channel names, no kid names (§14, ADR-0004). The id is random, never a request id or a YouTube id. If the extension's fetch fails, the notification reads "Something new in Eddy" and the content is only visible in the app.
 
-APNs buttons hit the same `/action/{handler}?token=` signed-token URLs as ntfy actions, unchanged (ADR-0005) — but note that neither the route nor a target id in the token payload exists yet. Both are owed by Phase 6 whether or not the shell ships.
+APNs buttons hit the `/action/{handler}?token=` signed-token URLs, unchanged by the channel (ADR-0005) — but note that neither the route nor a target id in the token payload exists yet. Both are owed by Phase 6 whether or not the shell ships.
 
 ### Build order
 
@@ -1292,9 +1288,9 @@ Roughly 7–9 sessions. Sharing is the feature the household actually wants, so 
 2. **Share extension + App Intent** ✅ (simulator-verified; extension proven against the live server, the Shortcuts action not yet seen running) — the Shortcut's replacement. Same `POST /requests`, shows `message` inline (§5).
 3. **Signing + OTA distribution** — onto Steve's device, then the boys'. The Shortcut is retired per device once the extension is proven.
 4. **Server push** — device registration + APNs sender behind `notify()`.
-5. **APNs client + Notification Service Extension**, device-tested against a backgrounded VPN, then per-user cutover — Steve first, then the boys, retiring each ntfy topic as APNs is proven.
+5. **APNs client + Notification Service Extension**, device-tested against a backgrounded VPN, then rolled out — Steve first, then the boys.
 
-Stages 4–5 wait for Phase 6 (guard live): until parent-approval notifications exist, ntfy is doing the job and APNs has nothing to earn.
+Stages 4–5 follow stage 3 directly. They used to wait for Phase 6, on the reasoning that ntfy was doing the job until parent approvals existed; ntfy's removal (ADR-0003) inverted that. Three of the five notification kinds are ops alerts to Steve — `circuit_open`, `download_failure_streak`, `download_alert` — and they are log-only now, so a blocked pipeline announces itself to a file nobody is watching. And Phase 6 cannot ship without stage 5.
 
 ### Distribution
 

@@ -8,7 +8,7 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 // Same harness shape as state.test.ts: the `:memory:` DB stays a real fixture
 // so the SQL the router runs is the real SQL, and every side-effect dependency
 // (queue, notifications, state machine) goes through `vi.mock` so the test
-// asserts on call shapes instead of dragging Redis/ntfy/BullMQ in.
+// asserts on call shapes instead of dragging Redis/notifications/BullMQ in.
 
 vi.mock('../../db/client', async () => {
   const { default: Database } = await import('better-sqlite3');

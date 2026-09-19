@@ -28,14 +28,6 @@ const schema = z.object({
   USER_ID_BOY2: z.string().uuid(),
   USER_BIRTH_YEAR_BOY1: z.coerce.number().int().optional(),
   USER_BIRTH_YEAR_BOY2: z.coerce.number().int().optional(),
-  // ntfy — optional until Phase 1 setup
-  NTFY_BASE_URL: z.string().optional(),
-  NTFY_TOPIC_STEVE: z.string().optional(),
-  NTFY_TOPIC_BOY1: z.string().optional(),
-  NTFY_TOPIC_BOY2: z.string().optional(),
-  NTFY_CREDS_STEVE: z.string().optional(),
-  NTFY_CREDS_BOY1: z.string().optional(),
-  NTFY_CREDS_BOY2: z.string().optional(),
   // Video — written locally by the Ubuntu worker
   VIDEO_OUTPUT_PATH: z.string().default('/home/steveu/eddy/videos'),
   NGINX_VIDEO_BASE_URL: z.string().optional(),
@@ -148,7 +140,7 @@ const schema = z.object({
   // at hours 10 and 14) run. Each slate run is bounded by whichever of the two is
   // tighter. Default 10.
   PER_USER_DOWNLOAD_DAILY_BUDGET: z.coerce.number().int().nonnegative().default(10),
-  // Consecutive terminal download failures before the worker sends one ntfy
+  // Consecutive terminal download failures before the worker sends one
   // alert (signature-blind safety net behind the bot-detect regex — the
   // 2026-07-31 flagged-jar 403s ran silent for 8 days). One alert per streak;
   // a successful download resets. Alert-only: queues are never paused by this.
@@ -190,29 +182,16 @@ if (!result.success) {
   process.exit(1);
 }
 
-// Derived ntfy user config — flattens the per-user NTFY_TOPIC_* / NTFY_CREDS_*
-// env vars into a single array consumed by the notifications module. A user is
-// only included if both their topic and credentials are set; missing entries
-// fall through to the "ntfy not configured for recipient" warning at send time.
 const env = result.data;
-const ntfyUserConfig: ReadonlyArray<{ userId: string; topic: string; credentials: string }> = [
-  { userId: env.USER_ID_STEVE, topic: env.NTFY_TOPIC_STEVE, credentials: env.NTFY_CREDS_STEVE },
-  { userId: env.USER_ID_BOY1,  topic: env.NTFY_TOPIC_BOY1,  credentials: env.NTFY_CREDS_BOY1  },
-  { userId: env.USER_ID_BOY2,  topic: env.NTFY_TOPIC_BOY2,  credentials: env.NTFY_CREDS_BOY2  },
-].flatMap((entry) =>
-  entry.topic && entry.credentials
-    ? [{ userId: entry.userId, topic: entry.topic, credentials: entry.credentials }]
-    : [],
-);
 
 // Per-user discovery hours (#185), flattened for the scheduler. Only the named
 // users carry overrides; any other eligible user falls back to
-// DISCOVERY_HOUR_DEFAULT inside buildDiscoverySchedule. Keyed by the same fixed
-// UUIDs as ntfyUserConfig.
+// DISCOVERY_HOUR_DEFAULT inside buildDiscoverySchedule. Keyed by the fixed
+// USER_ID_* UUIDs.
 const discoverySchedule: ReadonlyArray<{ userId: string; hour: number }> = [
   { userId: env.USER_ID_STEVE, hour: env.DISCOVERY_HOUR_STEVE },
   { userId: env.USER_ID_BOY1,  hour: env.DISCOVERY_HOUR_BOY1  },
   { userId: env.USER_ID_BOY2,  hour: env.DISCOVERY_HOUR_BOY2  },
 ];
 
-export const config = { ...env, ntfyUserConfig, discoverySchedule };
+export const config = { ...env, discoverySchedule };

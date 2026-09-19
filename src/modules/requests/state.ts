@@ -8,7 +8,7 @@ import type { DownloadJobData } from '../content';
 // default port bindings live in `./state-default.ts`. Keeping them off this
 // file's static import graph lets the test suite (and any future caller)
 // construct the module with fake ports without dragging BullMQ, Redis, and
-// ntfy into a unit test's startup path.
+// notifications into a unit test's startup path.
 
 // Shared job data for the delete queue. The worker uses filePath to unlink the
 // .mp4 + sidecars; requestId is carried so the callback can report which row
@@ -351,7 +351,7 @@ export const TRANSITIONS = {
   // decides eligibility is `file_state = 'recycled'` in the UPDATE WHERE —
   // status is just the descriptor table's coarse filter. No notify effect:
   // restore is an in-PWA action the user just initiated; surprising them
-  // with a `video_ready` ntfy would be noise. No ensure_person_capture
+  // with a `video_ready` notification would be noise. No ensure_person_capture
   // either — the person row already exists from the original mark_downloaded.
   mark_restored: {
     sources: ['ready', 'watched', 'dismissed'],
@@ -667,7 +667,7 @@ type SqlResultCarrier = TransitionResult & { __sqlResult?: Record<string, unknow
 
 // Outcome of a single `apply(event)` call. The SQL write is synchronous, so
 // `result` is available immediately. `settled` resolves once every effect's
-// returned promise has settled — fire-and-forget effects (e.g. ntfy send) do
+// returned promise has settled — fire-and-forget effects (e.g. a notification send) do
 // not contribute to it; only effects that genuinely need sequencing (BullMQ
 // `enqueue_download`, `cancel_download_job_awaited`) do. Sync callers ignore
 // `settled`; async callers (retry / creators) `await` it before returning so
@@ -688,7 +688,7 @@ export function createRequestsState({ ports }: { ports: Ports }): RequestsState 
   function runEffect(effect: Effect): Promise<void> | void {
     switch (effect.kind) {
       case 'notify_video_ready': {
-        // Fire-and-forget: an ntfy outage must not surface as an unhandled
+        // Fire-and-forget: a notification failure must not surface as an unhandled
         // rejection, and the row stays `ready` regardless of notification.
         void ports
           .notifyVideoReady(effect.userId, effect.requestId, effect.title)
@@ -875,7 +875,7 @@ export function createRequestsState({ ports }: { ports: Ports }): RequestsState 
 }
 
 // Production wiring lives in ./state-default.ts so this file's static imports
-// stay free of the side-effect-heavy port providers (BullMQ, ntfy,
+// stay free of the side-effect-heavy port providers (BullMQ, notifications,
 // people/registry). See state-default.ts for the boot-time
 // `registerDefaultRequestsState` seam and the `getRequestsState` accessor
 // that production call sites use to reach `apply`.

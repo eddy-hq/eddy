@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-// Keep module load free of real Redis / config / ntfy. The unit under test
+// Keep module load free of real Redis / config / notifications. The unit under test
 // takes its I/O via injected deps, so the production wiring these mocks stand in
 // for is never exercised here.
 vi.mock('./logger', () => ({
@@ -85,7 +85,7 @@ describe('tripCircuitIfNeeded', () => {
 
   it('releases the alert claim when the send fails, so a later trip can re-alert', async () => {
     const deps = makeDeps({
-      sendAlert: vi.fn(async () => { throw new Error('ntfy unreachable'); }),
+      sendAlert: vi.fn(async () => { throw new Error('notify failed'); }),
     });
     await expect(tripCircuitIfNeeded(CIRCUIT_BREAKER_THRESHOLD, deps)).resolves.toBe(false);
     expect(deps.releaseAlert).toHaveBeenCalledTimes(1);

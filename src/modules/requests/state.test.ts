@@ -783,7 +783,7 @@ describe('mark_downloaded', () => {
 
   it('warn-logs when notifyVideoReady rejects and does not surface as unhandled rejection', async () => {
     insertRequest({ request_id: 'req-dl4', status: 'downloading' });
-    vi.mocked(fakePorts.notifyVideoReady).mockRejectedValueOnce(new Error('ntfy down'));
+    vi.mocked(fakePorts.notifyVideoReady).mockRejectedValueOnce(new Error('notify failed'));
 
     const { result } = state.apply({ kind: 'mark_downloaded', requestId: 'req-dl4', fields: FIELDS });
     expect(result).toEqual({ transitioned: true, userId: USER_ID });

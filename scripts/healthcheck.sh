@@ -111,15 +111,6 @@ if [[ "$SSH_OK" == true ]]; then
     check "Video path (${REMOTE_PATH})" "fail" "path missing or not writable"
   fi
 
-  # ntfy
-  NTFY_URL="${NTFY_BASE_URL:-http://100.95.170.27:2586}"
-  if docker exec eddy-ntfy wget -qO- http://localhost:80/v1/health &>/dev/null 2>/dev/null ||
-     ssh $SSH_OPTS "${SSH_TARGET}" "docker exec eddy-ntfy wget -qO- http://localhost:80/v1/health > /dev/null 2>&1" 2>/dev/null; then
-    check "ntfy" "ok"
-  else
-    check "ntfy" "fail" "run: deploy/setup-ubuntu.sh"
-  fi
-
   # nginx — a 200, 403 (no listing) or 404 from the host all confirm nginx is up
   NGINX_URL="${NGINX_VIDEO_BASE_URL:-http://100.95.170.27/videos}"
   NGINX_HOST=$(echo "$NGINX_URL" | python3 -c "import sys; from urllib.parse import urlparse; u=urlparse(sys.stdin.read().strip()); print(f'{u.scheme}://{u.netloc}')")
@@ -151,7 +142,6 @@ if [[ "$SSH_OK" == true ]]; then
 else
   check "yt-dlp" "skip" "SSH unavailable"
   check "Video path" "skip" "SSH unavailable"
-  check "ntfy" "skip" "SSH unavailable"
   check "nginx" "skip" "SSH unavailable"
   check "Eddy worker (systemd)" "skip" "SSH unavailable"
   check "Plex API" "skip" "SSH unavailable"

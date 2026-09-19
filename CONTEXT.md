@@ -87,7 +87,7 @@ The three guard outcomes. Clear-yes approves; clear-no rejects with a one-senten
 _Avoid_: approved/denied/pending (those are downstream states)
 
 **Escalation**:
-The parent-decision path for an **Uncertain** request — ntfy notification with `[Approve] [Deny]` actions. Kid sees "waiting for a grown-up" until resolved.
+The parent-decision path for an **Uncertain** request — a notification with `[Approve] [Deny]` actions. Kid sees "waiting for a grown-up" until resolved.
 _Avoid_: review, hold
 
 **Appeal**:
@@ -210,20 +210,16 @@ _Avoid_: scraper, ingester
 The single-use HMAC-SHA256 token (1h TTL) embedded in every notification action URL — validated, looked up in `used_tokens`, marked used. The pattern is universal across every action endpoint.
 _Avoid_: action token, magic link, callback token
 
-**ntfy**:
-The self-hosted push notification service on the Ubuntu box. The *only* notification channel — no Web Push, no Pushover, no email.
-_Avoid_: pusher, notifier (in code, `notify()` is the narrow module interface)
-
-**Topic**:
-A per-user ntfy channel, UUID-suffixed (e.g. `eddy-boy1-{uuid}`). Each iOS app holds credentials for its own topic only.
-_Avoid_: channel (overloaded), stream
+**`notify()`**:
+The one notification interface every module calls. One channel for every event class — no Web Push, no Pushover, no email, no per-event-class routing (ADR-0003). The transport behind it is log-only since ntfy's removal on 2026-09-19; APNs through **the shell** is next.
+_Avoid_: pusher, notifier, channel (overloaded)
 
 **The shell**:
-The native iOS app — a `WKWebView` hosting the **PWA** plus the four things a web page can't do on iOS (share extension, APNs push, `eddy://` deep links, Keychain identity). Not a second client: it renders no screens of its own. See [[0013-native-ios-is-a-thin-shell-apns-replaces-ntfy]].
+The native iOS app — a `WKWebView` hosting the **PWA** plus the four things a web page can't do on iOS (share extension, APNs push, `eddy://` deep links, Keychain identity). Not a second client: it renders no screens of its own. See [[0013-native-ios-is-a-thin-shell-with-apns-push]].
 _Avoid_: native client, second app (both imply a parallel UI), wrapper
 
 **Opaque push**:
-A notification whose payload carries a random message id and placeholder copy, nothing more. The real title and body are fetched from **the M4** over Tailscale by the iOS service extension and written into the notification on the device, so nothing about a **Kid** transits Apple. The same model ntfy's poll-request forwarding already uses.
+A notification whose payload carries a random message id and placeholder copy, nothing more. The real title and body are fetched from **the M4** over Tailscale by the iOS service extension and written into the notification on the device, so nothing about a **Kid** transits Apple.
 _Avoid_: silent push (that's a different iOS mechanism), stub notification
 
 **MCP**:

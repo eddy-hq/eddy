@@ -1,11 +1,12 @@
 // NotificationEvent — the discriminated union describing every notification the
-// system can emit. The `notify(event, recipient)` adapter maps each `kind` to
-// an ntfy topic + payload internally, so adding a new event type is a single
-// case here plus a single branch in `notify.ts` — no new public export and no
-// new module surface area.
+// system can emit. The `notify(event, recipient)` adapter maps each `kind` to a
+// transport payload internally, so adding a new event type is a single case
+// here plus a single branch in `notify.ts` — no new public export and no new
+// module surface area.
 //
-// ntfy stays the only transport (per `CLAUDE.md`); this union is event-type
-// fan-in, not transport pluggability.
+// There is exactly one transport at a time (ADR-0003) — log-only today, APNs
+// when the native iOS shell ships. This union is event-type fan-in, not
+// transport pluggability.
 
 export type NotificationEvent =
   | VideoReadyEvent
@@ -32,7 +33,7 @@ export interface DownloadAlertEvent {
 
 // Sent to Steve when the yt-dlp circuit breaker trips: both queues have been
 // auto-paused after consecutive bot-detection blocks and resume is manual
-// (ADR-0012). Not addressed to a kid — the adult (Steve) topic only.
+// (ADR-0012). Not addressed to a kid — the adult recipient only.
 export interface CircuitOpenEvent {
   kind: 'circuit_open';
   consecutiveTrips: number;

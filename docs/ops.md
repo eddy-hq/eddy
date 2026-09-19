@@ -1,6 +1,8 @@
 # Eddy — Operations
 
-Two machines: **M4 Mac Mini** (Tailscale: `mini-steve`) runs the Express server, Ollama, and Redis. **Ubuntu media server** (Tailscale: `mediaserver`) runs the download worker, ntfy, nginx, and Plex.
+Two machines: **M4 Mac Mini** (Tailscale: `mini-steve`) runs the Express server, Ollama, and Redis. **Ubuntu media server** (Tailscale: `mediaserver`) runs the download worker, nginx, and Plex.
+
+> **Notifications are log-only.** ntfy was removed from the codebase on 2026-09-19 (ADR-0003 amendment) and APNs hasn't landed yet (brief §21). Every alert below — watchdog, circuit breaker, failure streak — now goes to a log file and nowhere else. Nothing pages anyone. See *Decommissioning ntfy* at the foot of this file for the host-side cleanup still outstanding.
 
 ---
 
@@ -14,7 +16,6 @@ Two machines: **M4 Mac Mini** (Tailscale: `mini-steve`) runs the Express server,
 | Caddy (HTTPS for `eddyhq.app`) | M4 | launchd `com.steveu.edge.caddy` (LaunchDaemon, root) — config in `~/code/edge` |
 | cloudflared | M4 | launchd `com.steveu.edge.cloudflared` — config in `~/code/edge` |
 | Download worker (`dist/workers/download.js`) | Ubuntu | systemd `eddy-worker` |
-| ntfy | Ubuntu | Docker (`eddy-ntfy` container) |
 | nginx | Ubuntu | system service |
 | Plex | Ubuntu | system service |
 
@@ -26,12 +27,12 @@ Runs every 60 seconds via launchd (`launchd/com.eddy.watchdog.plist`). Self-heal
 
 **What it checks and fixes:**
 
-1. **M4 Express server** — curls `http://localhost:3737/health`. If unreachable, runs `launchctl kickstart -k gui/$(id -u)/com.eddy.server` and rechecks. launchd's `KeepAlive` is the primary recovery path; the watchdog is defence-in-depth and the notification path.
-2. **Tailscale** — if state is not `Running`, runs `tailscale up`. If state is `NeedsLogin`, notifies and aborts (can't auto-fix).
-3. **SSH to Ubuntu** — if unreachable despite Tailscale being up, notifies. All remote checks are skipped.
+1. **M4 Express server** — curls `http://localhost:3737/health`. If unreachable, runs `launchctl kickstart -k gui/$(id -u)/com.eddy.server` and rechecks. launchd's `KeepAlive` is the primary recovery path; the watchdog is defence-in-depth and the alerting path.
+2. **Tailscale** — if state is not `Running`, runs `tailscale up`. If state is `NeedsLogin`, alerts and aborts (can't auto-fix).
+3. **SSH to Ubuntu** — if unreachable despite Tailscale being up, alerts. All remote checks are skipped.
 4. **eddy-worker** — checks `systemctl --user is-active eddy-worker`. If not active, restarts it and rechecks.
 
-Sends an ntfy notification to Steve's topic on any corrective action or unrecoverable failure.
+Records every corrective action and unrecoverable failure to the watchdog log. It used to push these to Steve's phone; since ntfy's removal the log is the only place they surface, so a failure it can't self-heal (Tailscale `NeedsLogin`, Ubuntu unreachable) will sit there unread until someone looks. Restoring the push is stage 4–5 of the native shell.
 
 **Log:** `logs/watchdog.log`
 
@@ -182,7 +183,7 @@ The July 2026 block outlived the cooldown machinery (three days, one re-probe pe
 
 - **`DOWNLOAD_DAILY_BUDGET`** (default 10) — global cap on *automated* downloads per UTC day, enforced in the slate-composition loop (`src/modules/discovery/index.ts`): slate-bound (delighter) picks are funded before follow-sourced ones; over-budget picks revert to `scored` in the candidate pool and get re-picked on a later slate. Explicit share-sheet / on-demand requests count toward the tally but are **never refused**. Priority ordering is per-run, not global across users — accepted approximation at 10/day.
 - **`BACK_CATALOGUE_ENABLED`** (default `true`, set `false` in `.env` since 2026-07-20) — kill-switch for the back-catalogue seeder (full moratorium per ADR-0012; the pool-to-consumption ratio says depth is already banked).
-- **Circuit breaker** (`src/circuit-breaker.ts`, threshold constant 3) — on the 3rd consecutive bot-detection trip, both queues auto-pause (same lever as `pipeline-pause.ts`) and Steve gets exactly one ntfy alert (`eddy:ytdlp:circuit-open` SET NX dedupes across M4 + worker; a failed send releases the claim so a later trip re-alerts). **No auto-resume** — dark until manual.
+- **Circuit breaker** (`src/circuit-breaker.ts`, threshold constant 3) — on the 3rd consecutive bot-detection trip, both queues auto-pause (same lever as `pipeline-pause.ts`) and exactly one `circuit_open` alert is raised (`eddy:ytdlp:circuit-open` SET NX dedupes across M4 + worker; a failed send releases the claim so a later trip re-alerts). **No auto-resume** — dark until manual. Note the alert is log-only until APNs lands, so in practice a tripped breaker is discovered by noticing the feed has gone quiet — check `logs/` first.
 - **Resume is manual and dual-path**: `pipeline-pause.ts resume-if-clear` probes the M4 anonymous path *and* the worker's mweb+POT path over SSH (`eddy-mediaserver`); both must clear. Any resume path also clears the cooldown, strike counter, and breaker flag ("resume means go now").
 - **`pipeline-pause.ts clear-parked`** — drains parked download jobs without a resume-burst: removes delayed/waiting jobs, marks their `downloading` rows `failed` (non-destructive), and resets their candidate-pool rows to `scored` so the slate re-selects them under budget. Side effect of the supporting dedup change: `failed` request rows no longer permanently block a video's re-selection.
 
@@ -199,7 +200,7 @@ Discovery's **metadata** reads (search, channel uploads, durations, channel bio/
 
 **Quota:** the free tier is **10,000 units/day**, resetting midnight Pacific. `search.list` costs **100 units**; every other call (`videos.list`, `playlistItems.list`, `channels.list`) costs **1**. Current fleet use is ~3.9k/day, dominated by interest-search. `youtubeapi.ts` keeps a coarse local tally (reset on the UTC day) and logs a one-shot `warn` at 80%; `getQuotaUsage()` exposes the running total.
 
-**On exhaustion, discovery skips and warns — no fallback to yt-dlp scraping** (by design; falling back reintroduces the IP load this removes). A `quotaExceeded` error breaks out of the interest-search and back-catalogue loops for the rest of that run, log-only (no ntfy), mirroring the bot-detection stand-down. If you see the 80%/exhaustion warnings routinely, the fleet has outgrown the free tier — raise the quota in Google Cloud or trim search depth (`DISCOVERY_SEARCH_LIMIT`), don't paper over it.
+**On exhaustion, discovery skips and warns — no fallback to yt-dlp scraping** (by design; falling back reintroduces the IP load this removes). A `quotaExceeded` error breaks out of the interest-search and back-catalogue loops for the rest of that run, log-only (no alert raised at all), mirroring the bot-detection stand-down. If you see the 80%/exhaustion warnings routinely, the fleet has outgrown the free tier — raise the quota in Google Cloud or trim search depth (`DISCOVERY_SEARCH_LIMIT`), don't paper over it.
 
 ---
 
@@ -259,7 +260,7 @@ mkdir -p ~/.local/state/eddy
 
 **Rotate.** If blocks recur while the jar is in use, **delete the file** (behaviour reverts to fresh-session-per-run) and, once the block has cleared, mint a fresh one and age it again. The jar is disposable — that is why this is safe. Keep one aged spare staged (e.g. `guest-cookies.next.txt`, minted at rotation time) so the swap is a single `mv`.
 
-**How a flagged jar announces itself** (2026-07-31 incident): every download dies **mid-transfer** with `HTTP Error 403: Forbidden` at a consistent byte offset — extraction, PO token and JS-challenge solving all succeed first. This does NOT match the bot-detect regex, so no cooldown or circuit breaker fires; the signature-blind failure-streak alert (`DOWNLOAD_FAILURE_STREAK_THRESHOLD`, ntfy after N consecutive terminal failures) is what catches it. Confirm with an A/B: run the worker's exact yt-dlp invocation manually with and without `--cookies` — jar-only failure = flagged jar, rotate it.
+**How a flagged jar announces itself** (2026-07-31 incident): every download dies **mid-transfer** with `HTTP Error 403: Forbidden` at a consistent byte offset — extraction, PO token and JS-challenge solving all succeed first. This does NOT match the bot-detect regex, so no cooldown or circuit breaker fires; the signature-blind failure-streak alert (`DOWNLOAD_FAILURE_STREAK_THRESHOLD`, fires after N consecutive terminal failures — log-only until APNs lands) is what catches it. Confirm with an A/B: run the worker's exact yt-dlp invocation manually with and without `--cookies` — jar-only failure = flagged jar, rotate it.
 
 **Hard rule.** Never use a **logged-in account's** cookies here. Guest-visitor (never-logged-in) only. An account under bot suspicion gets banned, not rate-limited, and crosses the brief's anonymity line (§256).
 
@@ -367,3 +368,44 @@ cd ~/code/edge && bin/build.sh && sudo launchctl kickstart -k system/com.steveu.
 - **`vite.config.ts`** — the dev-server proxy map, so `npm run dev:pwa` on `:5173` forwards API calls to the Express server on `:3737`.
 
 To add a new top-level route: add the prefix to the array, mount the router in `src/server.ts`. No changes needed in the Vite config or the fallback regex — both pick it up automatically.
+
+---
+
+## Decommissioning ntfy
+
+The code came out on 2026-09-19 (ADR-0003 amendment); the hosts have not been touched. Nothing below is automated and nothing below is urgent — the service has been failing every send since its certificate expired on 2026-07-12, so leaving it running costs only the container. Run it by hand when convenient, top to bottom.
+
+Nothing in Eddy reads any of this any more, so there is no order dependency and no rollback to preserve. If a step's target doesn't exist on the box, it was never set up — move on rather than hunt for it.
+
+1. **Stop and remove the container** (on `mediaserver`). It ran under Docker Compose with `restart: unless-stopped`, so a reboot brings it back until it is removed. `deploy/docker-compose.ubuntu.yml` and `deploy/ntfy/server.yml` have already gone from the repo, so take the container down by name:
+
+   ```bash
+   # on mediaserver
+   docker rm -f eddy-ntfy
+   docker volume ls | grep ntfy     # the ntfy-cache volume holds cache.db + auth.db
+   docker volume rm <name>          # deletes the per-user credentials with it
+   docker image rm binwiederhier/ntfy:latest
+   ```
+
+2. **Remove the nginx vhost.** `deploy/nginx/eddy-ntfy.conf` was installed to `/etc/nginx/sites-available/eddy-ntfy` and symlinked into `sites-enabled` by `deploy/setup-ubuntu.sh`. It is the only thing listening on **:443** on that box:
+
+   ```bash
+   sudo rm /etc/nginx/sites-enabled/eddy-ntfy /etc/nginx/sites-available/eddy-ntfy
+   sudo nginx -t && sudo systemctl reload nginx
+   ```
+
+   Leave `eddy-videos` alone — it serves `/videos/*` and `/thumbs/*` on :80 and the PWA still reaches it through Caddy (see *Media URL rewrite*).
+
+3. **Delete the TLS cert.** `setup-ubuntu.sh` obtained it with `sudo tailscale cert` for the mediaserver's MagicDNS name and wrote it to `/etc/ssl/eddy/ntfy.crt` / `ntfy.key`. Re-running that script was the *only* renewal path — which is why it expired on 2026-07-12 and stayed expired. Nothing else uses that directory:
+
+   ```bash
+   sudo rm -rf /etc/ssl/eddy
+   ```
+
+4. **DNS: nothing to do.** ntfy was only ever reachable on the tailnet MagicDNS name, so no record was ever created for it. `eddyhq.app`'s Cloudflare records and the M4's Caddy/Let's Encrypt setup are unrelated and stay.
+
+5. **Delete the `NTFY_*` lines from `.env` on both boxes** — M4 and the worker: `NTFY_BASE_URL`, `NTFY_TOPIC_*`, `NTFY_CREDS_*`. Zod no longer expects them and an unknown key is harmless, but those are live credentials sitting in two files for a service that is gone. Restart the M4 afterwards (`npm run deploy -- --server`) so the running process stops carrying them.
+
+6. **Uninstall the ntfy app from the family devices**, including the saved topic subscriptions, so nobody is left holding an app that will never buzz again. Worth doing in person — it is the only step the household will notice.
+
+Until APNs ships (brief §21), no alert reaches a phone. Check `logs/watchdog.log` and the server log by habit.

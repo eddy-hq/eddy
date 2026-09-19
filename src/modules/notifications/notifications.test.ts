@@ -1,18 +1,13 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
-// The wrappers used to live as `sendVideoReady` / `sendDownloadAlert` /
-// `sendParentReview`. They were consolidated behind `notify(event, recipient)`
-// in createNotifications; the acceptance criteria still apply to the payload
-// each event kind produces, which we observe by mocking `sendNtfy`.
+// `notify(event, recipient)` is the whole contract. The transport behind it is
+// log-only (ntfy removed, APNs not yet shipped), so what these tests pin is the
+// log line each event kind produces: its level, and — the part that matters —
+// that no title, channel, requester name or token reaches `logs/`.
 
-const { sendNtfyMock, warnMock, infoMock } = vi.hoisted(() => ({
-  sendNtfyMock: vi.fn().mockResolvedValue(undefined),
+const { warnMock, infoMock } = vi.hoisted(() => ({
   warnMock: vi.fn(),
   infoMock: vi.fn(),
-}));
-
-vi.mock('./ntfy', () => ({
-  sendNtfy: sendNtfyMock,
 }));
 
 vi.mock('../../logger', () => ({
@@ -24,106 +19,82 @@ vi.mock('../../logger', () => ({
   },
 }));
 
-import { createNotifications, type NtfyUserConfig } from './notify';
+import { createNotifications } from './notify';
 
-const BASE = 'http://100.0.0.1:3737';
-const USER: NtfyUserConfig = {
-  userId: 'user-1',
-  topic: 'eddy-user-1',
-  credentials: 'u:p',
-};
+const RECIPIENT = 'user-1';
 
-function build(opts?: { ntfyConfig?: ReadonlyArray<NtfyUserConfig> }) {
-  return createNotifications({
-    ntfyConfig: opts?.ntfyConfig ?? [USER],
-    pwaBaseUrl: BASE,
-  });
-}
-
-function lastSendNtfyArg(): Record<string, unknown> {
-  const calls = sendNtfyMock.mock.calls;
+function lastFields(mock: typeof infoMock): Record<string, unknown> {
+  const calls = mock.mock.calls;
   expect(calls.length).toBeGreaterThan(0);
   return calls[calls.length - 1][0] as Record<string, unknown>;
 }
 
+// Every string value logged, flattened — used to assert free text never leaks.
+function loggedStrings(mock: typeof infoMock): string[] {
+  return Object.values(lastFields(mock))
+    .filter((v): v is string => typeof v === 'string');
+}
+
 beforeEach(() => {
-  sendNtfyMock.mockReset();
-  sendNtfyMock.mockResolvedValue(undefined);
   warnMock.mockReset();
   infoMock.mockReset();
 });
 
-describe('createNotifications — ntfy lookup by recipient', () => {
-  it('skips sendNtfy and warns when the recipient has no ntfy config', async () => {
-    const mod = build({ ntfyConfig: [] });
+describe('createNotifications — log-only transport', () => {
+  it('logs one line per notification carrying the kind and the recipient user_id', async () => {
+    const mod = createNotifications();
     await mod.notify(
       { kind: 'video_ready', requestId: 'req-1', title: 'Some video' },
-      'user-1',
+      RECIPIENT,
     );
-    expect(sendNtfyMock).not.toHaveBeenCalled();
-    expect(warnMock).toHaveBeenCalledTimes(1);
+    expect(infoMock).toHaveBeenCalledTimes(1);
+    expect(warnMock).not.toHaveBeenCalled();
+    const fields = lastFields(infoMock);
+    expect(fields['kind']).toBe('video_ready');
+    expect(fields['recipient']).toBe(RECIPIENT);
   });
 
-  it('skips sendNtfy and warns when the recipient does not match any configured user', async () => {
-    const mod = build({ ntfyConfig: [USER] });
-    await mod.notify(
-      { kind: 'video_ready', requestId: 'req-1', title: 'Some video' },
-      'someone-else',
-    );
-    expect(sendNtfyMock).not.toHaveBeenCalled();
-    expect(warnMock).toHaveBeenCalledTimes(1);
-  });
-
-  it('skips sendNtfy and warns when the matched user has an empty topic', async () => {
-    const mod = build({ ntfyConfig: [{ ...USER, topic: '' }] });
-    await mod.notify(
-      { kind: 'video_ready', requestId: 'req-1', title: 'Some video' },
-      'user-1',
-    );
-    expect(sendNtfyMock).not.toHaveBeenCalled();
-    expect(warnMock).toHaveBeenCalledTimes(1);
-  });
-
-  it('skips sendNtfy and warns when the matched user has empty credentials', async () => {
-    const mod = build({ ntfyConfig: [{ ...USER, credentials: '' }] });
-    await mod.notify(
-      { kind: 'video_ready', requestId: 'req-1', title: 'Some video' },
-      'user-1',
-    );
-    expect(sendNtfyMock).not.toHaveBeenCalled();
-    expect(warnMock).toHaveBeenCalledTimes(1);
-  });
-
-  it('passes the matched user topic and credentials through to sendNtfy', async () => {
-    const mod = build();
-    await mod.notify(
-      { kind: 'video_ready', requestId: 'req-1', title: 'Some video' },
-      'user-1',
-    );
-    const arg = lastSendNtfyArg();
-    expect(arg['topic']).toBe('eddy-user-1');
-    expect(arg['credentials']).toBe('u:p');
+  it('never throws, whoever the recipient is — there is nothing per-user to configure', async () => {
+    const mod = createNotifications();
+    await expect(
+      mod.notify({ kind: 'video_ready', requestId: 'req-1', title: 'Some video' }, 'nobody'),
+    ).resolves.toBeUndefined();
+    expect(infoMock).toHaveBeenCalledTimes(1);
   });
 });
 
-describe('createNotifications — video_ready', () => {
-  it('uses priority default, tag tada, and clickUrl pointing at /watch/<requestId>', async () => {
-    const mod = build();
+describe('createNotifications — log level by event kind', () => {
+  it('logs video_ready at info', async () => {
+    const mod = createNotifications();
     await mod.notify(
       { kind: 'video_ready', requestId: 'req-42', title: 'Some video' },
-      'user-1',
+      RECIPIENT,
     );
-    const arg = lastSendNtfyArg();
-    expect(arg['priority']).toBe('default');
-    expect(arg['tags']).toEqual(['tada']);
-    expect(arg['clickUrl']).toBe(`${BASE}/watch/req-42`);
-    expect(arg['message']).toBe('Some video');
+    expect(infoMock).toHaveBeenCalledTimes(1);
+    expect(lastFields(infoMock)['requestId']).toBe('req-42');
   });
-});
 
-describe('createNotifications — download_alert', () => {
-  it('uses priority high and tag warning when action is "failed"', async () => {
-    const mod = build();
+  it('logs parent_review at info', async () => {
+    const mod = createNotifications();
+    await mod.notify(
+      {
+        kind: 'parent_review',
+        requestId: 'req-7',
+        requesterName: 'Boy1',
+        title: 'Something',
+        channel: 'A Channel',
+        reason: 'because',
+        approveToken: 'tok-approve',
+        denyToken: 'tok-deny',
+      },
+      RECIPIENT,
+    );
+    expect(infoMock).toHaveBeenCalledTimes(1);
+    expect(lastFields(infoMock)['requestId']).toBe('req-7');
+  });
+
+  it('logs download_alert at warn, with the stuck minutes and the action taken', async () => {
+    const mod = createNotifications();
     await mod.notify(
       {
         kind: 'download_alert',
@@ -132,108 +103,89 @@ describe('createNotifications — download_alert', () => {
         stuckMins: 12,
         action: 'failed',
       },
-      'user-1',
+      RECIPIENT,
     );
-    const arg = lastSendNtfyArg();
-    expect(arg['priority']).toBe('high');
-    expect(arg['tags']).toEqual(['warning']);
+    expect(warnMock).toHaveBeenCalledTimes(1);
+    expect(infoMock).not.toHaveBeenCalled();
+    const fields = lastFields(warnMock);
+    expect(fields['stuckMins']).toBe(12);
+    expect(fields['action']).toBe('failed');
   });
 
-  it('uses priority default and tag arrows_counterclockwise when action is "re-enqueued"', async () => {
-    const mod = build();
-    await mod.notify(
-      {
-        kind: 'download_alert',
-        requestId: 'req-1',
-        title: 'A stuck thing',
-        stuckMins: 12,
-        action: 're-enqueued',
-      },
-      'user-1',
-    );
-    const arg = lastSendNtfyArg();
-    expect(arg['priority']).toBe('default');
-    expect(arg['tags']).toEqual(['arrows_counterclockwise']);
+  it('logs circuit_open at warn, with the consecutive trip count', async () => {
+    const mod = createNotifications();
+    await mod.notify({ kind: 'circuit_open', consecutiveTrips: 3 }, RECIPIENT);
+    expect(warnMock).toHaveBeenCalledTimes(1);
+    expect(lastFields(warnMock)['consecutiveTrips']).toBe(3);
   });
 
-  it('uses priority default and tag arrows_counterclockwise when action is "alert"', async () => {
-    const mod = build();
+  it('logs download_failure_streak at warn, with the count and the error signature', async () => {
+    const mod = createNotifications();
     await mod.notify(
       {
-        kind: 'download_alert',
-        requestId: 'req-1',
-        title: 'A stuck thing',
-        stuckMins: 12,
-        action: 'alert',
+        kind: 'download_failure_streak',
+        consecutiveFailures: 5,
+        lastError: 'HTTP Error 403: Forbidden',
       },
-      'user-1',
+      RECIPIENT,
     );
-    const arg = lastSendNtfyArg();
-    expect(arg['priority']).toBe('default');
-    expect(arg['tags']).toEqual(['arrows_counterclockwise']);
+    expect(warnMock).toHaveBeenCalledTimes(1);
+    const fields = lastFields(warnMock);
+    expect(fields['consecutiveFailures']).toBe(5);
+    expect(fields['lastError']).toBe('HTTP Error 403: Forbidden');
   });
 });
 
-describe('createNotifications — parent_review', () => {
-  it('builds approve and deny action URLs from the token contract', async () => {
-    const mod = build();
+describe('createNotifications — nothing about what a kid is watching reaches the log', () => {
+  it('drops the title from video_ready', async () => {
+    const mod = createNotifications();
     await mod.notify(
-      {
-        kind: 'parent_review',
-        requestId: 'req-7',
-        requesterName: 'Boy1',
-        title: 'Something',
-        channel: 'A Channel',
-        reason: 'because',
-        approveToken: 'tok-approve',
-        denyToken: 'tok-deny',
-      },
-      'user-1',
+      { kind: 'video_ready', requestId: 'req-42', title: 'A Very Identifiable Video' },
+      RECIPIENT,
     );
-    const arg = lastSendNtfyArg();
-    const actions = arg['actions'] as Array<{
-      action: string;
-      label: string;
-      url: string;
-      method?: string;
-      clear?: boolean;
-    }>;
-    expect(actions).toHaveLength(2);
-    expect(actions[0].label).toBe('Approve');
-    expect(actions[0].url).toBe(`${BASE}/action/approve?token=tok-approve`);
-    expect(actions[1].label).toBe('Deny');
-    expect(actions[1].url).toBe(`${BASE}/action/deny?token=tok-deny`);
+    expect(loggedStrings(infoMock)).not.toContain('A Very Identifiable Video');
   });
 
-  it('uses priority max, tag eyes, and two http actions in Approve-then-Deny order', async () => {
-    const mod = build();
+  it('drops the title from download_alert', async () => {
+    const mod = createNotifications();
+    await mod.notify(
+      {
+        kind: 'download_alert',
+        requestId: 'req-1',
+        title: 'A Very Identifiable Video',
+        stuckMins: 12,
+        action: 'alert',
+      },
+      RECIPIENT,
+    );
+    expect(loggedStrings(warnMock)).not.toContain('A Very Identifiable Video');
+  });
+
+  it('drops the requester name, title, channel, reason and both tokens from parent_review', async () => {
+    const mod = createNotifications();
     await mod.notify(
       {
         kind: 'parent_review',
         requestId: 'req-7',
-        requesterName: 'Boy1',
-        title: 'Something',
+        requesterName: 'A Requester Name',
+        title: 'A Very Identifiable Video',
         channel: 'A Channel',
         reason: 'because',
         approveToken: 'tok-approve',
         denyToken: 'tok-deny',
       },
-      'user-1',
+      RECIPIENT,
     );
-    const arg = lastSendNtfyArg();
-    expect(arg['priority']).toBe('max');
-    expect(arg['tags']).toEqual(['eyes']);
-    const actions = arg['actions'] as Array<{
-      action: string;
-      method?: string;
-      clear?: boolean;
-    }>;
-    expect(actions).toHaveLength(2);
-    expect(actions[0].action).toBe('http');
-    expect(actions[0].method).toBe('POST');
-    expect(actions[0].clear).toBe(true);
-    expect(actions[1].action).toBe('http');
-    expect(actions[1].method).toBe('POST');
-    expect(actions[1].clear).toBe(true);
+    const strings = loggedStrings(infoMock);
+    for (const secret of [
+      'A Requester Name',
+      'A Very Identifiable Video',
+      'A Channel',
+      'because',
+      'tok-approve',
+      'tok-deny',
+    ]) {
+      expect(strings).not.toContain(secret);
+    }
   });
 });

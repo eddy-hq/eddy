@@ -7,7 +7,7 @@
  * jar — every download dying mid-transfer with a plain HTTP 403 — tripped
  * nothing and ran silently for 8 days. This detector is signature-blind on
  * purpose: it counts consecutive TERMINAL download failures (attempts
- * exhausted), whatever the error, and sends Steve exactly one ntfy alert per
+ * exhausted), whatever the error, and sends Steve exactly one alert per
  * streak once the count crosses the threshold. A successful download ends the
  * streak and re-arms the alert.
  *
@@ -43,7 +43,7 @@ export function shouldAlertOnStreak(count: number, threshold: number): boolean {
   return count >= threshold;
 }
 
-// Seam for tests — production wiring closes over Redis and ntfy.
+// Seam for tests — production wiring closes over Redis and the notifications module.
 export interface FailureStreakDeps {
   // Increment the streak counter, returning the new count.
   incrementStreak: () => Promise<number>;
@@ -53,7 +53,7 @@ export interface FailureStreakDeps {
   claimAlert: () => Promise<boolean>;
   // Release the slot after a failed send so a later failure retries the alert.
   releaseAlert: () => Promise<void>;
-  // Send the one ntfy alert to Steve's adult topic.
+  // Send the one alert to Steve.
   sendAlert: (consecutiveFailures: number, lastError: string) => Promise<void>;
 }
 
@@ -78,7 +78,7 @@ const defaultDeps: FailureStreakDeps = {
 };
 
 // First line of the error, capped — enough to recognise the signature (e.g.
-// "HTTP Error 403: Forbidden") without dumping a stack trace into ntfy. No
+// "HTTP Error 403: Forbidden") without dumping a stack trace into the alert. No
 // titles or user attribution: the alert describes pipeline health, not
 // anyone's viewing.
 export function summariseError(message: string): string {
@@ -87,7 +87,7 @@ export function summariseError(message: string): string {
 }
 
 // Record one terminal download failure. Alerts (once per streak) when the
-// consecutive count reaches the threshold. Fail-open: a dead Redis/ntfy must
+// consecutive count reaches the threshold. Fail-open: a dead Redis or a throwing notify must
 // not wedge the worker's failure handling.
 export async function recordDownloadFailure(
   errorMessage: string,

@@ -1,7 +1,6 @@
 import path from 'path';
 import 'express-async-errors';
 import express, { NextFunction, Request, Response } from 'express';
-import { config } from './config';
 import { logger } from './logger';
 import { ollamaHealthCheck } from './ollama';
 import { downloadQueue, deleteQueue, redis } from './queue';
@@ -27,14 +26,11 @@ import {
 import { ensurePersonForChannel, applyChannelInfoToPerson } from './modules/people/registry';
 import { API_PREFIXES } from './api-prefixes';
 
-// Wire the notifications module at the production boot site. Built once from
-// startup config; everything downstream reaches `notify` via
-// `getNotifications()`. ntfy stays the only transport — this is event-type
-// fan-in, not transport pluggability.
-const notifications = createNotifications({
-  ntfyConfig: config.ntfyUserConfig,
-  pwaBaseUrl: `http://${config.TAILSCALE_IP}:${config.PORT}`,
-});
+// Wire the notifications module at the production boot site. Everything
+// downstream reaches `notify` via `getNotifications()`. There is one transport
+// at a time (ADR-0003) — log-only today, APNs when the iOS shell ships — so
+// this is event-type fan-in, not transport pluggability.
+const notifications = createNotifications();
 registerDefaultNotifications(notifications);
 
 // Wire the requests state seam at the production boot site. Call sites reach

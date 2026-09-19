@@ -34,7 +34,7 @@ Quick reference; durable form in `docs/adr/`.
 
 - Modular monolith. Two Node entry points (M4 server, Ubuntu worker) sharing modules. Modules are TS files, not services.
 - yt-dlp directly (no Tube Archivist). Eddy owns video files; Plex/nginx read.
-- ntfy self-hosted is the only notification channel. No Web Push, Pushover, email, SMS.
+- One notification channel, ever. Everything calls `notify()`. Log-only today (ntfy removed 2026-09-19), APNs via the iOS shell next. No Web Push, Pushover, email, SMS.
 - SQLite single-file. `better-sqlite3`.
 - Gemma 4 E4B for guard triage. No frontier API calls until Phase 11 (optional).
 - No Tailwind, no CSS-in-JS, no Storybook in the PWA.
@@ -43,7 +43,7 @@ Quick reference; durable form in `docs/adr/`.
 
 ## Stack
 
-TypeScript strict · Node LTS · Express · SQLite (`better-sqlite3`) · BullMQ + Redis · Ollama (`gemma4:e4b`) · ntfy · React 19 + Vite · Framer Motion · Zustand · TanStack Query · Lucide.
+TypeScript strict · Node LTS · Express · SQLite (`better-sqlite3`) · BullMQ + Redis · Ollama (`gemma4:e4b`) · React 19 + Vite · Framer Motion · Zustand · TanStack Query · Lucide.
 
 No Python in Eddy — yt-dlp is a binary shell-out.
 
@@ -62,7 +62,7 @@ No Python in Eddy — yt-dlp is a binary shell-out.
 
 ## Push back if asked to
 
-- Add a notification channel other than ntfy.
+- Add a notification channel alongside the one channel — including a stopgap while the transport is log-only.
 - Make a frontier API call from runtime code (Phase 11 only, and only if enabled).
 - Split modules into HTTP services.
 - Put persistent user state in `localStorage` / `sessionStorage` in the PWA. Transient UI-only state (e.g. video resume position) is fine.

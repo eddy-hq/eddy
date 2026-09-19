@@ -8,7 +8,7 @@
  * yt-dlp-touching queues (the same lever `pipeline-pause.ts` pulls), alert Steve
  * once, and wait for a manual resume. Dark-until-manual, by design.
  *
- * This module owns the queue + ntfy coupling deliberately, keeping `botdetect.ts`
+ * This module owns the queue + notification coupling deliberately, keeping `botdetect.ts`
  * a pure detector + thin Redis wrappers. The detector returns the running strike
  * `level`; this decides whether that level warrants tripping.
  *
@@ -42,7 +42,7 @@ export function shouldTripCircuit(level: number): boolean {
   return level >= CIRCUIT_BREAKER_THRESHOLD;
 }
 
-// Seam for tests — production wiring closes over queues, Redis and ntfy.
+// Seam for tests — production wiring closes over queues, Redis and the notifications module.
 export interface CircuitBreakerDeps {
   // Pause both yt-dlp-touching queues. Idempotent.
   pauseQueues: () => Promise<void>;
@@ -53,7 +53,7 @@ export interface CircuitBreakerDeps {
   // Release the single-alert slot after a failed send, so a later trip can
   // retry the alert instead of the claim being burned forever.
   releaseAlert: () => Promise<void>;
-  // Send the one ntfy alert to Steve's adult topic.
+  // Send the one alert to Steve.
   sendAlert: (consecutiveTrips: number) => Promise<void>;
 }
 
@@ -81,7 +81,7 @@ const defaultDeps: CircuitBreakerDeps = {
 // queues on every trip (idempotent) but alerts + logs only on the transition
 // (whichever process wins the SET NX). Returns whether this call opened the
 // circuit (i.e. sent the alert). Fail-open: never throws into the caller's
-// error path — a dead Redis/ntfy must not wedge the arming site.
+// error path — a dead Redis or a throwing notify must not wedge the arming site.
 export async function tripCircuitIfNeeded(
   level: number,
   deps: CircuitBreakerDeps = defaultDeps,

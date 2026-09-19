@@ -12,7 +12,7 @@ import { createRequestsState, type Ports, type RequestsState } from './state';
 //
 // Production wiring for `createRequestsState`. Imports the upstream modules
 // statically here (rather than in state.ts) so the state machine itself stays
-// free of side-effect-heavy dependencies (BullMQ, Redis, ntfy, yt-dlp). Tests
+// free of side-effect-heavy dependencies (BullMQ, Redis, notifications, yt-dlp). Tests
 // that exercise `getRequestsState().apply(...)` against `vi.mock`'d upstream
 // modules see those mocks through these closures.
 function defaultPorts(): Ports {

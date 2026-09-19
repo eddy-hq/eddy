@@ -389,7 +389,7 @@ async function start(): Promise<void> {
     // parks instead of exhausting — this fires for genuinely failing downloads.
     if (job && attemptsExhausted(job.attemptsMade, job.opts.attempts)) {
       const { requestId } = job.data;
-      // Signature-blind failure-streak tally (one ntfy alert per streak once
+      // Signature-blind failure-streak tally (one alert per streak once
       // the threshold is crossed) — counts TERMINAL failures only, so retry
       // attempts don't inflate the streak.
       void recordDownloadFailure(err?.message ?? 'unknown error');

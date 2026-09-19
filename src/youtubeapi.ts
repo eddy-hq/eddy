@@ -98,7 +98,7 @@ interface VideosListResponse {
 // before exhaustion, so we reset on the UTC calendar day (no tz library) and
 // accept the few-hours skew. getQuotaUsage() exposes the running total for the
 // observability surface; the 80% line logs once per day, matching botdetect's
-// log-only stand-down (no ntfy).
+// log-only stand-down (no notification event).
 const QUOTA_DAILY_FREE_UNITS = 10_000;
 const QUOTA_WARN_FRACTION = 0.8;
 const quotaState = { day: '', units: 0, warned: false };

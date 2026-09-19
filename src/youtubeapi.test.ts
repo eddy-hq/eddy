@@ -606,7 +606,7 @@ describe('quota accounting', () => {
   it('warns exactly once when the day crosses 80% of the free tier', async () => {
     // search.list (100) + videos.list (1) = 101 units/call; loop past the
     // 8,000-unit (80% of 10k) line, then keep going to prove the warn is
-    // one-shot per day, not per-call. No ntfy by design (ADR-0011).
+    // one-shot per day, not per-call. No notification event by design (ADR-0011).
     fetchMock.mockImplementation((url: URL) => {
       const path = url.toString();
       if (path.includes('/youtube/v3/search')) {

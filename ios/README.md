@@ -1,7 +1,7 @@
 # Eddy iOS shell
 
 A thin native wrapper around the PWA at `https://eddyhq.app`. Not a second
-client — see `docs/adr/0013-native-ios-is-a-thin-shell-apns-replaces-ntfy.md`
+client — see `docs/adr/0013-native-ios-is-a-thin-shell-with-apns-push.md`
 and brief §21. Stages 1 (shell foundation) and 2 (share extension + App
 Intent) are built; signing, OTA distribution and APNs are stages 3–5.
 

@@ -22,91 +22,18 @@ sudo mkdir -p "${VIDEO_PATH}"
 sudo chown -R "${USER}:${USER}" "/mnt/ssd/eddy"
 check "Video path ready: ${VIDEO_PATH}"
 
-# ── 2. Docker services (ntfy) ────────────────────────────────────────────────
-# Redis lives on M4 (Homebrew). Ubuntu only runs ntfy in Docker.
-info "Docker services"
-
-if ! command -v docker &>/dev/null; then
-  warn "Docker not found — install it first: https://docs.docker.com/engine/install/ubuntu/"
-  exit 1
-fi
-
-# Copy ntfy config into place alongside docker-compose
-mkdir -p "${DEPLOY_DIR}/ntfy"
-cp -n "${DEPLOY_DIR}/ntfy/server.yml" "${DEPLOY_DIR}/ntfy/server.yml" 2>/dev/null || true
-
-# Stop and remove any container started outside of compose so compose can own it
-if docker ps -a --format '{{.Names}}' | grep -q "^eddy-ntfy$"; then
-  docker rm -f eddy-ntfy > /dev/null
-fi
-
-docker compose -f "${DEPLOY_DIR}/docker-compose.ubuntu.yml" up -d
-check "ntfy container running"
-
-# ── 3. ntfy users and topics ─────────────────────────────────────────────────
-info "ntfy users"
-
-# Load .env for topic/credential values
+# ── 2. Environment ────────────────────────────────────────────────────────────
 ENV_FILE="${REPO_DIR}/.env"
 if [[ ! -f "${ENV_FILE}" ]]; then
   warn ".env not found at ${ENV_FILE} — copy .env.example and fill in values first"
   exit 1
 fi
 set -a; source "${ENV_FILE}"; set +a
+check ".env loaded"
 
-# Wait for ntfy to be ready
-for i in {1..10}; do
-  if docker exec eddy-ntfy wget -qO- http://localhost:80/v1/health &>/dev/null; then
-    break
-  fi
-  sleep 2
-done
-
-create_ntfy_user() {
-  local user="$1" pass="$2" topic="$3"
-  # Add user (pipe password twice for the prompt + confirm)
-  # If user already exists ntfy exits non-zero — handle with change-pass instead
-  if ! printf '%s\n%s\n' "${pass}" "${pass}" | docker exec -i eddy-ntfy ntfy user add --role=user "${user}" 2>/dev/null; then
-    printf '%s\n%s\n' "${pass}" "${pass}" | docker exec -i eddy-ntfy ntfy user change-pass "${user}"
-  fi
-  # Reset all topic permissions for this user then grant only their current topic
-  docker exec eddy-ntfy ntfy access --reset "${user}" 2>/dev/null || true
-  docker exec eddy-ntfy ntfy access "${user}" "${topic}" rw
-  check "ntfy user: ${user} → ${topic}"
-}
-
-# Parse "user:pass" from NTFY_CREDS_* vars
-parse_creds() { echo "${1%%:*}"; }
-parse_pass()  { echo "${1#*:}"; }
-
-for var_prefix in STEVE BOY1 BOY2; do
-  creds_var="NTFY_CREDS_${var_prefix}"
-  topic_var="NTFY_TOPIC_${var_prefix}"
-  creds="${!creds_var:-}"
-  topic="${!topic_var:-}"
-  if [[ -z "$creds" || -z "$topic" ]]; then
-    warn "${creds_var} or ${topic_var} not set in .env — skipping"
-    continue
-  fi
-  create_ntfy_user "$(parse_creds "$creds")" "$(parse_pass "$creds")" "$topic"
-done
-
-# ── 4. Tailscale cert (for ntfy HTTPS) ───────────────────────────────────────
-info "Tailscale TLS cert"
-
-NTFY_HOSTNAME="mediaserver.tail1b6462.ts.net"
-SSL_DIR="/etc/ssl/eddy"
-sudo mkdir -p "${SSL_DIR}"
-sudo tailscale cert \
-  --cert-file "${SSL_DIR}/ntfy.crt" \
-  --key-file  "${SSL_DIR}/ntfy.key" \
-  "${NTFY_HOSTNAME}"
-# nginx needs to read the key
-sudo chmod 640 "${SSL_DIR}/ntfy.key"
-sudo chgrp www-data "${SSL_DIR}/ntfy.key"
-check "Tailscale cert written to ${SSL_DIR}"
-
-# ── 5. nginx ──────────────────────────────────────────────────────────────────
+# ── 3. nginx ──────────────────────────────────────────────────────────────────
+# Serves videos + thumbs over HTTP :80 on the tailnet. Nothing here needs TLS:
+# the PWA reaches Eddy through Caddy on the M4, which rewrites media URLs.
 info "nginx"
 
 if ! command -v nginx &>/dev/null; then
@@ -114,12 +41,10 @@ if ! command -v nginx &>/dev/null; then
   sudo apt-get update -qq && sudo apt-get install -y nginx
 fi
 
-for conf in eddy-videos eddy-ntfy; do
-  sudo cp "${DEPLOY_DIR}/nginx/${conf}.conf" "/etc/nginx/sites-available/${conf}"
-  if [[ ! -L "/etc/nginx/sites-enabled/${conf}" ]]; then
-    sudo ln -s "/etc/nginx/sites-available/${conf}" "/etc/nginx/sites-enabled/${conf}"
-  fi
-done
+sudo cp "${DEPLOY_DIR}/nginx/eddy-videos.conf" /etc/nginx/sites-available/eddy-videos
+if [[ ! -L /etc/nginx/sites-enabled/eddy-videos ]]; then
+  sudo ln -s /etc/nginx/sites-available/eddy-videos /etc/nginx/sites-enabled/eddy-videos
+fi
 
 # Remove default site if it conflicts on port 80
 if [[ -L /etc/nginx/sites-enabled/default ]]; then
@@ -130,9 +55,9 @@ fi
 sudo nginx -t
 sudo systemctl enable nginx
 sudo systemctl reload nginx
-check "nginx configured and running (HTTP :80 videos, HTTPS :443 ntfy)"
+check "nginx configured and running (HTTP :80 videos)"
 
-# ── 6. Eddy worker systemd service ───────────────────────────────────────────
+# ── 4. Eddy worker systemd service ───────────────────────────────────────────
 info "Eddy worker systemd service"
 
 # Resolve Node bin dir — prefer nvm's latest installed version, fall back to PATH
@@ -189,7 +114,7 @@ sudo systemctl enable eddy-worker
 sudo systemctl restart eddy-worker
 check "eddy-worker service enabled and started"
 
-# ── 7. bgutil PO-token server ─────────────────────────────────────────────────
+# ── 5. bgutil PO-token server ─────────────────────────────────────────────────
 info "bgutil PO-token server"
 BGUTIL_SERVICE="${DEPLOY_DIR}/bgutil-pot-server.service"
 if [[ ! -f "${BGUTIL_SERVICE}" ]]; then
@@ -208,9 +133,6 @@ echo "────────────────────────�
 printf "${GREEN}${BOLD}Ubuntu setup complete.${RESET}\n"
 echo ""
 echo "Next steps:"
-echo "  1. Install ntfy iOS app on each device"
-echo "     Server: http://\${TAILSCALE_IP:-100.95.170.27}:2586"
-echo "     Subscribe to each user's topic with their credentials"
-echo "  2. Install the iOS Shortcut on kids' devices (see docs/shortcut.md)"
-echo "  3. Run: npm run health  (from M4)"
+echo "  1. Install the iOS Shortcut on kids' devices (see docs/shortcut.md)"
+echo "  2. Run: npm run health  (from M4)"
 echo ""

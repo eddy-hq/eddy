@@ -3,7 +3,8 @@
 # (KeepAlive=true). Runs checks every INTERVAL seconds in an internal
 # loop — launchd's StartInterval was coalesced unreliably on macOS.
 # Checks: M4 Express /health → Tailscale → SSH → eddy-worker.
-# Notifies via ntfy on any corrective action or unrecoverable failure.
+# Records an ALERT line on any corrective action or unrecoverable failure.
+# Log-only: there is no delivery channel until APNs ships with the iOS shell.
 set -uo pipefail
 
 INTERVAL="${WATCHDOG_INTERVAL:-60}"
@@ -22,24 +23,18 @@ fi
 SSH_TARGET="eddy-mediaserver"
 SSH_OPTS="-o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new -o BatchMode=yes"
 
-NTFY_URL="${NTFY_BASE_URL:-}"
-NTFY_TOPIC="${NTFY_TOPIC_STEVE:-}"
-NTFY_CREDS="${NTFY_CREDS_STEVE:-}"
 TAILSCALE="/usr/local/bin/tailscale"
 
 log() {
   echo "$(date -u +"%Y-%m-%dT%H:%M:%SZ") [$1] ${*:2}" >> "$LOG_FILE"
 }
 
+# Log-only notification. Kept as a separate level (ALERT) from the ordinary
+# WARN/ERROR lines so the things that would have been pushed are greppable:
+#   grep ALERT logs/watchdog.log
 notify() {
   local title="$1" body="$2"
-  [[ -z "$NTFY_URL" || -z "$NTFY_TOPIC" ]] && return 0
-  curl -sf --max-time 5 \
-    -u "$NTFY_CREDS" \
-    -H "Title: $title" \
-    -H "Priority: high" \
-    -d "$body" \
-    "$NTFY_URL/$NTFY_TOPIC" > /dev/null 2>&1 || true
+  log "ALERT" "${title}: ${body}"
 }
 
 ts_state() {
