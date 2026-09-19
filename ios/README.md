@@ -265,7 +265,7 @@ By hand, the same thing without the test: install the app, launch it once with
 
 ## Not done yet
 
-- The app icon is an empty placeholder asset.
+- The app icon source is `design/icon/AppIcon.svg`; the catalogue holds a flattened 1024px PNG of it.
 - No "Open Tailscale" button on the fallback screen: Tailscale publishes no
   documented iOS URL scheme, so there is nothing safe to link to.
 - Deep links are unit-tested and the `eddy://` type is registered, but the
