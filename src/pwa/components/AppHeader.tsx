@@ -40,11 +40,17 @@ export function AppHeader({ borderBottom = true }: { borderBottom?: boolean }) {
       borderBottom: borderBottom ? '1px solid var(--border-subtle)' : 'none',
     }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingBottom: 13 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 7, lineHeight: 1 }}>
-          <svg width="22" height="24" viewBox="4 7 40 33" fill="none" style={{ flexShrink: 0, display: 'block' }}>
-            <path d="M 40 23 C 40 11,29 5,18 8 C 8 11,4 21,7 30 C 10 39,21 44,31 41 C 39 38,43 29,40 22 C 37 16,28 13,21 17 C 15 21,14 29,18 34 C 21 37,28 37,32 32" stroke="var(--accent)" strokeWidth="3.2" strokeLinecap="round" fill="none"/>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, lineHeight: 1 }}>
+          {/* The iOS icon's banded play mark, cut down to three bands so it
+              holds at 26px, in the accent rather than the icon's navy. The
+              full-colour source is design/icon/AppIcon.svg. */}
+          <svg width="26" height="26" viewBox="0 0 512 512" aria-hidden style={{ flexShrink: 0, display: 'block' }}>
+            <rect width="512" height="512" rx="150" fill="var(--accent)" opacity="0.2" />
+            <rect x="60" y="60" width="392" height="392" rx="115" fill="var(--accent)" opacity="0.4" />
+            <rect x="120" y="120" width="272" height="272" rx="80" fill="var(--accent)" />
+            <path d="M 225 205 L 225 307 L 311 256 Z" fill="var(--bg-primary)" stroke="var(--bg-primary)" strokeWidth="21" strokeLinejoin="round" />
           </svg>
-          <span style={{ fontFamily: 'var(--font-serif)', fontSize: 22, fontWeight: 400, letterSpacing: '-0.015em', color: 'var(--text-primary)' }}>
+          <span style={{ fontFamily: 'var(--font-sans)', fontSize: 22, fontWeight: 600, letterSpacing: '-0.03em', color: 'var(--text-primary)' }}>
             eddy
           </span>
         </div>
