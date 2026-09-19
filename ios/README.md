@@ -81,7 +81,9 @@ run, with the account fine in Xcode, the team id right and a normal desktop
 session. Give it an App Store Connect API key instead: copy
 `Config/release.env.example` to `Config/release.env` (gitignored), fill in the
 three values, and keep the `.p8` outside the repo. The script picks it up by
-itself.
+itself. The key must have the **Admin** role: export re-signs with Apple's
+cloud-managed distribution certificate, which lesser roles cannot use
+(`Cloud signing permission error`).
 
 The archive is signed for development and re-signed for distribution at
 export; that is why Release names a development identity in `project.yml`.
@@ -293,11 +295,12 @@ By hand, the same thing without the test: install the app, launch it once with
   intent itself is wrong. Making `link` optional (the documented shape for a
   parameter an App Shortcut can't be given) did not change it. Try it on a
   device before assuming the code is at fault.
-- **The release script has never produced an ipa.** The archive step works;
-  the export has only ever failed with `No Accounts` (see *Releasing*), so the
-  API-key route, the ipa and an install from the page are all unproven. APNs is stages 4–5. Nothing in the repo carries a team id —
-  `Local.xcconfig` stays gitignored and is still the only place
-  `DEVELOPMENT_TEAM` lives.
+- The release script has produced and published an ipa (2026-09-19), signing
+  in with an Admin App Store Connect API key — a lesser role authenticates and
+  then fails with `Cloud signing permission error`. **Installing from the
+  `/ios` page on a device is still unproven**, as are Developer Mode and Screen
+  Time on the boys' devices. APNs is stages 4–5. Nothing in the repo carries a
+  team id or a key.
 - Every simulator build prints one `appintentsmetadataprocessor` notice —
   "Metadata extraction skipped. No AppIntents.framework dependency found" —
   for the `EddyShare` target, which has no App Intents and needs none.
