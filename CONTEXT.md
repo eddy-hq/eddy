@@ -218,6 +218,14 @@ _Avoid_: pusher, notifier (in code, `notify()` is the narrow module interface)
 A per-user ntfy channel, UUID-suffixed (e.g. `eddy-boy1-{uuid}`). Each iOS app holds credentials for its own topic only.
 _Avoid_: channel (overloaded), stream
 
+**The shell**:
+The native iOS app — a `WKWebView` hosting the **PWA** plus the four things a web page can't do on iOS (share extension, APNs push, `eddy://` deep links, Keychain identity). Not a second client: it renders no screens of its own. See [[0013-native-ios-is-a-thin-shell-apns-replaces-ntfy]].
+_Avoid_: native client, second app (both imply a parallel UI), wrapper
+
+**Opaque push**:
+A notification whose payload carries a random message id and placeholder copy, nothing more. The real title and body are fetched from **the M4** over Tailscale by the iOS service extension and written into the notification on the device, so nothing about a **Kid** transits Apple. The same model ntfy's poll-request forwarding already uses.
+_Avoid_: silent push (that's a different iOS mechanism), stub notification
+
 **MCP**:
 The Model Context Protocol surface that lets adults manage Eddy from Claude.ai — adults only, kids' consumption detail never returned. Privacy filter enforced at the response boundary.
 _Avoid_: API (overloaded), control plane (descriptive but not the term)

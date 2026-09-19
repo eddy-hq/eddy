@@ -121,10 +121,10 @@ Ubuntu worker never writes SQLite directly — it reports results via M4's inter
 Every client-facing interaction is plain HTTP with a clean JSON contract. No PWA-only cleverness in the data layer.
 
 **Canonical URL paths** are documented once and used everywhere. Protocol is variable:
-- `https://eddy.tail-xxxx.ts.net/request/{id}` — PWA
-- `eddy://request/{id}` — native app when it ships
+- `https://eddyhq.app/feed` — PWA
+- `eddy://feed` — native shell (Section 21)
 
-Same paths both forms. Switching consumers is a protocol prefix change, not a route rewrite.
+Same paths both forms. Switching consumers is a protocol prefix change, not a route rewrite. Custom scheme only — universal links would need a publicly reachable `apple-app-site-association`, and `eddyhq.app` is tailnet-only.
 
 ---
 
@@ -178,7 +178,7 @@ Shortcut structure:
 2. `POST [base]/requests` with the URL — response includes `{ "path": "/request/{id}" }`
 3. `Open URL [base][path]`
 
-`[base]` is a Shortcut variable. Today: `https://eddy.tail-xxxx.ts.net`. When native ships: `eddy://`. Same Shortcut, two modes.
+`[base]` is a Shortcut variable. Today: `https://eddyhq.app`. The native shell replaces this route with a real share extension and keeps an App Intent for anyone who prefers the Shortcut (Section 21).
 
 **Safety net (Phase 9): DNS-block landing page.** Blocked YouTube domains resolve to a local page: *"Looks like you're trying to watch something. Open in Eddy?"* URL prefilled, one tap submits. Every block becomes a redirect, not a wall.
 
@@ -864,7 +864,9 @@ One PIN per parent, stored as scrypt hash. Same PIN across every approval surfac
 notify(user_id: string, event: EventType, payload: EventPayload): Promise<void>
 ```
 
-Everything else in the codebase calls this. Today it's ntfy; tomorrow (native iOS) it's direct APNs. Narrow interface, not a plugin abstraction.
+Everything else in the codebase calls this. Today it's ntfy; the native shell swaps in APNs *behind this interface*, one user at a time — never both for one user, and ntfy comes out once the last user has moved (Section 21). Narrow interface, not a plugin abstraction.
+
+> The implemented signature is `notify(event: NotificationEvent, recipient: string)` — event-first, with the payload folded into a discriminated union on `event.kind`. Treat the code as canonical.
 
 ---
 
@@ -1036,6 +1038,8 @@ A session is a focused working block of a few hours ending with the system runna
 - **Phase 9** — Overrides & blocking (gated on partner buy-in)
 - **Phase 10** — MCP
 - **Phase 11** — Frontier escalation (optional)
+
+Outside the numbered phases: the **native iOS shell** (Section 21) is a separate track, not a phase. It gates nothing and nothing gates it.
 
 ### Phase 0 ✅ — Foundation
 
@@ -1227,13 +1231,13 @@ Resolve before or during the relevant phase.
 
 1. **Gemma inference throughput on M4 with 16GB RAM.** Can it handle scoring + hook generation + triage + recommendation detection on a busy day without swap? Instrument in Phase 3, adjust batch sizes if needed.
 2. **Whole-house DNS coverage (Phase 9 decision).** HH2 can't push DNS to DHCP clients. Tailscale-only may be sufficient once kids are using share-sheet for most requests. If not: Pi-hole-as-DHCP (fragile but free) or router replacement (~£140 for UniFi Cloud Gateway Ultra). Decide at start of Phase 9.
-3. **Eddy domain name.** Registered or pending. Needed properly when native ships (for universal links — `.ts.net` can't serve `apple-app-site-association`). Current working DNS: `eddy.tail-xxxx.ts.net`.
+3. ~~**Eddy domain name.**~~ **Resolved** — `eddyhq.app` is live over HTTPS behind Caddy, tailnet-only. Custom scheme rather than universal links follows from that; see Section 4.
 4. **Recommendation detection quality.** Gemma extracting book/article/podcast recommendations from a person's text output is the novel piece in Phase 5/7. Signal quality unknown until tested on real data. If poor, fall back to "new outputs only" for followed-person discovery and revisit.
 5. **Kid person-level UI tone.** "You've been really into this creator lately" is the intended register. Exact phrasing matters — reviewing with kids during Phase 5 is part of the work, not an afterthought.
 
 ### Known dependencies
 
-- **ntfy.sh upstream** — required for instant iOS push (poll-request forwarding). Single point of failure outside our control. Uptime has been good. Native iOS (v2) removes this dependency.
+- **ntfy.sh upstream** — required for instant iOS push (poll-request forwarding). Single point of failure outside our control. Uptime has been good. The native shell drops this dependency user by user as each is cut over to APNs (Section 21) — Apple's push infrastructure in place of ntfy.sh's, not alongside it.
 - **yt-dlp + bgutil-ytdlp-pot-provider** — active arms race with YouTube. Both well-maintained, typical fix times 24-48h. Mitigation is operational (Section 6 Reliability). No credible architectural alternative.
 
 ---
@@ -1245,3 +1249,63 @@ Resolve before or during the relevant phase.
 - **Repo:** `eddy-hq/eddy`
 - **Licence:** MIT
 - **Open source:** when stable (post-Phase 8). Per-household native builds require per-household Apple Developer accounts — consistent with self-hosted ethos.
+
+---
+
+## 21. Native iOS shell
+
+A thin native app that wraps the existing PWA. Not a second client. Decision and rejected alternatives: ADR-0013.
+
+### What native owns / what the PWA owns
+
+**Native (Swift + SwiftUI):**
+- **Share extension** — appears directly in the iOS share sheet, replacing the Shortcut. POSTs to `/requests`, shows the outcome inline.
+- **App Intent** — so Shortcuts and Siri can still reach Eddy for anyone who prefers the old route.
+- **APNs push**, including lock-screen `[Approve] [Deny]` action buttons.
+- **`eddy://` deep links** — same paths as the web routes.
+- **Fallback screen** when Tailscale isn't connected. The one thing a web page can't explain well.
+- **User identity in the Keychain**, injected into the web view. Today identity is a `?userId=` query param that every page re-appends by hand; the shell makes it survive.
+
+**PWA (unchanged):** every screen. Feed, player, request landing, saved, search, profile, person view, admin. The web view loads `https://eddyhq.app` over the tailnet — it never serves bundled local HTML, because every PWA fetch is origin-relative.
+
+No native feed. No native player. No second design system.
+
+### Server contract changes
+
+Three additions, all on the M4. Shapes only; implementing agents fill in the detail.
+
+- **`POST /devices`** — device registration carrying the APNs token. Upserts into the existing (currently unused) `devices` table, which gains a token column and a `last_seen_at`. `DELETE /devices/:id` on sign-out or token invalidation.
+- **APNs sender behind `notify()`** — selected per user. A user is on ntfy *or* APNs, never both, and the ntfy transport comes out of the codebase once the last user has moved (§12, ADR-0003). Event types, priorities and action URLs are unchanged.
+- **`GET /notifications/:messageId`** — what the Notification Service Extension calls to turn an opaque push into real content. Tailnet-only, and authenticated as the device's own user: a message is readable only by its recipient.
+
+Payloads that transit Apple carry the opaque message id and generic placeholder copy, nothing else — no titles, no channel names, no kid names (§14, ADR-0004). The id is random, never a request id or a YouTube id. If the extension's fetch fails, the notification reads "Something new in Eddy" and the content is only visible in the app.
+
+APNs buttons hit the same `/action/{handler}?token=` signed-token URLs as ntfy actions, unchanged (ADR-0005) — but note that neither the route nor a target id in the token payload exists yet. Both are owed by Phase 6 whether or not the shell ships.
+
+### Build order
+
+Roughly 7–9 sessions. Stages 2–3 stand alone and can ship before any push work.
+
+1. **Server** — device registration + APNs sender behind `notify()`. No client yet.
+2. **Xcode project** — WKWebView shell, `eddy://` deep links, Keychain identity, Tailscale fallback screen.
+3. **Share extension + App Intent** — the Shortcut's replacement.
+4. **APNs client + Notification Service Extension**, device-tested against a backgrounded VPN before anyone is cut over.
+5. **Signing + OTA distribution + per-user cutover** — Steve first, then the boys, retiring each ntfy topic as APNs is proven.
+
+APNs earns its keep once Phase 6 (guard live) starts producing parent-approval notifications; before that the shell is mostly about the share extension.
+
+### Distribution
+
+Ad hoc provisioning, not TestFlight (ADR-0013 for why).
+
+- Register each device's UDID; 12-month provisioning profile.
+- OTA install manifest served from `eddyhq.app` behind Caddy, tailnet-only like everything else.
+- Yearly re-sign, with a watchdog warning a month before profile expiry.
+- Each self-hosting household signs with its own Apple Developer account.
+
+### Open questions
+
+1. **Will the kids' devices install it?** Screen Time's "Installing Apps" restriction, and whether iOS 16+ demands Developer Mode for an ad hoc build. Both untested.
+2. **Video inside `WKWebView`** — inline vs forced fullscreen, and whether the player's state machine survives it. Device test in stage 2.
+3. **Where the Swift lives** — `ios/` in this repo, or a separate repo. Separate keeps the Node toolchain clean; same repo keeps the API contract and its client honest in one diff.
+4. **Service extension over a backgrounded VPN** — the load-bearing unknown; stage 4 answers it before any cutover.

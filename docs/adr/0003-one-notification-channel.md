@@ -11,3 +11,4 @@ ntfy specifically is a good fit right now (self-hosted, signed-token-friendly ac
 - If ntfy.sh has an outage, urgent notifications wait. That's the price of the principle; no fallback channel is the right answer.
 - Every action button in the system depends on the signed-token pattern surviving the channel swap. See [[0005-single-use-signed-tokens]].
 - Migrating to a native iOS app means re-pointing `notify()`, re-issuing topic credentials, and updating Shortcuts — the user-visible surface (events, priorities, actions) doesn't change.
+- That migration is now specified: [[0013-native-ios-is-a-thin-shell-apns-replaces-ntfy]] swaps ntfy for APNs, one user at a time, as a branch inside `notify()`. During the migration a user is on ntfy or on APNs, never both; when the last user has moved, ntfy comes out of the codebase. Replace, not augment — the rule above holds unchanged.
