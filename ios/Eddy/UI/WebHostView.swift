@@ -24,7 +24,12 @@ struct WebHostView: View {
                 onTerminated: model.webContentProcessTerminated,
                 onResetRequested: model.requestIdentityReset
             )
-            .ignoresSafeArea()
+            // Bottom edge only. The PWA's sticky headers pin to `top: 0` with
+            // no safe-area padding of their own, so a web view running under
+            // the status bar leaves a strip above the header where scrolling
+            // content shows through. Stopping at the top safe area clips it;
+            // RootView's background fills the strip.
+            .ignoresSafeArea(.all, edges: .bottom)
 
             // The PWA's own first paint is behind a network round trip, so
             // without this the shell shows a plain colour and nothing else.
