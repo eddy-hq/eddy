@@ -14,4 +14,5 @@ export const API_PREFIXES = [
   '/health',
   '/action',
   '/ios',
+  '/site',
 ] as const;

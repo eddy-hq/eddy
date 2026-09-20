@@ -124,6 +124,10 @@ app.use(
   })
 );
 
+// Marketing site preview — the static pages in site/, tailnet-only until they
+// have a public home (docs/self-install-gaps.md).
+app.use('/site', express.static(path.join(__dirname, '../site'), { redirect: true }));
+
 // PWA — serve built assets; fall back to index.html for client-side routing.
 // API prefixes are excluded so unknown API paths reach the 404 handler below
 // instead of silently returning index.html.
