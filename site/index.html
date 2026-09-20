@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Eddy — family media without the feed</title>
+<meta name="description" content="A self-hosted family media server. Kids share a link, it is checked on your own machine, and it comes back watchable in a feed that ends.">
+<meta name="theme-color" content="#FAFAF8">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600&family=IBM+Plex+Mono:wght@400;500&family=Source+Serif+4:opsz,wght@8..60,400&display=swap">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="mark" viewBox="0 0 512 512">
+    <rect width="512" height="512" rx="150" fill="#3D6B6B" opacity="0.2"/>
+    <rect x="60" y="60" width="392" height="392" rx="115" fill="#3D6B6B" opacity="0.4"/>
+    <rect x="120" y="120" width="272" height="272" rx="80" fill="#3D6B6B"/>
+    <path d="M225 205V307L311 256Z" fill="#FAFAF8" stroke="#FAFAF8" stroke-width="21" stroke-linejoin="round"/>
+  </symbol>
+  <symbol id="app-icon" viewBox="0 0 512 512">
+    <rect width="512" height="512" rx="115" fill="#1B2A41"/>
+    <rect x="40" y="40" width="432" height="432" rx="105" fill="#21405A"/>
+    <rect x="88" y="88" width="336" height="336" rx="92" fill="#2B6377"/>
+    <rect x="136" y="136" width="240" height="240" rx="72" fill="#4E9CA0"/>
+    <path d="M228 208V304L308 256Z" fill="#FAF6EC" stroke="#FAF6EC" stroke-width="20" stroke-linejoin="round"/>
+  </symbol>
+</svg>
+
+<header class="nav wrap">
+  <a class="brand" href="#top" aria-label="Eddy">
+    <svg width="30" height="30" aria-hidden="true"><use href="#mark"/></svg>
+    <span>eddy</span>
+  </a>
+  <nav aria-label="Main">
+    <a href="#story">How it works</a>
+    <a href="#wont">Principles</a>
+    <a href="https://github.com/eddy-hq/eddy">GitHub</a>
+    <a class="btn btn-small" href="#install">Install</a>
+  </nav>
+</header>
+
+<main id="top">
+
+<section class="hero wrap">
+  <div class="hero-copy">
+    <h1>Share a link.<br>Watch it in Eddy.</h1>
+    <p class="lede">A family media server you run at home. Kids get the videos they actually asked for, checked on your own machine, in a feed that ends. The engagement machinery stays outside.</p>
+    <div class="actions">
+      <a class="btn" href="#install">Install Eddy</a>
+      <a class="btn btn-quiet" href="#story">See how it works</a>
+    </div>
+    <p class="fine">Free, open source, self-hosted. No accounts and no cloud.</p>
+  </div>
+  <div class="art-wrap" aria-hidden="true">
+    <div class="art">
+      <div class="band band-1"></div>
+      <div class="band band-2"></div>
+      <div class="band band-3"></div>
+      <div class="art-phone">
+        <div class="art-brand"><svg><use href="#mark"/></svg><span>eddy</span></div>
+        <div class="art-today">Today</div>
+        <div class="art-card"><div class="art-thumb thumb-a"></div><strong>Build a marble run</strong><span>You asked for this</span></div>
+        <div class="art-card"><div class="art-thumb thumb-b"></div><strong>How bridges stay up</strong><span>Because you follow this maker</span></div>
+        <div class="art-done">That&rsquo;s everything for today.</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="story" class="tint">
+  <div class="wrap section">
+    <div class="section-head">
+      <h2>Three taps for them. Nothing for you.</h2>
+      <p>Most requests never need a parent. You hear about the ones that do.</p>
+    </div>
+    <ol class="story">
+      <li>
+        <div class="phone phone-share" aria-hidden="true">
+          <div class="sheet">
+            <span class="sheet-title">Share</span>
+            <div class="sheet-row">
+              <div class="sheet-app"><i></i>Messages</div>
+              <div class="sheet-app is-eddy"><svg width="52" height="52"><use href="#app-icon"/></svg>Eddy</div>
+              <div class="sheet-app"><i></i>Mail</div>
+              <div class="sheet-app"><i></i>More</div>
+            </div>
+          </div>
+        </div>
+        <h3>1. Share to Eddy</h3>
+        <p>From YouTube, a group chat, anywhere a link turns up.</p>
+      </li>
+      <li>
+        <div class="phone phone-check" aria-hidden="true">
+          <div class="serif big">Got it.</div>
+          <p>Checking this one for you. It usually takes a couple of minutes.</p>
+          <ul class="steps">
+            <li class="done">Asked</li>
+            <li class="done">Checked</li>
+            <li class="now">Getting it</li>
+            <li>Ready</li>
+          </ul>
+        </div>
+        <h3>2. Eddy checks it</h3>
+        <p>On your machine, against their age. Waiting is always explained, and a no always has a reason.</p>
+      </li>
+      <li>
+        <div class="phone phone-play" aria-hidden="true">
+          <div class="player"><svg width="40" height="40" viewBox="0 0 40 40"><path d="M14 10V30L30 20Z" fill="#FAFAF8" stroke="#FAFAF8" stroke-width="4" stroke-linejoin="round"/></svg></div>
+          <div class="player-meta"><strong>Build a marble run</strong><span>You asked for this.</span></div>
+          <div class="serif player-end">Nothing up next.</div>
+        </div>
+        <h3>3. They watch it</h3>
+        <p>The video, and only the video. When it ends, it ends.</p>
+      </li>
+    </ol>
+  </div>
+</section>
+
+<section class="wrap section pair">
+  <article class="card card-teal">
+    <div class="eyebrow">For them</div>
+    <h2>A service that is on their side.</h2>
+    <ul>
+      <li>Links from friends come back watchable in minutes.</li>
+      <li>They follow the creators they like, and new videos arrive on their own.</li>
+      <li>Every suggestion says why it is there.</li>
+      <li>A no comes with a reason and a way to appeal.</li>
+    </ul>
+  </article>
+  <article class="card card-stone">
+    <div class="eyebrow">For you</div>
+    <h2>One decision at a time, from your lock screen.</h2>
+    <ul>
+      <li>Only the uncertain ones reach you. Approve or decline without opening anything.</li>
+      <li>Controls are in plain language, by child and by age.</li>
+      <li>Their viewing history stays on a machine in your house.</li>
+      <li>You can read every line of the code that decides.</li>
+    </ul>
+  </article>
+</section>
+
+<section id="wont" class="navy">
+  <div class="wrap section">
+    <h2>What is not in the box</h2>
+    <div class="nots">
+      <div><h3>Autoplay</h3><p>One video ends, and that is the end.</p></div>
+      <div><h3>Infinite scroll</h3><p>The day&rsquo;s feed is short. Finishing it is the point.</p></div>
+      <div><h3>A cloud</h3><p>One SQLite file on your machine. No accounts, no telemetry.</p></div>
+      <div><h3>Scoreboards</h3><p>No hour counts or rankings on a kid&rsquo;s screen.</p></div>
+    </div>
+  </div>
+</section>
+
+<section id="install" class="wrap section split">
+  <div class="stack">
+    <h2>Set it up this evening.</h2>
+    <div class="cmd">
+      <code><span class="prompt">$</span> <span id="install-cmd">curl -fsSL https://eddyhq.app/install.sh | sh</span></code>
+      <button type="button" id="copy" aria-label="Copy install command">Copy</button>
+    </div>
+    <p>Or <code class="inline">docker compose up -d</code> from the repository. Then add your kids and send each device its pairing link.</p>
+    <p><a href="https://github.com/eddy-hq/eddy">Read the install guide</a></p>
+  </div>
+  <div class="stack">
+    <div class="eyebrow">You will need</div>
+    <div class="needs">
+      <div><h3>A machine that stays on</h3><p>Mac or Linux. A Mac mini is ideal.</p></div>
+      <div><h3>16 GB of memory</h3><p>For the local model that does the checking.</p></div>
+      <div><h3>Tailscale</h3><p>On the server and the family&rsquo;s devices. The free plan is enough.</p></div>
+      <div><h3>Some disk</h3><p>[SIZE GUIDANCE]. Old videos are recycled.</p></div>
+    </div>
+  </div>
+</section>
+
+<section class="tint">
+  <div class="wrap section split">
+    <h2>Honest about where it is.</h2>
+    <div class="stack prose">
+      <p>Eddy is built by one parent and runs one household every day. It is early, and it does YouTube only. It is free and open source under [LICENCE].</p>
+      <p>The iPhone app needs your own Apple developer account for now. The web app and an iOS Shortcut work without one.</p>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer class="wrap foot">
+  <div><strong>eddy</strong> A family media space on the kids&rsquo; side.</div>
+  <div class="foot-links"><a href="https://github.com/eddy-hq/eddy">GitHub</a><a href="https://github.com/eddy-hq/eddy/blob/main/docs/brief.md">The spec</a></div>
+</footer>
+
+<script>
+  const copy = document.getElementById('copy');
+  copy.addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText(document.getElementById('install-cmd').textContent);
+      copy.textContent = 'Copied';
+    } catch {
+      copy.textContent = 'Select it';
+    }
+    setTimeout(() => { copy.textContent = 'Copy'; }, 1600);
+  });
+</script>
+</body>
+</html>
