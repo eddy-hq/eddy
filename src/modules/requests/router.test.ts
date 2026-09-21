@@ -738,6 +738,37 @@ describe('GET /requests/feed', () => {
     expect(ids).toContain('feed-cap-200');
   });
 
+  it('returns every saved row in `saved`, including ones older than the feed cap', async () => {
+    const baseTime = new Date(isoAt(0)).getTime();
+    const insertMany = db.transaction(() => {
+      for (let i = 0; i <= FEED_LIMIT; i += 1) {
+        insertRequestRow({
+          request_id: `saved-cap-${i}`,
+          status: 'watched',
+          added_at: new Date(baseTime - i * 1000).toISOString(),
+        });
+      }
+    });
+    insertMany();
+    insertRequestRow({ request_id: 'saved-then-dismissed', status: 'dismissed', added_at: isoAt(0) });
+    const save = db.prepare('UPDATE requests SET saved_at = ? WHERE request_id = ?');
+    // The oldest row sits one past the cap; it is also the most recent save.
+    save.run(isoAt(0), `saved-cap-${FEED_LIMIT}`);
+    save.run(new Date(baseTime - 60_000).toISOString(), 'saved-cap-0');
+    save.run(isoAt(0), 'saved-then-dismissed');
+
+    const resp = await request('GET', '/requests/feed?user=Boy1');
+    expect(resp.status).toBe(200);
+    const body = resp.json<{
+      days: Array<{ cards: Array<{ request_id: string }>; sections?: Array<{ cards: Array<{ request_id: string }> }> }>;
+      saved: Array<{ request_id: string }>;
+    }>();
+    const dayIds = body.days.flatMap((d) => d.sections ? d.sections.flatMap((s) => s.cards) : d.cards).map((c) => c.request_id);
+
+    expect(dayIds).not.toContain(`saved-cap-${FEED_LIMIT}`);
+    expect(body.saved.map((c) => c.request_id)).toEqual([`saved-cap-${FEED_LIMIT}`, 'saved-cap-0']);
+  });
+
   it('returns 400 when neither userId nor user is provided', async () => {
     const resp = await request('GET', '/requests/feed');
     expect(resp.status).toBe(400);
