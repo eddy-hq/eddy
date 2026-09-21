@@ -300,7 +300,11 @@ opaque id that means nothing off the M4.
   the `eddy://` form the shell already routes, so there is one navigation path
   and not two. Only a same-origin *path* is honoured — an absolute URL is
   refused rather than compared against the origin — and a notification with no
-  `actionUrl` just opens the app.
+  `actionUrl` just opens the app. The delegate is installed in
+  `didFinishLaunchingWithOptions`, not when the SwiftUI side attaches: a tap
+  that launches a terminated Eddy is delivered in that window, and a delegate
+  set later never hears about it. The link waits in the delegate until the
+  model arrives, and the opening `/feed` load doesn't overwrite it.
 
 ### Device-testing push
 
