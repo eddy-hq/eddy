@@ -20,6 +20,7 @@ import { discoveryRouter } from './modules/discovery/router';
 import { interestsRouter } from './modules/interests/index';
 import { avatarsRouter } from './modules/avatars/index';
 import { watchEventsRouter } from './modules/watch-events/index';
+import { iosEnrolRouter } from './modules/ios-enrol/index';
 import {
   createNotifications,
   registerDefaultNotifications,
@@ -111,7 +112,9 @@ app.get('/health', async (_req: Request, res: Response) => {
 
 // iOS shell releases — the over-the-air install page, manifest and ipa written
 // by ios/scripts/release-adhoc.sh. iOS is particular about the manifest being
-// XML, and the ipa must never be served stale after a re-sign.
+// XML, and the ipa must never be served stale after a re-sign. The enrol
+// routes sit in front: cable-free device registration (modules/ios-enrol).
+app.use('/ios', iosEnrolRouter);
 app.use(
   '/ios',
   express.static(config.IOS_DIST_PATH, {

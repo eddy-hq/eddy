@@ -66,7 +66,13 @@ Before the first run:
 
 1. `Config/Local.xcconfig` has `DEVELOPMENT_TEAM`, and Xcode is signed in to
    that team (Settings → Accounts).
-2. Every device is registered in the developer portal (Devices → +, by UDID).
+2. Every device is registered with the developer account.
+   `ios/scripts/register-devices.mjs` does it through the App Store Connect
+   API (it needs `Config/release.env`), for any device cabled to the Mac and
+   trusted — Xcode pairing is not needed — and for any device that enrolled
+   itself: on the device, open `https://eddyhq.app/ios/enrol`, fetch the
+   profile and install it from Settings. That reports the UDID to the M4 and
+   nowhere else, and is the only route for a device that cannot be cabled.
    An ad hoc profile only covers devices that existed when it was generated,
    so **a new device means registering it and running the script again**. The
    script prints how many devices the profile covers — check it matches.
