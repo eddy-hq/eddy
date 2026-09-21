@@ -1,4 +1,6 @@
 import { generateKeyPairSync } from 'crypto';
+import http2 from 'http2';
+import type { AddressInfo } from 'net';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 // The HTTP/2 layer and the clock are injected, so nothing here touches the
@@ -7,6 +9,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 import {
   createApnsSender,
+  createHttp2Client,
   apnsSettingsFrom,
   buildApnsPayload,
   APNS_HOSTS,
@@ -191,6 +194,81 @@ describe('what APNs answers', () => {
 
     expect(await sender.send(DEVICE, 'm1')).toMatchObject({ deviceGone: false });
     expect(await sender.send(DEVICE, 'm2')).toMatchObject({ deviceGone: false, status: 503 });
+  });
+});
+
+describe('a provider token Apple refuses', () => {
+  it('is dropped so the next send mints a fresh one', async () => {
+    const { client, sent } = fakeClient([{ status: 403, reason: 'ExpiredProviderToken' }]);
+    let clock = 1_000_000;
+    const sender = createApnsSender({ settings: SETTINGS, client, readKey, now: () => clock });
+
+    const first = await sender.send(DEVICE, 'm1');
+    // The device is fine — it is the credential that is stale.
+    expect(first).toMatchObject({ ok: false, status: 403, deviceGone: false });
+
+    clock += 1_000;
+    await sender.send(DEVICE, 'm2');
+
+    expect(keyReads).toBe(2);
+    expect(sent[1]!.headers['authorization']).not.toBe(sent[0]!.headers['authorization']);
+  });
+
+  it('is dropped for InvalidProviderToken too', async () => {
+    const { client } = fakeClient([{ status: 403, reason: 'InvalidProviderToken' }]);
+    let clock = 1_000_000;
+    const sender = createApnsSender({ settings: SETTINGS, client, readKey, now: () => clock });
+
+    await sender.send(DEVICE, 'm1');
+    clock += 1_000;
+    await sender.send(DEVICE, 'm2');
+
+    expect(keyReads).toBe(2);
+  });
+
+  it('keeps the cached token for a 403 that is not about the token', async () => {
+    const { client } = fakeClient([{ status: 403, reason: 'Forbidden' }]);
+    let clock = 1_000_000;
+    const sender = createApnsSender({ settings: SETTINGS, client, readKey, now: () => clock });
+
+    await sender.send(DEVICE, 'm1');
+    clock += 1_000;
+    await sender.send(DEVICE, 'm2');
+
+    expect(keyReads).toBe(1);
+  });
+});
+
+describe('the HTTP/2 connection', () => {
+  // A connection that dies without a RST stays `closed === false` and
+  // `destroyed === false`, so a cached session would be handed back forever.
+  // The stand-in here is a local h2c server that accepts streams and never
+  // answers: every send times out, and the test asserts the client reconnects
+  // instead of reusing the wedged session.
+  it('is rebuilt after a request times out, not reused', async () => {
+    const server = http2.createServer();
+    const serverSessions: http2.ServerHttp2Session[] = [];
+    server.on('session', (session) => serverSessions.push(session));
+    server.on('stream', () => {
+      // Deliberately no response.
+    });
+
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const { port } = server.address() as AddressInfo;
+    const host = `http://127.0.0.1:${port}`;
+    const client = createHttp2Client({ requestTimeoutMs: 100 });
+
+    try {
+      const send = () => client.post({ host, path: '/3/device/token', headers: {}, body: '{}' });
+
+      await expect(send()).rejects.toThrow(/timed out/);
+      await expect(send()).rejects.toThrow(/timed out/);
+
+      expect(serverSessions).toHaveLength(2);
+    } finally {
+      for (const session of serverSessions) session.destroy();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 });
 

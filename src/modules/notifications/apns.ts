@@ -107,28 +107,41 @@ function base64url(value: string): string {
   return Buffer.from(value).toString('base64url');
 }
 
+interface TokenProvider {
+  current(): string;
+  // Drops the cached JWT so the next send re-reads the key file and mints
+  // again, rather than reattaching a token Apple has already refused.
+  invalidate(): void;
+}
+
 function createTokenProvider(
   settings: ApnsSettings,
   now: () => number,
   readKey: (keyPath: string) => string | Buffer
-): () => string {
+): TokenProvider {
   let cached: { jwt: string; issuedAt: number } | null = null;
 
-  return () => {
-    const at = now();
-    if (cached && at - cached.issuedAt < JWT_MAX_AGE_MS) return cached.jwt;
+  return {
+    current() {
+      const at = now();
+      if (cached && at - cached.issuedAt < JWT_MAX_AGE_MS) return cached.jwt;
 
-    const header = base64url(JSON.stringify({ alg: 'ES256', kid: settings.keyId }));
-    const claims = base64url(
-      JSON.stringify({ iss: settings.teamId, iat: Math.floor(at / 1000) })
-    );
-    const signature = createSign('SHA256')
-      .update(`${header}.${claims}`)
-      .sign({ key: readKey(settings.keyPath), dsaEncoding: 'ieee-p1363' })
-      .toString('base64url');
+      const header = base64url(JSON.stringify({ alg: 'ES256', kid: settings.keyId }));
+      const claims = base64url(
+        JSON.stringify({ iss: settings.teamId, iat: Math.floor(at / 1000) })
+      );
+      const signature = createSign('SHA256')
+        .update(`${header}.${claims}`)
+        .sign({ key: readKey(settings.keyPath), dsaEncoding: 'ieee-p1363' })
+        .toString('base64url');
 
-    cached = { jwt: `${header}.${claims}.${signature}`, issuedAt: at };
-    return cached.jwt;
+      cached = { jwt: `${header}.${claims}.${signature}`, issuedAt: at };
+      return cached.jwt;
+    },
+
+    invalidate() {
+      cached = null;
+    },
   };
 }
 
@@ -148,7 +161,7 @@ export function createApnsSender(deps: ApnsSenderDeps): ApnsSender {
         host: APNS_HOSTS[target.apnsEnvironment],
         path: `/3/device/${target.apnsToken}`,
         headers: {
-          authorization: `bearer ${token()}`,
+          authorization: `bearer ${token.current()}`,
           'apns-topic': settings.topic,
           'apns-push-type': 'alert',
           'apns-priority': '10',
@@ -157,6 +170,20 @@ export function createApnsSender(deps: ApnsSenderDeps): ApnsSender {
       });
 
       if (response.status === 200) return { ok: true };
+
+      // A 403 about the provider token means the cached JWT is no longer
+      // acceptable — the key was rotated, or this machine's clock has drifted
+      // out of Apple's window. Without this the same stale JWT would be
+      // reattached to every send until the 50-minute cache expired, so every
+      // push would fail while both the devices and the config looked healthy.
+      // The next send mints a fresh one; this one is still reported as failed.
+      if (
+        response.status === 403 &&
+        (response.reason === 'ExpiredProviderToken' ||
+          response.reason === 'InvalidProviderToken')
+      ) {
+        token.invalidate();
+      }
 
       // 410 Gone, and the two 400s that mean the same thing: this token is dead.
       const deviceGone =
@@ -169,24 +196,37 @@ export function createApnsSender(deps: ApnsSenderDeps): ApnsSender {
   };
 }
 
+export interface Http2ClientOptions {
+  // Both exist for the wedged-session test, which needs a local h2c server and
+  // a timeout it can wait out. Production passes neither.
+  requestTimeoutMs?: number;
+  connect?: (host: string) => http2.ClientHttp2Session;
+}
+
 // Production client: one HTTP/2 session per APNs host, reused across sends and
-// rebuilt when it dies. Never constructed in tests — they inject their own.
-export function createHttp2Client(): ApnsHttpClient {
+// rebuilt when it dies.
+export function createHttp2Client(options: Http2ClientOptions = {}): ApnsHttpClient {
+  const { requestTimeoutMs = REQUEST_TIMEOUT_MS, connect = (host: string) => http2.connect(host) } =
+    options;
   const sessions = new Map<string, http2.ClientHttp2Session>();
+
+  function dropSession(host: string, session: http2.ClientHttp2Session): void {
+    if (sessions.get(host) === session) sessions.delete(host);
+  }
 
   function sessionFor(host: string): http2.ClientHttp2Session {
     const existing = sessions.get(host);
     if (existing && !existing.closed && !existing.destroyed) return existing;
 
-    const session = http2.connect(host);
+    const session = connect(host);
     // A session-level error must not become an unhandled event; the next send
     // opens a fresh connection.
     session.on('error', () => {
-      if (sessions.get(host) === session) sessions.delete(host);
+      dropSession(host, session);
       session.destroy();
     });
     session.on('close', () => {
-      if (sessions.get(host) === session) sessions.delete(host);
+      dropSession(host, session);
     });
     sessions.set(host, session);
     return session;
@@ -195,14 +235,21 @@ export function createHttp2Client(): ApnsHttpClient {
   return {
     post({ host, path, headers, body }) {
       return new Promise<ApnsHttpResponse>((resolve, reject) => {
-        const request = sessionFor(host).request({
+        const session = sessionFor(host);
+        const request = session.request({
           ':method': 'POST',
           ':path': path,
           ...headers,
         });
 
-        request.setTimeout(REQUEST_TIMEOUT_MS, () => {
+        request.setTimeout(requestTimeoutMs, () => {
           request.close(http2.constants.NGHTTP2_CANCEL);
+          // A connection that dies without a RST — a Tailscale flap, a NAT
+          // dropping an idle mapping — leaves a session that is neither closed
+          // nor destroyed, so `sessionFor` would hand it back forever and every
+          // send would time out silently. Bin the session with the request.
+          dropSession(host, session);
+          session.destroy();
           reject(new Error('APNs request timed out'));
         });
 
