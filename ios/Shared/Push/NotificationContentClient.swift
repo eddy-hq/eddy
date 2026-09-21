@@ -28,12 +28,20 @@ struct NotificationContentClient: Sendable {
     }
 
     func content(messageId: String, userId: String) async -> NotificationContent? {
+        try? await result(messageId: messageId, userId: userId).get()
+    }
+
+    /// The same fetch, saying why it failed. The reason never reaches a person
+    /// in a shipping build — the extension shows the placeholder whatever it
+    /// is — but a development build surfaces it, because the extension's log
+    /// can't be read off a device without root.
+    func result(messageId: String, userId: String) async -> Result<NotificationContent, NotificationFetchFailure> {
         let request: URLRequest
         do {
             request = try makeRequest(messageId: messageId, userId: userId)
         } catch {
             Log.push.error("Couldn't build the notification URL")
-            return nil
+            return .failure(.badURL)
         }
 
         let data: Data
@@ -42,21 +50,22 @@ struct NotificationContentClient: Sendable {
             (data, response) = try await transport.send(request)
         } catch {
             Log.push.notice("Notification fetch failed: \(error.localizedDescription, privacy: .public)")
-            return nil
+            let nsError = error as NSError
+            return .failure(.transport(domain: nsError.domain, code: nsError.code))
         }
 
-        guard let http = response as? HTTPURLResponse else { return nil }
+        guard let http = response as? HTTPURLResponse else { return .failure(.notHTTP) }
         guard http.statusCode == 200 else {
             // 404 is the ordinary shape of an expired message, or one that
             // belongs to another member of the household.
             Log.push.notice("Notification fetch answered \(http.statusCode, privacy: .public)")
-            return nil
+            return .failure(.status(http.statusCode))
         }
         guard let content = try? JSONDecoder().decode(NotificationContent.self, from: data) else {
             Log.push.error("Notification response didn't parse")
-            return nil
+            return .failure(.unparseable)
         }
-        return content
+        return .success(content)
     }
 
     /// Built from components rather than `URL(string:relativeTo:)` so a base
@@ -79,5 +88,25 @@ struct NotificationContentClient: Sendable {
         request.timeoutInterval = timeout
         request.cachePolicy = .reloadIgnoringLocalCacheData
         return request
+    }
+}
+
+/// Why a notification's content couldn't be fetched. Carries no content, ids
+/// or identity — only the shape of the failure.
+enum NotificationFetchFailure: Error, Equatable {
+    case badURL
+    case transport(domain: String, code: Int)
+    case notHTTP
+    case status(Int)
+    case unparseable
+
+    var debugLabel: String {
+        switch self {
+        case .badURL: "bad URL"
+        case .transport(let domain, let code): "\(domain) \(code)"
+        case .notHTTP: "no HTTP response"
+        case .status(let code): "HTTP \(code)"
+        case .unparseable: "unparseable response"
+        }
     }
 }

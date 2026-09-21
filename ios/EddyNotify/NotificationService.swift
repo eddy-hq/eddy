@@ -32,24 +32,28 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
 
         guard let messageId = PushMessage.id(in: request.content.userInfo) else {
             Log.push.notice("Push carried no usable message id")
-            deliver(nil)
+            deliver(nil, debugReason: "no message id")
             return
         }
         guard let config = try? AppConfig.load(from: .main) else {
             Log.push.error("No usable EddyBaseURL in the extension's Info.plist")
-            deliver(nil)
+            deliver(nil, debugReason: "no base URL")
             return
         }
         guard let userId = KeychainIdentityStore.readIdentity() else {
             Log.push.notice("No identity on this device; delivering the placeholder")
-            deliver(nil)
+            deliver(nil, debugReason: "no identity in keychain")
             return
         }
 
         let client = NotificationContentClient(baseURL: config.baseURL)
         let task = Task { [weak self] in
-            let content = await client.content(messageId: messageId, userId: userId)
-            self?.deliver(content)
+            let result = await client.result(messageId: messageId, userId: userId)
+            guard let self else { return }
+            switch result {
+            case .success(let content): self.deliver(content)
+            case .failure(let failure): self.deliver(nil, debugReason: failure.debugLabel)
+            }
         }
         lock.lock()
         fetch = task
@@ -62,12 +66,12 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
         lock.unlock()
         task?.cancel()
         Log.push.notice("Service extension expired; delivering the placeholder")
-        deliver(nil)
+        deliver(nil, debugReason: "extension expired")
     }
 
     /// nil content means "deliver what Apple sent". Called more than once by
     /// design; only the first call reaches iOS.
-    private func deliver(_ fetched: NotificationContent?) {
+    private func deliver(_ fetched: NotificationContent?, debugReason: String? = nil) {
         lock.lock()
         let handler = contentHandler
         let content = placeholder
@@ -75,6 +79,12 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
         lock.unlock()
 
         guard let handler, let content else { return }
+        #if DEBUG
+        // A development build only: the extension's log can't be read off a
+        // device without root, so the reason rides on the notification. A
+        // shipping build delivers the placeholder untouched.
+        if fetched == nil, let debugReason { content.subtitle = "debug: \(debugReason)" }
+        #endif
         if let fetched {
             content.title = fetched.title
             content.body = fetched.body
