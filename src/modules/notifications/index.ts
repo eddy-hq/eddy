@@ -8,8 +8,34 @@
 
 import { createNotifications, type NotificationsModule } from './notify';
 
-export { createNotifications } from './notify';
-export type { NotificationsModule } from './notify';
+export { createNotifications, contentFor } from './notify';
+export type {
+  NotificationsModule,
+  NotificationPorts,
+  NotificationsOptions,
+} from './notify';
+export {
+  createApnsSender,
+  createHttp2Client,
+  apnsSettingsFrom,
+  buildApnsPayload,
+  APNS_HOSTS,
+  PLACEHOLDER_TITLE,
+  PLACEHOLDER_BODY,
+} from './apns';
+export type {
+  ApnsSender,
+  ApnsSettings,
+  ApnsTarget,
+  ApnsHttpClient,
+  ApnsHttpResponse,
+  ApnsSendResult,
+} from './apns';
+export { recordMessage, readMessage, MESSAGE_TTL_MS } from './messages';
+export type { NotificationContent } from './messages';
+export { notificationsRouter } from './router';
+export { createRelayNotifications, parseRelayPayload, RELAY_PATH } from './relay';
+export type { RelayPayload } from './relay';
 export type {
   NotificationEvent,
   VideoReadyEvent,

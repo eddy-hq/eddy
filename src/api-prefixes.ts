@@ -11,6 +11,8 @@ export const API_PREFIXES = [
   '/avatars',
   '/discovery',
   '/watch-events',
+  '/devices',
+  '/notifications',
   '/health',
   '/action',
   '/ios',

@@ -68,6 +68,15 @@ const schema = z.object({
   // the ipa, manifest and install page here; the M4 serves it at /ios. Outside
   // the repo because the ipa's embedded profile carries device identifiers.
   IOS_DIST_PATH: z.string().default(path.join(os.homedir(), 'data/eddy/ios')),
+  // ── APNs push (brief §21, ADR-0013) ──────────────────────────────────────
+  // All optional. With the three key settings absent, notify() stays log-only
+  // exactly as it is today and nothing is sent to Apple — the server says so
+  // once at startup. APNS_KEY_PATH is an absolute path to the .p8 auth key,
+  // which lives OUTSIDE the repo. The topic is the app's bundle id.
+  APNS_KEY_PATH: z.string().optional(),
+  APNS_KEY_ID: z.string().optional(),
+  APNS_TEAM_ID: z.string().optional(),
+  APNS_TOPIC: z.string().default('app.eddyhq.Eddy'),
   // Internal M4 ↔ Ubuntu worker callback
   INTERNAL_HMAC_SECRET: z.string().min(32, 'INTERNAL_HMAC_SECRET must be at least 32 characters'),
   M4_INTERNAL_URL: z.string().optional(), // set on Ubuntu worker; not required on M4

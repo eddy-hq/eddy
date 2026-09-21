@@ -19,6 +19,7 @@ import { tripCircuitIfNeeded } from '../circuit-breaker';
 import { recordDownloadFailure, recordDownloadSuccess } from '../failure-streak';
 import { triggerPlexScan, updatePlexMetadata } from '../modules/content/plex';
 import { postSigned } from '../signed-channel';
+import { createRelayNotifications, registerDefaultNotifications } from '../modules/notifications';
 import { generateThumbnail } from './thumb';
 import type { DownloadJobData } from '../modules/content';
 import type { DeleteJobData } from '../modules/requests';
@@ -352,6 +353,10 @@ async function processThumbJob(job: Job<ThumbJobData>): Promise<void> {
 
 async function start(): Promise<void> {
   logger.info('Eddy download worker starting');
+
+  // This box has no database and no APNs key, so the circuit-breaker and
+  // failure-streak alerts raised here are handed to the M4 for delivery.
+  registerDefaultNotifications(createRelayNotifications(postSigned));
 
   // Concurrency 1: serialise downloads so the worker never runs two extractions
   // at once on the shared residential IP. Throughput isn't the constraint here

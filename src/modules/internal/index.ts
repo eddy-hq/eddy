@@ -4,7 +4,7 @@ import { logger } from '../../logger';
 import { downloadQueue } from '../../queue';
 import { verifySignedJson } from '../../signed-channel';
 import { getRequestsState } from '../requests';
-import { getNotifications } from '../notifications';
+import { getNotifications, parseRelayPayload } from '../notifications';
 import { checkStuckDownloads } from '../watchdog';
 import { scoreForRequest, classifyThumbnail, classifyYtImage } from '../guard';
 import { ollamaGenerate } from '../../ollama';
@@ -336,6 +336,19 @@ internalRouter.post('/thumb/score-frame', verifySignedJson<{ image: string; prom
 }));
 
 // POST /internal/watchdog/run — trigger an immediate watchdog check (for testing/ops)
+// POST /internal/notify — the worker hands over an ops alert it cannot deliver
+// itself (no database, no APNs key). Only the two kinds the worker raises are
+// accepted; the M4's own notify() logs and delivers it.
+internalRouter.post('/notify', verifySignedJson<unknown>(async (_req, res, payload) => {
+  const relayed = parseRelayPayload(payload);
+  if (!relayed) {
+    res.status(400).json({ error: 'Not a relayable notification' });
+    return;
+  }
+  await getNotifications().notify(relayed.event, relayed.recipient);
+  res.json({ ok: true });
+}));
+
 internalRouter.post('/watchdog/run', (_req: Request, res: Response) => {
   void checkStuckDownloads().catch((err: unknown) => {
     logger.error({ err }, 'Manual watchdog check failed');
