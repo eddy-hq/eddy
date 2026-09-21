@@ -10,9 +10,10 @@
 //
 // Discovery reads dispatched here: searchVideosWithDates (#190),
 // flatPlaylistChannel (#191), channelInfo (#192), videoDurations (#193,
-// batched). Interactive parent-facing UI searches also dispatch here:
-// searchVideosFlat (search-videos route) and searchChannelsFlat (people-search
-// route) — the same source switch, but with no freshness bound.
+// batched), recentUploads (the daily follow poll). Interactive parent-facing UI
+// searches also dispatch here: searchVideosFlat (search-videos route) and
+// searchChannelsFlat (people-search route) — the same source switch, but with
+// no freshness bound.
 import { config } from './config';
 import * as ytdlp from './ytdlp';
 import * as api from './youtubeapi';
@@ -55,6 +56,17 @@ export function flatPlaylistChannel(channelId: string) {
 
 export function channelInfo(channelId: string) {
   return useApi() ? api.channelInfo(channelId) : ytdlp.channelInfo(channelId);
+}
+
+export type { RecentUpload } from './youtubeapi';
+
+// The follow poll's listing of a channel's newest uploads. Under the API source
+// this is one playlistItems.list call (1 unit). There is no yt-dlp equivalent
+// on purpose — a per-channel scrape every day is exactly the exposure ADR-0012
+// budgets away — so the fallback source returns null and the poller keeps its
+// RSS read.
+export function recentUploads(channelId: string): Promise<api.RecentUpload[] | null> {
+  return useApi() ? api.recentUploads(channelId) : Promise.resolve(null);
 }
 
 // Batched (#193): resolve many ids in one Data API call, or loop the per-video

@@ -660,7 +660,7 @@ describe('pollChannel failure modes', () => {
     mockFetchOk(xml);
     vi.mocked(videoDuration).mockResolvedValue(600);
 
-    await expect(pollChannel(OUTPUT)).resolves.toBeUndefined();
+    await expect(pollChannel(OUTPUT)).resolves.toBe(true);
 
     // Let the rejected fire-and-forget settle.
     await new Promise((resolve) => setImmediate(resolve));

@@ -504,6 +504,52 @@ export async function flatPlaylistChannel(channelId: string): Promise<PlaylistEn
   return out;
 }
 
+interface RecentUploadsResponse {
+  items?: Array<{
+    snippet?: { title?: string; thumbnails?: Record<string, { url?: string }> };
+    contentDetails?: { videoId?: string; videoPublishedAt?: string };
+  }>;
+}
+
+// A followed channel's newest uploads, for the daily follow poll. The same
+// count the RSS feed carried, so the poller's first-poll and seen-ledger
+// behaviour is unchanged.
+const RECENT_UPLOADS_LIMIT = 15;
+
+export interface RecentUpload {
+  videoId: string;
+  title: string;
+  publishedAt: string;
+  thumbnailUrl: string | null;
+}
+
+// One playlistItems.list page (1 unit) over the derived uploads playlist,
+// newest first. Title, publish time and thumbnail all ride on that one call,
+// so no videos.list is needed here — the poller batches durations itself.
+// `videoPublishedAt` is the video's own publish time (`snippet.publishedAt` is
+// when it joined the playlist); an item without it is private or deleted and
+// is dropped.
+export async function recentUploads(channelId: string): Promise<RecentUpload[]> {
+  const data = await apiGet<RecentUploadsResponse>('playlistItems', {
+    part: 'snippet,contentDetails',
+    playlistId: toUploadsPlaylistId(channelId),
+    maxResults: String(RECENT_UPLOADS_LIMIT),
+  });
+  const out: RecentUpload[] = [];
+  for (const item of data.items ?? []) {
+    const videoId = item.contentDetails?.videoId;
+    const publishedAt = item.contentDetails?.videoPublishedAt;
+    if (typeof videoId !== 'string' || typeof publishedAt !== 'string') continue;
+    out.push({
+      videoId,
+      title: String(item.snippet?.title ?? ''),
+      publishedAt,
+      thumbnailUrl: pickThumbnail(item.snippet?.thumbnails),
+    });
+  }
+  return out;
+}
+
 // Channel bio + avatar (#192). One channels.list call (1 unit). Mirrors
 // yt-dlp's channelInfo contract: blank/whitespace description collapses to
 // null, avatar is the largest thumbnail.

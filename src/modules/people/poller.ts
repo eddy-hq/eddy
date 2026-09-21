@@ -17,7 +17,7 @@ import { v7 as uuidv7 } from 'uuid';
 import { db } from '../../db/client';
 import { logger } from '../../logger';
 import { SHORTS_MAX_SECS } from '../content';
-import { videoDurations } from '../../discovery-metadata';
+import { recentUploads, videoDurations } from '../../discovery-metadata';
 import { applyChannelInfoToPerson } from './registry';
 import { getDeclaredChannelInterest } from '../interests';
 
@@ -100,36 +100,55 @@ export interface OutputRow {
   channel_name: string;
 }
 
-export async function pollChannel(output: OutputRow): Promise<void> {
+// A channel's newest uploads, or null when the listing could not be read (already
+// logged). Under the Data API source this is one playlistItems.list call; the
+// RSS feed is only the fallback source's listing, because it proved unreliable
+// as the primary — whole 05:00 passes came back 404/500 for every channel, and
+// an upload found days late has decayed below the slate's score floor. A quota
+// stand-down is not a per-channel flake, so it propagates (#194).
+async function listRecentUploads(channelId: string): Promise<RssVideo[] | null> {
+  let viaApi: RssVideo[] | null;
+  try {
+    viaApi = await recentUploads(channelId);
+  } catch (err) {
+    if ((err as { quotaExceeded?: boolean }).quotaExceeded) throw err;
+    logger.warn({ err, channelId }, 'Uploads listing failed');
+    return null;
+  }
+  if (viaApi !== null) return viaApi;
+
+  const rssUrl = `https://www.youtube.com/feeds/videos.xml?channel_id=${channelId}`;
+  try {
+    const resp = await fetch(rssUrl, { signal: AbortSignal.timeout(15_000) });
+    if (!resp.ok) {
+      logger.warn({ channelId, status: resp.status }, 'RSS fetch non-200');
+      return null;
+    }
+    return parseYoutubeRss(await resp.text()).videos;
+  } catch (err) {
+    logger.warn({ err, channelId }, 'RSS fetch failed');
+    return null;
+  }
+}
+
+// Resolves true when the channel's uploads listing was read, false when it
+// could not be — the pass tallies these so a wholesale failure is loud.
+export async function pollChannel(output: OutputRow): Promise<boolean> {
   // Silent refresh of person bio + photo. Fire-and-forget — keeps poll latency
-  // bounded by RSS+yt-dlp(video) work, not by the channel-metadata call.
+  // bounded by the listing + duration work, not by the channel-metadata call.
   void applyChannelInfoToPerson(output.person_id, output.channel_id)
     .catch((err: unknown) =>
       logger.debug({ err, channelId: output.channel_id }, 'Channel info refresh failed'),
     );
 
-  const rssUrl = `https://www.youtube.com/feeds/videos.xml?channel_id=${output.channel_id}`;
-
-  let xml: string;
-  try {
-    const resp = await fetch(rssUrl, { signal: AbortSignal.timeout(15_000) });
-    if (!resp.ok) {
-      logger.warn({ channelId: output.channel_id, status: resp.status }, 'RSS fetch non-200');
-      return;
-    }
-    xml = await resp.text();
-  } catch (err) {
-    logger.warn({ err, channelId: output.channel_id }, 'RSS fetch failed');
-    return;
-  }
-
-  const { videos } = parseYoutubeRss(xml);
+  const videos = await listRecentUploads(output.channel_id);
+  if (videos === null) return false;
 
   const followers = db.prepare(
     'SELECT user_id FROM followed_people WHERE person_id = ?'
   ).all(output.person_id) as Array<{ user_id: string }>;
 
-  if (followers.length === 0) return;
+  if (followers.length === 0) return true;
 
   // On first poll for a channel (no seen_videos yet), queue only the latest
   // video as confirmation that follow worked. Mark the rest seen without downloading.
@@ -229,6 +248,7 @@ export async function pollChannel(output: OutputRow): Promise<void> {
 
   db.prepare('UPDATE person_outputs SET last_polled = ? WHERE output_id = ?')
     .run(nowIso(), output.output_id);
+  return true;
 }
 
 function nowIso(): string {
@@ -238,7 +258,9 @@ function nowIso(): string {
 // Full poll pass over every active, followed YouTube channel. The daily
 // discovery job awaits this as its first step (ADR-0009) so subscription
 // candidates are in the pool before composition runs. Per-channel failures
-// are logged and skipped — one flaky RSS feed must not abort the pass.
+// are logged and skipped — one flaky listing must not abort the pass — but a
+// pass in which NO channel could be read is an error, not a quiet day: that is
+// how weeks of failed polls went unnoticed.
 export async function runRssPollPass(): Promise<void> {
   const outputs = db.prepare(`
     SELECT DISTINCT po.output_id, po.external_id AS channel_id, po.person_id,
@@ -253,9 +275,12 @@ export async function runRssPollPass(): Promise<void> {
 
   logger.info({ count: outputs.length }, 'RSS poll pass starting');
 
+  let failed = 0;
+  let aborted = false;
+
   for (const output of outputs) {
     try {
-      await pollChannel(output);
+      if (!(await pollChannel(output))) failed += 1;
     } catch (err) {
       // Data API quota exhaustion (#194): the next channel's probes hit the
       // same wall, so abort the whole pass rather than burn a failed call per
@@ -265,11 +290,20 @@ export async function runRssPollPass(): Promise<void> {
           { channelId: output.channel_id },
           'RSS poll pass: YouTube Data API quota exhausted — aborting remaining channels',
         );
+        aborted = true;
         break;
       }
+      failed += 1;
       logger.error({ err, channelId: output.channel_id }, 'RSS poll failed for channel');
     }
   }
 
-  logger.info({ count: outputs.length }, 'RSS poll pass complete');
+  if (!aborted && failed === outputs.length) {
+    logger.error(
+      { count: outputs.length },
+      'RSS poll pass: every channel failed — no follow uploads were read today',
+    );
+  }
+
+  logger.info({ count: outputs.length, failed }, 'RSS poll pass complete');
 }

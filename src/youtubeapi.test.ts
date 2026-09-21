@@ -18,6 +18,7 @@ import {
   searchChannelsFlat,
   fetchVideoMetadata,
   flatPlaylistChannel,
+  recentUploads,
   channelInfo,
   videoDuration,
   videoDurations,
@@ -474,6 +475,62 @@ describe('flatPlaylistChannel', () => {
     const out = await flatPlaylistChannel('UCx');
     expect(out).toEqual([]);
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('recentUploads', () => {
+  it('reads one page of the UU uploads playlist — a single 1-unit call', async () => {
+    fetchMock.mockResolvedValue(fetchResult({ items: [] }));
+    await recentUploads('UCabc123');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const url = (fetchMock.mock.calls[0]![0] as URL).toString();
+    expect(url).toContain('/youtube/v3/playlistItems');
+    expect(url).toContain('playlistId=UUabc123');
+    expect(url).toContain('part=snippet%2CcontentDetails');
+  });
+
+  it("maps title, thumbnail and the video's own publish time, preserving order", async () => {
+    fetchMock.mockResolvedValue(
+      fetchResult({
+        items: [
+          {
+            snippet: {
+              title: 'Newest',
+              publishedAt: '2026-09-21T09:00:00Z',
+              thumbnails: { default: { url: 'small' }, high: { url: 'big' } },
+            },
+            contentDetails: { videoId: 'v1', videoPublishedAt: '2026-09-20T08:00:00Z' },
+          },
+          {
+            snippet: { title: 'Older' },
+            contentDetails: { videoId: 'v2', videoPublishedAt: '2026-09-18T08:00:00Z' },
+          },
+        ],
+      }),
+    );
+    const out = await recentUploads('UCx');
+    expect(out).toEqual([
+      { videoId: 'v1', title: 'Newest', publishedAt: '2026-09-20T08:00:00Z', thumbnailUrl: 'big' },
+      { videoId: 'v2', title: 'Older', publishedAt: '2026-09-18T08:00:00Z', thumbnailUrl: null },
+    ]);
+  });
+
+  it('drops private / deleted items, which carry no videoPublishedAt', async () => {
+    fetchMock.mockResolvedValue(
+      fetchResult({
+        items: [
+          { snippet: { title: 'Private video' }, contentDetails: { videoId: 'gone' } },
+          { snippet: { title: 'OK' }, contentDetails: { videoId: 'ok', videoPublishedAt: '2026-09-20T08:00:00Z' } },
+        ],
+      }),
+    );
+    const out = await recentUploads('UCx');
+    expect(out.map((v) => v.videoId)).toEqual(['ok']);
+  });
+
+  it('flags quota exhaustion so the poll pass can stand down', async () => {
+    fetchMock.mockResolvedValue(fetchResult('quotaExceeded', { ok: false, status: 403 }));
+    await expect(recentUploads('UCx')).rejects.toMatchObject({ quotaExceeded: true });
   });
 });
 
