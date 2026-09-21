@@ -207,7 +207,7 @@ describe('scoreForRequest', () => {
     );
     expect(insertCall).toBeDefined();
     const row = insertCall?.[0] as Record<string, unknown>;
-    expect(row['prompt_version']).toBe('v1');
+    expect(row['prompt_version']).toBe('v2');
     expect(row['gemma_verdict']).toBe('clear_yes');
     expect(row['request_id']).toBe('req-1');
     expect(row['url']).toBe('https://youtube.com/watch?v=abc');
@@ -239,6 +239,45 @@ describe('scoreForRequest', () => {
 });
 
 describe('evaluateCandidate', () => {
+  it('asks for a short, schema-constrained verdict with thinking off', async () => {
+    vi.mocked(ollamaGenerate).mockResolvedValue('{"reason":"ok","verdict":"clear_yes","confidence":0.9}');
+    await evaluateCandidate({
+      candidateId: 'cand-0', userId: 'user-1', url: 'https://x', title: 'Some video',
+    });
+    const call = vi.mocked(ollamaGenerate).mock.calls[0];
+    expect(call?.[3]).toMatchObject({ think: false, temperature: 0 });
+    expect(call?.[3]?.num_predict).toBeGreaterThan(0);
+    const format = call?.[4] as { properties: { verdict: { enum: string[] } } };
+    expect(format.properties.verdict.enum).toEqual(['clear_yes', 'clear_no', 'uncertain']);
+  });
+
+  it('gives the model the channel, the follow and the real channel history', async () => {
+    channelHistory = { approved: 4, rejected: 0 };
+    vi.mocked(ollamaGenerate).mockResolvedValue('{"reason":"ok","verdict":"clear_yes","confidence":0.9}');
+    await evaluateCandidate({
+      candidateId: 'cand-0', userId: 'user-1', url: 'https://x',
+      title: 'Some video', channel: 'Example Channel', followed: true,
+    });
+    const prompt = vi.mocked(ollamaGenerate).mock.calls[0]?.[0] ?? '';
+    expect(prompt).toContain('Channel: Example Channel');
+    expect(prompt).toContain('4 previously approved');
+    expect(prompt).toContain('chosen to follow this channel');
+    // ADR-0010: a follow is the child's choice, never a parent's approval.
+    expect(prompt).toContain('no parent has reviewed it');
+    expect(prompt).not.toContain('Description:');
+  });
+
+  it('makes no claim about channel or history when the channel is unknown', async () => {
+    vi.mocked(ollamaGenerate).mockResolvedValue('{"reason":"ok","verdict":"clear_yes","confidence":0.9}');
+    await evaluateCandidate({
+      candidateId: 'cand-0', userId: 'user-1', url: 'https://x', title: 'Some video', channel: null,
+    });
+    const prompt = vi.mocked(ollamaGenerate).mock.calls[0]?.[0] ?? '';
+    expect(prompt).not.toContain('Channel:');
+    expect(prompt).not.toContain('Channel history');
+    expect(prompt).not.toContain('follow');
+  });
+
   it('writes guard_eval row with request_id NULL and returns verdict', async () => {
     vi.mocked(ollamaGenerate).mockResolvedValue(
       '{"verdict":"clear_yes","reason":"Looks fine.","confidence":0.8}'
@@ -258,7 +297,7 @@ describe('evaluateCandidate', () => {
     expect(row['request_id']).toBeNull();
     expect(row['url']).toBe('https://youtube.com/watch?v=abc');
     expect(row['gemma_verdict']).toBe('clear_yes');
-    expect(row['prompt_version']).toBe('v1');
+    expect(row['prompt_version']).toBe('candidate-v2');
     expect(row['request_type']).toBe('candidate');
     expect(row['subject_text']).toBeNull();
     expect(row['interest_id']).toBeNull();
@@ -319,7 +358,7 @@ describe('evaluateKidInterest', () => {
     expect(row['request_type']).toBe('kid_interest');
     expect(row['subject_text']).toBe('Bird Watching');
     expect(row['interest_id']).toBe('bird_watching');
-    expect(row['prompt_version']).toBe('kid-interest-v1');
+    expect(row['prompt_version']).toBe('kid-interest-v2');
     expect(row['request_id']).toBeNull();
     expect(row['url']).toBe('interest:bird_watching');
   });
