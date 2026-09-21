@@ -39,6 +39,11 @@ final class ShellModel {
 
     let config: AppConfig
 
+    /// Push registration, once the app delegate has wired it up. Weak because
+    /// the delegate owns it, and optional because the previews and the tests
+    /// have no APNs at all.
+    weak var push: (any PushRegistering)?
+
     private let identity: any IdentityStore
     private let verifier: any IdentityVerifier
     private let loadTimeout: Duration
@@ -84,6 +89,7 @@ final class ShellModel {
     }
 
     func enteredForeground() {
+        push?.enteredForeground()
         let before = state
         apply(.foregrounded)
         if before != state, state == .loading { retry() }
@@ -165,6 +171,7 @@ final class ShellModel {
 
         Log.identity.info("Identity saved for \(candidate, privacy: .private)")
         userId = candidate
+        push?.identityAvailable(candidate)
         apply(.identitySaved)
         load(path: DeepLinkRouter.fallbackPath)
         return .ok
@@ -178,6 +185,9 @@ final class ShellModel {
     func clearIdentity() {
         isConfirmingReset = false
         timeoutTask?.cancel()
+        // Before the identity goes: the device row can only be deleted by the
+        // user that owns it, and in a moment nobody here knows who that was.
+        push?.identityWillClear()
         try? identity.clear()
         userId = nil
         pendingLoad = nil

@@ -2,8 +2,10 @@
 
 A thin native wrapper around the PWA at `https://eddyhq.app`. Not a second
 client — see `docs/adr/0013-native-ios-is-a-thin-shell-with-apns-push.md`
-and brief §21. Stages 1 (shell foundation) and 2 (share extension + App
-Intent) are built; signing, OTA distribution and APNs are stages 3–5.
+and brief §21. Stages 1 (shell foundation), 2 (share extension + App Intent)
+and 3 (signing + OTA) are built; stage 4 (server push) shipped in #203, and
+stage 5 (APNs client + notification service extension) is built here but has
+not yet been proven on a device.
 
 ## Layout
 
@@ -11,22 +13,26 @@ Intent) are built; signing, OTA distribution and APNs are stages 3–5.
 gitignored — never edit project settings in Xcode's UI, edit `project.yml` and
 regenerate. No third-party packages.
 
-Four targets:
+Five targets:
 
-- **`Eddy`** — the app: web view shell, setup, fallback screen, App Intent.
+- **`Eddy`** — the app: web view shell, setup, fallback screen, App Intent,
+  push registration.
 - **`EddyShare`** — the share extension (`app.eddyhq.Eddy.Share`), embedded in
   the app.
+- **`EddyNotify`** — the notification service extension
+  (`app.eddyhq.Eddy.Notify`), embedded in the app (see *Push*).
 - **`EddyTests`** — unit tests, hosted by the app. The `Eddy` scheme runs them.
 - **`EddyUITests`** — one XCUITest that drives Safari's share sheet. It has its
   own scheme and is deliberately not in the `Eddy` scheme's test action: it
   takes half a minute and needs a specially-built app (see *Sharing*).
 
-`Shared/` compiles into both `Eddy` and `EddyShare`: config, identity,
-UUID validation, logging, the request client and the share-input rules. Not a
-framework and not a package — two small targets sharing a dozen files don't
-need a module boundary, and `@testable import Eddy` keeps reaching all of it.
-Anything the extension needs belongs in `Shared/`; anything only the app can
-use (web view, routing, shell state) stays under `Eddy/`.
+`Shared/` compiles into all three shipping targets: config, identity, UUID
+validation, logging, the request client, the share-input rules and the pure
+push types. Not a framework and not a package — small targets sharing a
+couple of dozen files don't need a module boundary, and `@testable import Eddy`
+keeps reaching all of it. Anything an extension needs belongs in `Shared/`;
+anything only the app can use (web view, routing, shell state, `UIApplication`)
+stays under `Eddy/`.
 
 ## Setup
 
@@ -259,6 +265,70 @@ variable so they can't come apart.
 By hand, the same thing without the test: install the app, launch it once with
 `-eddyUserId`, then share a page from Safari.
 
+## Push
+
+Nothing about what anyone watches transits Apple (ADR-0004). The payload is
+the same every time — `{aps: {alert: {title: "Eddy", body: "Something new in
+Eddy"}, "mutable-content": 1, sound: "default"}, m: "<uuid>"}` — and `m` is an
+opaque id that means nothing off the M4.
+
+- **Registration** (`Eddy/Push/`). Once the device has an identity, and not
+  before — asking on the setup screen would prompt someone who hasn't yet said
+  what Eddy is — the app requests authorisation, registers with APNs and
+  `POST /devices` with the token. It re-registers when the identity changes and
+  on each foreground if the token or the identity differs from what was last
+  sent; `PushRegistrationLedger` is what makes the usual no-op free. The server's
+  `deviceId` is kept in `UserDefaults` so one device stays one row. Disconnecting
+  the device `DELETE`s it first, best effort. Every failure is logged and
+  swallowed: push is an addition to the shell, never a dependency of it.
+- **`apnsEnvironment`** is read from the embedded provisioning profile's
+  `aps-environment`, not from `#if DEBUG`. `release-adhoc.sh` archives *Release*
+  with a development identity and re-signs for distribution at export, so a
+  compile flag would name the wrong environment on the build the household
+  actually installs. No profile (the simulator) falls back to `production`.
+- **`EddyNotify`** wakes on each push, reads the userId from the shared
+  keychain exactly as `EddyShare` does, `GET /notifications/{m}?userId=…`, and
+  replaces the title and body. `actionUrl` is stashed in the notification's
+  `userInfo` for the tap handler. The fetch is bounded at **four** seconds, not
+  twenty: with the tailnet down the person waits out the whole timeout staring
+  at the placeholder. Any failure at all — no id, no identity, non-200, junk,
+  timeout, iOS ending the extension — delivers Apple's placeholder unchanged.
+  There is no error copy; "Something new in Eddy" means open the app.
+- **Taps and foreground.** `PushAppDelegate` is a `UNUserNotificationCenter`
+  delegate: `willPresent` returns banner + list + sound, so a push arriving
+  while Eddy is open is shown rather than dropped. A tap turns `actionUrl` into
+  the `eddy://` form the shell already routes, so there is one navigation path
+  and not two. Only a same-origin *path* is honoured — an absolute URL is
+  refused rather than compared against the origin — and a notification with no
+  `actionUrl` just opens the app.
+
+### Device-testing push
+
+**The simulator cannot receive APNs.** It has no device token: `xcrun simctl
+push` injects a payload locally, which exercises `EddyNotify` and the tap
+handler but proves nothing about registration, Apple's delivery, or the
+tailnet. The unit tests cover the pure parts (payload parsing, URL building,
+response decoding, environment derivation, de-duplication, tap routing) and
+nothing pretends to cover the rest.
+
+On a device, over an ad hoc install:
+
+1. Install, pair, and allow notifications at the prompt. `Console.app` on the
+   Mac, subsystem `app.eddyhq.Eddy`, category `push`, should show
+   `APNs token registered` then `Device registered for push (production)`.
+   The token itself is never logged.
+2. The M4's `devices` table should hold one row for that user. Trigger a real
+   notification and watch the banner: placeholder copy means the extension's
+   fetch failed, real copy means it reached the M4.
+3. Repeat with the app in the foreground (the banner must still appear), with
+   the phone locked, and with Tailscale switched off (placeholder copy, within
+   a few seconds — not a twenty-second hang).
+4. Tap one with an `actionUrl` and check the web view lands on that screen.
+
+An ad hoc build carries a production token, so the M4 must be pushing at
+Apple's production host for that device — `apnsEnvironment` on the row says
+which one the app asked for.
+
 ## How it behaves
 
 - **The web view is not a browser.** Main-frame navigation is allowed only to
@@ -305,8 +375,12 @@ By hand, the same thing without the test: install the app, launch it once with
   in with an Admin App Store Connect API key — a lesser role authenticates and
   then fails with `Cloud signing permission error`. Installing from the `/ios` page works on a device
   (over a cable build, pairing kept). Still unproven: Developer Mode and Screen
-  Time on the boys' devices. APNs is stages 4–5. Nothing in the repo carries a
-  team id or a key.
+  Time on the boys' devices. Nothing in the repo carries a team id or a key.
+- **Push has never run on a device.** Stage 5 is built and unit-tested, and the
+  service extension's ability to reach the tailnet was proven separately by the
+  spike (brief §21, branch `apns-nse-spike`), but registration, delivery, the
+  foreground banner and the tap-through have not been seen working together on
+  real hardware. The device checklist is under *Push*.
 - Every simulator build prints one `appintentsmetadataprocessor` notice —
   "Metadata extraction skipped. No AppIntents.framework dependency found" —
   for the `EddyShare` target, which has no App Intents and needs none.

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Shared with the app so the extension can read the stored userId and
+	     authenticate its own fetch. $(AppIdentifierPrefix) resolves to the team
+	     prefix on a device build and to nothing on an unsigned simulator
+	     build; the literal prefix is never written down. -->
+	<key>keychain-access-groups</key>
+	<array>
+		<string>$(AppIdentifierPrefix)app.eddyhq.Eddy.shared</string>
+	</array>
+</dict>
+</plist>
