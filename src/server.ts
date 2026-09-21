@@ -24,16 +24,36 @@ import { iosEnrolRouter } from './modules/ios-enrol/index';
 import {
   createNotifications,
   registerDefaultNotifications,
+  createApnsSender,
+  apnsSettingsFrom,
+  notificationsRouter,
+  recordMessage,
 } from './modules/notifications';
+import { devicesRouter, listPushDevices, forgetDevice } from './modules/devices';
 import { ensurePersonForChannel, applyChannelInfoToPerson } from './modules/people/registry';
 import { API_PREFIXES } from './api-prefixes';
 
 // Wire the notifications module at the production boot site. Everything
 // downstream reaches `notify` via `getNotifications()`. There is one transport
-// at a time (ADR-0003) — log-only today, APNs when the iOS shell ships — so
-// this is event-type fan-in, not transport pluggability.
-const notifications = createNotifications();
+// at a time (ADR-0003) — APNs through the native iOS shell (ADR-0013) — so this
+// is event-type fan-in, not transport pluggability. With no APNs key
+// configured, `createNotifications` is log-only exactly as it was before the
+// sender existed.
+const apnsSettings = apnsSettingsFrom(config);
+const notifications = createNotifications({
+  sender: apnsSettings === null ? null : createApnsSender({ settings: apnsSettings }),
+  ports: {
+    listPushDevices,
+    recordMessage,
+    forgetDevice,
+  },
+});
 registerDefaultNotifications(notifications);
+if (apnsSettings === null) {
+  logger.info('Notifications are log-only: no APNs key configured (APNS_KEY_PATH/KEY_ID/TEAM_ID)');
+} else {
+  logger.info({ topic: apnsSettings.topic }, 'Notifications will be delivered over APNs');
+}
 
 // Wire the requests state seam at the production boot site. Call sites reach
 // `apply` via `getRequestsState()`, which routes through whatever was
@@ -76,6 +96,8 @@ app.use('/interests', interestsRouter);
 app.use('/avatars', avatarsRouter);
 app.use('/discovery', discoveryRouter);
 app.use('/watch-events', watchEventsRouter);
+app.use('/devices', devicesRouter);
+app.use('/notifications', notificationsRouter);
 
 app.get('/health', async (_req: Request, res: Response) => {
   // DB — synchronous probe; throws if SQLite is broken
