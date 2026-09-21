@@ -374,39 +374,12 @@ To add a new top-level route: add the prefix to the array, mount the router in `
 
 ## Decommissioning ntfy
 
-The code came out on 2026-09-19 (ADR-0003 amendment); the hosts have not been touched. Nothing below is automated and nothing below is urgent — the service has been failing every send since its certificate expired on 2026-07-12, so leaving it running costs only the container. Run it by hand when convenient, top to bottom.
+The code came out on 2026-09-19 (ADR-0003 amendment). The mediaserver side was taken down on 2026-09-21: the `eddy-ntfy` container, its `deploy_ntfy-cache` volume (which held the per-user credentials) and the image are removed; the `eddy-ntfy` nginx vhost is gone, so nothing listens on :443 on that box any more; and the Tailscale cert under `/etc/ssl/eddy` is deleted. There was never a DNS record to remove. `eddy-videos` on :80 is untouched — the PWA still reaches it through Caddy (see *Media URL rewrite*).
 
-Nothing in Eddy reads any of this any more, so there is no order dependency and no rollback to preserve. If a step's target doesn't exist on the box, it was never set up — move on rather than hunt for it.
+Two steps are left, both by hand:
 
-1. **Stop and remove the container** (on `mediaserver`). It ran under Docker Compose with `restart: unless-stopped`, so a reboot brings it back until it is removed. `deploy/docker-compose.ubuntu.yml` and `deploy/ntfy/server.yml` have already gone from the repo, so take the container down by name:
+1. **Delete the `NTFY_*` lines from `.env` on both boxes** — M4 and the worker: `NTFY_BASE_URL`, `NTFY_TOPIC_*`, `NTFY_CREDS_*`. Zod no longer expects them and an unknown key is harmless, and with the server gone the credentials open nothing, but they are dead weight in two files. Restart the M4 afterwards (`npm run deploy -- --server`) so the running process stops carrying them.
 
-   ```bash
-   # on mediaserver
-   docker rm -f eddy-ntfy
-   docker volume ls | grep ntfy     # the ntfy-cache volume holds cache.db + auth.db
-   docker volume rm <name>          # deletes the per-user credentials with it
-   docker image rm binwiederhier/ntfy:latest
-   ```
-
-2. **Remove the nginx vhost.** `deploy/nginx/eddy-ntfy.conf` was installed to `/etc/nginx/sites-available/eddy-ntfy` and symlinked into `sites-enabled` by `deploy/setup-ubuntu.sh`. It is the only thing listening on **:443** on that box:
-
-   ```bash
-   sudo rm /etc/nginx/sites-enabled/eddy-ntfy /etc/nginx/sites-available/eddy-ntfy
-   sudo nginx -t && sudo systemctl reload nginx
-   ```
-
-   Leave `eddy-videos` alone — it serves `/videos/*` and `/thumbs/*` on :80 and the PWA still reaches it through Caddy (see *Media URL rewrite*).
-
-3. **Delete the TLS cert.** `setup-ubuntu.sh` obtained it with `sudo tailscale cert` for the mediaserver's MagicDNS name and wrote it to `/etc/ssl/eddy/ntfy.crt` / `ntfy.key`. Re-running that script was the *only* renewal path — which is why it expired on 2026-07-12 and stayed expired. Nothing else uses that directory:
-
-   ```bash
-   sudo rm -rf /etc/ssl/eddy
-   ```
-
-4. **DNS: nothing to do.** ntfy was only ever reachable on the tailnet MagicDNS name, so no record was ever created for it. `eddyhq.app`'s Cloudflare records and the M4's Caddy/Let's Encrypt setup are unrelated and stay.
-
-5. **Delete the `NTFY_*` lines from `.env` on both boxes** — M4 and the worker: `NTFY_BASE_URL`, `NTFY_TOPIC_*`, `NTFY_CREDS_*`. Zod no longer expects them and an unknown key is harmless, but those are live credentials sitting in two files for a service that is gone. Restart the M4 afterwards (`npm run deploy -- --server`) so the running process stops carrying them.
-
-6. **Uninstall the ntfy app from the family devices**, including the saved topic subscriptions, so nobody is left holding an app that will never buzz again. Worth doing in person — it is the only step the household will notice.
+2. **Uninstall the ntfy app from the family devices**, including the saved topic subscriptions, so nobody is left holding an app that will never buzz again. Worth doing in person — it is the only step the household will notice.
 
 Until APNs ships (brief §21), no alert reaches a phone. Check `logs/watchdog.log` and the server log by habit.
