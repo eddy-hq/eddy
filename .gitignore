@@ -17,6 +17,7 @@ logs/
 ios/Eddy.xcodeproj/
 ios/Config/Local.xcconfig
 ios/Config/release.env
+ios/Config/apns.env
 ios/build/
 ios/DerivedData/
 **/xcuserdata/

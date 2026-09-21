@@ -2,6 +2,9 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<!-- Automatic signing flips this to production for the ad hoc export. -->
+	<key>aps-environment</key>
+	<string>development</string>
 	<!-- Shared with EddyShare (and, later, the notification service
 	     extension) so they can read the stored userId. The team prefix comes
 	     from $(AppIdentifierPrefix) at build time and is never committed. -->

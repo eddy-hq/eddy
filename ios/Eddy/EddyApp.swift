@@ -2,6 +2,9 @@ import SwiftUI
 
 @main
 struct EddyApp: App {
+    // SPIKE: push registration for the NSE-over-tailnet test.
+    @UIApplicationDelegateAdaptor(PushSpikeAppDelegate.self) private var pushSpikeDelegate
+
     @State private var model: ShellModel
 
     init() {
@@ -28,6 +31,7 @@ struct EddyApp: App {
     var body: some Scene {
         WindowGroup {
             RootView(model: model)
+                .modifier(PushSpikeAlert())
         }
     }
 
