@@ -34,6 +34,8 @@ export type {
 export { recordMessage, readMessage, MESSAGE_TTL_MS } from './messages';
 export type { NotificationContent } from './messages';
 export { notificationsRouter } from './router';
+export { createRelayNotifications, parseRelayPayload, RELAY_PATH } from './relay';
+export type { RelayPayload } from './relay';
 export type {
   NotificationEvent,
   VideoReadyEvent,
