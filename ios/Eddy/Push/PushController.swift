@@ -144,15 +144,49 @@ final class PushController: PushRegistering {
 
     private func finish(_ registration: DeviceRegistration, deviceId: String?) {
         isRegistering = false
-        // The identity may have been cleared while the request was in flight;
-        // recording it then would leave the ledger describing somebody else.
-        guard let deviceId, userId == registration.userId else { return }
-        ledger.recordRegistration(
-            userId: registration.userId,
-            token: registration.apnsToken,
+        switch PushRegistrationOutcome.resolve(
+            currentUserId: userId,
+            registeredUserId: registration.userId,
             deviceId: deviceId
-        )
-        defaults.set(deviceId, forKey: Self.deviceIdKey)
-        Log.push.info("Device registered for push (\(self.environment.rawValue, privacy: .public))")
+        ) {
+        case .record(let deviceId):
+            ledger.recordRegistration(
+                userId: registration.userId,
+                token: registration.apnsToken,
+                deviceId: deviceId
+            )
+            defaults.set(deviceId, forKey: Self.deviceIdKey)
+            Log.push.info("Device registered for push (\(self.environment.rawValue, privacy: .public))")
+        case .orphaned(let deviceId):
+            // Disconnect (or a switch of identity) landed while the request was
+            // in flight, so identityWillClear() had no device id to delete. The
+            // row exists now and nobody owns it on this side: remove it, or the
+            // device keeps receiving pushes for someone who has left.
+            Task { [client] in
+                await client.deregister(deviceId: deviceId, userId: registration.userId)
+            }
+        case .failed:
+            // Logged by the client. Returning here is what stops a server
+            // that is down from being retried in a tight loop; the next
+            // foreground tries again.
+            return
+        }
+        // A rotated token or a new identity that arrived while this request
+        // was running was dropped by the isRegistering guard. The ledger makes
+        // this a no-op when nothing has changed.
+        register()
+    }
+}
+
+/// What to do with a finished registration, given who is signed in now. Pure,
+/// so the in-flight races are testable without UIKit.
+enum PushRegistrationOutcome: Equatable {
+    case record(deviceId: String)
+    case orphaned(deviceId: String)
+    case failed
+
+    static func resolve(currentUserId: String?, registeredUserId: String, deviceId: String?) -> Self {
+        guard let deviceId else { return .failed }
+        return currentUserId == registeredUserId ? .record(deviceId: deviceId) : .orphaned(deviceId: deviceId)
     }
 }
