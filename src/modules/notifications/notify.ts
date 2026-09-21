@@ -1,7 +1,7 @@
 import { v7 as uuidv7 } from 'uuid';
 import { logger } from '../../logger';
 import type { NotificationEvent } from './events';
-import type { ApnsSender, ApnsTarget } from './apns';
+import type { ApnsSender, ApnsSendResult, ApnsTarget } from './apns';
 import type { NotificationContent } from './messages';
 
 // The one notification channel.
@@ -169,7 +169,15 @@ export function createNotifications(options: NotificationsOptions = {}): Notific
     ports.recordMessage(messageId, recipient, contentFor(event));
 
     for (const device of devices) {
-      const result = await sender.send(device, messageId);
+      let result: ApnsSendResult;
+      try {
+        result = await sender.send(device, messageId);
+      } catch (err) {
+        // A timeout or a dropped connection on one device must not cost the
+        // recipient's other devices their push.
+        logger.warn({ err, deviceId: device.deviceId }, 'APNs send threw; continuing with the next device');
+        continue;
+      }
       if (result.ok) continue;
 
       if (result.deviceGone) {

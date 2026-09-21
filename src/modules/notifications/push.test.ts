@@ -175,9 +175,31 @@ describe('notify() with APNs configured', () => {
       )
     ).resolves.toBeUndefined();
 
-    // The notification was still logged; only the delivery failed.
-    expect(warnMock).toHaveBeenCalledTimes(1);
-    expect(errorMock).toHaveBeenCalledTimes(1);
+    // The notification was still logged (one warn); the failed send is a
+    // second warn, not an error that ends the delivery loop.
+    expect(warnMock).toHaveBeenCalledTimes(2);
+    expect(errorMock).not.toHaveBeenCalled();
+  });
+
+  it('still pushes to the other devices when one send throws', async () => {
+    const second: ApnsTarget = { ...DEVICE, deviceId: 'device-2' };
+    const { ports, forgotten } = fakePorts([DEVICE, second]);
+    const reached: string[] = [];
+    const sender: ApnsSender = {
+      send: vi.fn(async (target: ApnsTarget): Promise<ApnsSendResult> => {
+        if (target.deviceId === DEVICE.deviceId) throw new Error('request timed out');
+        reached.push(target.deviceId);
+        return { ok: true };
+      }),
+    };
+
+    await expect(
+      createNotifications({ sender, ports }).notify(VIDEO_READY, RECIPIENT)
+    ).resolves.toBeUndefined();
+
+    expect(reached).toEqual(['device-2']);
+    // A thrown send says nothing about the token, so the device is kept.
+    expect(forgotten).toEqual([]);
   });
 
   it('never throws when looking up the devices fails', async () => {
