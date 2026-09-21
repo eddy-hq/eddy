@@ -251,19 +251,17 @@ describe('evaluateCandidate', () => {
     expect(format.properties.verdict.enum).toEqual(['clear_yes', 'clear_no', 'uncertain']);
   });
 
-  it('gives the model the channel, the follow and the real channel history', async () => {
+  it('gives the model the channel and the real channel history, and never the follow', async () => {
     channelHistory = { approved: 4, rejected: 0 };
     vi.mocked(ollamaGenerate).mockResolvedValue('{"reason":"ok","verdict":"clear_yes","confidence":0.9}');
     await evaluateCandidate({
       candidateId: 'cand-0', userId: 'user-1', url: 'https://x',
-      title: 'Some video', channel: 'Example Channel', followed: true,
+      title: 'Some video', channel: 'Example Channel',
     });
     const prompt = vi.mocked(ollamaGenerate).mock.calls[0]?.[0] ?? '';
     expect(prompt).toContain('Channel: Example Channel');
     expect(prompt).toContain('4 previously approved');
-    expect(prompt).toContain('chosen to follow this channel');
-    // ADR-0010: a follow is the child's choice, never a parent's approval.
-    expect(prompt).toContain('no parent has reviewed it');
+    expect(prompt).not.toContain('follow');
     expect(prompt).not.toContain('Description:');
   });
 

@@ -164,7 +164,6 @@ export async function runDiscoveryForUser(user: UserRow, options: { force?: bool
         url: c.url,
         title: c.title ?? '',
         channel: c.channel,
-        followed: c.source_type === 'subscription' || c.source_type === 'person_backcatalog',
         ageBand,
       });
 

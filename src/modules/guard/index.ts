@@ -72,11 +72,10 @@ interface PromptParams extends ScoreParams {
   // Null when the channel is unknown — the history line is then left out
   // rather than claiming there is no history.
   channelHistory: ChannelHistory | null;
-  followed?: boolean;
 }
 
 function buildPrompt(params: PromptParams): string {
-  const { title, channel, description, transcript, ageBand, channelHistory, followed } = params;
+  const { title, channel, description, transcript, ageBand, channelHistory } = params;
 
   const desc = description.length > 500 ? description.slice(0, 500) + '...' : description;
   const txScript = transcript
@@ -87,11 +86,10 @@ function buildPrompt(params: PromptParams): string {
     : channelHistory.approved > 0 || channelHistory.rejected > 0
       ? `\nChannel history for this child: ${channelHistory.approved} previously approved, ${channelHistory.rejected} previously rejected.`
       : '\nChannel history: no prior requests from this channel.';
-  // Kid follows are ungated (ADR-0010) — say so, so the follow reads as the
-  // child's interest and not as a parent's approval.
-  const follow = followed
-    ? '\nThe child has chosen to follow this channel. That is their own choice; no parent has reviewed it.'
-    : '';
+  // Deliberately no "the child follows this channel" line. Tested on parked
+  // and rejected follow candidates: a neutral wording talked the model out of
+  // a clear_no, and an ADR-0010 wording ("no parent has reviewed it") pushed
+  // nearly everything to uncertain. A follow is persuasion, not evidence.
   // Blank fields are omitted: an empty "Channel:" line reads as missing
   // evidence and pushes the model towards uncertain.
   const details = [
@@ -103,7 +101,7 @@ function buildPrompt(params: PromptParams): string {
   return `You are a content safety guard for a family media system. A child (aged ${ageBand}) wants to watch a YouTube video.
 
 Video details:
-${details}${txScript}${history}${follow}
+${details}${txScript}${history}
 
 Decide if this video is appropriate for a child aged ${ageBand}.
 
@@ -237,8 +235,6 @@ export interface CandidateEvalParams {
   url: string;
   title: string;
   channel?: string | null;
-  // True when the candidate came from a channel the child follows.
-  followed?: boolean;
   ageBand?: string;
 }
 
@@ -257,7 +253,6 @@ export async function evaluateCandidate(params: CandidateEvalParams): Promise<Gu
     transcript: null,
     ageBand: params.ageBand ?? getAgeBand(params.userId),
     channelHistory: channel ? getChannelHistory(params.userId, channel) : null,
-    followed: params.followed,
   });
   return runGuardEvaluation(prompt, {
     requestId: null,
