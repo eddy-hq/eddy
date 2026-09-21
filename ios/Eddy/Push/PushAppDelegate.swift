@@ -75,25 +75,30 @@ final class PushAppDelegate: NSObject, UIApplicationDelegate {
     }
 }
 
-extension PushAppDelegate: UNUserNotificationCenterDelegate {
+// The completion-handler forms, on the main actor, and deliberately not the
+// `async` ones. A `nonisolated ... async` delegate method has its Objective-C
+// completion handler called from the cooperative pool, and UIKit asserts that
+// the `didReceive` handler runs on the main thread — every notification tap
+// aborted the app on a device (four crash reports, all in
+// `_performBlockAfterCATransactionCommitSynchronizes`). iOS delivers these
+// callbacks on the main thread, which is what `@preconcurrency` relies on.
+extension PushAppDelegate: @preconcurrency UNUserNotificationCenterDelegate {
     /// Without this a push that arrives while Eddy is on screen is delivered
     /// to the app and shown to nobody — the spike watched it happen.
-    nonisolated func userNotificationCenter(
+    func userNotificationCenter(
         _ center: UNUserNotificationCenter,
-        willPresent notification: UNNotification
-    ) async -> UNNotificationPresentationOptions {
-        [.banner, .list, .sound]
+        willPresent notification: UNNotification,
+        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+    ) {
+        completionHandler([.banner, .list, .sound])
     }
 
-    nonisolated func userNotificationCenter(
+    func userNotificationCenter(
         _ center: UNUserNotificationCenter,
-        didReceive response: UNNotificationResponse
-    ) async {
-        // `userInfo` is not Sendable, so the link is decided here and only the
-        // URL crosses to the main actor.
-        let link = NotificationTapRouter.deepLink(in: response.notification.request.content.userInfo)
-        await MainActor.run { [weak self] in
-            self?.follow(link)
-        }
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping () -> Void
+    ) {
+        follow(NotificationTapRouter.deepLink(in: response.notification.request.content.userInfo))
+        completionHandler()
     }
 }
