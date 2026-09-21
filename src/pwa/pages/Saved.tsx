@@ -30,7 +30,7 @@ interface FeedCard {
   source: string;
 }
 
-interface FeedResponse { days: { date: string; label: string; cards: FeedCard[]; sections?: { id: string; label: string; cards: FeedCard[] }[] }[]; }
+interface FeedResponse { days: { date: string; label: string; cards: FeedCard[]; sections?: { id: string; label: string; cards: FeedCard[] }[] }[]; saved?: FeedCard[]; }
 
 async function fetchFeed(user: string): Promise<FeedResponse> {
   const param = /^[0-9a-f-]{36}$/.test(user) ? 'userId' : 'user';
@@ -89,8 +89,10 @@ export function Saved() {
   if (isLoading) return <Empty text="Loading…" />;
   if (isError) return <Empty text="Could not load." />;
 
-  const allCards = (data?.days ?? [])
-    .flatMap(d => d.sections ? d.sections.flatMap(s => s.cards) : d.cards)
+  // `saved` is every saved row; `days` stops at the feed's row limit, so it is
+  // only the fallback for a server that predates the field.
+  const allCards = (data?.saved ?? (data?.days ?? [])
+    .flatMap(d => d.sections ? d.sections.flatMap(s => s.cards) : d.cards))
     .filter(c => !!c.saved_at)
     .sort((a, b) => new Date(b.saved_at!).getTime() - new Date(a.saved_at!).getTime());
 

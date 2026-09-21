@@ -246,6 +246,7 @@ requestsRouter.post('/', async (req: Request, res: Response) => {
 //   days: [{ date, label, sections?, cards }]          — Tier 1+2, full rows, full history
 //   tier3Days: [{ date, count, provenanceMix, topTitles }]      — age 7–29 days
 //   tier4Weeks: [{ rangeStart, rangeEnd, count, topChannels, summary }] — age ≥ 30 days
+//   saved: [card]                                      — every saved row, newest save first, not capped by FEED_LIMIT
 // }
 // `days` is unchanged from before (Saved.tsx depends on the full history); the
 // tier fields are additive. Tier grouping lives in ./feed-tiers (issue #140).
@@ -282,10 +283,26 @@ requestsRouter.get('/feed', (req: Request, res: Response) => {
     saved_at: string | null; source: string;
   }>;
 
+  // Saved rows are read on their own, uncapped: a save is kept indefinitely
+  // (the recycler never picks it), so it outlives the FEED_LIMIT window that
+  // `days` is cut to. Kept out of `rows` so old saves don't skew the tier
+  // summaries or surface as lone cards in the timeline.
+  const savedRows = db.prepare(`
+    SELECT
+      request_id, url, youtube_id, youtube_channel_id, title, channel, status, file_state,
+      rejection_reason, nginx_url, thumbnail_url, duration_secs, why_text,
+      requested_at, published_at, added_at, watched_at, saved_at, source
+    FROM requests
+    WHERE user_id = ?
+      AND saved_at IS NOT NULL
+      AND status NOT IN ('dismissed', 'deleted')
+    ORDER BY saved_at DESC
+  `).all(found.user_id) as typeof rows;
+
   const todayStr = new Date().toISOString().slice(0, 10);
   const yesterdayStr = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
 
-  for (const row of rows) {
+  for (const row of [...rows, ...savedRows]) {
     row.rejection_reason = displayRejectionReason(row.rejection_reason);
     row.nginx_url = toPublicMediaUrl(row.nginx_url);
     row.thumbnail_url = toPublicMediaUrl(row.thumbnail_url);
@@ -349,7 +366,7 @@ requestsRouter.get('/feed', (req: Request, res: Response) => {
   const summaryCache = readWeekSummaryCache(found.user_id);
   const tier4WeeksWithSummary = applyCachedSummaries(tier4Weeks, summaryCache);
 
-  res.json({ days, tier3Days, tier4Weeks: tier4WeeksWithSummary });
+  res.json({ days, tier3Days, tier4Weeks: tier4WeeksWithSummary, saved: savedRows });
 });
 
 // GET /requests/admin/pipeline — active + recent rejected requests across all users
