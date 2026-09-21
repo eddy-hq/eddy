@@ -5,15 +5,27 @@ import { GuardError } from './errors';
 interface OllamaOptions {
   temperature?: number;
   num_predict?: number;
+  // Top-level Ollama request fields rather than model options — split out
+  // before the request is built. `think: false` stops a thinking-capable
+  // model reasoning before it answers; `keep_alive` holds the model in
+  // memory between calls (Ollama duration string, e.g. '30m').
+  think?: boolean;
+  keep_alive?: string;
 }
+
+// 'json' asks for any valid JSON; an object is a JSON schema the output is
+// constrained to (Ollama structured outputs).
+export type OllamaFormat = 'json' | Record<string, unknown>;
 
 interface OllamaGenerateRequest {
   model: string;
   prompt: string;
   stream: boolean;
   images?: string[];
-  options?: OllamaOptions;
-  format?: 'json';
+  options?: Pick<OllamaOptions, 'temperature' | 'num_predict'>;
+  format?: OllamaFormat;
+  think?: boolean;
+  keep_alive?: string;
 }
 
 interface OllamaGenerateResponse {
@@ -30,13 +42,18 @@ export async function ollamaGenerate(
   model = config.OLLAMA_GUARD_MODEL,
   images?: string[],
   options?: OllamaOptions,
-  format?: 'json',
+  format?: OllamaFormat,
 ): Promise<string> {
   let response: Response;
   try {
     const body: OllamaGenerateRequest = { model, prompt, stream: false };
     if (images?.length) body.images = images;
-    if (options) body.options = options;
+    if (options) {
+      const { think, keep_alive, ...modelOptions } = options;
+      if (Object.keys(modelOptions).length > 0) body.options = modelOptions;
+      if (think !== undefined) body.think = think;
+      if (keep_alive !== undefined) body.keep_alive = keep_alive;
+    }
     if (format) body.format = format;
     response = await fetch(`${config.OLLAMA_URL}/api/generate`, {
       method: 'POST',

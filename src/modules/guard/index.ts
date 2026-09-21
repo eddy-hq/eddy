@@ -7,8 +7,9 @@ import { config } from '../../config';
 import { redis } from '../../queue';
 import { getAgeBand } from '../users';
 
-const PROMPT_VERSION = 'v1';
-const KID_INTEREST_PROMPT_VERSION = 'kid-interest-v1';
+const PROMPT_VERSION = 'v2';
+const CANDIDATE_PROMPT_VERSION = 'candidate-v2';
+const KID_INTEREST_PROMPT_VERSION = 'kid-interest-v2';
 export const KID_INTEREST_EVAL_JOB = 'kid-interest-eval';
 
 export interface ScoreParams {
@@ -20,6 +21,29 @@ export interface ScoreParams {
   description: string;
   transcript: string | null;
 }
+
+// A verdict is a short classification, not an essay: no thinking pass, output
+// constrained to the verdict shape, deterministic, capped well above one
+// sentence of reason. keep_alive holds the model across a discovery run's
+// back-to-back calls.
+const GUARD_CALL_OPTIONS = {
+  temperature: 0,
+  num_predict: 200,
+  think: false,
+  keep_alive: '30m',
+};
+
+// `reason` comes first so the model states its grounds before it commits to
+// a verdict — the only reasoning it gets with thinking off.
+const GUARD_VERDICT_SCHEMA = {
+  type: 'object',
+  properties: {
+    reason: { type: 'string' },
+    verdict: { type: 'string', enum: ['clear_yes', 'clear_no', 'uncertain'] },
+    confidence: { type: 'number', minimum: 0, maximum: 1 },
+  },
+  required: ['reason', 'verdict', 'confidence'],
+};
 
 export interface GuardVerdict {
   verdict: 'clear_yes' | 'clear_no' | 'uncertain';
@@ -43,31 +67,48 @@ function getChannelHistory(userId: string, channel: string): ChannelHistory {
   return { approved: row?.approved ?? 0, rejected: row?.rejected ?? 0 };
 }
 
-function buildPrompt(params: ScoreParams & { ageBand: string; channelHistory: ChannelHistory }): string {
+interface PromptParams extends ScoreParams {
+  ageBand: string;
+  // Null when the channel is unknown — the history line is then left out
+  // rather than claiming there is no history.
+  channelHistory: ChannelHistory | null;
+}
+
+function buildPrompt(params: PromptParams): string {
   const { title, channel, description, transcript, ageBand, channelHistory } = params;
 
   const desc = description.length > 500 ? description.slice(0, 500) + '...' : description;
   const txScript = transcript
     ? `\nTranscript excerpt:\n${transcript.slice(0, 2000)}${transcript.length > 2000 ? '...' : ''}`
     : '';
-  const history =
-    channelHistory.approved > 0 || channelHistory.rejected > 0
+  const history = !channelHistory
+    ? ''
+    : channelHistory.approved > 0 || channelHistory.rejected > 0
       ? `\nChannel history for this child: ${channelHistory.approved} previously approved, ${channelHistory.rejected} previously rejected.`
       : '\nChannel history: no prior requests from this channel.';
+  // Deliberately no "the child follows this channel" line. Tested on parked
+  // and rejected follow candidates: a neutral wording talked the model out of
+  // a clear_no, and an ADR-0010 wording ("no parent has reviewed it") pushed
+  // nearly everything to uncertain. A follow is persuasion, not evidence.
+  // Blank fields are omitted: an empty "Channel:" line reads as missing
+  // evidence and pushes the model towards uncertain.
+  const details = [
+    `Title: ${title}`,
+    channel ? `Channel: ${channel}` : null,
+    desc ? `Description: ${desc}` : null,
+  ].filter((line) => line !== null).join('\n');
 
   return `You are a content safety guard for a family media system. A child (aged ${ageBand}) wants to watch a YouTube video.
 
 Video details:
-Title: ${title}
-Channel: ${channel}
-Description: ${desc}${txScript}${history}
+${details}${txScript}${history}
 
 Decide if this video is appropriate for a child aged ${ageBand}.
 
 Return ONLY valid JSON with no other text:
 {
-  "verdict": "clear_yes" or "clear_no" or "uncertain",
   "reason": "one sentence, plain English, suitable to show a parent",
+  "verdict": "clear_yes" or "clear_no" or "uncertain",
   "confidence": 0.0 to 1.0
 }
 
@@ -118,7 +159,7 @@ async function runGuardEvaluation(
 ): Promise<GuardVerdict> {
   let verdict: GuardVerdict;
   try {
-    const raw = await ollamaGenerate(prompt);
+    const raw = await ollamaGenerate(prompt, undefined, undefined, GUARD_CALL_OPTIONS, GUARD_VERDICT_SCHEMA);
     verdict = parseVerdict(raw);
   } catch (err) {
     logger.warn({ err, requestId: ctx.requestId, url: ctx.url }, 'Guard scoring failed — defaulting to uncertain');
@@ -193,28 +234,31 @@ export interface CandidateEvalParams {
   userId: string;
   url: string;
   title: string;
+  channel?: string | null;
   ageBand?: string;
 }
 
-// Evaluate a discovery candidate. The candidate flow has no request row,
-// so guard_eval.request_id is NULL and channel/description/transcript are
-// unavailable — only the title carries safety signal at this stage.
+// Evaluate a discovery candidate. The candidate flow has no request row, so
+// guard_eval.request_id is NULL and description/transcript are unavailable —
+// the title, the channel and the child's history with it carry the signal.
 export async function evaluateCandidate(params: CandidateEvalParams): Promise<GuardVerdict> {
+  const channel = params.channel?.trim() ?? '';
   const prompt = buildPrompt({
     requestId: params.candidateId,
     userId: params.userId,
     url: params.url,
     title: params.title,
-    channel: '',
+    channel,
     description: '',
     transcript: null,
     ageBand: params.ageBand ?? getAgeBand(params.userId),
-    channelHistory: { approved: 0, rejected: 0 },
+    channelHistory: channel ? getChannelHistory(params.userId, channel) : null,
   });
   return runGuardEvaluation(prompt, {
     requestId: null,
     url: params.url,
     requestType: 'candidate',
+    promptVersion: CANDIDATE_PROMPT_VERSION,
   });
 }
 
@@ -237,8 +281,8 @@ Decide whether this interest is appropriate to recommend videos for to a child a
 
 Return ONLY valid JSON with no other text:
 {
-  "verdict": "clear_yes" or "clear_no" or "uncertain",
   "reason": "one sentence, plain English, suitable to show a parent",
+  "verdict": "clear_yes" or "clear_no" or "uncertain",
   "confidence": 0.0 to 1.0
 }
 

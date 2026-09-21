@@ -163,6 +163,7 @@ export async function runDiscoveryForUser(user: UserRow, options: { force?: bool
         userId: user.user_id,
         url: c.url,
         title: c.title ?? '',
+        channel: c.channel,
         ageBand,
       });
 

@@ -5,6 +5,7 @@ export interface ScoredCandidateForGuard {
   candidate_id: string;
   title: string | null;
   url: string;
+  channel: string | null;
 }
 
 // Kid guard recheck candidates, the top `perBucketLimit` UN-rechecked scored
@@ -33,7 +34,7 @@ export function readScoredCandidatesByBucket(
 ): ScoredCandidateForGuard[] {
   const row = db.prepare(`
     WITH ranked AS (
-      SELECT candidate_id, title, url,
+      SELECT candidate_id, title, url, channel,
              ROW_NUMBER() OVER (
                PARTITION BY CASE
                  WHEN source_type = 'subscription' THEN 'subscription'
@@ -45,7 +46,7 @@ export function readScoredCandidatesByBucket(
       FROM candidate_pool
       WHERE user_id = ? AND status = 'scored' AND guard_verdict IS NULL
     )
-    SELECT candidate_id, title, url FROM ranked WHERE rn <= ?
+    SELECT candidate_id, title, url, channel FROM ranked WHERE rn <= ?
   `);
   return row.all(userId, perBucketLimit) as ScoredCandidateForGuard[];
 }
