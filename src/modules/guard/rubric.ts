@@ -6,7 +6,7 @@
 // this file together and bump RUBRIC_VERSION — rubric.test.ts fails if the
 // limits tables drift apart.
 
-export const RUBRIC_VERSION = 'rubric-v1.1';
+export const RUBRIC_VERSION = 'rubric-v1.2';
 
 export type RubricScore = 0 | 1 | 2 | 3;
 
@@ -63,7 +63,7 @@ export const DIMENSIONS: readonly DimensionSpec[] = [
     label: 'Violence',
     anchors: [
       'None — no harm shown. Ordinary sport, cooking, science.',
-      'Mild — stylised or cartoon, no blood. Slapstick, Minecraft/Fortnite combat, hard football tackles, nature-doc hunts without close-ups.',
+      'Mild — stylised or cartoon, no blood. Slapstick, ordinary Minecraft/Fortnite fighting, hard football tackles, nature-doc hunts without close-ups.',
       'Moderate — realistic with some blood, or brief real fights. Realistic shooter gameplay, boxing/MMA knockouts, a brief real street-fight clip, war-documentary footage.',
       'Severe — gore, torture, real serious injury or death. Graphic horror kills, real accident or war casualties, animal cruelty, sustained real beatings.',
     ],
@@ -71,6 +71,8 @@ export const DIMENSIONS: readonly DimensionSpec[] = [
       'real scores a level higher than equivalent fiction',
       'glorified or gratuitous (fight compilations set to music, "most brutal knockouts") scores a level higher',
       "educational framing doesn't lower the score but is noted in the reason",
+      'realistic real-world weapons (modern firearms shown as real guns) score at least 2, even inside a stylised game',
+      'torture or cruelty as the premise scores at least 2, even when stylised or played for laughs',
     ],
   },
   {
