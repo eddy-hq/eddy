@@ -363,6 +363,23 @@ describe('Spot checks', () => {
     expect(queue('catch_up', 'escalations').cards).toHaveLength(10);
   });
 
+  it('keeps the unfinished half of a two-kid card after the allowance is used', async () => {
+    for (let i = 0; i < 14; i++) seedCandidate(`parked${String(i).padStart(2, '0')}`, { createdAt: daysAgo(2) });
+    seedCandidate('both-k1', { userId: KID_1, yt: 'both', createdAt: daysAgo(3) });
+    seedCandidate('both-k2', { userId: KID_2, yt: 'both', createdAt: daysAgo(3) });
+    const first = queue().cards;
+    expect(first).toHaveLength(DAILY_CARD_CAP);
+    for (const card of first.filter((c) => c.youtubeId !== 'both')) {
+      const s = card.subjects[0]!;
+      await recordDecision(PARENT, { subjectType: s.subjectType, subjectId: s.subjectId, verdict: 'clear_yes' }, NOW);
+    }
+    await recordDecision(PARENT, { subjectType: 'candidate', subjectId: 'both-k1', verdict: 'clear_yes' }, NOW);
+
+    const after = queue().cards;
+    expect(after).toHaveLength(1);
+    expect(after[0]!.subjects.map((s) => s.subjectId)).toEqual(['both-k2']);
+  });
+
   it('puts escalations before spot checks', () => {
     seedRecentVerdicts();
     seedCandidate('parked');

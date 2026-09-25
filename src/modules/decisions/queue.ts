@@ -230,13 +230,14 @@ function drawnCount(day: string, source: 'spot_check' | 'catch_up'): number {
   ).get(day, source) as { n: number }).n;
 }
 
-// Escalation cards decided on a UTC day. A two-kid card is one card, so
-// decisions are counted per video, not per kid.
-function escalationsDecidedOn(day: string): number {
-  return (db.prepare(`
-    SELECT COUNT(DISTINCT COALESCE(youtube_id, url)) AS n FROM guard_decisions
+// Videos with an escalation decided on a UTC day. A two-kid card is one
+// card, so the allowance counts videos, not kids.
+function escalationVideosDecidedOn(day: string): Set<string> {
+  const rows = db.prepare(`
+    SELECT DISTINCT COALESCE(youtube_id, url) AS video FROM guard_decisions
      WHERE source = 'escalation' AND substr(decided_at, 1, 10) = ?
-  `).get(day) as { n: number }).n;
+  `).all(day) as Array<{ video: string }>;
+  return new Set(rows.map((r) => r.video));
 }
 
 // Today's Spot checks are drawn once, on the first queue read of the UTC day.
@@ -319,8 +320,17 @@ export function readDecisionQueue(opts: QueueOptions): DecisionQueue {
     // finishing or reloading doesn't serve another 15. The rest waits for
     // catch-up.
     const spotChecks = toCards(readDrawn(day, 'spot_check'), 'spot_check', bands).slice(0, DAILY_CARD_CAP);
-    const allowance = Math.max(0, DAILY_CARD_CAP - drawnCount(day, 'spot_check') - escalationsDecidedOn(day));
-    const escalations = toCards(readEscalations(recentSince), 'escalation', bands).slice(0, allowance);
+    // A card already started today (decided for one kid of two) has used
+    // its slot, so its unfinished half always shows.
+    const started = escalationVideosDecidedOn(day);
+    const allowance = Math.max(0, DAILY_CARD_CAP - drawnCount(day, 'spot_check') - started.size);
+    const videoOf = (c: DecisionCard) => c.youtubeId ?? c.url;
+    let fresh = 0;
+    const escalations = toCards(readEscalations(recentSince), 'escalation', bands).filter((c) => {
+      if (started.has(videoOf(c))) return true;
+      fresh += 1;
+      return fresh <= allowance;
+    });
     const cards = [...escalations, ...spotChecks];
     return { mode: 'today', focus: null, cards, counts };
   }
