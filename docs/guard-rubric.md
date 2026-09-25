@@ -113,9 +113,8 @@ A flag's request action can only make a verdict stricter (allow leaves the dimen
 
 ## Thumbnails (applies across dimensions)
 
-- The creator's thumbnail is evidence, not exposure — Eddy replaces it with a selected frame after download (brief §6). Score the content; note a suggestive or shock-bait creator thumbnail in the reason as a sign the content leans that way.
-- Frame picker safety floor (6a): a candidate frame must score 0–1 on Violence, Frightening and Sexual, or it's rejected.
-
-## Open questions
-
-- Search and Person pages render `thumbnail_url` for items that may not have passed the guard or the frame picker — check whether kids see creator thumbnails there.
+- The creator's thumbnail is evidence for scoring content: note a suggestive or shock-bait creator thumbnail in the reason as a sign the content leans that way. Score the content, not the thumbnail.
+- It can also be exposure. After download the thumbnail picker (brief §6) may keep an editorial creator thumbnail, but only once it has passed the same safety floor as any frame — so where it's shown, it has been checked.
+- Frame picker safety floor (6a, `thumb-safety-v1`): every image the picker would show — creator thumbnail, YouTube auto-frame or sampled frame — must score 0–1 on Violence, Frightening and Sexual, using the anchors above as they apply to a still image, or it's rejected. A scorer failure is a reject. If nothing passes, a neutral placeholder is shown, never the creator image.
+- Not covered by the floor: surfaces that render thumbnails before download (search, Person pages, discovery previews) — handled by the companion exposure fixes — and the Plex poster, which is still the creator thumbnail.
+- The former open question (do kids see unchecked creator thumbnails?) is resolved by the floor (#209) for downloaded videos and by the companion exposure fixes for pre-download surfaces.

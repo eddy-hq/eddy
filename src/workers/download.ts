@@ -20,7 +20,7 @@ import { recordDownloadFailure, recordDownloadSuccess } from '../failure-streak'
 import { triggerPlexScan, updatePlexMetadata } from '../modules/content/plex';
 import { postSigned } from '../signed-channel';
 import { createRelayNotifications, registerDefaultNotifications } from '../modules/notifications';
-import { generateThumbnail } from './thumb';
+import { generateThumbnail, PLACEHOLDER_THUMB_URL } from './thumb';
 import type { DownloadJobData } from '../modules/content';
 import type { DeleteJobData } from '../modules/requests';
 
@@ -204,9 +204,14 @@ async function processJob(job: Job<DownloadJobData>, token?: string): Promise<vo
     ? `${nginxBase.replace(/\/$/, '')}/${path.basename(filePath)}`
     : null;
 
-  // Immediate fallback thumbnail — the editorial-first upgrade runs in a separate
-  // queue so the video is available without waiting on Gemma.
-  const thumbnailUrl = `https://i.ytimg.com/vi/${youtubeId}/maxresdefault.jpg`;
+  // Interim thumbnail until the picker (separate queue, so the video is
+  // available without waiting on Gemma) has chosen one that passes the safety
+  // floor: the neutral placeholder, never the unchecked creator thumbnail.
+  const thumbnailUrl = PLACEHOLDER_THUMB_URL;
+
+  // Known gap (separate follow-up): the Plex poster is still the creator
+  // thumbnail, unchecked by the floor and never updated after the picker.
+  const plexPosterUrl = `https://i.ytimg.com/vi/${youtubeId}/maxresdefault.jpg`;
 
   // Plex scan + metadata. Awaited so item title/summary/poster are set before
   // the M4 callback flips status to ready. Best-effort — both calls warn-log
@@ -216,7 +221,7 @@ async function processJob(job: Job<DownloadJobData>, token?: string): Promise<vo
     filePath,
     title: metadata.title,
     summary: metadata.description,
-    posterUrl: thumbnailUrl,
+    posterUrl: plexPosterUrl,
   });
 
   // Final 100-tick is written immediately before the callback flips status to
@@ -340,15 +345,10 @@ async function processThumbJob(job: Job<ThumbJobData>): Promise<void> {
     return;
   }
 
+  // Always a checked image or the placeholder. Reuses the backfill endpoint.
   const thumbnailUrl = await generateThumbnail(youtubeId, filePath, durationSecs);
-  if (!thumbnailUrl) {
-    log.info('Thumbnail upgrade returned no URL — leaving fallback in place');
-    return;
-  }
-
-  // Push the upgraded URL back to M4. Reuses the backfill endpoint.
   await postSigned(`/internal/backfill/thumb/${youtubeId}`, { thumbnailUrl }, { timeoutMs: 10_000 });
-  log.info({ thumbnailUrl }, 'Thumbnail upgraded');
+  log.info({ placeholder: thumbnailUrl === PLACEHOLDER_THUMB_URL }, 'Thumbnail upgraded');
 }
 
 async function start(): Promise<void> {

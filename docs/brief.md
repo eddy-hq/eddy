@@ -242,13 +242,20 @@ Metadata and auto-subs stored in SQLite for guard + hook generation.
 
 YouTube's creator-uploaded thumbnails are often the most clickbaity surface on the platform — title-card text, exaggerated faces, saturated graphics. Earlier exploration considered a sharp pipeline (blur + desaturate + dim) to neutralise them; that was rejected. Blurred thumbnails read as broken, and the editorial register the rest of the design aims at depends on *high-quality* imagery, not muted imagery.
 
-Instead, after each successful download the Ubuntu worker picks the best available frame and writes it to `$THUMB_OUTPUT_PATH/{youtube_id}.webp`:
+Instead, after each successful download the Ubuntu worker picks a thumbnail in a separate queue (Gemma runs on the M4, reached through signed `/internal/thumb/*` endpoints). Until it has, the card shows a neutral placeholder — never the unchecked creator thumbnail.
 
-1. **YouTube auto-frames first.** YT exposes 3–4 algorithmically-chosen frames per video (`maxres` + `hq1`/`hq2`/`hq3`). Gemma 4 E4B scores each one 0–10 against a "good family-video thumbnail" rubric (clear subject, no full-screen text/graphics, no transitions). The first variant scoring ≥ a "good enough" threshold short-circuits the rest.
-2. **Local ffmpeg fallback.** If every YT auto-frame scores low (rare — usually the video is mostly title cards or overlays), the worker extracts 3 frames from the middle of the video file via ffmpeg (`30%`, `50%`, `70%` of duration) and Gemma scores those.
-3. **The highest-scoring frame is saved as `.webp`.** PWA shows it, nginx serves it, Plex doesn't care.
+**Safety floor.** Every image the picker would show — the creator thumbnail, a YouTube auto-frame, or an ffmpeg-sampled frame — is first scored by Gemma 4 E4B (vision, structured output, `thumb-safety-v1`) on the rubric's Violence, Frightening and Sexual dimensions (0–3, anchors from `docs/guard-rubric.md`). Any score above 1 rejects the image and the picker moves to the next candidate; a scorer error or malformed reply is a reject, never a pass. At most four safety checks run per video; once they're spent the picker stops.
 
-The verdict per video (which slot won, the score, the reason) is logged in `requests.thumb_verdict` for spot-checking. Code: `src/workers/thumb.ts`.
+Every winner is saved as `$THUMB_OUTPUT_PATH/{youtube_id}.webp` and served by nginx — YouTube images included, downloaded and converted by the worker before they are checked — so the bytes checked are the bytes shown. Serving an i.ytimg.com URL would let a creator swap the image after it passed.
+
+1. **Creator thumbnail, if editorial and safe.** Gemma classes the creator thumbnail editorial or slop (a style judgement). An editorial one is kept if it passes the floor.
+2. **YouTube auto-frames.** YT exposes algorithmically-chosen frames per video (`hq1`/`hq2`/`hq3`, served at `maxres1–3` where they exist). The first classed editorial that passes the floor wins.
+3. **Local ffmpeg frames.** The worker extracts 3 frames from the video file (`30%`, `50%`, `70%` of duration), Gemma scores their composition 0–10, and the best-composed frame that passes the floor wins. An existing local frame from an earlier run is re-checked, not trusted.
+4. **Neutral placeholder.** If nothing passes, the card gets a plain dark placeholder — an inline SVG data URI, so it needs no file or nginx and can't go missing — never the creator thumbnail. The thumbnail is never left null, because the PWA fills a null with the creator's image.
+
+Each video's outcome (which slot won, safety checks run and rejected, per-dimension scores) is logged by the worker and M4 without titles or model reasons. Code: `src/workers/thumb.ts`, scorer in `src/modules/guard/thumb-safety.ts`.
+
+Known gap: the Plex poster is still set to the creator thumbnail at download and isn't updated by the picker.
 
 Thumbnails persist across file recycling so "recycled" cards stay recognisable.
 
@@ -1146,6 +1153,7 @@ Discovery candidates are already enforced (kids only surface `clear_yes`), and ~
 
 - **Rubric** — v1 written: `docs/guard-rubric.md`. Eight scored dimensions, four hard stops, two flags, a per-age-band limits table and the verdict mapping. 6a turns it into the guard module's versioned source, read by the guard prompt, parent reason chips, and (later) the classifier track. Models score dimensions; the limits table decides.
 - **Frame picker safety floor** — the thumbnail picker (§6) rejects any frame scoring above 1 on the rubric's Violence, Frightening or Sexual dimensions. Today it scores composition only, and the ffmpeg fallback samples mid-video.
+  Built: every image the picker would show (creator thumbnail, YouTube auto-frame, ffmpeg frame) is scored by Gemma (`thumb-safety-v1`) and rejected above 1 on any of the three; a scorer error is a reject; at most four checks per video; winners are served from a local copy of the checked bytes; nothing passing → neutral placeholder, never the creator image. The placeholder is also the interim thumbnail between download and the picker. Plex poster not yet covered.
 - **Richer candidate inputs** — store and prompt with the Data API fields already fetched and discarded (description, tags, category, `contentRating.ytRating`) plus `status.madeForKids`. Age-restricted is an automatic clear-no, no model call.
 - **Download-time second pass** — transcripts already arrive free with every download (the info JSON carries auto-captions). When a slate pick downloads, re-guard it with the transcript before the card becomes visible; a metadata-only clear-yes the transcript contradicts never shows and becomes an Escalation. No extra yt-dlp traffic, no quota.
   Built: a kid's slate pick lands in hidden `guard_review` on download; a guard-queue job on the M4 re-guards it (`candidate-transcript-v1`, or `-no-transcript` when captions are missing) and moves it to `ready` on clear-yes or parks it as request status `guard_pending`, file kept, on anything else or any failure.

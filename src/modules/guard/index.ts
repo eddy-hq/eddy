@@ -9,6 +9,16 @@ import { getAgeBand } from '../users';
 import { categoryName, readVideoMetadata, type StoredVideoMetadata } from './metadata';
 
 export { ensureVideoMetadata, readVideoMetadata, type StoredVideoMetadata } from './metadata';
+export {
+  THUMB_SAFETY_VERSION,
+  THUMB_SAFETY_MAX_SCORE,
+  passesThumbSafetyFloor,
+  scoreThumbnailSafety,
+  type ThumbSafetyVerdict,
+  type ThumbSafetyScore,
+  type ThumbSafetyDimension,
+  type ThumbSafetyError,
+} from './thumb-safety';
 
 const PROMPT_VERSION = 'v2';
 export const CANDIDATE_PROMPT_VERSION = 'candidate-v3';

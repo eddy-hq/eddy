@@ -6,7 +6,7 @@ import { verifySignedJson } from '../../signed-channel';
 import { getRequestsState, needsDownloadSecondPass } from '../requests';
 import { getNotifications, parseRelayPayload } from '../notifications';
 import { checkStuckDownloads } from '../watchdog';
-import { scoreForRequest, classifyThumbnail, classifyYtImage, enqueueDownloadSecondPass } from '../guard';
+import { scoreForRequest, classifyThumbnail, classifyYtImage, enqueueDownloadSecondPass, scoreThumbnailSafety } from '../guard';
 import { ollamaGenerate } from '../../ollama';
 import { config } from '../../config';
 
@@ -322,6 +322,18 @@ internalRouter.post('/thumb/classify-variant', verifySignedJson<{ youtubeId: str
 
   const style = await classifyYtImage(payload.youtubeId, payload.variant);
   res.json({ style });
+}));
+
+// POST /internal/thumb/safety — thumbnail safety floor (brief §6, Phase 6a).
+// Body is { image } (base64): the worker sends the exact bytes it would serve.
+// Always answers 200 with a verdict; a model or parse failure is a failing
+// verdict, never a passing one.
+internalRouter.post('/thumb/safety', verifySignedJson<{ image?: unknown }>(async (_req, res, payload) => {
+  if (typeof payload.image !== 'string' || payload.image.length === 0) {
+    return res.status(400).json({ error: 'image required' });
+  }
+  const verdict = await scoreThumbnailSafety(payload.image);
+  res.json(verdict);
 }));
 
 // POST /internal/thumb/score-frame — proxy for Ubuntu worker to score a local frame against Gemma.
