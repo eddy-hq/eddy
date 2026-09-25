@@ -116,6 +116,13 @@ function persist(fetched: VideoMetadata[], fetchedAt: string): void {
   })(fetched);
 }
 
+// Stored metadata for one video, or null when there is no row. A plain read —
+// never fetches, so callers that must not spend Data API quota (the
+// download-time second pass) use this rather than ensureVideoMetadata.
+export function readVideoMetadata(youtubeId: string): StoredVideoMetadata | null {
+  return readStored([youtubeId]).get(youtubeId) ?? null;
+}
+
 // Return stored metadata for `youtubeIds`, first fetching and persisting rows
 // for any id that lacks one. Never throws: a fetch failure, a quota
 // stand-down or a DB error logs at warn and returns whatever is already

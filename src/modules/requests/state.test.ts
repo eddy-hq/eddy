@@ -49,6 +49,7 @@ const ALL_STATUSES: Status[] = [
   'watched',
   'dismissed',
   'deleted',
+  'guard_pending',
 ];
 
 // Map an Effect kind to the Ports method that runEffect dispatches it to.
@@ -1457,6 +1458,12 @@ function buildEvent(kind: Event['kind'], requestId: string): Event {
       };
     case 'mark_downloaded':
       return { kind, requestId, fields: PROP_DOWNLOADED_FIELDS };
+    case 'mark_downloaded_for_second_pass':
+      return { kind, requestId, fields: PROP_DOWNLOADED_FIELDS };
+    case 'mark_second_pass_cleared':
+      return { kind, requestId, reason: 'prop clear reason' };
+    case 'mark_second_pass_parked':
+      return { kind, requestId, verdict: 'uncertain', reason: 'prop park reason' };
     case 'mark_rejected':
       return { kind, requestId, reason: 'prop reject reason' };
     case 'mark_guard_blocked':

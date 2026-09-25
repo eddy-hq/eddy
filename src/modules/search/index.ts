@@ -3,7 +3,7 @@ import { db } from '../../db/client';
 import { logger } from '../../logger';
 import { ValidationError } from '../../errors';
 import { resolveUserByIdOrName } from '../users';
-import { displayRejectionReason } from '../requests';
+import { displayRejectionReason, HIDDEN_STATUSES_SQL } from '../requests';
 import { toPublicMediaUrl } from '../media';
 import { searchVideosFlat, type SearchVideoFlat } from '../../discovery-metadata';
 
@@ -34,7 +34,7 @@ searchRouter.get('/', (req: Request, res: Response) => {
       SELECT rowid FROM requests_fts WHERE requests_fts MATCH ?
     )
     AND r.user_id = ?
-    AND r.status NOT IN ('dismissed')
+    AND r.status NOT IN ('dismissed', ${HIDDEN_STATUSES_SQL})
     ORDER BY r.added_at DESC
     LIMIT 50
   `).all(matchExpr, uid) as Array<{ rejection_reason: string | null; nginx_url: string | null; thumbnail_url: string | null }>;

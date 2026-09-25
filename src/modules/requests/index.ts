@@ -15,6 +15,9 @@ import { toPublicMediaUrl } from '../media';
 import {
   findActiveDuplicateRequest,
   displayRejectionReason,
+  HIDDEN_STATUSES,
+  HIDDEN_STATUSES_SQL,
+  type Status,
 } from './state';
 import { getRequestsState } from './state-default';
 import { buildTierSummaries } from './feed-tiers';
@@ -29,6 +32,11 @@ export {
   CANCELLED_REASON,
   displayRejectionReason,
   findActiveDuplicateRequest,
+  needsDownloadSecondPass,
+  readSecondPassInput,
+  SLATE_PICK_SOURCES,
+  HIDDEN_STATUSES,
+  HIDDEN_STATUSES_SQL,
 } from './state';
 export {
   registerDefaultRequestsState,
@@ -47,6 +55,7 @@ export type {
   CreateFromCandidateInput,
   Ports,
   RequestsState,
+  SecondPassInput,
 } from './state';
 export {
   buildTierSummaries,
@@ -263,7 +272,7 @@ requestsRouter.get('/feed', (req: Request, res: Response) => {
       requested_at, published_at, added_at, watched_at, saved_at, source
     FROM requests
     WHERE user_id = ?
-      AND status NOT IN ('dismissed', 'deleted')
+      AND status NOT IN ('dismissed', 'deleted', ${HIDDEN_STATUSES_SQL})
       -- Fresh follow uploads stay hidden until they arrive ready (ADR-0009) —
       -- but only FIRST-TIME downloads (retried_at IS NULL). A retried row was
       -- already visible as 'failed'; hiding it the moment a kid taps its
@@ -295,7 +304,7 @@ requestsRouter.get('/feed', (req: Request, res: Response) => {
     FROM requests
     WHERE user_id = ?
       AND saved_at IS NOT NULL
-      AND status NOT IN ('dismissed', 'deleted')
+      AND status NOT IN ('dismissed', 'deleted', ${HIDDEN_STATUSES_SQL})
     ORDER BY saved_at DESC
   `).all(found.user_id) as typeof rows;
 
@@ -511,7 +520,9 @@ requestsRouter.get('/:id', async (req: Request, res: Response) => {
     title: row.title,
     channel: row.channel,
     rejectionReason: displayRejectionReason(row.rejection_reason),
-    videoUrl: toPublicMediaUrl(row.nginx_url),
+    // A slate pick awaiting or parked by its second pass has a file on disk
+    // but must not be playable from the PWA.
+    videoUrl: HIDDEN_STATUSES.includes(row.status as Status) ? null : toPublicMediaUrl(row.nginx_url),
     // The original YouTube URL as stored on the request. Distinct from
     // `videoUrl` (the local nginx file URL the player streams from); exposed
     // for the PWA's Web Share tile so the recipient gets the canonical
@@ -707,7 +718,7 @@ requestsRouter.get('/', (req: Request, res: Response) => {
     SELECT request_id, url, youtube_id, title, channel, status, rejection_reason, nginx_url, requested_at
     FROM requests
     WHERE user_id = ?
-      AND status NOT IN ('watched', 'dismissed')
+      AND status NOT IN ('watched', 'dismissed', ${HIDDEN_STATUSES_SQL})
     ORDER BY requested_at DESC
     LIMIT 50
   `).all(resolvedUserId) as Array<{

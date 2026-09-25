@@ -26,6 +26,7 @@ import { ollamaGenerate } from '../../ollama';
 import { config } from '../../config';
 import type { FeedKind, TierInputRow, Tier4Week } from './feed-tiers';
 import { sourceToKind, isoWeekRange, ageInDays } from './feed-tiers';
+import { HIDDEN_STATUSES_SQL } from './state';
 
 export const WEEK_SUMMARY_PROMPT_VERSION = 'week-summary-v1';
 
@@ -373,7 +374,7 @@ function readTierRows(userId: string): TierInputRow[] {
     SELECT title, channel, source, requested_at, added_at
     FROM requests
     WHERE user_id = ?
-      AND status NOT IN ('dismissed', 'deleted')
+      AND status NOT IN ('dismissed', 'deleted', ${HIDDEN_STATUSES_SQL})
       AND NOT (source = 'channel_subscription' AND status IN ('pending', 'downloading'))
     ORDER BY added_at DESC
     LIMIT ?
