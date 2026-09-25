@@ -135,7 +135,7 @@ beforeEach(() => {
   db.exec('DELETE FROM candidate_pool');
   evaluateMock.mockReset();
   metadataMock.mockReset();
-  metadataMock.mockResolvedValue(new Map());
+  metadataMock.mockImplementation(async (ids) => new Map(ids.map((id) => [id, meta(id)])));
   dir = mkdtempSync(path.join(tmpdir(), 'parked-rerun-'));
   resultsPath = path.join(dir, 'parked-rerun.json');
   backupPath = path.join(dir, 'eddy.pre-parked-rerun.db');
@@ -245,6 +245,24 @@ describe('evaluateParkedBacklog', () => {
 
     await evaluateParkedBacklog({ resultsPath, limit: 2 });
     expect(evaluateMock.mock.calls.map((c) => c[0].candidateId)).toEqual(['a', 'b', 'c']);
+  });
+
+  it('leaves candidates without stored metadata unevaluated, for the next run', async () => {
+    insertCandidate({ id: 'a', createdAt: daysAgo(2) });
+    insertCandidate({ id: 'b', createdAt: daysAgo(1) });
+    metadataMock.mockResolvedValue(new Map([['a', meta('a')]]));
+    evaluateMock.mockResolvedValue({ verdict: 'clear_yes', reason: 'Fine', confidence: 0.9 });
+
+    const report = await evaluateParkedBacklog({ resultsPath });
+    expect(report).toMatchObject({ recorded: 1, missingMetadata: 1 });
+    expect(evaluateMock.mock.calls.map((c) => c[0].candidateId)).toEqual(['a']);
+    expect(readRerunResults(resultsPath).map((r) => r.candidateId)).toEqual(['a']);
+
+    // Metadata arrives later: the next run picks b up.
+    metadataMock.mockImplementation(async (ids) => new Map(ids.map((id) => [id, meta(id)])));
+    const second = await evaluateParkedBacklog({ resultsPath });
+    expect(second).toMatchObject({ alreadyEvaluated: 1, recorded: 1, missingMetadata: 0 });
+    expect(readRerunResults(resultsPath).map((r) => r.candidateId)).toEqual(['a', 'b']);
   });
 
   it('does not record model errors, and stops after repeated ones', async () => {

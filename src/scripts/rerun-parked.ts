@@ -116,6 +116,9 @@ async function main(): Promise<number> {
   console.log(`Parked kid candidates:           ${report.parked}`);
   console.log(`Already evaluated (skipped):     ${report.alreadyEvaluated}`);
   console.log(`Evaluated this run:              ${report.recorded}`);
+  if (report.missingMetadata > 0) {
+    console.log(`No metadata (retried next run):  ${report.missingMetadata}`);
+  }
   if (report.scoringErrors > 0) {
     console.log(`Model errors (retried next run): ${report.scoringErrors}`);
   }

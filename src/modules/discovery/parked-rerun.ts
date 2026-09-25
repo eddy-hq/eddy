@@ -141,6 +141,9 @@ export interface EvaluateParkedReport {
   // to the results file, so the next run retries them.
   scoringErrors: number;
   abortedAfterErrors: boolean;
+  // Candidates with no stored Data API metadata after the fetch. Not
+  // evaluated and not written, so the next run retries them.
+  missingMetadata: number;
 }
 
 // Guard every parked kid candidate not already in the results file at the
@@ -165,6 +168,7 @@ export async function evaluateParkedBacklog(opts: EvaluateParkedOptions): Promis
     recorded: 0,
     scoringErrors: 0,
     abortedAfterErrors: false,
+    missingMetadata: 0,
   };
   if (todo.length === 0) return report;
 
@@ -174,9 +178,16 @@ export async function evaluateParkedBacklog(opts: EvaluateParkedOptions): Promis
     todo.map((c) => c.external_id).filter((id): id is string => !!id),
   );
 
+  // The point of the re-run is the richer inputs. A candidate with no stored
+  // metadata (fetch failed, quota hit, or the video is gone) would be judged
+  // on title + channel again and then skipped by every later run, so leave it
+  // out of the file and untouched — the next run tries the fetch again.
+  const guardable = todo.filter((c) => c.external_id && metadata.has(c.external_id));
+  report.missingMetadata = todo.length - guardable.length;
+
   const ageBands = new Map<string, string>();
   let consecutiveErrors = 0;
-  for (const c of todo) {
+  for (const c of guardable) {
     let ageBand = ageBands.get(c.user_id);
     if (ageBand === undefined) {
       ageBand = getAgeBand(c.user_id);
@@ -189,7 +200,7 @@ export async function evaluateParkedBacklog(opts: EvaluateParkedOptions): Promis
     if (verdict.reason === GUARD_SCORING_ERROR_REASON && verdict.confidence === 0) {
       report.scoringErrors += 1;
       consecutiveErrors += 1;
-      opts.onProgress?.(report.attempted, todo.length);
+      opts.onProgress?.(report.attempted, guardable.length);
       if (consecutiveErrors >= MAX_CONSECUTIVE_SCORING_ERRORS) {
         report.abortedAfterErrors = true;
         break;
@@ -209,7 +220,7 @@ export async function evaluateParkedBacklog(opts: EvaluateParkedOptions): Promis
     });
     writeRerunResults(opts.resultsPath, results);
     report.recorded += 1;
-    opts.onProgress?.(report.attempted, todo.length);
+    opts.onProgress?.(report.attempted, guardable.length);
   }
   return report;
 }
