@@ -349,6 +349,24 @@ describe('download-time second pass: kid slate picks', () => {
     expect(await feedIds(KID_ID)).not.toContain('pick-noqueue');
   });
 
+  it('cannot be cancelled while awaiting the second pass, so the file never surfaces uncleared', async () => {
+    seedRequest('pick-cancel');
+    await workerDownloaded('pick-cancel');
+
+    const cancel = await supertest(app).post('/requests/pick-cancel/cancel');
+
+    expect(cancel.status).toBe(409);
+    expect(row('pick-cancel').status).toBe('guard_review');
+    expect(await feedIds(KID_ID)).not.toContain('pick-cancel');
+    const single = await supertest(app).get('/requests/pick-cancel');
+    expect(single.body.videoUrl).toBeNull();
+
+    // The second pass still decides.
+    vi.mocked(ollamaGenerate).mockResolvedValue(verdictJson('uncertain'));
+    await runDownloadSecondPass('pick-cancel');
+    expect(row('pick-cancel').status).toBe('guard_pending');
+  });
+
   it('a second run of the job is a no-op once the pick is resolved', async () => {
     seedRequest('pick-twice');
     await workerDownloaded('pick-twice');

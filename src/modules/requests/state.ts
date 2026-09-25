@@ -356,10 +356,15 @@ function downloadedSql(
 // than derived from a global LEGAL map so a future non-cancel rejection path
 // can't silently broaden cancel eligibility — or, worse, overwrite a
 // guard-set rejection_reason with the cancel sentinel.
+//
+// `guard_review` is deliberately absent: a slate pick there already has a
+// playable file and hasn't been cleared by its second pass. Cancelling would
+// move it to `rejected`, which every kid surface shows (nginx_url intact),
+// and the second pass would then skip the row — the file would surface
+// uncleared. It resolves only through the second pass.
 const CANCELLABLE_SOURCES: Status[] = [
   'pending',
   'downloading',
-  'guard_review',
   'parent_review',
   'approved',
 ];
