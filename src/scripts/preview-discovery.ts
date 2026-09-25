@@ -21,6 +21,7 @@ import {
   MIN_QUALITY_SCORE,
   type RankerCandidate,
 } from '../modules/discovery/ranker';
+import { kidGuardClause } from '../modules/discovery/surface';
 
 runMigrations();
 seedUsers();
@@ -105,9 +106,7 @@ for (const user of users) {
   console.log(`  Cap ${cap} · already surfaced today ${alreadySurfaced} (subscription ${subscriptionQuota} + back-catalogue ${BACK_CATALOG_QUOTA} + delighter ${DELIGHTER_QUOTA})`);
   console.log(`  Floors: connection ≥ ${MIN_CONNECTION_SCORE} · quality ≥ ${MIN_QUALITY_SCORE}`);
 
-  const guardClause = isKid
-    ? "AND (c.guard_verdict = 'clear_yes' OR c.guard_verdict IS NULL)"
-    : '';
+  const guardClause = kidGuardClause(isKid);
 
   const rows = db.prepare(`
     SELECT c.candidate_id, c.title, c.channel, c.published_at,
