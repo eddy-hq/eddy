@@ -1,10 +1,10 @@
-# Guard rubric — v1
+# Guard rubric — v1.1
 
 The parent's standards the guard judges against. Models score the dimensions and detect hard stops and flags; the limits table decides the verdict. One versioned source read by the guard prompt, the offline teacher, parent reason chips, and any trained student (brief §9, Phase 6a, §22; ADR-0014). Every label records the rubric version it was made under.
 
 Examples here are generic on purpose — never drawn from household viewing.
 
-The guard reads this rubric as code from `src/modules/guard/rubric.ts` (`rubric-v1`); change both together — a test fails if the limits or flag tables diverge.
+The guard reads this rubric as code from `src/modules/guard/rubric.ts` (`rubric-v1.1`); change both together — a test fails if the limits or flag tables diverge.
 
 Scale per dimension: 0 None · 1 Mild · 2 Moderate · 3 Severe.
 
@@ -85,7 +85,7 @@ Per age band, not per kid — a younger sibling reaching a band gets exactly wha
 |---|---|---|---|
 | Language | 1 | 2 | 2 |
 | Violence | 1 | 1 | 2 |
-| Frightening | 1 | 2 | 2 |
+| Frightening | 1 | 1 | 2 |
 | Sexual | 0 | 1 | 1 |
 | Substances | 0 | 1 | 1 |
 | Dangerous acts | 1 | 1 | 2 |

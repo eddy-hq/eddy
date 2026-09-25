@@ -6,7 +6,7 @@
 // this file together and bump RUBRIC_VERSION — rubric.test.ts fails if the
 // limits tables drift apart.
 
-export const RUBRIC_VERSION = 'rubric-v1';
+export const RUBRIC_VERSION = 'rubric-v1.1';
 
 export type RubricScore = 0 | 1 | 2 | 3;
 
@@ -210,7 +210,7 @@ export const LIMITS: Readonly<Record<LimitsBand, Readonly<Record<RubricDimension
     substances: 0, dangerous: 1, commercial: 1, attitude: 1,
   },
   '10-12': {
-    language: 2, violence: 1, frightening: 2, sexual: 1,
+    language: 2, violence: 1, frightening: 1, sexual: 1,
     substances: 1, dangerous: 1, commercial: 1, attitude: 1,
   },
   '13-15': {
