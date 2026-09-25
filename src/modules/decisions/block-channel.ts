@@ -7,7 +7,7 @@ import { db } from '../../db/client';
 import { ValidationError } from '../../errors';
 import { blockChannel } from '../discovery';
 import { recordDecision, type DecisionOutcome } from './decide';
-import type { SubjectType } from './util';
+import type { DecisionReason, SubjectType } from './util';
 
 export interface CardSubjectRef {
   subjectType: SubjectType;
@@ -60,12 +60,14 @@ export async function blockChannelFromCard(
   subjects: readonly CardSubjectRef[],
   reason: string | null,
   now: Date = new Date(),
+  // The card's reason chips and note, recorded on each kid's Block.
+  decisionReason: DecisionReason | null = null,
 ): Promise<BlockChannelResult> {
   // Resolve first, so a card without a channel id changes nothing.
   const channel = channelForSubjects(subjects);
   const outcomes: DecisionOutcome[] = [];
   for (const s of subjects) {
-    outcomes.push(await recordDecision(parentId, { ...s, verdict: 'clear_no' }, now));
+    outcomes.push(await recordDecision(parentId, { ...s, verdict: 'clear_no', reason: decisionReason }, now));
   }
   const block = blockChannel({ ...channel, reason, blockedBy: parentId, now });
   return { channel, alreadyBlocked: block.alreadyBlocked, poolRowsRemoved: block.poolRowsRemoved, outcomes };

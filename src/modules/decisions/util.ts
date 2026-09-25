@@ -16,6 +16,30 @@ export const ESCALATION_RECENT_DAYS = 14;
 
 export const PARENT_BLOCKED_REASON = 'Blocked by a parent';
 
+// Reason chips: the parent's optional why, attached to a decision. Dimension
+// keys are the rubric's scored dimensions (validated at the route); the note
+// is capped so a decision stays a tap, not an essay.
+export const REASON_TEXT_MAX = 280;
+
+export interface DecisionReason {
+  dimensions: string[];
+  text: string | null;
+}
+
+// Stored form: NULL columns when nothing was given; dimensions deduplicated
+// and kept in the order supplied (the PWA sends rubric order).
+export function reasonColumns(reason: DecisionReason | null | undefined): {
+  dimensionsJson: string | null;
+  text: string | null;
+} {
+  const dims = [...new Set(reason?.dimensions ?? [])];
+  const text = reason?.text?.trim() || null;
+  return {
+    dimensionsJson: dims.length > 0 ? JSON.stringify(dims) : null,
+    text,
+  };
+}
+
 // UTC calendar day of an instant, as the guard_spot_checks key.
 export function utcDay(now: Date): string {
   return now.toISOString().slice(0, 10);

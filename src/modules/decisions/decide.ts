@@ -17,6 +17,8 @@ import { SLATE_PICK_SOURCES, findSlatePickRequest, getRequestsState } from '../r
 import { getAgeBand, resolveUserById } from '../users';
 import {
   PARENT_BLOCKED_REASON,
+  reasonColumns,
+  type DecisionReason,
   type DecisionSource,
   type HumanVerdict,
   type SubjectType,
@@ -26,6 +28,8 @@ export interface DecisionInput {
   subjectType: SubjectType;
   subjectId: string;
   verdict: HumanVerdict;
+  // Optional reason chips and note; absent is a bare Allow / Block.
+  reason?: DecisionReason | null;
 }
 
 // What the decision did to the kid's feed.
@@ -179,21 +183,28 @@ export async function recordDecision(
   const effect = await applyEffect(s, input.verdict, parentId);
 
   const at = now.toISOString();
+  const reason = reasonColumns(input.reason);
   db.transaction(() => {
     db.prepare(`
       INSERT INTO guard_decisions
         (decision_id, subject_type, subject_id, user_id, url, youtube_id, age_band,
-         rubric_version, source, guard_verdict, eval_id, human_verdict, decided_by, decided_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         rubric_version, source, guard_verdict, eval_id, human_verdict, decided_by, decided_at,
+         reason_dimensions_json, reason_text)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       uuidv7(), s.subjectType, s.subjectId, s.userId, s.url, s.youtubeId, ageBand,
       RUBRIC_VERSION, source, guardVerdict, guard.evalId, input.verdict, parentId, at,
+      reason.dimensionsJson, reason.text,
     );
     if (guard.evalId) labelGuardEval(guard.evalId, input.verdict, at);
   })();
 
   logger.info(
-    { subjectType: s.subjectType, subjectId: s.subjectId, source, verdict: input.verdict, effect },
+    {
+      subjectType: s.subjectType, subjectId: s.subjectId, source, verdict: input.verdict, effect,
+      // Whether a reason came with it, never the note itself.
+      withReason: reason.dimensionsJson !== null || reason.text !== null,
+    },
     'Parent decision recorded',
   );
   return { subjectType: s.subjectType, subjectId: s.subjectId, source, effect, alreadyDecided: false, guard };

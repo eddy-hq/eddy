@@ -520,6 +520,7 @@ describe('contentFor', () => {
       contentFor({ kind: 'download_alert', requestId: 'req-1', title: 'x', stuckMins: 12, action: 'failed' }),
       contentFor({ kind: 'circuit_open', consecutiveTrips: 3 }),
       contentFor({ kind: 'download_failure_streak', consecutiveFailures: 5, lastError: 'HTTP Error 403' }),
+      contentFor({ kind: 'decisions_waiting', count: 3 }),
     ];
 
     for (const content of contents) {
@@ -542,5 +543,14 @@ describe('contentFor', () => {
 
     expect(JSON.stringify(content)).not.toContain('tok-approve');
     expect(JSON.stringify(content)).not.toContain('tok-deny');
+  });
+
+  it('says only how many decisions wait, and links to /decisions', () => {
+    expect(contentFor({ kind: 'decisions_waiting', count: 3 })).toEqual({
+      title: 'Decisions',
+      body: '3 decisions waiting',
+      actionUrl: '/decisions',
+    });
+    expect(contentFor({ kind: 'decisions_waiting', count: 1 }).body).toBe('1 decision waiting');
   });
 });

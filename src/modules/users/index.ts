@@ -70,3 +70,11 @@ export function resolveUserByIdOrName(value: unknown): UserRow {
   if (!row) throw new NotFoundError(`user ${value}`);
   return row;
 }
+
+// Every parent's user id, oldest first. Recipients for parent-only
+// notifications (the Decisions nudge).
+export function listParentIds(): string[] {
+  return (db.prepare(
+    "SELECT user_id FROM users WHERE role = 'parent' ORDER BY created_at, user_id"
+  ).all() as Array<{ user_id: string }>).map((r) => r.user_id);
+}

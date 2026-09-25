@@ -111,6 +111,17 @@ export const recyclerQueue = new Queue('recycler', {
   },
 });
 
+// Decisions queue (Phase 6a) — the daily "decisions waiting" nudge to a
+// parent. Carries the schedule trigger only; processed on the M4.
+export const decisionsQueue = new Queue('decisions', {
+  connection: redis,
+  defaultJobOptions: {
+    attempts: 1,
+    removeOnComplete: { count: 10 },
+    removeOnFail: { count: 20 },
+  },
+});
+
 export async function closeQueues(): Promise<void> {
   await Promise.all([
     downloadQueue.close(),
@@ -121,6 +132,7 @@ export async function closeQueues(): Promise<void> {
     interestsQueue.close(),
     deleteQueue.close(),
     recyclerQueue.close(),
+    decisionsQueue.close(),
   ]);
   await redis.quit();
 }

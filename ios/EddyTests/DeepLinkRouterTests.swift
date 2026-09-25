@@ -27,6 +27,7 @@ final class DeepLinkRouterTests: XCTestCase {
         XCTAssertEqual(path("eddy://profile"), "/profile")
         XCTAssertEqual(path("eddy://request"), "/request")
         XCTAssertEqual(path("eddy://admin"), "/admin")
+        XCTAssertEqual(path("eddy://decisions"), "/decisions")
     }
 
     func testParameterisedRoutes() {

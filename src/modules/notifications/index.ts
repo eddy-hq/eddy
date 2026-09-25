@@ -44,6 +44,7 @@ export type {
   DownloadAlertEvent,
   ParentReviewEvent,
   CircuitOpenEvent,
+  DecisionsWaitingEvent,
 } from './events';
 export { generateActionToken, validateActionToken } from './tokens';
 

@@ -15,6 +15,7 @@ import { startInterestsWorker, stopInterestsWorker } from './modules/interests/s
 import { reconcilePendingSearchTerms } from './modules/interests';
 import { startGuardWorker, stopGuardWorker } from './modules/guard/index';
 import { startRecyclerScheduler, stopRecyclerScheduler } from './modules/recycler/index';
+import { startDecisionsNudgeScheduler, stopDecisionsNudgeScheduler } from './modules/decisions/index';
 
 async function start(): Promise<void> {
   logger.info({ env: config.NODE_ENV }, 'Starting Eddy');
@@ -27,6 +28,7 @@ async function start(): Promise<void> {
   startDiscoveryScheduler();
   startProfileEnrichmentScheduler();
   startRecyclerScheduler();
+  startDecisionsNudgeScheduler();
   startInterestsWorker();
   startGuardWorker();
 
@@ -48,6 +50,7 @@ async function start(): Promise<void> {
     await stopDiscoveryScheduler();
     await stopProfileEnrichmentScheduler();
     await stopRecyclerScheduler();
+    await stopDecisionsNudgeScheduler();
     await stopInterestsWorker();
     await stopGuardWorker();
     server.close(() => logger.info('HTTP server closed'));

@@ -13,7 +13,8 @@ export type NotificationEvent =
   | DownloadAlertEvent
   | ParentReviewEvent
   | CircuitOpenEvent
-  | DownloadFailureStreakEvent;
+  | DownloadFailureStreakEvent
+  | DecisionsWaitingEvent;
 
 // Sent to a kid when their video is downloaded and ready to watch.
 export interface VideoReadyEvent {
@@ -60,4 +61,12 @@ export interface ParentReviewEvent {
   reason: string;
   approveToken: string;
   denyToken: string;
+}
+
+// Sent to each parent once a day when the Decisions queue for Today is
+// non-empty (Phase 6a daily nudge). A count only — no titles, channels or kid
+// names — and the tap opens /decisions.
+export interface DecisionsWaitingEvent {
+  kind: 'decisions_waiting';
+  count: number;
 }

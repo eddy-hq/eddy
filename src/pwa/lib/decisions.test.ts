@@ -1,17 +1,25 @@
 import { describe, expect, it } from 'vitest';
 import {
+  EMPTY_REASON,
   agreement,
+  blockChannelBody,
   blockChannelFlash,
   blockChannelPrompt,
   blockChannelSubjects,
   canBlockChannel,
   decisionsForCard,
   formatScores,
+  hasReason,
   keyAction,
+  reasonFields,
+  reasonSummary,
   removeChannelCards,
   removeDecided,
+  setReasonText,
   skipCard,
+  toggleReasonDimension,
   type BlockChannelResult,
+  type ReasonOptions,
   type CardSubject,
   type DecisionCard,
 } from './decisions';
@@ -148,5 +156,104 @@ describe('Block channel', () => {
     expect(blockChannelFlash(result(0))).toBe('Blocked Placeholder channel · nothing else queued');
     expect(blockChannelFlash(result(1))).toBe('Blocked Placeholder channel · 1 queued video removed');
     expect(blockChannelFlash(result(3, true))).toBe('Already blocked Placeholder channel · 3 queued videos removed');
+  });
+});
+
+// ── Reason chips ─────────────────────────────────────────────────────────────
+
+const OPTIONS: ReasonOptions = {
+  dimensions: [
+    { key: 'language', label: 'Language' },
+    { key: 'violence', label: 'Violence' },
+    { key: 'frightening', label: 'Frightening' },
+  ],
+  textMax: 10,
+};
+
+describe('toggleReasonDimension', () => {
+  it('selects and deselects a chip', () => {
+    const on = toggleReasonDimension(EMPTY_REASON, 'violence', OPTIONS);
+    expect(on.dimensions).toEqual(['violence']);
+    expect(toggleReasonDimension(on, 'violence', OPTIONS).dimensions).toEqual([]);
+  });
+
+  it('keeps selected chips in rubric order whatever the tap order', () => {
+    let draft = toggleReasonDimension(EMPTY_REASON, 'frightening', OPTIONS);
+    draft = toggleReasonDimension(draft, 'language', OPTIONS);
+    expect(draft.dimensions).toEqual(['language', 'frightening']);
+  });
+
+  it('ignores a key that is not on offer', () => {
+    expect(toggleReasonDimension(EMPTY_REASON, 'gore', OPTIONS)).toBe(EMPTY_REASON);
+  });
+
+  it('leaves the note alone', () => {
+    const draft = toggleReasonDimension({ dimensions: [], text: 'hi' }, 'language', OPTIONS);
+    expect(draft.text).toBe('hi');
+  });
+});
+
+describe('setReasonText', () => {
+  it("cuts the note to the server's cap", () => {
+    expect(setReasonText(EMPTY_REASON, 'x'.repeat(25), OPTIONS).text).toBe('x'.repeat(10));
+  });
+});
+
+describe('reasonFields and hasReason', () => {
+  it('leaves both fields out when nothing is picked', () => {
+    expect(reasonFields(EMPTY_REASON)).toEqual({});
+    expect(reasonFields({ dimensions: [], text: '   ' })).toEqual({});
+    expect(hasReason({ dimensions: [], text: '   ' })).toBe(false);
+  });
+
+  it('carries chips and a trimmed note', () => {
+    const draft = { dimensions: ['violence'], text: '  scary  ' };
+    expect(reasonFields(draft)).toEqual({ reasonDimensions: ['violence'], reasonText: 'scary' });
+    expect(hasReason(draft)).toBe(true);
+  });
+});
+
+describe('reasonSummary', () => {
+  it('is null with nothing picked, else the chip labels and "note"', () => {
+    expect(reasonSummary(EMPTY_REASON, OPTIONS)).toBeNull();
+    expect(reasonSummary({ dimensions: ['language', 'violence'], text: '' }, OPTIONS)).toBe('Language, Violence');
+    expect(reasonSummary({ dimensions: ['violence'], text: 'x' }, OPTIONS)).toBe('Violence, note');
+  });
+});
+
+describe('decision payloads with a reason', () => {
+  const both = card('v1', [subject('s1', 'kid1'), subject('s2', 'kid2')], { channel: 'Placeholder', channelId: 'UC1' });
+  const reason = { dimensions: ['frightening'], text: 'Too scary' };
+
+  it('puts the reason on every kid for "same for both"', () => {
+    expect(decisionsForCard(both, 'clear_no', undefined, reason)).toEqual([
+      { subjectType: 'candidate', subjectId: 's1', verdict: 'clear_no', reasonDimensions: ['frightening'], reasonText: 'Too scary' },
+      { subjectType: 'candidate', subjectId: 's2', verdict: 'clear_no', reasonDimensions: ['frightening'], reasonText: 'Too scary' },
+    ]);
+  });
+
+  it('puts the reason on the one kid decided', () => {
+    expect(decisionsForCard(both, 'clear_yes', 'kid1', { dimensions: [], text: 'ok' })).toEqual([
+      { subjectType: 'candidate', subjectId: 's1', verdict: 'clear_yes', reasonText: 'ok' },
+    ]);
+  });
+
+  it('a bare decision posts no reason fields', () => {
+    expect(decisionsForCard(both, 'clear_yes', 'kid2', EMPTY_REASON)).toEqual([
+      { subjectType: 'candidate', subjectId: 's2', verdict: 'clear_yes' },
+    ]);
+  });
+
+  it('Block channel carries every kid and the reason', () => {
+    expect(blockChannelBody('parent', both, reason)).toEqual({
+      userId: 'parent',
+      subjects: [{ subjectType: 'candidate', subjectId: 's1' }, { subjectType: 'candidate', subjectId: 's2' }],
+      reasonDimensions: ['frightening'],
+      reasonText: 'Too scary',
+    });
+    expect(blockChannelBody('parent', both)).toEqual({
+      userId: 'parent',
+      subjects: [{ subjectType: 'candidate', subjectId: 's1' }, { subjectType: 'candidate', subjectId: 's2' }],
+    });
   });
 });
