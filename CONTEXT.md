@@ -87,8 +87,16 @@ The three guard outcomes. Clear-yes approves; clear-no rejects with a one-senten
 _Avoid_: approved/denied/pending (those are downstream states)
 
 **Escalation**:
-The parent-decision path for an **Uncertain** request — a notification with `[Approve] [Deny]` actions. Kid sees "waiting for a grown-up" until resolved.
+The parent-decision path for an **Uncertain** verdict — on a kid **Request**, or on a discovery candidate the guard parked (`guard_pending`). Approve/deny changes what the kid can see; the decision is also recorded as a ground-truth label. Kid sees "waiting for a grown-up" on a Request until resolved; a parked candidate simply doesn't surface.
 _Avoid_: review, hold
+
+**Spot check**:
+A parent decision on a randomly sampled **Clear-yes** or **Clear-no** verdict, shown without the guard's verdict until the parent answers. Measures guard precision; a disagreement still acts (a denied clear-yes leaves the kid's feed, an approved clear-no becomes eligible).
+_Avoid_: audit, sample review, labelling
+
+**Rubric**:
+The written statement of the parent's standards the guard judges against — dimensions (language, frightening, …), a severity scale with anchoring examples per dimension, and a per-age-band limits table mapping severities to **Clear-yes** / **Uncertain** / **Clear-no**. Models score dimensions; the limits table decides. One versioned source read by the guard prompt, the teacher, parent reason chips, and any trained student.
+_Avoid_: policy, guidelines, criteria
 
 **Appeal**:
 The kid's one-tap "Ask a grown-up" affordance on a **Clear-no** rejection. Routes the request to the parent with Gemma's reasoning attached.

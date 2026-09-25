@@ -1028,7 +1028,8 @@ A session is a focused working block of a few hours ending with the system runna
 - **Phase 3 ✅** — Guard in shadow mode
 - **Phase 4 ✅** — Channels, subscriptions, search
 - **Phase 5 ✅** — Discovery
-- **Phase 6** — Guard live
+- **Phase 6a** — Rubric and parent decisions
+- **Phase 6b** — Guard live
 - **Phase 7** — Adult sources
 - **Phase 8** — Drift
 - **Phase 9** — Overrides & blocking (gated on partner buy-in)
@@ -1036,6 +1037,8 @@ A session is a focused working block of a few hours ending with the system runna
 - **Phase 11** — Frontier escalation (optional)
 
 Outside the numbered phases: the **native iOS shell** (Section 21) is a separate track, not a phase. Nothing gates it, and it gates one thing — **Phase 6**, which needs the shell's APNs push to get an uncertain verdict in front of a parent (ADR-0013). Since ntfy's removal there is no other way to reach a device.
+
+Also outside the numbered phases: the **guard classifier track** (Section 22) — a public floor benchmark, then a frontier-labelled public pool and a small local student model (ADR-0014). It starts once Phase 6a's rubric exists and never gates a phase; the guard adopts a new model only if it beats the incumbent on the harness.
 
 ### Phase 0 ✅ — Foundation
 
@@ -1131,21 +1134,41 @@ Specs in Sections 4a and 9a. ~2-3 sessions.
 
 **Ends with:** Today carries discovery picks (in the unified stream, per ADR-0009 — no separate "Picked for you" cluster) with visible reasoning, mostly naming a specific person. Kids follow people via YouTube channels (v1). Scarcity principle honoured. Guard still shadow-mode.
 
-### Phase 6 — Guard live
+### Phase 6 — Guard live (split into 6a and 6b)
 
-Spec in Section 9. ~2 sessions.
-
-By now the eval set from Phases 3–5 is substantial. This phase puts the guard in the critical path.
+Spec in Section 9. The original plan assumed the Phase 3–5 eval set would be substantial by now; in practice it holds 4 labelled verdicts out of ~5,100 (2026-09-25), because labelling by CLI never became a habit. Prompts can't be tuned against a dataset that doesn't exist, so the phase splits: 6a builds the surface that produces labels as a side effect of parent decisions, 6b flips requests live once those labels show the thresholds are met.
 
 **Prerequisite: push (APNs) is live.** Uncertain verdicts have to reach a parent, and since ntfy's removal notifications are log-only — so stages 4–5 of the native shell (Section 21) ship before this phase does. A guard that escalates into a log file is a guard that blocks kids indefinitely.
 
-- Tune prompts against the labelled dataset until thresholds hit (95% clear-yes precision, 90% clear-no precision, 10–30% uncertain rate)
+#### Phase 6a — Rubric and parent decisions
+
+Discovery candidates are already enforced (kids only surface `clear_yes`), and ~1,300 sit parked as `guard_pending` with no way to resolve them. 6a gives them a path and starts the eval set. Kid requests stay in shadow mode.
+
+- **Rubric** — dimensions, a severity scale with anchoring examples per dimension, and a per-age-band limits table mapping severities to a verdict. One versioned source in the guard module, read by the guard prompt, parent reason chips, and (later) the classifier track. Models score dimensions; the limits table decides. Written by Steve.
+- **Richer candidate inputs** — store and prompt with the Data API fields already fetched and discarded (description, tags, category, `contentRating.ytRating`) plus `status.madeForKids`. Age-restricted is an automatic clear-no, no model call.
+- **Transcript second pass** — candidates still uncertain after the richer first pass get a transcript fetch, within the yt-dlp exposure budget (ADR-0012).
+- **Re-run the parked backlog** with the richer inputs before building the queue for it.
+- **Parent decision surface** in the PWA (not `/admin/guard-review` — "review" is a glossary avoid-term):
+  - **Escalations** — parked uncertain candidates, guard verdict and reason shown. Approve → eligible for the kid's slate; deny → `guard_rejected`.
+  - **Spot checks** — 5 a day (4 clear-yes, 1 clear-no), sampled from the last 7 days across both kids, candidates and requests. Guard verdict hidden until the parent answers. A denied clear-yes leaves the kid's feed; an approved clear-no becomes eligible; a spot check on an already-downloaded shadow-mode request records a label only.
+  - Daily queue capped ~15 items, escalations first; escalations older than 14 days appear only in **catch-up mode**, which lifts the cap and draws further spot checks from older verdict history.
+  - Optional reason chips per decision, one per rubric dimension, plus free text.
+  - Decisions are per kid (age bands differ); "same for both" when a video is pending for both.
+  - Every decision writes `guard_eval.human_verdict` with its source (escalation / spot check), rubric version, and age band at decision time.
+- **Daily nudge** via `notify()` — "N decisions waiting", only when the queue is non-empty. No per-item push in 6a.
+
+**Ends with:** parked candidates resolvable in a few minutes a day, and a labelled set growing at ~5 spot checks + escalations per day. ~150 clear-yes spot checks (≈ ±3.5% on precision) in about five weeks, sooner with catch-up sessions.
+
+#### Phase 6b — Guard live for requests
+
+Gated on 6a's labels meeting the thresholds.
+
+- Tune against the labelled set until thresholds hit (95% clear-yes precision, 90% clear-no precision, 10–30% uncertain rate)
 - Flip `decided_by` default: clear_yes auto-approves, clear_no auto-rejects with reason, uncertain escalates
-- `/admin/guard-review` surface — lists uncertain items plus recent clear-yes/clear-no for spot-checking, one-tap labelling continues to feed the eval set
 - Parent push for uncertain verdicts with approve/deny actions (signed-token pattern)
 - Appeal flow — kid taps "ask again" on a rejection, Gemma re-evaluates with the appeal context, still-uncertain escalates to parent
 - Kid-facing rejection reasons (age-appropriate phrasing, not raw Gemma output)
-- First month: parent reviews a sample of clear-yes too via admin view
+- First month: spot checks continue at the 6a rate
 
 **Ends with:** ~70–80% of requests auto-handled. Parents only see uncertain + appeals. Rejection paths exist with reasons and appeals.
 
@@ -1307,3 +1330,20 @@ Ad hoc provisioning, not TestFlight (ADR-0013 for why).
 2. ~~Video inside `WKWebView`~~ — plays fine on a device (2026-09-19).
 3. ~~Where the Swift lives~~ — decided: `ios/` in this repo, so the API contract and its client change in one diff.
 4. ~~Service extension over a backgrounded VPN~~ — answered by a spike on 2026-09-21 (branch `apns-nse-spike`, not merged). On one iPhone, a Notification Service Extension that fetched `/health` on each mutable push reached Eddy in 66 ms with the phone in use, and succeeded again with the phone locked and idle for 16 minutes on mobile data, Tailscale backgrounded. With Tailscale switched off the fetch failed, so the successes went over the tailnet. Not yet covered: an iPad, a kid's Screen Time-managed device, Low Power Mode, and an overnight idle. Two things the spike surfaced for stage 5: a push that arrives while the app is on screen is dropped unless the app implements the foreground presentation delegate, and with the tailnet down the extension waits out its whole fetch timeout before the fallback copy shows, so that timeout should be a few seconds, not twenty.
+
+---
+
+## 22. Guard classifier track
+
+A separate track, like the native iOS shell: nothing gates it and it gates no phase. It starts once Phase 6a's rubric exists. Decision record: ADR-0014.
+
+The aim is a guard shaped like Luna-2 / Jev — text in, one calibrated probability per rubric dimension out — running locally. At Eddy's volume (~30 verdicts a day) the case is quality and calibration, not cost: a score read from the model's token probabilities can be thresholded, where Gemma's self-reported `confidence` can't.
+
+1. **Harness** — replays labelled items through any guard configuration and reports clear-yes / clear-no precision and uncertain rate, split by label source and rubric version.
+2. **Public floor benchmark** — the universal floor (sexual, graphic, disturbing) measured on public data: the Samba test split first (public, has subtitles), Disturbed YouTube for Kids (access by request). Contenders: today's Gemma prompt (baseline), ShieldGemma text, ShieldGemma 2 on thumbnails, and any open Jev-like model worth trying. First check: whether Ollama exposes token probabilities — without them there's no real score. Unlike household results, this number is publishable.
+3. **Public pool** — 10–20K public videos from the Data API across genres 10–13-year-olds watch, plus public-dataset hard positives. Never seeded from or joined to Eddy's data.
+4. **Frontier teacher** labels the pool against the rubric, offline. Steve audits ~300 as gold; iterate the rubric until teacher–gold agreement holds.
+5. **Student** — a small head over an embedding model first, LoRA on a small open model if that falls short. Evaluated on gold, the public benchmark, and household decisions. Adopted only if it beats the incumbent.
+6. **Loop** — student-uncertain items route into Phase 6a's escalations; those decisions become new gold.
+
+Household decisions stay evaluation-only and, later, retrieved precedents (a new item's nearest past parent decisions in the guard prompt). They are never teacher input or training data.
