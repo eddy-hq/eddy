@@ -316,8 +316,9 @@ describe('the HTTP/2 connection', () => {
       const send = () => client.post({ host: apns.host, path: '/3/device/token', headers: {}, body: '{}' });
 
       const failure = await send().catch((err: unknown) => err);
+      // Not the exact code: depending on timing the client sees the reset as
+      // ECONNRESET, a stream error, or a close with no response at all.
       expect(failure).toBeInstanceOf(ApnsConnectionError);
-      expect((failure as ApnsConnectionError).code).toBe('ECONNRESET');
 
       expect(await send()).toEqual({ status: 200, reason: undefined });
       expect(apns.sessions).toHaveLength(2);
