@@ -20,7 +20,7 @@ import { recordDownloadFailure, recordDownloadSuccess } from '../failure-streak'
 import { triggerPlexScan, updatePlexMetadata } from '../modules/content/plex';
 import { postSigned } from '../signed-channel';
 import { createRelayNotifications, registerDefaultNotifications } from '../modules/notifications';
-import { generateThumbnail, placeholderThumbUrl } from './thumb';
+import { generateThumbnail, PLACEHOLDER_THUMB_URL } from './thumb';
 import type { DownloadJobData } from '../modules/content';
 import type { DeleteJobData } from '../modules/requests';
 
@@ -207,11 +207,10 @@ async function processJob(job: Job<DownloadJobData>, token?: string): Promise<vo
   // Interim thumbnail until the picker (separate queue, so the video is
   // available without waiting on Gemma) has chosen one that passes the safety
   // floor: the neutral placeholder, never the unchecked creator thumbnail.
-  // Null if the placeholder can't be produced.
-  const thumbnailUrl = await placeholderThumbUrl(log);
+  const thumbnailUrl = PLACEHOLDER_THUMB_URL;
 
-  // Known gap: the Plex poster is still the creator thumbnail, unchecked by
-  // the safety floor, and is never updated after the picker runs.
+  // Known gap (separate follow-up): the Plex poster is still the creator
+  // thumbnail, unchecked by the floor and never updated after the picker.
   const plexPosterUrl = `https://i.ytimg.com/vi/${youtubeId}/maxresdefault.jpg`;
 
   // Plex scan + metadata. Awaited so item title/summary/poster are set before
@@ -346,12 +345,10 @@ async function processThumbJob(job: Job<ThumbJobData>): Promise<void> {
     return;
   }
 
-  // Always written back, null included: null means neither a safe image nor
-  // the placeholder was available, and clearing the row beats leaving an
-  // unchecked creator thumbnail there. Reuses the backfill endpoint.
+  // Always a checked image or the placeholder. Reuses the backfill endpoint.
   const thumbnailUrl = await generateThumbnail(youtubeId, filePath, durationSecs);
   await postSigned(`/internal/backfill/thumb/${youtubeId}`, { thumbnailUrl }, { timeoutMs: 10_000 });
-  log.info({ thumbnailUrl }, thumbnailUrl ? 'Thumbnail upgraded' : 'Thumbnail cleared — no safe image or placeholder');
+  log.info({ placeholder: thumbnailUrl === PLACEHOLDER_THUMB_URL }, 'Thumbnail upgraded');
 }
 
 async function start(): Promise<void> {

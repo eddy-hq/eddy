@@ -44,8 +44,7 @@ async function run(): Promise<void> {
   let failed = 0;
 
   for (const row of pending) {
-    // Null (no safe image and no placeholder) is written too: it clears an
-    // unchecked creator thumbnail rather than leaving it in place.
+    // Always a checked image or the neutral placeholder.
     const thumbUrl = await generateThumbnail(row.youtube_id, row.file_path, row.duration_secs, { force });
 
     try {

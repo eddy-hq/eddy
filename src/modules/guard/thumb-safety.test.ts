@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('../../config', () => ({
   config: { OLLAMA_URL: 'http://localhost:11434', OLLAMA_GUARD_MODEL: 'gemma4:e4b' },
@@ -19,7 +19,6 @@ import {
   THUMB_SAFETY_VERSION,
   passesThumbSafetyFloor,
   scoreThumbnailSafety,
-  scoreYtThumbnailSafety,
 } from './thumb-safety';
 
 function modelReply(v: number, f: number, s: number): string {
@@ -33,10 +32,6 @@ function modelReply(v: number, f: number, s: number): string {
 beforeEach(() => {
   vi.mocked(ollamaGenerate).mockReset();
   vi.mocked(logger.info).mockClear();
-});
-
-afterEach(() => {
-  vi.unstubAllGlobals();
 });
 
 describe('scoreThumbnailSafety', () => {
@@ -96,28 +91,6 @@ describe('scoreThumbnailSafety', () => {
     const logged = JSON.stringify(vi.mocked(logger.info).mock.calls);
     expect(logged).toContain('"violence":0');
     expect(logged).not.toContain('SECRET-REASON');
-  });
-});
-
-describe('scoreYtThumbnailSafety', () => {
-  it('fails without a model call when the image cannot be fetched', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status: 404 })));
-    const v = await scoreYtThumbnailSafety('abcdefghijk', 'maxresdefault');
-    expect(v).toMatchObject({ pass: false, error: 'fetch_failed' });
-    expect(ollamaGenerate).not.toHaveBeenCalled();
-  });
-
-  it("fails on YouTube's placeholder-sized image", async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, arrayBuffer: async () => new ArrayBuffer(1000) })));
-    const v = await scoreYtThumbnailSafety('abcdefghijk', 'maxres1');
-    expect(v).toMatchObject({ pass: false, error: 'fetch_failed' });
-  });
-
-  it('scores a fetched image', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, arrayBuffer: async () => new ArrayBuffer(5000) })));
-    vi.mocked(ollamaGenerate).mockResolvedValue(modelReply(0, 1, 0));
-    const v = await scoreYtThumbnailSafety('abcdefghijk', 'maxresdefault');
-    expect(v.pass).toBe(true);
   });
 });
 

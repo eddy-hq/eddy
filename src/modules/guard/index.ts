@@ -14,7 +14,6 @@ export {
   THUMB_SAFETY_MAX_SCORE,
   passesThumbSafetyFloor,
   scoreThumbnailSafety,
-  scoreYtThumbnailSafety,
   type ThumbSafetyVerdict,
   type ThumbSafetyScore,
   type ThumbSafetyDimension,

@@ -18,21 +18,24 @@ vi.mock('../logger', () => {
 
 vi.mock('../signed-channel', () => ({ postSigned: vi.fn() }));
 
-// ffmpeg stand-in: writes a small file whose content names the frame, so the
-// mocked Gemma endpoints can tell frames apart. promisify() calls this with a
-// trailing node-style callback.
+// ffmpeg stand-in. Frame extraction (-ss) writes a file naming the frame; YT
+// conversion (-i file) copies the input through. File contents stand in for
+// images so the mocked Gemma endpoints can tell them apart. promisify() calls
+// this with a trailing node-style callback.
 vi.mock('child_process', () => ({
   execFile: vi.fn((_cmd: string, args: string[], cb: (err: Error | null, out?: unknown) => void) => {
     const out = args[args.length - 1]!;
     const ssIdx = args.indexOf('-ss');
-    const content = ssIdx >= 0 ? `frame-${args[ssIdx + 1]}` : 'placeholder';
+    const content = ssIdx >= 0
+      ? `frame-${args[ssIdx + 1]}`
+      : fs.readFileSync(args[args.indexOf('-i') + 1]!).toString();
     fs.writeFileSync(out, content);
     cb(null, { stdout: '', stderr: '' });
   }),
 }));
 
 import { postSigned } from '../signed-channel';
-import { generateThumbnail, MAX_SAFETY_CHECKS, PLACEHOLDER_FILENAME } from './thumb';
+import { generateThumbnail, MAX_SAFETY_CHECKS, PLACEHOLDER_THUMB_URL } from './thumb';
 
 const YT_ID = 'abcdefghijk';
 const DURATION = 100; // frames at 30s, 50s, 70s
@@ -43,10 +46,12 @@ const SAFE: Scores = { violence: 0, frightening: 0, sexual: 0 };
 interface Scenario {
   creatorStyle: 'editorial' | 'slop';
   autoStyles: Record<string, 'editorial' | 'slop'>;
-  // Keyed by YT variant (e.g. 'maxresdefault', 'maxres1') or frame content
-  // (e.g. 'frame-30'). Missing key → safe.
+  // Keyed by image content: 'yt-<variant>' for YT images (e.g.
+  // 'yt-maxresdefault'), 'frame-<secs>' for extracted frames. Missing → safe.
   safety: Record<string, Scores | 'error' | 'malformed'>;
   composition: Record<string, number>;
+  // YT variants that don't exist (i.ytimg.com returns its tiny placeholder).
+  missingVariants: Set<string>;
 }
 
 let scenario: Scenario;
@@ -66,11 +71,21 @@ function verdictFor(scores: Scores): unknown {
 }
 
 function decode(b64: string): string {
-  return Buffer.from(b64, 'base64').toString();
+  return Buffer.from(b64, 'base64').toString().trim();
+}
+
+// A YT image body: names its variant, padded past the placeholder-size cut-off.
+function ytBody(variant: string): ArrayBuffer {
+  const buf = Buffer.from(`yt-${variant}`.padEnd(3000, ' '));
+  return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer;
 }
 
 function safetyCalls(): string[] {
   return calls.filter((c) => c.path === '/internal/thumb/safety').map((c) => c.key!);
+}
+
+function scoreFrameCalls(): string[] {
+  return calls.filter((c) => c.path === '/internal/thumb/score-frame').map((c) => c.key!);
 }
 
 let tmpDir: string;
@@ -86,13 +101,17 @@ beforeEach(() => {
     autoStyles: {},
     safety: {},
     composition: { 'frame-30': 5, 'frame-50': 6, 'frame-70': 4 },
+    missingVariants: new Set(),
   };
 
-  // Every preferred YT variant exists (HEAD returns a real-sized image).
-  vi.stubGlobal('fetch', vi.fn(async () => ({
-    ok: true,
-    headers: new Headers({ 'content-length': '50000' }),
-  })));
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+    const variant = /\/([a-z0-9]+)\.jpg$/.exec(url)![1]!;
+    if (scenario.missingVariants.has(variant)) {
+      const tiny = new ArrayBuffer(1000);
+      return { ok: true, arrayBuffer: async () => tiny };
+    }
+    return { ok: true, arrayBuffer: async () => ytBody(variant) };
+  }));
 
   vi.mocked(postSigned).mockReset();
   vi.mocked(postSigned).mockImplementation(async (p: string, payload: unknown) => {
@@ -110,7 +129,7 @@ beforeEach(() => {
         return jsonResponse({ raw: JSON.stringify({ score: scenario.composition[key] ?? 0, reason: 'r' }) });
       }
       case '/internal/thumb/safety': {
-        const key = body['image'] ? decode(body['image']) : body['variant']!;
+        const key = decode(body['image']!);
         calls.push({ path: p, key });
         const s = scenario.safety[key] ?? SAFE;
         if (s === 'error') throw new Error('M4 returned 502');
@@ -128,46 +147,48 @@ afterEach(() => {
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
-const PLACEHOLDER_URL = `http://nginx.test/thumbs/${PLACEHOLDER_FILENAME}`;
 const localUrl = expect.stringMatching(new RegExp(`^http://nginx\\.test/thumbs/${YT_ID}\\.webp\\?v=\\d+$`));
 
 function localThumbContent(): string {
-  return fs.readFileSync(path.join(tmpDir, `${YT_ID}.webp`)).toString();
+  return fs.readFileSync(path.join(tmpDir, `${YT_ID}.webp`)).toString().trim();
 }
 
 describe('generateThumbnail safety floor', () => {
-  it('keeps an editorial creator thumbnail that passes the floor', async () => {
+  it('keeps an editorial creator thumbnail that passes the floor, served from a local copy', async () => {
     scenario.creatorStyle = 'editorial';
     const url = await generateThumbnail(YT_ID, '/videos/x.mp4', DURATION);
-    expect(url).toBe(`https://i.ytimg.com/vi/${YT_ID}/maxresdefault.jpg`);
-    expect(safetyCalls()).toEqual(['maxresdefault']);
+    expect(url).toEqual(localUrl);
+    expect(safetyCalls()).toEqual(['yt-maxresdefault']);
+    // The bytes checked are the bytes served — not a mutable i.ytimg.com URL.
+    expect(localThumbContent()).toBe('yt-maxresdefault');
   });
 
-  it('safety-checks the variant actually served when maxres is missing', async () => {
+  it('checks and serves hqdefault when maxres is missing', async () => {
     scenario.creatorStyle = 'editorial';
-    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, headers: new Headers() })));
+    scenario.missingVariants.add('maxresdefault');
     const url = await generateThumbnail(YT_ID, '/videos/x.mp4', DURATION);
-    expect(url).toBe(`https://i.ytimg.com/vi/${YT_ID}/hqdefault.jpg`);
-    expect(safetyCalls()).toEqual(['hqdefault']);
+    expect(url).toEqual(localUrl);
+    expect(safetyCalls()).toEqual(['yt-hqdefault']);
+    expect(localThumbContent()).toBe('yt-hqdefault');
   });
 
   it('falls through to frames when an editorial creator thumbnail fails the floor', async () => {
     scenario.creatorStyle = 'editorial';
-    scenario.safety['maxresdefault'] = { violence: 0, frightening: 2, sexual: 0 };
+    scenario.safety['yt-maxresdefault'] = { violence: 0, frightening: 2, sexual: 0 };
     const url = await generateThumbnail(YT_ID, '/videos/x.mp4', DURATION);
     expect(url).toEqual(localUrl);
-    expect(url).not.toContain('i.ytimg.com');
     // Best-composed frame (50s, score 6) checked and chosen.
-    expect(safetyCalls()).toEqual(['maxresdefault', 'frame-50']);
+    expect(safetyCalls()).toEqual(['yt-maxresdefault', 'frame-50']);
     expect(localThumbContent()).toBe('frame-50');
   });
 
   it('uses an editorial auto-frame only after it passes the floor', async () => {
     scenario.autoStyles = { hq1: 'editorial', hq2: 'editorial' };
-    scenario.safety['maxres1'] = { violence: 2, frightening: 0, sexual: 0 };
+    scenario.safety['yt-maxres1'] = { violence: 2, frightening: 0, sexual: 0 };
     const url = await generateThumbnail(YT_ID, '/videos/x.mp4', DURATION);
-    expect(url).toBe(`https://i.ytimg.com/vi/${YT_ID}/maxres2.jpg`);
-    expect(safetyCalls()).toEqual(['maxres1', 'maxres2']);
+    expect(url).toEqual(localUrl);
+    expect(safetyCalls()).toEqual(['yt-maxres1', 'yt-maxres2']);
+    expect(localThumbContent()).toBe('yt-maxres2');
   });
 
   it.each(['violence', 'frightening', 'sexual'] as const)('rejects a frame scoring above 1 on %s', async (dim) => {
@@ -189,54 +210,66 @@ describe('generateThumbnail safety floor', () => {
 
   it('treats a scorer error as a reject, never a pass', async () => {
     scenario.creatorStyle = 'editorial';
-    scenario.safety['maxresdefault'] = 'error';
-    const url = await generateThumbnail(YT_ID, '/videos/x.mp4', DURATION);
-    expect(url).not.toContain('i.ytimg.com');
-    expect(safetyCalls()).toEqual(['maxresdefault', 'frame-50']);
+    scenario.safety['yt-maxresdefault'] = 'error';
+    await generateThumbnail(YT_ID, '/videos/x.mp4', DURATION);
+    expect(safetyCalls()).toEqual(['yt-maxresdefault', 'frame-50']);
+    expect(localThumbContent()).toBe('frame-50');
   });
 
   it('treats a malformed verdict (pass without scores) as a reject', async () => {
     scenario.creatorStyle = 'editorial';
-    scenario.safety['maxresdefault'] = 'malformed';
-    const url = await generateThumbnail(YT_ID, '/videos/x.mp4', DURATION);
-    expect(url).not.toContain('i.ytimg.com');
+    scenario.safety['yt-maxresdefault'] = 'malformed';
+    await generateThumbnail(YT_ID, '/videos/x.mp4', DURATION);
+    expect(localThumbContent()).toBe('frame-50');
   });
 
   it('serves the placeholder, never the creator image, when nothing passes', async () => {
     scenario.creatorStyle = 'editorial';
-    for (const key of ['maxresdefault', 'frame-30', 'frame-50', 'frame-70']) {
+    for (const key of ['yt-maxresdefault', 'frame-30', 'frame-50', 'frame-70']) {
       scenario.safety[key] = { violence: 3, frightening: 0, sexual: 0 };
     }
     const url = await generateThumbnail(YT_ID, '/videos/x.mp4', DURATION);
-    expect(url).toBe(PLACEHOLDER_URL);
-    expect(fs.existsSync(path.join(tmpDir, PLACEHOLDER_FILENAME))).toBe(true);
+    expect(url).toBe(PLACEHOLDER_THUMB_URL);
     expect(fs.existsSync(path.join(tmpDir, `${YT_ID}.webp`))).toBe(false);
   });
 
   it('serves the placeholder when every scorer call errors', async () => {
     scenario.creatorStyle = 'editorial';
-    for (const key of ['maxresdefault', 'frame-30', 'frame-50', 'frame-70']) scenario.safety[key] = 'error';
-    expect(await generateThumbnail(YT_ID, '/videos/x.mp4', DURATION)).toBe(PLACEHOLDER_URL);
+    for (const key of ['yt-maxresdefault', 'frame-30', 'frame-50', 'frame-70']) scenario.safety[key] = 'error';
+    expect(await generateThumbnail(YT_ID, '/videos/x.mp4', DURATION)).toBe(PLACEHOLDER_THUMB_URL);
   });
 
   it('bounds safety checks per video and stops once they are spent', async () => {
     scenario.creatorStyle = 'editorial';
     scenario.autoStyles = { hq1: 'editorial', hq2: 'editorial', hq3: 'editorial' };
     const fail = { violence: 0, frightening: 0, sexual: 3 };
-    for (const key of ['maxresdefault', 'maxres1', 'maxres2', 'maxres3', 'frame-30', 'frame-50', 'frame-70']) {
+    for (const key of ['yt-maxresdefault', 'yt-maxres1', 'yt-maxres2', 'yt-maxres3', 'frame-30', 'frame-50', 'frame-70']) {
       scenario.safety[key] = fail;
     }
     const url = await generateThumbnail(YT_ID, '/videos/x.mp4', DURATION);
-    expect(url).toBe(PLACEHOLDER_URL);
+    expect(url).toBe(PLACEHOLDER_THUMB_URL);
     expect(safetyCalls()).toHaveLength(MAX_SAFETY_CHECKS);
     // Budget spent on the YT candidates: no frames extracted or scored.
-    expect(calls.filter((c) => c.path === '/internal/thumb/score-frame')).toHaveLength(0);
+    expect(scoreFrameCalls()).toHaveLength(0);
+  });
+
+  it('stops scoring frames once the budget runs out part-way through them', async () => {
+    scenario.creatorStyle = 'editorial';
+    scenario.autoStyles = { hq1: 'editorial', hq2: 'editorial' };
+    scenario.composition = { 'frame-30': 9, 'frame-50': 6, 'frame-70': 4 };
+    const fail = { violence: 3, frightening: 0, sexual: 0 };
+    for (const key of ['yt-maxresdefault', 'yt-maxres1', 'yt-maxres2', 'frame-30']) scenario.safety[key] = fail;
+    const url = await generateThumbnail(YT_ID, '/videos/x.mp4', DURATION);
+    expect(url).toBe(PLACEHOLDER_THUMB_URL);
+    expect(safetyCalls()).toEqual(['yt-maxresdefault', 'yt-maxres1', 'yt-maxres2', 'frame-30']);
+    // The fourth check spent the budget on frame-30; the other frames aren't scored.
+    expect(scoreFrameCalls()).toEqual(['frame-30']);
   });
 
   it('never makes more than the bounded number of Ollama-backed calls per video', async () => {
     scenario.creatorStyle = 'editorial';
     scenario.autoStyles = { hq1: 'editorial' };
-    for (const key of ['maxresdefault', 'maxres1', 'frame-30', 'frame-50', 'frame-70']) scenario.safety[key] = 'error';
+    for (const key of ['yt-maxresdefault', 'yt-maxres1', 'frame-30', 'frame-50', 'frame-70']) scenario.safety[key] = 'error';
     await generateThumbnail(YT_ID, '/videos/x.mp4', DURATION);
     // 1 creator style + 3 auto-frame styles + 3 composition scores + safety cap.
     expect(calls.length).toBeLessThanOrEqual(1 + 3 + 3 + MAX_SAFETY_CHECKS);
@@ -262,14 +295,19 @@ describe('generateThumbnail safety floor', () => {
 
   it('serves the placeholder without any checks when the M4 is unreachable by config', async () => {
     mockConfig.M4_INTERNAL_URL = undefined;
-    expect(await generateThumbnail(YT_ID, '/videos/x.mp4', DURATION)).toBe(PLACEHOLDER_URL);
+    expect(await generateThumbnail(YT_ID, '/videos/x.mp4', DURATION)).toBe(PLACEHOLDER_THUMB_URL);
     expect(calls).toHaveLength(0);
   });
 
-  it('returns null rather than a creator image when no placeholder can be served', async () => {
+  it('serves the placeholder without any checks when a checked image could not be served', async () => {
     mockConfig.NGINX_THUMB_BASE_URL = undefined;
     scenario.creatorStyle = 'editorial';
-    scenario.safety['maxresdefault'] = 'error';
-    expect(await generateThumbnail(YT_ID, '/videos/x.mp4', DURATION)).toBeNull();
+    expect(await generateThumbnail(YT_ID, '/videos/x.mp4', DURATION)).toBe(PLACEHOLDER_THUMB_URL);
+    expect(calls).toHaveLength(0);
+  });
+
+  it('uses an inline neutral image as the placeholder, never a YouTube URL', () => {
+    expect(PLACEHOLDER_THUMB_URL.startsWith('data:image/svg+xml,')).toBe(true);
+    expect(PLACEHOLDER_THUMB_URL).not.toContain('ytimg');
   });
 });

@@ -12,10 +12,6 @@ export const THUMB_SAFETY_VERSION = 'thumb-safety-v1';
 // Highest score on any dimension an image may have and still be shown.
 export const THUMB_SAFETY_MAX_SCORE = 1;
 
-// Smallest byte size a real YouTube thumbnail can have; below this i.ytimg.com
-// is returning its grey "no such variant" placeholder.
-const YT_PLACEHOLDER_BYTES = 2000;
-
 export type ThumbSafetyDimension = 'violence' | 'frightening' | 'sexual';
 const DIMENSIONS: ThumbSafetyDimension[] = ['violence', 'frightening', 'sexual'];
 
@@ -24,7 +20,7 @@ export interface ThumbSafetyScore {
   reason: string;
 }
 
-export type ThumbSafetyError = 'fetch_failed' | 'model_error' | 'parse_error';
+export type ThumbSafetyError = 'model_error' | 'parse_error';
 
 export interface ThumbSafetyVerdict {
   version: string;
@@ -152,22 +148,4 @@ export async function scoreThumbnailSafety(imageBase64: string, logCtx: Record<s
     sexual: scores.sexual.score,
   }, 'Thumbnail safety verdict');
   return { version: THUMB_SAFETY_VERSION, pass, scores };
-}
-
-// Fetch a YouTube thumbnail variant (e.g. maxresdefault, hq1) and score it.
-// A fetch failure or YouTube's placeholder image is a failing verdict.
-export async function scoreYtThumbnailSafety(youtubeId: string, variant: string): Promise<ThumbSafetyVerdict> {
-  const url = `https://i.ytimg.com/vi/${youtubeId}/${variant}.jpg`;
-  let imageBase64: string;
-  try {
-    const resp = await fetch(url, { signal: AbortSignal.timeout(10_000) });
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-    const buf = await resp.arrayBuffer();
-    if (buf.byteLength < YT_PLACEHOLDER_BYTES) throw new Error('placeholder-sized response');
-    imageBase64 = Buffer.from(buf).toString('base64');
-  } catch (err) {
-    logger.warn({ err, youtubeId, variant, version: THUMB_SAFETY_VERSION }, 'Thumbnail safety: fetch failed — rejecting image');
-    return failed('fetch_failed');
-  }
-  return scoreThumbnailSafety(imageBase64, { youtubeId, variant });
 }

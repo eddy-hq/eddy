@@ -6,7 +6,7 @@ import { verifySignedJson } from '../../signed-channel';
 import { getRequestsState, needsDownloadSecondPass } from '../requests';
 import { getNotifications, parseRelayPayload } from '../notifications';
 import { checkStuckDownloads } from '../watchdog';
-import { scoreForRequest, classifyThumbnail, classifyYtImage, enqueueDownloadSecondPass, scoreThumbnailSafety, scoreYtThumbnailSafety } from '../guard';
+import { scoreForRequest, classifyThumbnail, classifyYtImage, enqueueDownloadSecondPass, scoreThumbnailSafety } from '../guard';
 import { ollamaGenerate } from '../../ollama';
 import { config } from '../../config';
 
@@ -293,13 +293,8 @@ internalRouter.get('/backfill/pending-thumbs', (req: Request, res: Response) => 
   res.json({ pending: rows });
 });
 
-// POST /internal/backfill/thumb/:youtube_id — write generated thumbnail URL back to DB.
-// thumbnailUrl may be null: the worker clears an unchecked creator thumbnail
-// when it has neither a safe image nor a placeholder to put in its place.
-internalRouter.post('/backfill/thumb/:youtube_id', verifySignedJson<{ thumbnailUrl: string | null }>((req, res, payload) => {
-  if (payload.thumbnailUrl !== null && typeof payload.thumbnailUrl !== 'string') {
-    return res.status(400).json({ error: 'thumbnailUrl must be a string or null' });
-  }
+// POST /internal/backfill/thumb/:youtube_id — write generated thumbnail URL back to DB
+internalRouter.post('/backfill/thumb/:youtube_id', verifySignedJson<{ thumbnailUrl: string }>((req, res, payload) => {
   db.prepare(`
     UPDATE requests SET thumbnail_url = @thumbnail_url
     WHERE youtube_id = @youtube_id
@@ -330,24 +325,14 @@ internalRouter.post('/thumb/classify-variant', verifySignedJson<{ youtubeId: str
 }));
 
 // POST /internal/thumb/safety — thumbnail safety floor (brief §6, Phase 6a).
-// Body is either { youtubeId, variant } (M4 fetches the YT image) or { image }
-// (base64 of a locally extracted frame). Always answers 200 with a verdict; a
-// fetch, model or parse failure is a failing verdict, never a passing one.
-internalRouter.post('/thumb/safety', verifySignedJson<{ youtubeId?: unknown; variant?: unknown; image?: unknown }>(async (_req, res, payload) => {
-  if (typeof payload.image === 'string' && payload.image.length > 0) {
-    const verdict = await scoreThumbnailSafety(payload.image, { source: 'frame' });
-    return res.json(verdict);
+// Body is { image } (base64): the worker sends the exact bytes it would serve.
+// Always answers 200 with a verdict; a model or parse failure is a failing
+// verdict, never a passing one.
+internalRouter.post('/thumb/safety', verifySignedJson<{ image?: unknown }>(async (_req, res, payload) => {
+  if (typeof payload.image !== 'string' || payload.image.length === 0) {
+    return res.status(400).json({ error: 'image required' });
   }
-  if (typeof payload.youtubeId !== 'string' || typeof payload.variant !== 'string') {
-    return res.status(400).json({ error: 'image, or youtubeId and variant, required' });
-  }
-  if (!/^[A-Za-z0-9_-]{11}$/.test(payload.youtubeId)) {
-    return res.status(400).json({ error: 'invalid youtubeId' });
-  }
-  if (!/^(hq|mq|maxres|sd)?(default|[1-3])$/.test(payload.variant)) {
-    return res.status(400).json({ error: 'unsupported variant' });
-  }
-  const verdict = await scoreYtThumbnailSafety(payload.youtubeId, payload.variant);
+  const verdict = await scoreThumbnailSafety(payload.image);
   res.json(verdict);
 }));
 
