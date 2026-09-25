@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { parseOllamaJson } from './ollama';
+import { ollamaGenerate, parseOllamaJson } from './ollama';
 
 vi.mock('./config', () => ({
   config: { OLLAMA_URL: 'http://localhost:11434', OLLAMA_GUARD_MODEL: 'gemma4:e4b', NODE_ENV: 'test' },
@@ -81,5 +81,22 @@ describe('parseOllamaJson', () => {
       };
     });
     expect(out).toEqual({ verdict: 'ok', confidence: 0.5 });
+  });
+});
+
+describe('ollamaGenerate request body', () => {
+  it('sends truncate and shift as top-level fields, not model options', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ response: '{}', done: true }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      await ollamaGenerate('prompt', undefined, undefined, {
+        temperature: 0, num_predict: 10, think: false, keep_alive: '30m', truncate: false, shift: false,
+      });
+      const body = JSON.parse((fetchMock.mock.calls[0] as unknown as [string, { body: string }])[1].body) as Record<string, unknown>;
+      expect(body).toMatchObject({ truncate: false, shift: false, think: false, keep_alive: '30m' });
+      expect(body['options']).toEqual({ temperature: 0, num_predict: 10 });
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });

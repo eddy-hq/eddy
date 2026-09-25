@@ -176,6 +176,12 @@ const schema = z.object({
   // API key for DISCOVERY_SOURCE=api. Required only when that source is
   // selected (enforced by the superRefine below).
   YOUTUBE_API_KEY: z.string().optional(),
+  // ── Candidate guard prompt (Phase 6a) ────────────────────────────────────
+  // Which prompt judges discovery candidates and the download-time second
+  // pass. 'v3' (default) asks the model for a verdict; 'v4' has it score the
+  // rubric (docs/guard-rubric.md) and lets the limits table decide. Kid
+  // requests (shadow mode) are unaffected.
+  GUARD_CANDIDATE_PROMPT: z.enum(['v3', 'v4']).default('v3'),
 }).superRefine((env, ctx) => {
   if (env.DISCOVERY_SOURCE === 'api' && !env.YOUTUBE_API_KEY) {
     ctx.addIssue({

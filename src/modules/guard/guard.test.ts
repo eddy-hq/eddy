@@ -327,7 +327,7 @@ describe('evaluateCandidate with Data API metadata', () => {
       description: 'Anything', madeForKids: true, ageRestricted: true,
     });
 
-    expect(result).toEqual({ verdict: 'clear_no', reason: 'Age-restricted on YouTube', confidence: 1 });
+    expect(result).toEqual({ verdict: 'clear_no', reason: 'Age-restricted on YouTube', confidence: 1, promptVersion: 'candidate-v3', rubric: null });
     expect(ollamaGenerate).not.toHaveBeenCalled();
 
     const row = insertRow();
