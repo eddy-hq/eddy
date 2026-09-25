@@ -44,13 +44,9 @@ async function run(): Promise<void> {
   let failed = 0;
 
   for (const row of pending) {
+    // Null (no safe image and no placeholder) is written too: it clears an
+    // unchecked creator thumbnail rather than leaving it in place.
     const thumbUrl = await generateThumbnail(row.youtube_id, row.file_path, row.duration_secs, { force });
-
-    if (!thumbUrl) {
-      failed++;
-      logger.warn({ youtubeId: row.youtube_id }, 'Thumbnail generation failed — skipping');
-      continue;
-    }
 
     try {
       await postSigned(`/internal/backfill/thumb/${row.youtube_id}`, { thumbnailUrl: thumbUrl }, { timeoutMs: 10_000 });

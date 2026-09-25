@@ -3,6 +3,7 @@ import { execFile } from 'child_process';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
+import type { Logger } from 'pino';
 import { config } from '../config';
 import { logger as rootLogger } from '../logger';
 import { postSigned } from '../signed-channel';
@@ -10,8 +11,8 @@ import { parseOllamaJson } from '../ollama';
 
 const execFileAsync = promisify(execFile);
 
-// Sample 3 positions across the middle of the video. Used only when all YT
-// options have classified as slop — rare in practice.
+// Sample 3 positions across the middle of the video. Used only when no YT
+// option is both editorial and safe.
 const LOCAL_SEEK_FRACTIONS = [0.30, 0.50, 0.70];
 
 // Short-circuit local frame scoring on the first frame scoring at or above this.
@@ -19,6 +20,21 @@ const GOOD_ENOUGH_SCORE = 8;
 
 // YT returns a ~1KB placeholder when a thumbnail variant doesn't exist.
 const YT_PLACEHOLDER_THRESHOLD = 2000;
+
+// Safety floor (brief §6): every image the picker would show is scored by
+// Gemma on Violence / Frightening / Sexual first. Each check is one Ollama
+// call on the busy M4, so a video gets at most this many; once they're spent
+// the picker stops and serves the placeholder. Four covers the creator
+// thumbnail plus several fallbacks — a video whose first four candidates all
+// fail is one to show neutrally anyway.
+export const MAX_SAFETY_CHECKS = 4;
+
+// Neutral image served when nothing passes the floor. Lives beside the frame
+// thumbnails so nginx/Caddy serve it on the same path. The name is longer
+// than an 11-character YouTube ID, so it can't collide with a video's frame.
+export const PLACEHOLDER_FILENAME = '_neutral-placeholder.webp';
+// Matches the PWA card background (THUMB_BG in Card.tsx).
+const PLACEHOLDER_COLOUR = '0x0a0a0a';
 
 // Slot labels for the YT auto-frame check. `classifyVariant` is sent to Gemma
 // at a smaller resolution; `displayVariant` is the URL we actually serve.
@@ -38,6 +54,79 @@ Judge by overall composition and visual impact. Penalise text/graphics only by h
 
 Return ONLY JSON: {"score": 0-10, "reason": "one short sentence"}`;
 
+type SafetyTarget = { youtubeId: string; variant: string } | { image: string };
+
+// Per-video safety bookkeeping: bounds the Ollama calls and feeds the summary
+// log line (counts only — no titles, no model reasons).
+class SafetyFloor {
+  checks = 0;
+  rejects = 0;
+
+  constructor(private readonly log: Logger) {}
+
+  get exhausted(): boolean {
+    return this.checks >= MAX_SAFETY_CHECKS;
+  }
+
+  // True only on an explicit passing verdict. Budget spent, transport error,
+  // non-2xx, or a malformed body all count as a fail (kid safety).
+  async passes(target: SafetyTarget, slot: string): Promise<boolean> {
+    if (this.exhausted) return false;
+    this.checks++;
+    let body: unknown;
+    try {
+      const resp = await postSigned('/internal/thumb/safety', target, { timeoutMs: 90_000 });
+      body = await resp.json();
+    } catch (err) {
+      this.rejects++;
+      this.log.warn({ err, slot }, 'Thumbnail safety check failed — treating image as unsafe');
+      return false;
+    }
+    const pass = isPassingVerdict(body);
+    if (!pass) {
+      this.rejects++;
+      this.log.info({ slot, ...verdictSummary(body) }, 'Thumbnail candidate failed safety floor');
+    }
+    return pass;
+  }
+}
+
+const SAFETY_DIMENSIONS = ['violence', 'frightening', 'sexual'] as const;
+const SAFETY_MAX_SCORE = 1;
+
+// Re-checks the scores rather than trusting `pass` alone, so a malformed or
+// partial response can never read as safe.
+function isPassingVerdict(body: unknown): boolean {
+  if (typeof body !== 'object' || body === null) return false;
+  const b = body as Record<string, unknown>;
+  if (b['pass'] !== true) return false;
+  const scores = b['scores'];
+  if (typeof scores !== 'object' || scores === null) return false;
+  return SAFETY_DIMENSIONS.every((dim) => {
+    const d = (scores as Record<string, unknown>)[dim];
+    if (typeof d !== 'object' || d === null) return false;
+    const score = (d as Record<string, unknown>)['score'];
+    return typeof score === 'number' && score >= 0 && score <= SAFETY_MAX_SCORE;
+  });
+}
+
+function verdictSummary(body: unknown): Record<string, unknown> {
+  if (typeof body !== 'object' || body === null) return {};
+  const b = body as Record<string, unknown>;
+  const scores = (typeof b['scores'] === 'object' && b['scores'] !== null ? b['scores'] : {}) as Record<string, { score?: unknown } | undefined>;
+  return {
+    version: b['version'],
+    error: b['error'],
+    violence: scores['violence']?.score,
+    frightening: scores['frightening']?.score,
+    sexual: scores['sexual']?.score,
+  };
+}
+
+// Returns the URL to show for this video: an image that passed the safety
+// floor, else the neutral placeholder. Null only when the placeholder can't be
+// produced either — the caller then clears the thumbnail rather than leave an
+// unchecked creator image in place. Never returns an unchecked image.
 export async function generateThumbnail(
   youtubeId: string,
   filePath: string,
@@ -54,58 +143,110 @@ export async function generateThumbnail(
     log.warn({ err }, 'Failed to create thumb directory');
   }
 
-  const baseUrl = config.M4_INTERNAL_URL;
-  if (!baseUrl) {
-    log.warn('M4_INTERNAL_URL not set — cannot classify, falling back to raw maxresdefault');
-    return ytUrl(youtubeId, 'maxresdefault');
+  const floor = new SafetyFloor(log);
+  const done = (outcome: string, url: string | null): string | null => {
+    log.info({ outcome, safetyChecks: floor.checks, safetyRejects: floor.rejects }, 'Thumbnail picked');
+    return url;
+  };
+
+  if (!config.M4_INTERNAL_URL) {
+    log.warn('M4_INTERNAL_URL not set — cannot safety-check, using placeholder');
+    return done('placeholder', await placeholderThumbUrl(log));
   }
 
-  // Step 1: maxresdefault (cached at the M4 side after first call).
+  // Step 1: creator thumbnail, if Gemma classes it editorial and it passes the floor.
   try {
     const style = await classifyMaxresdefault(youtubeId);
     if (style === 'editorial') {
-      log.info({ youtubeId }, 'maxresdefault editorial — using channel thumbnail');
-      return ytUrl(youtubeId, 'maxresdefault');
+      const variant = await pickDisplayVariant(youtubeId, 'maxresdefault', 'hqdefault');
+      if (await floor.passes({ youtubeId, variant }, 'creator')) {
+        return done('creator', ytUrl(youtubeId, variant));
+      }
     }
   } catch (err) {
     log.warn({ err }, 'maxresdefault classify failed — continuing to auto-frames');
   }
 
-  // Step 2: YT auto-frames (1/2/3) — short-circuit on first editorial.
+  // Step 2: YT auto-frames (1/2/3) — first one that is editorial and passes the floor.
   for (const slot of YT_AUTO_FRAMES) {
+    if (floor.exhausted) break;
     try {
       const style = await classifyVariant(youtubeId, slot.classifyVariant);
       if (style === 'editorial') {
-        const display = await pickDisplayUrl(youtubeId, slot.displayVariant, slot.classifyVariant);
-        log.info({ youtubeId, slot: slot.classifyVariant, display }, 'Auto-frame editorial — using YT URL');
-        return display;
+        const variant = await pickDisplayVariant(youtubeId, slot.displayVariant, slot.classifyVariant);
+        if (await floor.passes({ youtubeId, variant }, slot.classifyVariant)) {
+          return done('auto-frame', ytUrl(youtubeId, variant));
+        }
       }
     } catch (err) {
       log.warn({ err, slot: slot.classifyVariant }, 'Auto-frame classify failed — continuing');
     }
   }
 
-  // Step 3: local fallback — extract 3 frames, score each, save raw WebP on first ≥ 8.
-  if (!force && fs.existsSync(localThumbPath)) {
-    log.debug('Local thumbnail already exists — reusing');
-    return buildLocalThumbUrl(youtubeId);
-  }
-
-  const winner = await pickLocalFrame(youtubeId, filePath, durationSecs);
-  if (winner) {
+  // Step 3: local frames. An existing local thumbnail (from an earlier run,
+  // possibly before the floor existed) is re-checked, not trusted.
+  if (!force && !floor.exhausted && fs.existsSync(localThumbPath)) {
     try {
-      fs.copyFileSync(winner.webpPath, localThumbPath);
-      fs.unlinkSync(winner.webpPath);
-      log.info({ youtubeId, seekSecs: winner.seekSecs, score: winner.score }, 'Saved local thumbnail');
-      return buildLocalThumbUrl(youtubeId);
+      const b64 = fs.readFileSync(localThumbPath).toString('base64');
+      if (await floor.passes({ image: b64 }, 'existing-local')) {
+        const url = buildLocalThumbUrl(youtubeId);
+        if (url) return done('existing-local', url);
+      }
     } catch (err) {
-      log.warn({ err }, 'Failed to save local thumbnail');
+      log.warn({ err }, 'Failed to read existing local thumbnail — extracting fresh frames');
     }
   }
 
-  // Final fallback: raw maxresdefault. User accepted this over a processed version.
-  log.info({ youtubeId }, 'No usable local frame — falling back to raw maxresdefault');
-  return ytUrl(youtubeId, 'maxresdefault');
+  if (!floor.exhausted) {
+    const winner = await pickLocalFrame(youtubeId, filePath, durationSecs, floor, log);
+    if (winner) {
+      try {
+        fs.copyFileSync(winner.webpPath, localThumbPath);
+        fs.unlinkSync(winner.webpPath);
+        log.info({ seekSecs: winner.seekSecs, score: winner.score }, 'Saved local thumbnail');
+        const url = buildLocalThumbUrl(youtubeId);
+        if (url) return done('local-frame', url);
+      } catch (err) {
+        log.warn({ err }, 'Failed to save local thumbnail');
+      }
+    }
+  }
+
+  // Nothing passed (or checks ran out): neutral placeholder, never the
+  // unchecked creator thumbnail.
+  return done('placeholder', await placeholderThumbUrl(log));
+}
+
+// URL of the shared neutral placeholder, creating the file with ffmpeg on
+// first use. Null when there's no thumb base URL or the file can't be made.
+export async function placeholderThumbUrl(log: Logger = rootLogger): Promise<string | null> {
+  const nginxBase = config.NGINX_THUMB_BASE_URL;
+  if (!nginxBase) {
+    log.warn('NGINX_THUMB_BASE_URL not set — no placeholder thumbnail available');
+    return null;
+  }
+  const placeholderPath = path.join(config.THUMB_OUTPUT_PATH, PLACEHOLDER_FILENAME);
+  if (!fs.existsSync(placeholderPath)) {
+    // Write to a temp name then rename, so a concurrent reader never sees a
+    // half-written file.
+    const tmp = `${placeholderPath}.${process.pid}-${Date.now()}.tmp.webp`;
+    try {
+      fs.mkdirSync(config.THUMB_OUTPUT_PATH, { recursive: true });
+      await execFileAsync('ffmpeg', [
+        '-y', '-f', 'lavfi',
+        '-i', `color=c=${PLACEHOLDER_COLOUR}:s=640x360`,
+        '-frames:v', '1',
+        '-c:v', 'libwebp',
+        tmp,
+      ]);
+      fs.renameSync(tmp, placeholderPath);
+    } catch (err) {
+      try { fs.unlinkSync(tmp); } catch { /* best-effort */ }
+      log.error({ err }, 'Failed to create placeholder thumbnail');
+      return null;
+    }
+  }
+  return `${nginxBase.replace(/\/$/, '')}/${PLACEHOLDER_FILENAME}`;
 }
 
 function ytUrl(youtubeId: string, variant: string): string {
@@ -119,16 +260,18 @@ function buildLocalThumbUrl(youtubeId: string): string | null {
   return `${nginxBase.replace(/\/$/, '')}/${youtubeId}.webp?v=${v}`;
 }
 
-async function pickDisplayUrl(youtubeId: string, preferred: string, fallback: string): Promise<string> {
-  const url = ytUrl(youtubeId, preferred);
+// The variant we'd actually serve: the preferred one if YouTube has a real
+// image for it, else the fallback. The safety floor checks this variant, so
+// the image checked is the image shown.
+async function pickDisplayVariant(youtubeId: string, preferred: string, fallback: string): Promise<string> {
   try {
-    const head = await fetch(url, { method: 'HEAD', signal: AbortSignal.timeout(5_000) });
+    const head = await fetch(ytUrl(youtubeId, preferred), { method: 'HEAD', signal: AbortSignal.timeout(5_000) });
     if (head.ok) {
       const len = parseInt(head.headers.get('content-length') ?? '0', 10);
-      if (len >= YT_PLACEHOLDER_THRESHOLD) return url;
+      if (len >= YT_PLACEHOLDER_THRESHOLD) return preferred;
     }
   } catch { /* fall through */ }
-  return ytUrl(youtubeId, fallback);
+  return fallback;
 }
 
 async function classifyMaxresdefault(youtubeId: string): Promise<'editorial' | 'slop'> {
@@ -169,16 +312,20 @@ interface LocalWinner {
   score: number;
 }
 
+// Extract frames, score composition, and return the best-composed frame that
+// passes the safety floor. A frame scoring ≥ GOOD_ENOUGH_SCORE is
+// safety-checked straight away and, if it passes, ends scoring early.
 async function pickLocalFrame(
   youtubeId: string,
   filePath: string,
   durationSecs: number,
+  floor: SafetyFloor,
+  log: Logger,
 ): Promise<LocalWinner | null> {
-  const log = rootLogger.child({ youtubeId });
   const tmpBase = path.join(os.tmpdir(), `eddy-thumb-${youtubeId}-${Date.now()}`);
   const extracted: Array<{ path: string; seekSecs: number }> = [];
 
-  // Extract all candidates up-front (cheap) so we can clean up whatever the scorer doesn't pick.
+  // Extract all candidates up-front (cheap) so we can clean up whatever isn't picked.
   for (let i = 0; i < LOCAL_SEEK_FRACTIONS.length; i++) {
     const seekSecs = Math.max(0, Math.floor(durationSecs * LOCAL_SEEK_FRACTIONS[i]!));
     const tmpWebp = `${tmpBase}-${i}.webp`;
@@ -203,23 +350,43 @@ async function pickLocalFrame(
     return null;
   }
 
-  let best: LocalWinner | null = null;
+  let winner: LocalWinner | null = null;
+  const checked = new Set<string>();
+  const scored: LocalWinner[] = [];
+  const b64Of = (p: string): string => fs.readFileSync(p).toString('base64');
+
   for (const cand of extracted) {
-    const b64 = fs.readFileSync(cand.path).toString('base64');
-    const result = await scoreFrame(b64);
-    if (result && (best === null || result.score > best.score)) {
-      best = { webpPath: cand.path, seekSecs: cand.seekSecs, score: result.score };
-    }
-    if (result && result.score >= GOOD_ENOUGH_SCORE) {
-      break; // short-circuit — this is good enough
+    const result = await scoreFrame(b64Of(cand.path));
+    if (!result) continue;
+    const entry = { webpPath: cand.path, seekSecs: cand.seekSecs, score: result.score };
+    scored.push(entry);
+    if (result.score >= GOOD_ENOUGH_SCORE && !floor.exhausted) {
+      checked.add(entry.webpPath);
+      if (await floor.passes({ image: b64Of(entry.webpPath) }, `frame-${entry.seekSecs}s`)) {
+        winner = entry;
+        break;
+      }
     }
   }
 
-  // Clean up every candidate except the eventual winner.
+  if (!winner) {
+    const remaining = scored
+      .filter((s) => !checked.has(s.webpPath))
+      .sort((a, b) => b.score - a.score);
+    for (const entry of remaining) {
+      if (floor.exhausted) break;
+      if (await floor.passes({ image: b64Of(entry.webpPath) }, `frame-${entry.seekSecs}s`)) {
+        winner = entry;
+        break;
+      }
+    }
+  }
+
+  // Clean up every candidate except the winner.
   for (const cand of extracted) {
-    if (best && cand.path === best.webpPath) continue;
+    if (winner && cand.path === winner.webpPath) continue;
     try { fs.unlinkSync(cand.path); } catch { /* best-effort */ }
   }
 
-  return best;
+  return winner;
 }
