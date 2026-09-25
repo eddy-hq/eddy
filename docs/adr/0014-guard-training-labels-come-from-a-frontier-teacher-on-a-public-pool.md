@@ -10,8 +10,8 @@ The guard's long-term shape is a small local classifier — one head per **Rubri
 
 ## Consequences
 
-- **Train/serve parity constrains the pool.** The student can only use signals available at runtime. Candidates get transcripts only on a budgeted second pass ([[0012-ytdlp-exposure-is-budgeted-slate-bound-and-residential]]), so the pool is labelled on metadata throughout and on transcripts only for a subset, matching the runtime mix.
-- **Pool transcripts cost yt-dlp exposure** and come out of the same residential budget. Collect them slowly or for a subset; never let pool building starve the kids' downloads.
+- **Train/serve parity constrains the pool.** The student can only use signals available at runtime. Transcripts reach the guard only through downloads — kid requests and the download-time second pass on slate picks — never for undownloaded candidates ([[0012-ytdlp-exposure-is-budgeted-slate-bound-and-residential]]). So the student needs a metadata-only path for candidates and a metadata-plus-transcript path for the post-download pass.
+- **The pool fetches no transcripts.** Collecting them would add yt-dlp traffic from the household IP. Pool transcripts come only from public datasets that ship them (Samba includes subtitles).
 - **The rubric becomes load-bearing.** The guard prompt, the teacher prompt, the parent's reason chips and the student's output heads all read one versioned rubric. Changing it means relabelling the pool (or the affected dimensions), so rubric versions are recorded on every label.
 - **"No frontier model anywhere in Eddy" is no longer true.** The accurate claim is "no frontier model ever sees household data, and none runs at request time".
 
