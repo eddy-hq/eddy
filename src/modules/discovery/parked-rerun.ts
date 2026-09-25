@@ -241,6 +241,40 @@ export function writeRerunResults(path: string, results: ParkedRerunResult[]): v
   renameSync(tmp, path);
 }
 
+// A drawn sample is saved beside the results file and reused by every later
+// run with the same population, seed and size, so v3 and v4 are compared on
+// the same videos even after the population has changed (new candidates
+// arrive, rows are applied). Rows that have since left the population drop
+// out and are counted; the sample is never topped up.
+export function samplesPathFor(resultsPath: string): string {
+  return resultsPath.replace(/\.json$/, '') + '.samples.json';
+}
+
+export function sampleKey(population: RerunPopulation, seed: number, n: number): string {
+  return `${population}:seed=${seed}:n=${n}`;
+}
+
+function readSamples(path: string): Record<string, string[]> {
+  if (!existsSync(path)) return {};
+  try {
+    const parsed = JSON.parse(readFileSync(path, 'utf8')) as unknown;
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return {};
+    const out: Record<string, string[]> = {};
+    for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+      if (Array.isArray(v) && v.every((id) => typeof id === 'string')) out[k] = v as string[];
+    }
+    return out;
+  } catch {
+    throw new ParkedRerunError(`Sample file is not valid JSON: ${path}`);
+  }
+}
+
+function writeSamples(path: string, samples: Record<string, string[]>): void {
+  const tmp = `${path}.tmp`;
+  writeFileSync(tmp, `${JSON.stringify(samples, null, 2)}\n`);
+  renameSync(tmp, path);
+}
+
 export interface EvaluateParkedOptions {
   resultsPath: string;
   prompt: CandidatePromptId;
@@ -263,6 +297,11 @@ export interface EvaluateParkedReport {
   eligible: number;
   // After sampling (equal to eligible without --sample).
   selected: number;
+  // --sample only: whether the saved draw was reused, how many of its ids
+  // have left the population since, and the ids (to scope the summary).
+  sampleReused: boolean;
+  sampleDropped: number;
+  sampleIds: string[] | null;
   alreadyEvaluated: number;
   attempted: number;
   recorded: number;
@@ -296,9 +335,29 @@ export async function evaluateParkedBacklog(opts: EvaluateParkedOptions): Promis
   const done = new Set(results.filter((r) => r.promptVersion === promptVersion).map((r) => r.candidateId));
 
   const eligible = population === 'decided' ? selectDecidedCandidates() : selectParkedCandidates();
-  const selected = opts.sample !== undefined
-    ? sampleCandidates(eligible, opts.sample, opts.seed ?? DEFAULT_SAMPLE_SEED)
-    : eligible;
+  let selected: RerunCandidateRow[] = eligible;
+  let sampleReused = false;
+  let sampleDropped = 0;
+  let sampleIds: string[] | null = null;
+  if (opts.sample !== undefined) {
+    const seed = opts.seed ?? DEFAULT_SAMPLE_SEED;
+    const samplesPath = samplesPathFor(opts.resultsPath);
+    const samples = readSamples(samplesPath);
+    const key = sampleKey(population, seed, opts.sample);
+    const saved = samples[key];
+    if (saved) {
+      const byId = new Map(eligible.map((c) => [c.candidate_id, c]));
+      selected = saved.map((id) => byId.get(id)).filter((c): c is RerunCandidateRow => c !== undefined);
+      sampleReused = true;
+      sampleDropped = saved.length - selected.length;
+      sampleIds = saved;
+    } else {
+      selected = sampleCandidates(eligible, opts.sample, seed);
+      sampleIds = selected.map((c) => c.candidate_id);
+      samples[key] = sampleIds;
+      writeSamples(samplesPath, samples);
+    }
+  }
   let todo = selected.filter((c) => !done.has(c.candidate_id));
   const alreadyEvaluated = selected.length - todo.length;
   if (opts.limit !== undefined) todo = todo.slice(0, opts.limit);
@@ -308,6 +367,9 @@ export async function evaluateParkedBacklog(opts: EvaluateParkedOptions): Promis
     population,
     eligible: eligible.length,
     selected: selected.length,
+    sampleReused,
+    sampleDropped,
+    sampleIds,
     alreadyEvaluated,
     attempted: 0,
     recorded: 0,
@@ -409,8 +471,9 @@ export interface ParkedRerunSummary {
   // Keyed by placeholder (kid_1, kid_2, ...), never a user id or name.
   byUser: Record<string, TransitionCounts>;
   byCandidateAge: { recent: TransitionCounts; older: TransitionCounts; unknown: TransitionCounts };
-  // Mean guard-call wall time over entries that made a model call.
-  meanSecondsPerCall: number | null;
+  // --sample only: sample ids that have a result at another prompt version,
+  // by version — shows the v3/v4 overlap the comparison rests on.
+  otherVersions: Record<string, number>;
   // Rubric driver counts (v4): e.g. { "over by 1: attitude": 12 }. Empty for v3.
   drivers: Record<string, number>;
 }
@@ -440,13 +503,17 @@ function kidPlaceholders(userIds: string[]): Map<string, string> {
 
 // Old → new verdict counts over one prompt version's results, overall, per
 // kid placeholder, and split by how long the candidate has been in the pool;
-// plus timing and (v4) rubric driver counts.
+// plus (v4) rubric driver counts. With `onlyIds` (a --sample run) it covers
+// just the sample. No timing here: entries from runs at different concurrency
+// aren't comparable, so the mean per call is reported per run instead.
 export function summariseRerun(
   results: ParkedRerunResult[],
   promptVersion: string,
   now: Date = new Date(),
+  onlyIds?: ReadonlySet<string>,
 ): ParkedRerunSummary {
-  const current = results.filter((r) => r.promptVersion === promptVersion);
+  const inScope = onlyIds ? results.filter((r) => onlyIds.has(r.candidateId)) : results;
+  const current = inScope.filter((r) => r.promptVersion === promptVersion);
   const createdAt = new Map<string, string>();
   if (current.length > 0) {
     const rows = db.prepare(`
@@ -466,11 +533,14 @@ export function summariseRerun(
     clearNoToClearYes: 0,
     byUser: {},
     byCandidateAge: { recent: {}, older: {}, unknown: {} },
-    meanSecondsPerCall: null,
+    otherVersions: {},
     drivers: {},
   };
-  let callMs = 0;
-  let calls = 0;
+  if (onlyIds) {
+    for (const r of inScope) {
+      if (r.promptVersion !== promptVersion) bump(summary.otherVersions, r.promptVersion);
+    }
+  }
   for (const r of current) {
     const key = transitionKey(r);
     if (r.ageRestricted) summary.ageRestricted += 1;
@@ -482,13 +552,8 @@ export function summariseRerun(
     const createdMs = created ? Date.parse(created) : Number.NaN;
     const bucket = Number.isNaN(createdMs) ? 'unknown' : createdMs >= recentCutoff ? 'recent' : 'older';
     bump(summary.byCandidateAge[bucket], key);
-    if (r.durationMs !== null) {
-      calls += 1;
-      callMs += r.durationMs;
-    }
     for (const d of r.drivers ?? []) bump(summary.drivers, d);
   }
-  summary.meanSecondsPerCall = calls > 0 ? callMs / calls / 1000 : null;
   return summary;
 }
 

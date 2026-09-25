@@ -69,8 +69,8 @@ function printSummary(s: ParkedRerunSummary): void {
     printCounts('Candidate no longer in pool', s.byCandidateAge.unknown);
   }
   console.log(`  Age-restricted (clear_no, no model call): ${s.ageRestricted}`);
-  if (s.meanSecondsPerCall !== null) {
-    console.log(`  Mean seconds per guard call: ${s.meanSecondsPerCall.toFixed(2)}`);
+  for (const [version, n] of Object.entries(s.otherVersions).sort()) {
+    console.log(`  Sample entries also evaluated at ${version}: ${n}`);
   }
   if (Object.keys(s.drivers).length > 0) printCounts('Rubric verdict drivers', s.drivers);
 }
@@ -128,7 +128,12 @@ async function main(): Promise<number> {
 
   const label = args.population === 'decided' ? 'Decided kid candidates:' : 'Parked kid candidates:';
   console.log(`${label.padEnd(33)}${report.eligible}`);
-  if (args.sample !== undefined) console.log(`Sampled:                         ${report.selected}`);
+  if (args.sample !== undefined) {
+    console.log(`Sampled:                         ${report.selected}${report.sampleReused ? ' (saved sample reused)' : ' (new sample saved)'}`);
+    if (report.sampleDropped > 0) {
+      console.log(`Sample left the population:      ${report.sampleDropped}`);
+    }
+  }
   console.log(`Already evaluated (skipped):     ${report.alreadyEvaluated}`);
   console.log(`Evaluated this run:              ${report.recorded}`);
   if (report.missingMetadata > 0) {
@@ -144,7 +149,9 @@ async function main(): Promise<number> {
     console.log('Stopped early: repeated model errors — check Ollama, then re-run to resume.');
   }
 
-  printSummary(summariseRerun(readRerunResults(resultsPath), promptVersion));
+  // A --sample run summarises its sample only, so the counts compare like with like.
+  const onlyIds = report.sampleIds ? new Set(report.sampleIds) : undefined;
+  printSummary(summariseRerun(readRerunResults(resultsPath), promptVersion, new Date(), onlyIds));
   if (args.population === 'decided') {
     console.log('\nMeasurement only — decided candidates are never applied.');
   } else {

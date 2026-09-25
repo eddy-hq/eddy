@@ -49,6 +49,7 @@ import {
   evaluateParkedBacklog,
   readRerunResults,
   sampleCandidates,
+  samplesPathFor,
   summariseRerun,
   writeRerunResults,
   ParkedRerunError,
@@ -461,6 +462,34 @@ describe('evaluateParkedBacklog — sampling, populations, concurrency', () => {
     expect(evaluateMock).toHaveBeenCalledTimes(6);
   });
 
+  it('--sample reuses the saved draw after the population changes, and scopes the summary to it', async () => {
+    for (let i = 0; i < 12; i++) insertCandidate({ id: `a${i}`, userId: KID_1 });
+    for (let i = 0; i < 4; i++) insertCandidate({ id: `b${i}`, userId: KID_2 });
+    evaluateMock.mockResolvedValue(gv('uncertain', 'Hm', 0.5));
+
+    const v3 = await evaluateParkedBacklog({ resultsPath, prompt: 'v3', sample: 6 });
+    expect(v3).toMatchObject({ sampleReused: false, sampleDropped: 0 });
+    const drawn = v3.sampleIds!;
+    expect(existsSync(samplesPathFor(resultsPath))).toBe(true);
+
+    // The population moves on: new candidates arrive, one sampled row leaves.
+    for (let i = 0; i < 20; i++) insertCandidate({ id: `c${i}`, userId: KID_1 });
+    db.prepare(`UPDATE candidate_pool SET status = 'scored' WHERE candidate_id = ?`).run(drawn[0]);
+    // A non-sample candidate evaluated at v4 must not leak into the summary.
+    await evaluateParkedBacklog({ resultsPath, prompt: 'v4', limit: 1 });
+    evaluateMock.mockClear();
+
+    const v4 = await evaluateParkedBacklog({ resultsPath, prompt: 'v4', sample: 6 });
+    expect(v4).toMatchObject({ sampleReused: true, sampleDropped: 1, selected: 5 });
+    expect(v4.sampleIds).toEqual(drawn);
+    const evaluated = evaluateMock.mock.calls.map((c) => c[0].candidateId);
+    expect(evaluated.every((id) => drawn.includes(id))).toBe(true);
+
+    const s = summariseRerun(readRerunResults(resultsPath), 'candidate-v4', new Date(), new Set(drawn));
+    expect(s.total).toBeLessThanOrEqual(5);
+    expect(s.otherVersions).toEqual({ 'candidate-v3': 6 });
+  });
+
   it('passes the chosen prompt to the guard and keys results by its version', async () => {
     insertCandidate({ id: 'a' });
     evaluateMock.mockResolvedValue(rubricVerdict('uncertain', { attitude: 2 }));
@@ -498,7 +527,6 @@ describe('evaluateParkedBacklog — sampling, populations, concurrency', () => {
       'clear_no -> clear_no': 1,
     });
     expect(s.drivers).toEqual({ 'over by 2+: attitude': 1 });
-    expect(s.meanSecondsPerCall).not.toBeNull();
     // Measurement only: candidate_pool is untouched.
     expect(candidateRow('no1')).toEqual({ status: 'guard_rejected', guard_verdict: 'clear_no' });
   });
