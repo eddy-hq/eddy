@@ -12,6 +12,7 @@ import {
   createHttp2Client,
   apnsSettingsFrom,
   buildApnsPayload,
+  ApnsConnectionError,
   APNS_HOSTS,
   type ApnsHttpClient,
   type ApnsHttpResponse,
@@ -268,6 +269,138 @@ describe('the HTTP/2 connection', () => {
     } finally {
       for (const session of serverSessions) session.destroy();
       await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  // A local h2c server whose per-stream behaviour the test scripts.
+  async function localApns(
+    onStream: (stream: http2.ServerHttp2Stream, index: number) => void,
+  ): Promise<{
+    host: string;
+    sessions: http2.ServerHttp2Session[];
+    close: () => Promise<void>;
+  }> {
+    const server = http2.createServer();
+    const sessions: http2.ServerHttp2Session[] = [];
+    let streams = 0;
+    server.on('session', (session) => sessions.push(session));
+    server.on('stream', (stream) => onStream(stream, streams++));
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const { port } = server.address() as AddressInfo;
+    return {
+      host: `http://127.0.0.1:${port}`,
+      sessions,
+      close: async () => {
+        for (const session of sessions) session.destroy();
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      },
+    };
+  }
+
+  const ok = (stream: http2.ServerHttp2Stream) => {
+    stream.respond({ ':status': 200 });
+    stream.end();
+  };
+
+  it('throws an ApnsConnectionError for a reset connection, and does not reuse it', async () => {
+    const apns = await localApns((stream, i) => {
+      if (i === 0) {
+        (stream.session!.socket as unknown as { resetAndDestroy(): void }).resetAndDestroy();
+        return;
+      }
+      ok(stream);
+    });
+    const client = createHttp2Client();
+
+    try {
+      const send = () => client.post({ host: apns.host, path: '/3/device/token', headers: {}, body: '{}' });
+
+      const failure = await send().catch((err: unknown) => err);
+      expect(failure).toBeInstanceOf(ApnsConnectionError);
+      expect((failure as ApnsConnectionError).code).toBe('ECONNRESET');
+
+      expect(await send()).toEqual({ status: 200, reason: undefined });
+      expect(apns.sessions).toHaveLength(2);
+    } finally {
+      await apns.close();
+    }
+  });
+
+  it('reports a timeout as an ApnsConnectionError', async () => {
+    const apns = await localApns(() => {
+      // Deliberately no response.
+    });
+    const client = createHttp2Client({ requestTimeoutMs: 100 });
+
+    try {
+      const failure = await client
+        .post({ host: apns.host, path: '/3/device/token', headers: {}, body: '{}' })
+        .catch((err: unknown) => err);
+      expect(failure).toBeInstanceOf(ApnsConnectionError);
+      expect((failure as ApnsConnectionError).code).toBe('ETIMEDOUT');
+    } finally {
+      await apns.close();
+    }
+  });
+
+  it('keeps an answer that arrived before the stream was torn down', async () => {
+    const apns = await localApns((stream) => {
+      // The server side sees its own reset as a stream error.
+      stream.on('error', () => {});
+      stream.respond({ ':status': 200 });
+      stream.write('{');
+      stream.close(http2.constants.NGHTTP2_INTERNAL_ERROR);
+    });
+    const client = createHttp2Client();
+
+    try {
+      const response = await client.post({ host: apns.host, path: '/3/device/token', headers: {}, body: '{}' });
+      // Apple took the push; resending would only duplicate it.
+      expect(response.status).toBe(200);
+    } finally {
+      await apns.close();
+    }
+  });
+
+  it('reuses a session that has been used recently', async () => {
+    const apns = await localApns(ok);
+    let clock = 1_000_000;
+    const client = createHttp2Client({ now: () => clock, sessionIdleMs: 60_000 });
+
+    try {
+      const send = () => client.post({ host: apns.host, path: '/3/device/token', headers: {}, body: '{}' });
+      await send();
+      clock += 59_000;
+      await send();
+      clock += 59_000;
+      await send();
+
+      // Idle is measured from the last send, not from when the session opened.
+      expect(apns.sessions).toHaveLength(1);
+    } finally {
+      await apns.close();
+    }
+  });
+
+  it('opens a fresh session after an idle spell, and closes the old one', async () => {
+    const apns = await localApns(ok);
+    let clock = 1_000_000;
+    const client = createHttp2Client({ now: () => clock, sessionIdleMs: 60_000 });
+
+    try {
+      const send = () => client.post({ host: apns.host, path: '/3/device/token', headers: {}, body: '{}' });
+      await send();
+      const firstServerSession = apns.sessions[0]!;
+      const firstClosed = new Promise<void>((resolve) => firstServerSession.on('close', () => resolve()));
+
+      clock += 60_001;
+      await send();
+
+      expect(apns.sessions).toHaveLength(2);
+      // The client closed the stale session rather than leaving it open.
+      await firstClosed;
+    } finally {
+      await apns.close();
     }
   });
 });

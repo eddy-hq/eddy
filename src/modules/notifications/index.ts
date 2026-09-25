@@ -19,6 +19,8 @@ export {
   createHttp2Client,
   apnsSettingsFrom,
   buildApnsPayload,
+  isRetryableApnsStatus,
+  ApnsConnectionError,
   APNS_HOSTS,
   PLACEHOLDER_TITLE,
   PLACEHOLDER_BODY,

@@ -1,6 +1,7 @@
 import { v7 as uuidv7 } from 'uuid';
 import { logger } from '../../logger';
 import type { NotificationEvent } from './events';
+import { ApnsConnectionError, isRetryableApnsStatus } from './apns';
 import type { ApnsSender, ApnsSendResult, ApnsTarget } from './apns';
 import type { NotificationContent } from './messages';
 
@@ -41,6 +42,20 @@ export interface NotificationsOptions {
   sender?: ApnsSender | null;
   ports?: NotificationPorts;
   newMessageId?: () => string;
+  // Tests pass 0; production takes the default.
+  retryDelayMs?: number;
+}
+
+// The pause before the one retry. Long enough for a blip to clear — a Wi-Fi or
+// Tailscale path settling, a reset connection's replacement handshaking — and
+// short enough that a "video ready" is not noticeably late. It will not ride
+// out a longer outage (the second 2026-09-25 failure came ~100 s after the
+// first); nothing short of a queue would, and that is not worth it here.
+const RETRY_DELAY_MS = 1_000;
+
+function sleep(ms: number): Promise<void> {
+  if (ms <= 0) return Promise.resolve();
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 type LogLevel = 'info' | 'warn';
@@ -155,8 +170,66 @@ export function contentFor(event: NotificationEvent): NotificationContent {
 // sender and ports it also pushes: one message row, then one opaque push per
 // registered device.
 export function createNotifications(options: NotificationsOptions = {}): NotificationsModule {
-  const { sender = null, ports, newMessageId = uuidv7 } = options;
+  const {
+    sender = null,
+    ports,
+    newMessageId = uuidv7,
+    retryDelayMs = RETRY_DELAY_MS,
+  } = options;
   const pushing = sender !== null && ports !== undefined;
+
+  // One send to one device, retried once when it is worth it: a connection
+  // that failed before APNs answered (reset, closed, GOAWAY, timeout), or an
+  // answer Apple documents as "try again later". Any other answer — a 400, a
+  // 403, a 410 — is final and comes straight back. The retry can duplicate a
+  // push Apple did deliver (e.g. a timeout after it was accepted); a
+  // duplicate "video ready" is better than a lost one. Returns null when the
+  // send threw and there is no answer to act on; that is already logged.
+  // Logs carry the device id and an error code or APNs status only.
+  async function deliver(device: ApnsTarget, messageId: string): Promise<ApnsSendResult | null> {
+    if (sender === null) return null;
+    const { deviceId } = device;
+
+    let first: ApnsSendResult;
+    try {
+      first = await sender.send(device, messageId);
+    } catch (err) {
+      if (!(err instanceof ApnsConnectionError)) {
+        // Not a transport failure (e.g. the key file could not be read), so a
+        // second attempt would fail the same way.
+        logger.warn({ err, deviceId }, 'APNs send threw; continuing with the next device');
+        return null;
+      }
+      logger.warn({ deviceId, code: err.code }, 'APNs connection failed; retrying once on a fresh connection');
+      return retry(device, messageId);
+    }
+
+    if (first.ok || !isRetryableApnsStatus(first.status)) return first;
+    logger.warn({ deviceId, status: first.status, reason: first.reason }, 'APNs asked to retry; retrying once');
+    return retry(device, messageId);
+  }
+
+  async function retry(device: ApnsTarget, messageId: string): Promise<ApnsSendResult | null> {
+    if (sender === null) return null;
+    const { deviceId } = device;
+
+    await sleep(retryDelayMs);
+    try {
+      const result = await sender.send(device, messageId);
+      if (result.ok) {
+        logger.info({ deviceId }, 'APNs retry succeeded');
+      } else {
+        logger.warn({ deviceId, status: result.status, reason: result.reason }, 'APNs retry answered with a failure');
+      }
+      return result;
+    } catch (err) {
+      logger.warn(
+        { deviceId, code: err instanceof ApnsConnectionError ? err.code : 'UNKNOWN' },
+        'APNs retry failed; continuing with the next device',
+      );
+      return null;
+    }
+  }
 
   async function push(event: NotificationEvent, recipient: string): Promise<void> {
     if (sender === null || ports === undefined) return;
@@ -169,16 +242,16 @@ export function createNotifications(options: NotificationsOptions = {}): Notific
     ports.recordMessage(messageId, recipient, contentFor(event));
 
     for (const device of devices) {
-      let result: ApnsSendResult;
-      try {
-        result = await sender.send(device, messageId);
-      } catch (err) {
-        // A timeout or a dropped connection on one device must not cost the
-        // recipient's other devices their push.
-        logger.warn({ err, deviceId: device.deviceId }, 'APNs send threw; continuing with the next device');
+      // A timeout or a dropped connection on one device must not cost the
+      // recipient's other devices their push: `deliver` never throws.
+      const result = await deliver(device, messageId);
+      if (result === null) continue;
+      if (result.ok) {
+        // With the extension's fetch log, this is what lets sent be compared
+        // with fetched — how often a phone fell back to the placeholder.
+        logger.info({ messageId, deviceId: device.deviceId }, 'APNs push accepted');
         continue;
       }
-      if (result.ok) continue;
 
       if (result.deviceGone) {
         // Apple says this token is dead — the app was deleted, or the token was
