@@ -196,27 +196,96 @@ export function createApnsSender(deps: ApnsSenderDeps): ApnsSender {
   };
 }
 
+// A send that failed before APNs gave any answer: the connection was reset,
+// the session was already closed or going away, the stream was cancelled
+// before response headers arrived, or the request timed out. Apple never said
+// no, so the push may simply not have been delivered — which is what makes it
+// worth one retry on a fresh connection (see notify.ts). `code` is the
+// underlying Node error code (e.g. ECONNRESET) and is the only detail that
+// should be logged.
+export class ApnsConnectionError extends Error {
+  readonly code: string;
+
+  constructor(code: string, message = `APNs connection failed (${code})`) {
+    super(message);
+    this.name = 'ApnsConnectionError';
+    this.code = code;
+  }
+}
+
+// Apple documents 500 InternalServerError and 503 ServiceUnavailable/Shutdown
+// as "try again later". 429 TooManyRequests is also a retry-later, but it is
+// about this device token specifically — resending to the same token a second
+// later only adds to the count, so it is left alone.
+export function isRetryableApnsStatus(status: number): boolean {
+  return status === 500 || status === 503;
+}
+
+function codeOf(err: unknown): string {
+  const code = (err as { code?: unknown } | null)?.code;
+  return typeof code === 'string' && code.length > 0 ? code : 'UNKNOWN';
+}
+
+// A session that has carried nothing for this long is not trusted with the
+// next send: it is closed and a fresh one opened. The 2026-09-25 lost pushes
+// were the first sends after an overnight idle, and a NAT or Apple can drop an
+// idle connection without a RST, which only shows up when the next request
+// dies on it. Five minutes sits under common NAT idle timeouts; Eddy sends a
+// handful of pushes a day, so the cost is one TLS handshake on the first send
+// after a quiet spell. Chosen over HTTP/2 PING because it needs no timers —
+// nothing to keep a test process or a shutdown alive — and node's ping has no
+// timeout of its own, so spotting a silently dead connection would need
+// another timer on top.
+const SESSION_IDLE_MS = 5 * 60 * 1000;
+
 export interface Http2ClientOptions {
-  // Both exist for the wedged-session test, which needs a local h2c server and
-  // a timeout it can wait out. Production passes neither.
+  // All of these exist for the tests, which need a local h2c server, a timeout
+  // they can wait out and a clock they can move. Production passes none.
   requestTimeoutMs?: number;
+  sessionIdleMs?: number;
+  now?: () => number;
   connect?: (host: string) => http2.ClientHttp2Session;
 }
 
+interface CachedSession {
+  session: http2.ClientHttp2Session;
+  lastUsedAt: number;
+}
+
 // Production client: one HTTP/2 session per APNs host, reused across sends and
-// rebuilt when it dies.
+// rebuilt when it dies, when a request on it fails before any response, or
+// when it has sat idle past SESSION_IDLE_MS.
 export function createHttp2Client(options: Http2ClientOptions = {}): ApnsHttpClient {
-  const { requestTimeoutMs = REQUEST_TIMEOUT_MS, connect = (host: string) => http2.connect(host) } =
-    options;
-  const sessions = new Map<string, http2.ClientHttp2Session>();
+  const {
+    requestTimeoutMs = REQUEST_TIMEOUT_MS,
+    sessionIdleMs = SESSION_IDLE_MS,
+    now = Date.now,
+    connect = (host: string) => http2.connect(host),
+  } = options;
+  const sessions = new Map<string, CachedSession>();
 
   function dropSession(host: string, session: http2.ClientHttp2Session): void {
-    if (sessions.get(host) === session) sessions.delete(host);
+    if (sessions.get(host)?.session === session) sessions.delete(host);
+  }
+
+  // Stop handing this session out. A graceful close lets any other in-flight
+  // stream on it finish; on a dead connection those streams error anyway.
+  function retireSession(host: string, session: http2.ClientHttp2Session): void {
+    dropSession(host, session);
+    if (!session.closed && !session.destroyed) session.close();
+  }
+
+  function touch(host: string, session: http2.ClientHttp2Session): void {
+    const cached = sessions.get(host);
+    if (cached?.session === session) cached.lastUsedAt = now();
   }
 
   function sessionFor(host: string): http2.ClientHttp2Session {
     const existing = sessions.get(host);
-    if (existing && !existing.closed && !existing.destroyed) return existing;
+    if (existing && !existing.session.closed && !existing.session.destroyed) {
+      if (now() - existing.lastUsedAt <= sessionIdleMs) return existing.session;
+      retireSession(host, existing.session);
+    }
 
     const session = connect(host);
     // A session-level error must not become an unhandled event; the next send
@@ -225,22 +294,72 @@ export function createHttp2Client(options: Http2ClientOptions = {}): ApnsHttpCli
       dropSession(host, session);
       session.destroy();
     });
+    // Apple sends GOAWAY when it is shutting a connection down; nothing new
+    // should be started on it.
+    session.on('goaway', () => {
+      dropSession(host, session);
+    });
     session.on('close', () => {
       dropSession(host, session);
     });
-    sessions.set(host, session);
+    sessions.set(host, { session, lastUsedAt: now() });
     return session;
   }
 
   return {
     post({ host, path, headers, body }) {
       return new Promise<ApnsHttpResponse>((resolve, reject) => {
-        const session = sessionFor(host);
-        const request = session.request({
-          ':method': 'POST',
-          ':path': path,
-          ...headers,
-        });
+        let session: http2.ClientHttp2Session;
+        let request: http2.ClientHttp2Stream;
+        try {
+          session = sessionFor(host);
+          touch(host, session);
+          request = session.request({
+            ':method': 'POST',
+            ':path': path,
+            ...headers,
+          });
+        } catch (err) {
+          // e.g. ERR_HTTP2_GOAWAY_SESSION or ERR_HTTP2_INVALID_SESSION: the
+          // session went away between the liveness check and the request.
+          reject(new ApnsConnectionError(codeOf(err)));
+          return;
+        }
+
+        let settled = false;
+        let status = 0;
+        let raw = '';
+
+        function parseReason(): string | undefined {
+          if (!raw) return undefined;
+          try {
+            return (JSON.parse(raw) as { reason?: string }).reason;
+          } catch {
+            // A non-JSON body carries no failure code; the status stands alone.
+            return undefined;
+          }
+        }
+
+        function answered(): void {
+          settled = true;
+          touch(host, session);
+          resolve({ status, reason: parseReason() });
+        }
+
+        // Once APNs has answered with a status, that answer stands even if the
+        // stream is torn down before the body finishes: a 200 means Apple took
+        // the push, and resending it would only duplicate it. Before any
+        // status, it is a connection failure and the session is not reused.
+        function failed(code: string, message?: string): void {
+          if (settled) return;
+          if (status > 0) {
+            answered();
+            return;
+          }
+          settled = true;
+          retireSession(host, session);
+          reject(new ApnsConnectionError(code, message));
+        }
 
         request.setTimeout(requestTimeoutMs, () => {
           request.close(http2.constants.NGHTTP2_CANCEL);
@@ -250,29 +369,23 @@ export function createHttp2Client(options: Http2ClientOptions = {}): ApnsHttpCli
           // send would time out silently. Bin the session with the request.
           dropSession(host, session);
           session.destroy();
-          reject(new Error('APNs request timed out'));
+          failed('ETIMEDOUT', 'APNs request timed out');
         });
 
-        let status = 0;
-        let raw = '';
         request.on('response', (responseHeaders) => {
           status = Number(responseHeaders[':status'] ?? 0);
         });
         request.on('data', (chunk) => {
           raw += chunk;
         });
-        request.on('error', reject);
-        request.on('end', () => {
-          let reason: string | undefined;
-          if (raw) {
-            try {
-              reason = (JSON.parse(raw) as { reason?: string }).reason;
-            } catch {
-              // A non-JSON body carries no failure code; the status stands alone.
-            }
-          }
-          resolve({ status, reason });
-        });
+        request.on('error', (err) => failed(codeOf(err)));
+        // The normal path: `failed` resolves with the answer once a status is
+        // in. A stream that ends without ever getting one is a failure too.
+        request.on('end', () => failed('NO_RESPONSE'));
+        // A stream closed by the peer (RST_STREAM, or a GOAWAY that excluded
+        // it) can close without 'end' or 'error'; without this the promise
+        // would never settle.
+        request.on('close', () => failed(`STREAM_CLOSED_${request.rstCode ?? 0}`));
 
         request.end(body);
       });

@@ -358,15 +358,17 @@ internalRouter.post('/thumb/score-frame', verifySignedJson<{ image: string; prom
 // POST /internal/watchdog/run — trigger an immediate watchdog check (for testing/ops)
 // POST /internal/notify — the worker hands over an ops alert it cannot deliver
 // itself (no database, no APNs key). Only the two kinds the worker raises are
-// accepted; the M4's own notify() logs and delivers it.
+// accepted; the M4's own notify() logs and delivers it. The reply goes before
+// delivery: an APNs send with its one retry can outlast the worker's 10s relay
+// timeout, and notify() never throws, so there is nothing to wait for.
 internalRouter.post('/notify', verifySignedJson<unknown>(async (_req, res, payload) => {
   const relayed = parseRelayPayload(payload);
   if (!relayed) {
     res.status(400).json({ error: 'Not a relayable notification' });
     return;
   }
-  await getNotifications().notify(relayed.event, relayed.recipient);
   res.json({ ok: true });
+  void getNotifications().notify(relayed.event, relayed.recipient);
 }));
 
 internalRouter.post('/watchdog/run', (_req: Request, res: Response) => {

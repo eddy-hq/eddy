@@ -13,8 +13,10 @@ vi.mock('../../db/client', async () => {
   return { db: memoryDb };
 });
 
+const { infoMock } = vi.hoisted(() => ({ infoMock: vi.fn() }));
+
 vi.mock('../../logger', () => ({
-  logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+  logger: { info: infoMock, warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 
 import { db } from '../../db/client';
@@ -50,6 +52,54 @@ beforeAll(() => {
 
 beforeEach(() => {
   db.exec('DELETE FROM notification_messages');
+  infoMock.mockReset();
+});
+
+function fetchLogs(): Array<[Record<string, unknown>, string]> {
+  return infoMock.mock.calls.filter((call) => call[1] === 'Notification message fetch') as Array<
+    [Record<string, unknown>, string]
+  >;
+}
+
+describe('the fetch log line', () => {
+  it('logs the message id and "found", and none of the content', async () => {
+    recordMessage('opaque-log-1', RECIPIENT, {
+      title: 'Ready to watch',
+      body: 'A Very Identifiable Video',
+      actionUrl: '/watch/req-1',
+    });
+
+    await request.get('/notifications/opaque-log-1').query({ userId: RECIPIENT });
+
+    const logs = fetchLogs();
+    expect(logs).toHaveLength(1);
+    expect(logs[0]![0]).toEqual({ messageId: 'opaque-log-1', outcome: 'found' });
+    const line = JSON.stringify(logs[0]);
+    for (const leak of ['Ready to watch', 'A Very Identifiable Video', '/watch/req-1', 'User1', RECIPIENT]) {
+      expect(line).not.toContain(leak);
+    }
+  });
+
+  it('logs "not_found" for someone else’s, an unknown or an expired id', async () => {
+    recordMessage('opaque-log-2', RECIPIENT, { title: 'Ready to watch', body: 'Something' });
+
+    await request.get('/notifications/opaque-log-2').query({ userId: SOMEONE_ELSE });
+    await request.get('/notifications/never-sent').query({ userId: RECIPIENT });
+
+    expect(fetchLogs().map(([fields]) => fields)).toEqual([
+      { messageId: 'opaque-log-2', outcome: 'not_found' },
+      { messageId: 'never-sent', outcome: 'not_found' },
+    ]);
+    expect(JSON.stringify(fetchLogs())).not.toContain('User2');
+  });
+
+  it('logs "user_rejected" when the caller is not a known user', async () => {
+    await request.get('/notifications/opaque-log-3');
+
+    expect(fetchLogs().map(([fields]) => fields)).toEqual([
+      { messageId: 'opaque-log-3', outcome: 'user_rejected' },
+    ]);
+  });
 });
 
 describe('GET /notifications/:messageId', () => {
