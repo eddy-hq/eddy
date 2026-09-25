@@ -14,6 +14,8 @@ import {
   buildRubricPrompt,
   parseRubricOutput,
   renderVideoDetails,
+  cleanDescription,
+  excerptTranscript,
 } from './rubric-prompt';
 import { DIMENSIONS, HARD_STOPS, FLAGS } from './rubric';
 
@@ -126,5 +128,62 @@ describe('parseRubricOutput', () => {
     expect(parseRubricOutput(JSON.stringify({ ...valid, lootbox: 1 }))).toBeNull();
     expect(parseRubricOutput('[]')).toBeNull();
     expect(parseRubricOutput('nothing')).toBeNull();
+  });
+});
+
+describe('cleanDescription', () => {
+  it('drops links, socials, sponsor codes and hashtag lines, keeping prose and chapters', () => {
+    const raw = [
+      'We build a castle and survive the first night.',
+      '',
+      'Subscribe for more! https://youtube.com/c/someone',
+      'Instagram: @someone_official',
+      'Use code SAVE10 for 10% off',
+      'Merch: someone.store',
+      '0:00 Intro',
+      '2:15 Building the walls',
+      '10:40 The raid',
+      '#minecraft #survival',
+    ].join('\n');
+    expect(cleanDescription(raw)).toBe(
+      'We build a castle and survive the first night. · 0:00 Intro · 2:15 Building the walls · 10:40 The raid',
+    );
+  });
+
+  it('keeps a chapter line even when it contains a promo word', () => {
+    expect(cleanDescription('5:00 Sponsor segment')).toBe('5:00 Sponsor segment');
+  });
+
+  it('returns an empty string when nothing but promotion is left', () => {
+    expect(cleanDescription('Follow me on TikTok\nhttps://x.com/a\n#tag')).toBe('');
+  });
+
+  it('is applied before the description is clipped', () => {
+    const promo = Array.from({ length: 20 }, (_, i) => `Link ${i}: https://example.com/${i}`).join('\n');
+    const prompt = buildRubricPrompt({
+      title: 'T', channel: 'C', description: `${promo}\nThe actual content summary.`, channelHistory: null,
+    });
+    expect(prompt).toContain('Description: The actual content summary.');
+    expect(prompt).not.toContain('https://');
+  });
+});
+
+describe('excerptTranscript', () => {
+  it('returns a short transcript whole, whitespace collapsed', () => {
+    expect(excerptTranscript('hello   there\nfriend')).toBe('hello there friend');
+  });
+
+  it('spreads slices from start to end within the limit', () => {
+    const words = Array.from({ length: 3000 }, (_, i) => `w${i}`).join(' ');
+    const out = excerptTranscript(words, 2000);
+    expect(out.length).toBeLessThanOrEqual(2000);
+    const parts = out.split(' … ');
+    expect(parts).toHaveLength(4);
+    expect(parts[0]!.startsWith('w0 ')).toBe(true);
+    expect(parts[3]!.endsWith('w2999')).toBe(true);
+    // Middle slices come from the middle, not the opening.
+    expect(Number(parts[1]!.split(' ')[0]!.slice(1))).toBeGreaterThan(500);
+    // Word boundaries: no slice starts or ends mid-token.
+    for (const p of parts) expect(p).toMatch(/^w\d+( w\d+)*$/);
   });
 });

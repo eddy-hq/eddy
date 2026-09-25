@@ -71,6 +71,13 @@ export function candidatePromptVersion(prompt: CandidatePromptId): string {
   return prompt === 'v4' ? CANDIDATE_V4_PROMPT_VERSION : CANDIDATE_PROMPT_VERSION;
 }
 
+// What a parked re-run keys its results by. A v4 result depends on both the
+// prompt and the rubric it scored against, so a rubric edit re-evaluates too
+// rather than resuming over results scored under the old rubric.
+export function rerunVersionKey(prompt: CandidatePromptId): string {
+  return prompt === 'v4' ? `${CANDIDATE_V4_PROMPT_VERSION}+${RUBRIC_VERSION}` : CANDIDATE_PROMPT_VERSION;
+}
+
 function secondPassPromptVersion(prompt: CandidatePromptId, transcriptAvailable: boolean): string {
   if (prompt === 'v4') {
     return transcriptAvailable ? SECOND_PASS_V4_PROMPT_VERSION : SECOND_PASS_V4_NO_TRANSCRIPT_PROMPT_VERSION;

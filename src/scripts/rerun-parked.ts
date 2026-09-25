@@ -35,7 +35,7 @@ import 'dotenv/config';
 import path from 'node:path';
 import { config } from '../config';
 import { runMigrations } from '../db/migrate';
-import { candidatePromptVersion, liveCandidatePrompt } from '../modules/guard/index';
+import { liveCandidatePrompt, rerunVersionKey } from '../modules/guard/index';
 import {
   evaluateParkedBacklog,
   applyParkedRerun,
@@ -79,7 +79,7 @@ async function main(): Promise<number> {
   const args = parseRerunArgs(process.argv.slice(2));
   const live = liveCandidatePrompt();
   const prompt = resolveRerunPrompt(args, live);
-  const promptVersion = candidatePromptVersion(prompt);
+  const promptVersion = rerunVersionKey(prompt);
   const dataDir = path.dirname(path.resolve(config.DATABASE_PATH));
   const resultsPath = path.join(
     dataDir,
@@ -91,7 +91,7 @@ async function main(): Promise<number> {
 
   if (args.apply) {
     if (prompt !== live) {
-      console.log(`Applying ${promptVersion} results while the live prompt is ${candidatePromptVersion(live)} (explicit --prompt).`);
+      console.log(`Applying ${promptVersion} results while the live prompt is ${rerunVersionKey(live)} (explicit --prompt).`);
     }
     const r = await applyParkedRerun({ resultsPath, backupPath, promptVersion, forceBackup: args.forceBackup });
     console.log(`Backed up DB to ${backupPath}`);
@@ -106,7 +106,7 @@ async function main(): Promise<number> {
   }
 
   console.log(`Results file: ${resultsPath}`);
-  console.log(`Prompt: ${promptVersion}${prompt === live ? ' (live)' : ` (live is ${candidatePromptVersion(live)})`}`);
+  console.log(`Prompt: ${promptVersion}${prompt === live ? ' (live)' : ` (live is ${rerunVersionKey(live)})`}`);
   let lastLine = '';
   const report = await evaluateParkedBacklog({
     resultsPath,

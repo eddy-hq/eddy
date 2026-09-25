@@ -22,7 +22,7 @@ import { db } from '../../db/client';
 import { EddyError } from '../../errors';
 import {
   GUARD_SCORING_ERROR_REASON,
-  candidatePromptVersion,
+  rerunVersionKey,
   driverCountKey,
   ensureVideoMetadata,
   type CandidatePromptId,
@@ -329,7 +329,7 @@ export async function evaluateParkedBacklog(opts: EvaluateParkedOptions): Promis
     throw new ParkedRerunError(`Concurrency must be an integer from 1 to ${MAX_RERUN_CONCURRENCY}`);
   }
   const population = opts.population ?? 'pending';
-  const promptVersion = candidatePromptVersion(opts.prompt);
+  const promptVersion = rerunVersionKey(opts.prompt);
 
   const results = readRerunResults(opts.resultsPath);
   const done = new Set(results.filter((r) => r.promptVersion === promptVersion).map((r) => r.candidateId));

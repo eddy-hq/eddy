@@ -51,6 +51,7 @@ import {
   evaluateCandidate,
   evaluateDownloadedPick,
   liveCandidatePrompt,
+  rerunVersionKey,
 } from './index';
 
 const generate = vi.mocked(ollamaGenerate);
@@ -320,5 +321,12 @@ describe('download-time second pass under v4', () => {
     generate.mockResolvedValue('{"reason":"Fine.","verdict":"clear_yes","confidence":0.9}');
     await evaluateDownloadedPick(pick);
     expect(lastEval()).toMatchObject({ prompt_version: SECOND_PASS_PROMPT_VERSION, rubric_version: null });
+  });
+});
+
+describe('rerunVersionKey', () => {
+  it('keys v4 results by prompt and rubric version, so a rubric edit re-evaluates', () => {
+    expect(rerunVersionKey('v4')).toBe(`${CANDIDATE_V4_PROMPT_VERSION}+${RUBRIC_VERSION}`);
+    expect(rerunVersionKey('v3')).not.toContain('+');
   });
 });

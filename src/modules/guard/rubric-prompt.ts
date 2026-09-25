@@ -25,9 +25,12 @@ import {
   type RubricScores,
 } from './rubric';
 
-export const CANDIDATE_V4_PROMPT_VERSION = 'candidate-v4';
-export const SECOND_PASS_V4_PROMPT_VERSION = 'candidate-transcript-v4';
-export const SECOND_PASS_V4_NO_TRANSCRIPT_PROMPT_VERSION = 'candidate-transcript-v4-no-transcript';
+// v4.1: descriptions are cleaned of links and promo lines before clipping,
+// and the transcript excerpt is spread across the video. Bump the prompt
+// version when the inputs or layout change; rubric edits bump RUBRIC_VERSION.
+export const CANDIDATE_V4_PROMPT_VERSION = 'candidate-v4.1';
+export const SECOND_PASS_V4_PROMPT_VERSION = 'candidate-transcript-v4.1';
+export const SECOND_PASS_V4_NO_TRANSCRIPT_PROMPT_VERSION = 'candidate-transcript-v4.1-no-transcript';
 
 // Upper bound on the rendered tags line. Uploaders stuff tags; a few hundred
 // characters carries the signal without crowding out the rest of the prompt.
@@ -52,6 +55,56 @@ export const DESCRIPTION_MAX_CHARS = 500;
 export const TRANSCRIPT_MAX_CHARS = 2000;
 // Reason is capped by instruction (~20 words); this is the stored ceiling.
 const REASON_MAX_CHARS = 200;
+
+// Lines that are promotion, not content: links, socials, sponsor and
+// affiliate codes, merch, subscribe calls, business contacts. Measured on the
+// stored metadata, 84% of non-empty descriptions carry links in their first
+// 500 characters, so without this the clip is mostly boilerplate.
+const PROMO_LINE = /(https?:\/\/|www\.|\.(com|co\.uk|gg|ly|tv)\b|@[a-z0-9_.]{2,}|\b(instagram|insta|twitter|tiktok|discord|twitch|facebook|patreon|snapchat|threads|merch|shop|store|subscribe|sub to|follow (me|us)|business|enquir|inquir|e-?mail|contact|sponsor|affiliate|promo code|use code|discount|% off|link in|links below|join (my|the) (channel|membership))\b)/i;
+const CHAPTER_LINE = /^\s*\(?\d{1,2}:\d{2}(:\d{2})?\)?\s+\S/;
+const HASHTAG_LINE = /^\s*(#[\p{L}\p{N}_]+[\s,]*)+$/u;
+
+// Keep what describes the video: prose and chapter titles. Chapter lines are
+// kept even when they would match a promo word, because a chapter title says
+// what is in that part of the video.
+export function cleanDescription(description: string): string {
+  const kept: string[] = [];
+  for (const raw of description.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line) continue;
+    if (CHAPTER_LINE.test(line)) {
+      kept.push(line);
+      continue;
+    }
+    if (HASHTAG_LINE.test(line) || PROMO_LINE.test(line)) continue;
+    if (!/[\p{L}\p{N}]/u.test(line)) continue;
+    kept.push(line);
+  }
+  return kept.join(' · ');
+}
+
+// Slices taken across a long transcript: the opening is often intro and
+// subscribe calls, and what decides a verdict can come anywhere.
+const TRANSCRIPT_SLICES = 4;
+const SLICE_SEPARATOR = ' … ';
+
+// Up to `max` characters of transcript: all of it when it fits, otherwise
+// TRANSCRIPT_SLICES evenly spaced slices (start, middle, end), each trimmed to
+// word boundaries.
+export function excerptTranscript(transcript: string, max: number = TRANSCRIPT_MAX_CHARS): string {
+  const text = transcript.replace(/\s+/g, ' ').trim();
+  if (text.length <= max) return text;
+  const sliceLen = Math.floor((max - SLICE_SEPARATOR.length * (TRANSCRIPT_SLICES - 1)) / TRANSCRIPT_SLICES);
+  const slices: string[] = [];
+  for (let i = 0; i < TRANSCRIPT_SLICES; i++) {
+    const start = Math.round((i * (text.length - sliceLen)) / (TRANSCRIPT_SLICES - 1));
+    let slice = text.slice(start, start + sliceLen);
+    if (start > 0) slice = slice.replace(/^\S*\s/, '');
+    if (start + sliceLen < text.length) slice = slice.replace(/\s\S*$/, '');
+    slices.push(slice);
+  }
+  return slices.join(SLICE_SEPARATOR);
+}
 
 export const VIDEO_MARKER = 'VIDEO';
 
@@ -169,7 +222,7 @@ function clip(text: string, max: number): string {
 export function renderVideoDetails(input: RubricPromptInput): string {
   const tags = formatTags(input.tags);
   const category = input.category?.trim() ?? '';
-  const desc = clip(input.description.trim(), DESCRIPTION_MAX_CHARS);
+  const desc = clip(cleanDescription(input.description), DESCRIPTION_MAX_CHARS);
   const audience = input.madeForKids === true
     ? 'YouTube audience setting: made for kids'
     : input.madeForKids === false
@@ -182,7 +235,7 @@ export function renderVideoDetails(input: RubricPromptInput): string {
       ? `Channel history: ${h.approved} previously approved, ${h.rejected} previously rejected`
       : 'Channel history: no prior requests from this channel';
   const transcript = input.transcript?.trim()
-    ? `Transcript excerpt:\n${clip(input.transcript, TRANSCRIPT_MAX_CHARS)}`
+    ? `Transcript excerpt:\n${excerptTranscript(input.transcript)}`
     : null;
   return [
     `Title: ${input.title}`,
