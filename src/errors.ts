@@ -29,6 +29,15 @@ export class ValidationError extends EddyError {
   }
 }
 
+// A known caller asking for something its role may not do (e.g. a kid's id
+// on a parent-only route). Mapped to 403.
+export class ForbiddenError extends EddyError {
+  constructor(message: string) {
+    super(message, 'FORBIDDEN');
+    this.name = 'ForbiddenError';
+  }
+}
+
 export class GuardError extends EddyError {
   constructor(message: string) {
     super(message, 'GUARD_ERROR');

@@ -45,7 +45,9 @@ export {
   SECOND_PASS_V4_NO_TRANSCRIPT_PROMPT_VERSION,
   RUBRIC_PROMPT_PREFIX,
   buildRubricPrompt,
+  cleanDescription,
 } from './rubric-prompt';
+export { shownEvalForCandidate, shownEvalForRequest, labelGuardEval, type ShownEval } from './labels';
 
 const PROMPT_VERSION = 'v2';
 export const CANDIDATE_PROMPT_VERSION = 'candidate-v3';
@@ -245,6 +247,10 @@ export type GuardRequestType = 'video' | 'candidate' | 'kid_interest';
 interface RunGuardCtx {
   requestId: string | null;
   url: string;
+  // The kid the verdict is for, and the candidate it judged (candidate flow
+  // only), so the parent decision surface can find the exact row.
+  userId?: string | null;
+  candidateId?: string | null;
   requestType: GuardRequestType;
   subjectText?: string | null;
   interestId?: string | null;
@@ -295,12 +301,12 @@ function recordGuardEval(verdict: GuardVerdict, ctx: RunGuardCtx, rubric?: Rubri
     INSERT INTO guard_eval
       (eval_id, request_id, url, gemma_verdict, gemma_reason, gemma_confidence,
        prompt_version, request_type, subject_text, interest_id,
-       rubric_version, rubric_scores_json,
+       rubric_version, rubric_scores_json, user_id, candidate_id,
        scored_at, created_at)
     VALUES
       (@eval_id, @request_id, @url, @gemma_verdict, @gemma_reason, @gemma_confidence,
        @prompt_version, @request_type, @subject_text, @interest_id,
-       @rubric_version, @rubric_scores_json,
+       @rubric_version, @rubric_scores_json, @user_id, @candidate_id,
        @scored_at, @scored_at)
   `).run({
     eval_id: uuidv7(),
@@ -319,6 +325,8 @@ function recordGuardEval(verdict: GuardVerdict, ctx: RunGuardCtx, rubric?: Rubri
     // Set only when scores exist; prompt_version already marks a v4 attempt.
     rubric_version: rubric?.decision ? RUBRIC_VERSION : null,
     rubric_scores_json: scoresJson,
+    user_id: ctx.userId ?? null,
+    candidate_id: ctx.candidateId ?? null,
     scored_at: now,
   });
 }
@@ -391,6 +399,7 @@ export async function scoreForRequest(params: ScoreParams): Promise<GuardVerdict
     requestId: params.requestId,
     url: params.url,
     requestType: 'video',
+    userId: params.userId,
   });
 
   db.prepare(`
@@ -448,6 +457,8 @@ export async function evaluateCandidate(params: CandidateEvalParams): Promise<Ca
     requestId: null,
     url: params.url,
     requestType: 'candidate',
+    userId: params.userId,
+    candidateId: params.candidateId,
     promptVersion,
   };
 
@@ -525,6 +536,7 @@ export async function evaluateDownloadedPick(params: DownloadedPickEvalParams): 
     requestId: params.requestId,
     url: params.url,
     requestType: 'video',
+    userId: params.userId,
     promptVersion: secondPassPromptVersion(promptId, transcriptAvailable),
   };
   const meta = params.metadata;
@@ -720,6 +732,7 @@ export async function evaluateKidInterest(params: KidInterestEvalParams): Promis
     requestId: null,
     url: `interest:${params.interestId}`,
     requestType: 'kid_interest',
+    userId: params.userId,
     subjectText: params.rawLabel,
     interestId: params.interestId,
     promptVersion: KID_INTEREST_PROMPT_VERSION,
