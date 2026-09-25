@@ -5,7 +5,11 @@ import { ValidationError } from '../../errors';
 import { resolveUserByIdOrName } from '../users';
 import { displayRejectionReason, HIDDEN_STATUSES_SQL } from '../requests';
 import { toPublicMediaUrl } from '../media';
-import { searchVideosFlat, type SearchVideoFlat } from '../../discovery-metadata';
+import {
+  searchVideosFlat,
+  searchVideosFlatStrict,
+  type SearchVideoFlat,
+} from '../../discovery-metadata';
 
 export const searchRouter = Router();
 
@@ -51,16 +55,34 @@ searchRouter.get('/', (req: Request, res: Response) => {
 // GET /search/videos?q=&userId=
 // Searches YouTube (Data API or yt-dlp, per DISCOVERY_SOURCE), returns up to 10
 // results with in-library flag.
+//
+// Kid searches are narrowed, because these are raw YouTube results no guard
+// has seen:
+//   - Data API only, with safeSearch=strict. The yt-dlp source has no
+//     safe-search control, so a kid gets an empty list with
+//     `unavailable: 'safe_search_unavailable'` rather than unfiltered results.
+//   - No thumbnail URL. A creator thumbnail is un-guarded imagery; the row
+//     renders a neutral placeholder. Titles still show and the kid can still
+//     request through the normal request path.
 searchRouter.get('/videos', async (req: Request, res: Response) => {
   const { q, userId, user } = req.query as { q?: string; userId?: string; user?: string };
   if (!q?.trim()) throw new ValidationError('q required');
 
-  const uid = resolveUserByIdOrName(userId ?? user).user_id;
+  const resolved = resolveUserByIdOrName(userId ?? user);
+  const uid = resolved.user_id;
+  const isKid = resolved.role === 'kid';
 
   let videos: SearchVideoFlat[] = [];
   let searchError = false;
+  let unavailable: 'safe_search_unavailable' | undefined;
   try {
-    videos = await searchVideosFlat(q.trim());
+    if (isKid) {
+      const strict = await searchVideosFlatStrict(q.trim());
+      if (strict === null) unavailable = 'safe_search_unavailable';
+      else videos = strict.map((v) => ({ ...v, thumbnailUrl: null }));
+    } else {
+      videos = await searchVideosFlat(q.trim());
+    }
   } catch (err) {
     logger.error({ err }, 'Video search failed');
     searchError = true;
@@ -79,5 +101,5 @@ searchRouter.get('/videos', async (req: Request, res: Response) => {
   }
 
   const results = videos.map((v) => ({ ...v, inLibrary: inLibrary.has(v.videoId) }));
-  res.json({ results, searchError });
+  res.json(unavailable ? { results, searchError, unavailable } : { results, searchError });
 });

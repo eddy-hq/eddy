@@ -354,17 +354,25 @@ export async function searchVideosWithDates(
 // hand is looking for anything, including old videos, so the freshness window
 // that keeps discovery's slate current would wrongly hide results here.
 // Drop-in for yt-dlp's searchVideosFlat; preserves search.list relevance order.
+//
+// `safeSearch: 'strict'` is set for kid searches (the route decides): the same
+// UI is reachable by kids, and search.list's strict filter is the only
+// safe-search control either source offers. Adult searches keep YouTube's
+// default (moderate) so a parent's hand search is not narrowed.
 export async function searchVideosFlat(
   query: string,
   limit = 10,
+  opts: { safeSearch?: 'strict' } = {},
 ): Promise<SearchVideoFlat[]> {
-  const search = await apiGet<SearchListResponse>('search', {
+  const params: Record<string, string> = {
     part: 'snippet',
     q: query,
     type: 'video',
     order: 'relevance',
     maxResults: String(Math.min(Math.max(Math.trunc(limit), 1), 50)),
-  });
+  };
+  if (opts.safeSearch) params['safeSearch'] = opts.safeSearch;
+  const search = await apiGet<SearchListResponse>('search', params);
 
   const ids: string[] = [];
   for (const item of search.items ?? []) {
