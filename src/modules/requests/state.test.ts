@@ -336,6 +336,61 @@ describe('mark_soft_deleted', () => {
   });
 });
 
+describe('shared files', () => {
+  // Downloads share one <youtubeId>.mp4 across kids: taking one row off the
+  // file must not unlink it while another live row still plays it.
+  const SHARED = '/mnt/ssd/eddy/videos/shared.mp4';
+
+  it('soft delete keeps a file another live request still uses', () => {
+    insertRequest({ request_id: 'req-sh1', status: 'ready', file_path: SHARED });
+    insertRequest({ request_id: 'req-sh2', status: 'watched', file_path: SHARED });
+
+    const { result } = state.apply({ kind: 'mark_soft_deleted', requestId: 'req-sh1' });
+
+    expect(result.transitioned).toBe(true);
+    expect(fakePorts.enqueueDelete).not.toHaveBeenCalled();
+  });
+
+  it('soft delete removes the file once the last live request leaves it', () => {
+    insertRequest({ request_id: 'req-sh1', status: 'ready', file_path: SHARED });
+    insertRequest({ request_id: 'req-sh2', status: 'ready', file_path: SHARED });
+
+    state.apply({ kind: 'mark_soft_deleted', requestId: 'req-sh1' });
+    state.apply({ kind: 'mark_soft_deleted', requestId: 'req-sh2' });
+
+    expect(fakePorts.enqueueDelete).toHaveBeenCalledTimes(1);
+    expect(fakePorts.enqueueDelete).toHaveBeenCalledWith(
+      { requestId: 'req-sh2', filePath: SHARED },
+      { jobId: 'delete-req-sh2' },
+    );
+  });
+
+  it('recycling one row keeps a file another live request still uses', () => {
+    insertRequest({ request_id: 'req-sh1', status: 'watched', file_path: SHARED });
+    insertRequest({ request_id: 'req-sh2', status: 'ready', file_path: SHARED });
+
+    const { result } = state.apply({ kind: 'mark_recycled', requestId: 'req-sh1' });
+
+    expect(result.transitioned).toBe(true);
+    const row = db.prepare('SELECT file_state, file_path FROM requests WHERE request_id = ?').get('req-sh1');
+    expect(row).toEqual({ file_state: 'recycled', file_path: null });
+    expect(fakePorts.enqueueDelete).not.toHaveBeenCalled();
+  });
+
+  it('recycling removes the file when the other row is already off it', () => {
+    insertRequest({ request_id: 'req-sh1', status: 'watched', file_path: SHARED });
+    insertRequest({ request_id: 'req-sh2', status: 'deleted', file_path: SHARED });
+    db.prepare(`UPDATE requests SET file_state = 'gone' WHERE request_id = 'req-sh2'`).run();
+
+    state.apply({ kind: 'mark_recycled', requestId: 'req-sh1' });
+
+    expect(fakePorts.enqueueDelete).toHaveBeenCalledWith(
+      { requestId: 'req-sh1', filePath: SHARED },
+      { jobId: 'delete-req-sh1' },
+    );
+  });
+});
+
 describe('mark_recycled', () => {
   const FILE_PATH = '/mnt/ssd/eddy/videos/recycled.mp4';
   const NGINX_URL = 'http://mediaserver/videos/recycled.mp4';
