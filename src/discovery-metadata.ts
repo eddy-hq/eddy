@@ -43,6 +43,19 @@ export function searchVideosFlat(query: string, limit?: number) {
     : ytdlp.searchVideosFlat(query, limit);
 }
 
+// Kid video search: the Data API with safeSearch=strict. Like recentUploads
+// there is deliberately no yt-dlp equivalent — ytsearch has no safe-search
+// control, so raw YouTube results would reach a kid unfiltered. The fallback
+// source returns null and the route reports search as unavailable.
+export function searchVideosFlatStrict(
+  query: string,
+  limit?: number,
+): Promise<ytdlp.SearchVideoFlat[] | null> {
+  return useApi()
+    ? api.searchVideosFlat(query, limit, { safeSearch: 'strict' })
+    : Promise.resolve(null);
+}
+
 export function searchChannelsFlat(query: string, limit?: number) {
   return useApi()
     ? api.searchChannelsFlat(query, limit)

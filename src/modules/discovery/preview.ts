@@ -1,6 +1,7 @@
 import { db } from '../../db/client';
 import { config } from '../../config';
 import { rank, isPicked, type RankerCandidate, type Verdict, type Disposition } from './ranker';
+import { kidGuardClause } from './surface';
 
 interface UserRow { user_id: string; role: string; age_gate: number; display_name: string; daily_pick_cap: number | null; }
 
@@ -97,9 +98,7 @@ function buildSection(user: UserRow): Section {
   const isKid = user.role === 'kid';
   const cap = user.daily_pick_cap ?? config.DEFAULT_DAILY_PICK_CAP;
 
-  const guardClause = isKid
-    ? "AND (c.guard_verdict = 'clear_yes' OR c.guard_verdict IS NULL)"
-    : '';
+  const guardClause = kidGuardClause(isKid);
 
   // Data-shape SQL only — identical filters to surface.ts. Floors live
   // in the ranker; preview never re-applies them in JS.

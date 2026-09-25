@@ -262,6 +262,20 @@ describe('searchVideosFlat', () => {
     expect(url).not.toContain('publishedAfter');
   });
 
+  it('leaves safeSearch at the YouTube default when not asked for strict', async () => {
+    routeFetch({ search: { items: [] }, videos: { items: [] } });
+    await searchVideosFlat('robots');
+    const url = fetchMock.mock.calls[0]![0] as URL;
+    expect(url.searchParams.has('safeSearch')).toBe(false);
+  });
+
+  it('sends safeSearch=strict when asked (kid searches)', async () => {
+    routeFetch({ search: { items: [] }, videos: { items: [] } });
+    await searchVideosFlat('robots', 10, { safeSearch: 'strict' });
+    const url = fetchMock.mock.calls[0]![0] as URL;
+    expect(url.searchParams.get('safeSearch')).toBe('strict');
+  });
+
   it('drops search ids the videos.list omits', async () => {
     routeFetch({
       search: { items: [{ id: { videoId: 'gone' } }, { id: { videoId: 'ok' } }] },

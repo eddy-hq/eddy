@@ -5,6 +5,7 @@ import { BottomNav } from '../components/BottomNav';
 import { Card } from '../components/Card';
 import type { CardData } from '../components/Card';
 import { useRestorePolling } from '../hooks/useRestorePolling';
+import { thumbnailSrc } from '../lib/thumbnailSrc';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -43,6 +44,9 @@ interface VideoResult {
 interface VideoSearchResponse {
   results: VideoResult[];
   searchError?: boolean;
+  // Set for kid searches when the server has no safe-search source (yt-dlp
+  // fallback): results is empty on purpose, not because nothing matched.
+  unavailable?: 'safe_search_unavailable';
 }
 
 interface ChannelResult {
@@ -380,6 +384,8 @@ export function Search() {
                       />
                     ))}
                   </div>
+                ) : videoResults.isFetched && !videoResults.isFetching && videoResults.data?.unavailable ? (
+                  <EmptySection text="YouTube search isn't available right now." />
                 ) : videoResults.isFetched && !videoResults.isFetching && !(videoResults.data?.searchError) ? (
                   <EmptySection text="No videos found." />
                 ) : null}
@@ -447,14 +453,17 @@ function Section({ label, count, loading, error, children }: {
 function VideoRow({ video, onRequest, requesting }: {
   video: VideoResult; onRequest: () => void; requesting: boolean;
 }) {
+  // Kid searches arrive with thumbnailUrl null (server-side); the row shows
+  // the neutral placeholder below instead.
+  const src = thumbnailSrc(video.thumbnailUrl);
   return (
     <div style={{
       display: 'flex', alignItems: 'center', gap: 12,
       padding: '10px 0', borderBottom: '1px solid var(--border-subtle)',
     }}>
-      {video.thumbnailUrl ? (
+      {src ? (
         <img
-          src={video.thumbnailUrl}
+          src={src}
           alt=""
           style={{ width: 80, height: 45, borderRadius: 6, objectFit: 'cover', flexShrink: 0, background: 'var(--bg-elevated)' }}
         />

@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { RotateCw } from 'lucide-react';
 import { readProgress, onProgressChange } from '../lib/videoProgress';
+import { thumbnailSrc } from '../lib/thumbnailSrc';
 import { useResolvePersonId } from '../hooks/useResolvePersonId';
 import { useRestoreRequest } from '../hooks/useRestoreRequest';
 import { useRestoreStore } from '../store/restore';
@@ -79,8 +80,7 @@ export function CompactCard({
 
   const showProgressBar = isLive && !isWatched && progressFraction > 0.01 && progressFraction < 0.95;
 
-  const effectiveThumbnailUrl = data.thumbnailUrl
-    ?? (data.youtubeId ? `https://i.ytimg.com/vi/${data.youtubeId}/hqdefault.jpg` : null);
+  const effectiveThumbnailUrl = thumbnailSrc(data.thumbnailUrl);
 
   function handleTap() {
     if (isRecycled) {

@@ -1,9 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { v7 as uuidv7 } from 'uuid';
 import { db } from '../../db/client';
-import { logger } from '../../logger';
 import { ValidationError, NotFoundError } from '../../errors';
-import { getRequestsState } from '../requests';
 import { resolveUserById } from '../users';
 import { freshnessMultiplier, rankWeight } from './ranker';
 
@@ -146,42 +144,4 @@ discoveryRouter.post('/dismiss', (req: Request, res: Response) => {
   db.prepare(`UPDATE candidate_pool SET status = 'dismissed' WHERE candidate_id = ?`).run(candidateId);
 
   res.json({ candidateId, status: 'dismissed' });
-});
-
-// POST /discovery/request — body: { userId, candidateId }
-discoveryRouter.post('/request', async (req: Request, res: Response) => {
-  const { userId, candidateId } = req.body as { userId?: string; candidateId?: string };
-  const user = resolveUserById(userId);
-  if (!candidateId?.trim()) throw new ValidationError('candidateId required');
-
-  const candidate = db.prepare(
-    'SELECT candidate_id, url, external_id, title, why_text FROM candidate_pool WHERE candidate_id = ? AND user_id = ?'
-  ).get(candidateId, user.user_id) as {
-    candidate_id: string;
-    url: string;
-    external_id: string | null;
-    title: string | null;
-    why_text: string | null;
-  } | undefined;
-  if (!candidate) throw new NotFoundError(`candidate ${candidateId}`);
-
-  const requestId = uuidv7();
-  const { settled } = getRequestsState().apply({
-    kind: 'create_candidate',
-    requestId,
-    input: {
-      url: candidate.url,
-      userId: user.user_id,
-      youtubeId: candidate.external_id,
-      title: candidate.title,
-      whyText: candidate.why_text,
-    },
-  });
-  await settled;
-
-  db.prepare(`UPDATE candidate_pool SET status = 'requested' WHERE candidate_id = ?`).run(candidateId);
-
-  logger.info({ requestId, candidateId, userId: user.user_id }, 'Discovery: candidate requested');
-
-  res.status(202).json({ requestId, candidateId, status: 'downloading' });
 });

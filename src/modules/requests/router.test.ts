@@ -1269,3 +1269,34 @@ describe('POST /requests/:id/restore', () => {
     expect(vi.mocked(downloadQueue.add)).not.toHaveBeenCalled();
   });
 });
+
+// ─── GET /requests/:id — detail sheet thumbnail ──────────────────────────────
+
+describe('GET /requests/:id thumbnailUrl', () => {
+  it("returns Eddy's own thumbnail for a visible row", async () => {
+    insertRequestRow({ request_id: 'ready-thumb', status: 'ready', youtube_id: 'vid1' });
+    db.prepare('UPDATE requests SET thumbnail_url = ? WHERE request_id = ?')
+      .run('http://media.local/thumbs/vid1.jpg', 'ready-thumb');
+
+    const resp = await request('GET', '/requests/ready-thumb');
+    expect(resp.status).toBe(200);
+    expect(resp.json<{ thumbnailUrl: string | null }>().thumbnailUrl)
+      .toBe('http://media.local/thumbs/vid1.jpg');
+  });
+
+  it('returns null rather than a YouTube URL when the row has no thumbnail', async () => {
+    insertRequestRow({ request_id: 'no-thumb', status: 'ready', youtube_id: 'vid2' });
+
+    const resp = await request('GET', '/requests/no-thumb');
+    expect(resp.json<{ thumbnailUrl: string | null }>().thumbnailUrl).toBeNull();
+  });
+
+  it('hides the thumbnail while a pick is held for its second pass', async () => {
+    insertRequestRow({ request_id: 'held-thumb', status: 'guard_pending', youtube_id: 'vid3' });
+    db.prepare('UPDATE requests SET thumbnail_url = ? WHERE request_id = ?')
+      .run('http://media.local/thumbs/vid3.jpg', 'held-thumb');
+
+    const resp = await request('GET', '/requests/held-thumb');
+    expect(resp.json<{ thumbnailUrl: string | null }>().thumbnailUrl).toBeNull();
+  });
+});

@@ -80,6 +80,14 @@ interface CandidateRow {
   guard_verdict: string | null;
 }
 
+// The kid guard filter on the candidate SELECT (alias `c` = candidate_pool):
+// a kid sees only an explicit `clear_yes`; NULL (never guarded) does not
+// surface. Shared with the preview surfaces so they cannot drift from what
+// production actually surfaces.
+export function kidGuardClause(isKid: boolean): string {
+  return isKid ? "AND c.guard_verdict = 'clear_yes'" : '';
+}
+
 // Per-user slate size (ADR-0009). The numbers are role-blind — the only
 // kid/adult difference is the guard recheck upstream — so the cap is read
 // from the user's `daily_pick_cap`, falling back to the global default when
@@ -105,7 +113,7 @@ export function surfaceForToday(userId: string, isKid: boolean, cap: number): Ve
   // outside the top-N recheck) — admitting it would surface a followed upload
   // to a kid unguarded, which is exactly the bypass this issue closes. Default
   // to escalation: an un-rechecked candidate does not surface for a kid.
-  const eligibleGuard = isKid ? "AND c.guard_verdict = 'clear_yes'" : '';
+  const eligibleGuard = kidGuardClause(isKid);
 
   // Data-shape SQL only: status, surfaced_date, kid guard, history
   // exclusion, why_text presence. Score floors live in the ranker so
