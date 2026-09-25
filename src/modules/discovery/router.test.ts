@@ -17,9 +17,11 @@ vi.mock('../requests', () => ({
   })),
 }));
 
+import express from 'express';
+import supertest from 'supertest';
 import { db } from '../../db/client';
 import { runMigrations } from '../../db/migrate';
-import { hasRecentBalancePrompt } from './router';
+import { discoveryRouter, hasRecentBalancePrompt } from './router';
 
 const USER_ID = '11111111-1111-7111-8111-111111111111';
 const INTEREST_ID = '22222222-2222-7222-8222-222222222222';
@@ -54,5 +56,33 @@ describe('discovery feed balance prompt cooldown', () => {
     `).run('prompt-1', USER_ID, INTEREST_ID, 'Robotics', 1, shownAt);
 
     expect(hasRecentBalancePrompt(USER_ID, INTEREST_ID)).toBe(false);
+  });
+});
+
+// POST /discovery/request let any caller turn any pool candidate into a
+// 'recommended' request regardless of guard_verdict. Nothing called it, so it
+// was removed rather than guarded; this pins that it stays gone.
+describe('POST /discovery/request', () => {
+  it('no longer exists, so a never-guarded candidate cannot be requested through it', async () => {
+    db.prepare(`
+      INSERT INTO candidate_pool
+        (candidate_id, user_id, content_type, source_type, url, external_id,
+         title, guard_verdict, status, created_at)
+      VALUES ('cand-1', ?, 'video', 'interest_search', 'https://www.youtube.com/watch?v=cand-1',
+              'cand-1', 'Placeholder', NULL, 'scored', ?)
+    `).run(USER_ID, new Date().toISOString());
+
+    const app = express();
+    app.use(express.json());
+    app.use('/discovery', discoveryRouter);
+
+    const res = await supertest(app)
+      .post('/discovery/request')
+      .send({ userId: USER_ID, candidateId: 'cand-1' });
+
+    expect(res.status).toBe(404);
+    const row = db.prepare('SELECT status FROM candidate_pool WHERE candidate_id = ?')
+      .get('cand-1') as { status: string };
+    expect(row.status).toBe('scored');
   });
 });
