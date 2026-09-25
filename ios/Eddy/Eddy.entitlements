@@ -2,9 +2,15 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<!-- Shared with EddyShare (and, later, the notification service
-	     extension) so they can read the stored userId. The team prefix comes
-	     from $(AppIdentifierPrefix) at build time and is never committed. -->
+	<!-- What a development-signed build gets; the ad hoc export re-signs and
+	     flips it to production. Nothing in the app reads this value —
+	     PushEnvironment reads the embedded provisioning profile, which is the
+	     only thing that knows how the build was actually signed. -->
+	<key>aps-environment</key>
+	<string>development</string>
+	<!-- Shared with EddyShare and EddyNotify so they can read the stored
+	     userId. The team prefix comes from $(AppIdentifierPrefix) at build
+	     time and is never committed. -->
 	<key>keychain-access-groups</key>
 	<array>
 		<string>$(AppIdentifierPrefix)app.eddyhq.Eddy.shared</string>

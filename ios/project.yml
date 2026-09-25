@@ -33,6 +33,8 @@ targets:
     dependencies:
       - target: EddyShare
         embed: true
+      - target: EddyNotify
+        embed: true
       # Linked explicitly: without it the App Intents metadata processor finds
       # no framework dependency, skips extraction, and "Add to Eddy" never
       # shows up in Shortcuts.
@@ -83,6 +85,37 @@ targets:
         CURRENT_PROJECT_VERSION: 1
         MARKETING_VERSION: "1.0"
         ENABLE_PREVIEWS: YES
+        SWIFT_EMIT_LOC_STRINGS: YES
+      configs:
+        Debug:
+          CODE_SIGN_IDENTITY: Apple Development
+        Release:
+          CODE_SIGN_IDENTITY: Apple Development
+
+  # The notification service extension. Wakes on every mutable push, swaps the
+  # placeholder copy for what the M4 says the message is, and delivers the
+  # placeholder unchanged whenever it can't (ADR-0004).
+  EddyNotify:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: EddyNotify
+        excludes:
+          - Info.plist
+          - EddyNotify.entitlements
+      # Same arrangement as EddyShare: the extension needs the identity store,
+      # the config and the push types, and they are files rather than a module.
+      - path: Shared
+    settings:
+      base:
+        PRODUCT_NAME: EddyNotify
+        PRODUCT_BUNDLE_IDENTIFIER: app.eddyhq.Eddy.Notify
+        APPLICATION_EXTENSION_API_ONLY: YES
+        INFOPLIST_FILE: EddyNotify/Info.plist
+        CODE_SIGN_ENTITLEMENTS: EddyNotify/EddyNotify.entitlements
+        GENERATE_INFOPLIST_FILE: NO
+        CURRENT_PROJECT_VERSION: 1
+        MARKETING_VERSION: "1.0"
         SWIFT_EMIT_LOC_STRINGS: YES
       configs:
         Debug:

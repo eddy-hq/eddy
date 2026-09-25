@@ -3,6 +3,9 @@ import SwiftUI
 @main
 struct EddyApp: App {
     @State private var model: ShellModel
+    /// APNs hands the device token and notification taps to an app delegate,
+    /// and SwiftUI has no equivalent.
+    @UIApplicationDelegateAdaptor(PushAppDelegate.self) private var appDelegate
 
     init() {
         let config: AppConfig
@@ -28,6 +31,7 @@ struct EddyApp: App {
     var body: some Scene {
         WindowGroup {
             RootView(model: model)
+                .task { appDelegate.attach(to: model) }
         }
     }
 

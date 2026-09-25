@@ -1322,8 +1322,8 @@ Roughly 7–9 sessions. Sharing is the feature the household actually wants, so 
 1. **Xcode project** ✅ (simulator-verified) — WKWebView shell, `eddy://` deep links, Keychain identity, Tailscale fallback screen. Lives in `ios/`; see `ios/README.md`.
 2. **Share extension + App Intent** ✅ (simulator-verified; extension proven against the live server, the Shortcuts action not yet seen running) — the Shortcut's replacement. Same `POST /requests`, shows `message` inline (§5).
 3. **Signing + OTA distribution** — onto Steve's device, then the boys'. *Released and installed over the air on Steve's device (2026-09-19); the boys' devices still to register and install.* The Shortcut is retired per device once the extension is proven.
-4. **Server push** — device registration + APNs sender behind `notify()`.
-5. **APNs client + Notification Service Extension**, device-tested against a backgrounded VPN, then rolled out — Steve first, then the boys.
+4. **Server push** ✅ (PR #203) — device registration (`POST`/`DELETE /devices`), `GET /notifications/:messageId`, and the APNs sender behind `notify()`. Payloads carry the opaque message id and the placeholder copy, nothing else.
+5. **APNs client + Notification Service Extension**, device-tested against a backgrounded VPN, then rolled out — Steve first, then the boys. *Built, not verified: registration, the extension, foreground presentation and tap routing are in and unit-tested, but none of it has run on real hardware — the simulator has no device token. Device checklist in `ios/README.md` under Push.*
 
 Stages 4–5 follow stage 3 directly. They used to wait for Phase 6, on the reasoning that ntfy was doing the job until parent approvals existed; ntfy's removal (ADR-0003) inverted that. Three of the five notification kinds are ops alerts to Steve — `circuit_open`, `download_failure_streak`, `download_alert` — and they are log-only now, so a blocked pipeline announces itself to a file nobody is watching. And Phase 6 cannot ship without stage 5.
 

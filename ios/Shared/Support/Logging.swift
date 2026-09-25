@@ -16,4 +16,7 @@ enum Log {
     /// The share extension and the App Intent. Shared URLs are `.private`:
     /// what someone asked for is consumption detail (§14).
     static let requests = Logger(subsystem: subsystem, category: "requests")
+    /// Push registration and the notification service extension. A device
+    /// token is a credential and never appears here, whole or in part.
+    static let push = Logger(subsystem: subsystem, category: "push")
 }

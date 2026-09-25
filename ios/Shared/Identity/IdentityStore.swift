@@ -22,11 +22,15 @@ final class KeychainIdentityStore: IdentityStore {
     /// inside an app extension that bundle is the extension's own, so the
     /// share and notification extensions would look under a different service
     /// and find nothing.
-    static let defaultService = "app.eddyhq.Eddy.identity"
+    /// `nonisolated` so the notification service extension can name them
+    /// without a hop to an actor it has no business touching.
+    nonisolated static let defaultService = "app.eddyhq.Eddy.identity"
+
+    private nonisolated static let defaultAccount = "userId"
 
     private let service: String
     private let accessGroup: String?
-    private let account = "userId"
+    private let account = KeychainIdentityStore.defaultAccount
 
     /// `accessGroup` nil means the target's default group. The app and the
     /// share extension both pass the shared group so the extension can read
@@ -40,6 +44,14 @@ final class KeychainIdentityStore: IdentityStore {
     }
 
     private var baseQuery: [String: Any] {
+        Self.baseQuery(service: service, account: account, accessGroup: accessGroup)
+    }
+
+    private nonisolated static func baseQuery(
+        service: String,
+        account: String,
+        accessGroup: String?
+    ) -> [String: Any] {
         var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -52,7 +64,18 @@ final class KeychainIdentityStore: IdentityStore {
     }
 
     func load() -> String? {
-        var query = baseQuery
+        Self.readIdentity(service: service, accessGroup: accessGroup)
+    }
+
+    /// The read without the MainActor hop. The protocol is MainActor because
+    /// the app's only caller is the UI, but the notification service extension
+    /// is handed its request off the main thread and has no UI to hop to —
+    /// and `SecItemCopyMatching` is thread-safe.
+    nonisolated static func readIdentity(
+        service: String = KeychainIdentityStore.defaultService,
+        accessGroup: String? = KeychainAccessGroup.resolve()
+    ) -> String? {
+        var query = baseQuery(service: service, account: defaultAccount, accessGroup: accessGroup)
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
 
