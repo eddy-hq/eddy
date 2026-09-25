@@ -42,7 +42,7 @@ vi.mock('../../queue', () => ({
 }));
 
 vi.mock('../notifications', () => ({
-  getNotifications: () => ({ notify: vi.fn() }),
+  getNotifications: () => ({ notify: vi.fn().mockResolvedValue(undefined) }),
   parseRelayPayload: vi.fn(),
 }));
 
@@ -54,6 +54,7 @@ vi.mock('../people/registry', () => ({
 vi.mock('../watchdog', () => ({ checkStuckDownloads: vi.fn() }));
 
 import { db } from '../../db/client';
+import { deleteQueue } from '../../queue';
 import { runMigrations } from '../../db/migrate';
 import { ollamaGenerate } from '../../ollama';
 import { sign } from '../../signed-channel';
@@ -72,6 +73,7 @@ app.use('/requests', requestsRouter);
 
 const KID_ID = '11111111-1111-7111-8111-111111111111';
 const PARENT_ID = '22222222-2222-7222-8222-222222222222';
+const KID_2_ID = '33333333-3333-7333-8333-333333333333';
 const BLOCKED_ID = 'UCblockedblockedblocked0';
 const OTHER_ID = 'UCotherotherotherother00';
 
@@ -83,6 +85,7 @@ beforeAll(() => {
   );
   insertUser.run(KID_ID, 'Boy1', 'kid', 1, 2013, now);
   insertUser.run(PARENT_ID, 'Parent', 'parent', 0, null, now);
+  insertUser.run(KID_2_ID, 'Boy2', 'kid', 1, 2015, now);
   db.prepare('INSERT INTO blocked_channels (channel_id, display_name, blocked_by, blocked_at) VALUES (?, ?, ?, ?)')
     .run(BLOCKED_ID, 'Placeholder blocked channel', PARENT_ID, now);
 });
@@ -91,6 +94,7 @@ beforeEach(() => {
   db.exec('DELETE FROM guard_eval');
   db.exec('DELETE FROM requests');
   vi.mocked(ollamaGenerate).mockReset();
+  vi.mocked(deleteQueue.add).mockClear();
 });
 
 function seedShareSheetRequest(requestId: string, userId: string): void {
@@ -172,5 +176,68 @@ describe('kid request from a blocked channel', () => {
       .send({ requestId: 'kid-unsigned', youtubeChannelId: BLOCKED_ID, channel: null });
     expect(res.status).toBe(401);
     expect(row('kid-unsigned').status).toBe('downloading');
+  });
+});
+
+describe('a block that lands while the download is in flight', () => {
+  async function downloaded(requestId: string, youtubeChannelId: string) {
+    const body = JSON.stringify({
+      requestId,
+      youtubeId: 'sharedvideo',
+      filePath: '/videos/sharedvideo.mp4',
+      nginxUrl: 'http://mediaserver/videos/sharedvideo.mp4',
+      thumbnailUrl: null,
+      title: 'Placeholder title',
+      channel: 'Placeholder blocked channel',
+      youtubeChannelId,
+      description: 'd',
+      durationSecs: 120,
+      transcript: null,
+      publishedAt: null,
+      fileSizeBytes: 1000,
+    });
+    const res = await supertest(app)
+      .post('/internal/videos/sharedvideo/downloaded')
+      .set('content-type', 'application/json')
+      .set('x-eddy-signature', sign(body))
+      .send(body);
+    expect(res.status).toBe(204);
+  }
+
+  function fileRow(requestId: string) {
+    return db.prepare('SELECT status, file_path, nginx_url, rejection_reason FROM requests WHERE request_id = ?')
+      .get(requestId) as { status: string; file_path: string | null; nginx_url: string | null; rejection_reason: string | null };
+  }
+
+  it("rejects a kid's request at the download callback instead of making it ready, and removes the file", async () => {
+    seedShareSheetRequest('kid-inflight', KID_ID);
+
+    await downloaded('kid-inflight', BLOCKED_ID);
+
+    expect(fileRow('kid-inflight')).toEqual({
+      status: 'rejected', file_path: null, nginx_url: null, rejection_reason: BLOCKED_CHANNEL_REASON,
+    });
+    expect(deleteQueue.add).toHaveBeenCalledWith(
+      'delete', { requestId: 'kid-inflight', filePath: '/videos/sharedvideo.mp4' }, expect.anything(),
+    );
+  });
+
+  it("keeps the file when another kid's live copy shares it", async () => {
+    seedShareSheetRequest('kid-other-copy', KID_2_ID);
+    db.prepare(`UPDATE requests SET status = 'ready', file_path = '/videos/sharedvideo.mp4', file_state = 'live' WHERE request_id = ?`)
+      .run('kid-other-copy');
+    seedShareSheetRequest('kid-inflight-shared', KID_ID);
+
+    await downloaded('kid-inflight-shared', BLOCKED_ID);
+
+    expect(fileRow('kid-inflight-shared').status).toBe('rejected');
+    expect(deleteQueue.add).not.toHaveBeenCalled();
+    expect(fileRow('kid-other-copy').status).toBe('ready');
+  });
+
+  it("makes an adult's download ready as usual", async () => {
+    seedShareSheetRequest('adult-inflight', PARENT_ID);
+    await downloaded('adult-inflight', BLOCKED_ID);
+    expect(fileRow('adult-inflight').status).toBe('ready');
   });
 });

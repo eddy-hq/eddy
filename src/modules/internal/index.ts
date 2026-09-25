@@ -47,6 +47,16 @@ interface DownloadedPayload {
 internalRouter.post('/videos/:youtube_id/downloaded', verifySignedJson<DownloadedPayload>(async (req, res, payload) => {
   const { requestId, filePath, nginxUrl, thumbnailUrl, title, channel, youtubeChannelId, description, durationSecs, transcript, publishedAt, fileSizeBytes } = payload;
 
+  // A channel blocked after the worker's pre-download check: the kid's
+  // request is rejected (and its file removed) instead of becoming visible.
+  const blockCheck = rejectIfChannelBlocked({
+    requestId, youtubeChannelId: youtubeChannelId ?? null, channel, filePath,
+  });
+  if (blockCheck.blocked) {
+    res.status(204).end();
+    return;
+  }
+
   const secondPass = needsDownloadSecondPass(requestId);
   const { result } = getRequestsState().apply({
     kind: secondPass ? 'mark_downloaded_for_second_pass' : 'mark_downloaded',

@@ -1,7 +1,7 @@
 import express, { type Request as ExpressRequest } from 'express';
 import 'express-async-errors';
 import supertest from 'supertest';
-import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Download-time second pass on slate picks (Phase 6a), end to end on the M4
 // side: the worker's signed /guard/score and /downloaded callbacks, the
@@ -62,6 +62,7 @@ vi.mock('../people/registry', () => ({
 vi.mock('../watchdog', () => ({ checkStuckDownloads: vi.fn() }));
 
 import { db } from '../../db/client';
+import { deleteQueue } from '../../queue';
 import { runMigrations } from '../../db/migrate';
 import { ollamaGenerate } from '../../ollama';
 import { sign } from '../../signed-channel';
@@ -413,5 +414,50 @@ describe('download-time second pass: everything else is unchanged', () => {
 
     expect(row('adult-pick').status).toBe('ready');
     expect(guardQueueAdd).not.toHaveBeenCalled();
+  });
+});
+
+describe('download-time second pass: Blocked channel', () => {
+  const blockPlaceholderChannel = () => db.prepare(
+    'INSERT OR IGNORE INTO blocked_channels (channel_id, display_name, blocked_by, blocked_at) VALUES (?, ?, ?, ?)',
+  ).run('UCplaceholder', 'Placeholder channel', ADULT_ID, new Date().toISOString());
+
+  beforeEach(() => {
+    vi.mocked(deleteQueue.add).mockClear();
+  });
+
+  afterEach(() => {
+    db.exec('DELETE FROM blocked_channels');
+  });
+
+  it('rejects a pick whose channel was blocked after download, without a model call, and removes the file', async () => {
+    seedRequest('pick-blocked');
+    await workerDownloaded('pick-blocked');
+    blockPlaceholderChannel();
+
+    await runDownloadSecondPass('pick-blocked');
+
+    // A slate pick the kid never asked for leaves every surface.
+    expect(row('pick-blocked')).toMatchObject({ status: 'deleted', file_path: null });
+    expect(ollamaGenerate).not.toHaveBeenCalled();
+    expect(deleteQueue.add).toHaveBeenCalledWith(
+      'delete', { requestId: 'pick-blocked', filePath: '/videos/pick-blocked.mp4' }, expect.anything(),
+    );
+    expect(notify).not.toHaveBeenCalled();
+    expect(await feedIds(KID_ID)).not.toContain('pick-blocked');
+  });
+
+  it('does not clear a pick whose channel was blocked while the guard ran', async () => {
+    seedRequest('pick-raced');
+    await workerDownloaded('pick-raced');
+    vi.mocked(ollamaGenerate).mockImplementation(async () => {
+      blockPlaceholderChannel();
+      return verdictJson('clear_yes');
+    });
+
+    await runDownloadSecondPass('pick-raced');
+
+    expect(row('pick-raced').status).toBe('deleted');
+    expect(notify).not.toHaveBeenCalled();
   });
 });

@@ -629,7 +629,7 @@ export async function enqueueDownloadSecondPass(requestId: string): Promise<void
 // missing transcript guards on metadata alone (recorded as such), a model
 // error comes back as uncertain, and anything that throws parks the pick.
 export async function runDownloadSecondPass(requestId: string): Promise<void> {
-  const { getRequestsState, readSecondPassInput } = await loadRequests();
+  const { getRequestsState, readSecondPassInput, rejectIfChannelBlocked } = await loadRequests();
   const input = readSecondPassInput(requestId);
   if (!input) {
     logger.warn({ requestId }, 'Second pass: request not found');
@@ -639,6 +639,11 @@ export async function runDownloadSecondPass(requestId: string): Promise<void> {
     logger.info({ requestId, currentStatus: input.status }, 'Second pass: request no longer awaiting the guard — skipping');
     return;
   }
+  // A Blocked channel needs no model call: the pick is rejected outright.
+  const channelBlocked = (): boolean => rejectIfChannelBlocked({
+    requestId, youtubeChannelId: input.youtubeChannelId, channel: input.channel,
+  }).blocked;
+  if (channelBlocked()) return;
 
   let outcome: DownloadedPickVerdict;
   try {
@@ -664,6 +669,8 @@ export async function runDownloadSecondPass(requestId: string): Promise<void> {
   );
 
   if (outcome.verdict === 'clear_yes') {
+    // The channel may have been blocked while the guard ran.
+    if (channelBlocked()) return;
     const { result } = getRequestsState().apply({ kind: 'mark_second_pass_cleared', requestId, reason: outcome.reason });
     if (!result.transitioned) {
       logger.info({ requestId, currentStatus: result.currentStatus }, 'Second pass: clear skipped — request no longer awaiting the guard');

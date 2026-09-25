@@ -138,6 +138,7 @@ export interface SecondPassInput {
   youtubeId: string | null;
   title: string | null;
   channel: string | null;
+  youtubeChannelId: string | null;
   description: string | null;
   transcript: string | null;
   status: string;
@@ -148,13 +149,13 @@ export interface SecondPassInput {
 // callback). Null when the row is gone.
 export function readSecondPassInput(requestId: string): SecondPassInput | null {
   const row = db.prepare(
-    `SELECT request_id, user_id, url, youtube_id, title, channel, description, transcript, status
+    `SELECT request_id, user_id, url, youtube_id, title, channel, youtube_channel_id, description, transcript, status
        FROM requests WHERE request_id = ?`,
   ).get(requestId) as
     | {
         request_id: string; user_id: string; url: string; youtube_id: string | null;
-        title: string | null; channel: string | null; description: string | null;
-        transcript: string | null; status: string;
+        title: string | null; channel: string | null; youtube_channel_id: string | null;
+        description: string | null; transcript: string | null; status: string;
       }
     | undefined;
   if (!row) return null;
@@ -165,6 +166,7 @@ export function readSecondPassInput(requestId: string): SecondPassInput | null {
     youtubeId: row.youtube_id,
     title: row.title,
     channel: row.channel,
+    youtubeChannelId: row.youtube_channel_id,
     description: row.description,
     transcript: row.transcript,
     status: row.status,
@@ -281,7 +283,16 @@ export type Event =
   | { kind: 'mark_parent_blocked'; requestId: string; parentId: string; reason: string }
   | { kind: 'mark_rejected'; requestId: string; reason: string }
   | { kind: 'mark_guard_blocked'; requestId: string; reason: string }
-  | { kind: 'mark_channel_blocked'; requestId: string; reason: string; youtubeChannelId: string | null; channel: string | null }
+  | {
+      kind: 'mark_channel_blocked' | 'mark_channel_blocked_hidden';
+      requestId: string;
+      reason: string;
+      youtubeChannelId: string | null;
+      channel: string | null;
+      // The downloaded file when the block is caught at the worker's
+      // completion callback (the row doesn't carry it yet). Absent otherwise.
+      filePath?: string | null;
+    }
   | { kind: 'mark_cancelled'; requestId: string }
   | { kind: 'mark_failed'; requestId: string }
   | { kind: 'retry'; requestId: string }
@@ -325,6 +336,58 @@ interface Descriptor<E extends Event> {
   // sees the post-update row). Returning undefined means "no pre-fetch".
   preFetch?: (event: E) => { sql: string; params: unknown[] } | undefined;
   effects: (event: E, result: TransitionResult) => Effect[];
+}
+
+type ChannelBlockedEvent = Extract<Event, { kind: 'mark_channel_blocked' | 'mark_channel_blocked_hidden' }>;
+
+// A kid's request from a Blocked channel. Caught first by the worker's channel
+// check after the metadata fetch (`downloading`, before any download or guard
+// call); and again, for a block that lands mid-flight, when the download
+// completes (`downloading`, file in the event) or before the second pass
+// clears a slate pick (`guard_review`). The file goes — the row must not stay
+// playable — unless another live request still points at the same
+// <youtubeId>.mp4 (downloads are shared across kids).
+function channelBlockedDescriptor(target: 'rejected' | 'deleted'): Descriptor<ChannelBlockedEvent> {
+  return {
+    sources: ['downloading', 'guard_review'],
+    target,
+    preFetch: (event) => ({
+      sql: `SELECT COALESCE(?, r.file_path) AS blocked_file_path,
+                   (SELECT COUNT(*) FROM requests o
+                     WHERE o.file_path = COALESCE(?, r.file_path)
+                       AND o.request_id != r.request_id
+                       AND o.file_state = 'live'
+                       AND o.status != 'deleted') AS other_live_refs
+              FROM requests r WHERE r.request_id = ?`,
+      params: [event.filePath ?? null, event.filePath ?? null, event.requestId],
+    }),
+    buildSql: (event, now) => ({
+      sql: `UPDATE requests
+              SET status             = '${target}',
+                  rejection_reason   = ?,
+                  youtube_channel_id = COALESCE(youtube_channel_id, ?),
+                  channel            = COALESCE(channel, ?),
+                  file_state         = CASE WHEN file_path IS NOT NULL OR ? IS NOT NULL THEN 'gone' ELSE file_state END,
+                  file_path          = NULL,
+                  nginx_url          = NULL,
+                  file_size_bytes    = NULL,
+                  deleted_at         = ${target === 'deleted' ? '?' : 'deleted_at'}
+            WHERE request_id = ? AND status IN ('downloading', 'guard_review')
+            RETURNING user_id`,
+      params: [
+        event.reason, event.youtubeChannelId, event.channel, event.filePath ?? null,
+        ...(target === 'deleted' ? [now] : []),
+        event.requestId,
+      ],
+    }),
+    effects: (event, result) => {
+      const sqlResult = (result as SqlResultCarrier).__sqlResult;
+      const filePath = sqlResult?.['blocked_file_path'] as string | null | undefined;
+      const otherLiveRefs = Number(sqlResult?.['other_live_refs'] ?? 0);
+      if (!result.transitioned || !filePath || otherLiveRefs > 0) return [];
+      return [{ kind: 'enqueue_delete', jobData: { requestId: event.requestId, filePath }, requestId: event.requestId }];
+    },
+  };
 }
 
 // Shared by mark_downloaded and mark_downloaded_for_second_pass: the same
@@ -720,25 +783,13 @@ export const TRANSITIONS = {
     effects: () => [],
   } as Descriptor<Extract<Event, { kind: 'mark_guard_blocked' }>>,
 
-  // A kid's request from a Blocked channel, caught by the worker after the
-  // metadata fetch and before the download or the guard. Same landing as a
-  // guard rejection (a reason, and the Appeal under it); the channel is kept
-  // on the row so the card can say whose it was.
-  mark_channel_blocked: {
-    sources: ['downloading'],
-    target: 'rejected',
-    buildSql: (event) => ({
-      sql: `UPDATE requests
-              SET status             = 'rejected',
-                  rejection_reason   = ?,
-                  youtube_channel_id = COALESCE(youtube_channel_id, ?),
-                  channel            = COALESCE(channel, ?)
-            WHERE request_id = ? AND status = 'downloading'
-            RETURNING user_id`,
-      params: [event.reason, event.youtubeChannelId, event.channel, event.requestId],
-    }),
-    effects: () => [],
-  } as Descriptor<Extract<Event, { kind: 'mark_channel_blocked' }>>,
+  // A kid's request from a Blocked channel (see channelBlockedDescriptor).
+  // A kid's own request lands `rejected`, with the reason and the Appeal.
+  mark_channel_blocked: channelBlockedDescriptor('rejected') as Descriptor<Extract<Event, { kind: 'mark_channel_blocked' }>>,
+
+  // A slate pick the kid never asked for leaves every kid surface instead
+  // (`deleted`, like a parent's Block): no card, no title from the channel.
+  mark_channel_blocked_hidden: channelBlockedDescriptor('deleted') as Descriptor<Extract<Event, { kind: 'mark_channel_blocked_hidden' }>>,
 
   mark_cancelled: {
     sources: CANCELLABLE_SOURCES,

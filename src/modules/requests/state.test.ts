@@ -1473,6 +1473,7 @@ function buildEvent(kind: Event['kind'], requestId: string): Event {
     case 'mark_guard_blocked':
       return { kind, requestId, reason: 'prop guard reason' };
     case 'mark_channel_blocked':
+    case 'mark_channel_blocked_hidden':
       return { kind, requestId, reason: 'prop channel reason', youtubeChannelId: PROP_CHANNEL_ID, channel: 'Placeholder channel' };
     case 'mark_cancelled':
       return { kind, requestId };
@@ -1631,7 +1632,8 @@ describe('TRANSITIONS property test', () => {
       // Mirror the columns runSql merges into __sqlResult: every column a
       // descriptor might read in `effects(...)` (RETURNING columns from the
       // UPDATE, plus any preFetch keys). `pre_file_path` is mark_recycled's
-      // preFetch alias for the pre-update file_path.
+      // preFetch alias for the pre-update file_path; `blocked_file_path` is
+      // mark_channel_blocked's.
       const fakeResult: TransitionResult & { __sqlResult?: Record<string, unknown> } = {
         transitioned: true,
         userId: source === 'creation' ? '' : USER_ID,
@@ -1639,6 +1641,7 @@ describe('TRANSITIONS property test', () => {
           user_id: USER_ID,
           file_path: PROP_FILE_PATH,
           pre_file_path: PROP_FILE_PATH,
+          blocked_file_path: PROP_FILE_PATH,
           youtube_id: PROP_YT_ID,
           url: PROP_URL,
         },
