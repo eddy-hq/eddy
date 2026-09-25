@@ -6,7 +6,7 @@
 // this file together and bump RUBRIC_VERSION — rubric.test.ts fails if the
 // limits tables drift apart.
 
-export const RUBRIC_VERSION = 'rubric-v1.2';
+export const RUBRIC_VERSION = 'rubric-v1.3';
 
 export type RubricScore = 0 | 1 | 2 | 3;
 
@@ -191,8 +191,8 @@ export interface FlagSpec {
 export const FLAGS: readonly FlagSpec[] = [
   {
     key: 'adult_game',
-    label: 'Adult-rated game',
-    description: 'gameplay or content from a PEGI 18 / ESRB M title (GTA, Call of Duty, …). Dimensions are still scored on what is actually shown.',
+    label: 'Adult-rated franchise',
+    description: 'gameplay or content from an adult-rated game, film or show (PEGI 18 / ESRB M games such as GTA or Call of Duty; 15- or 18-rated films and shows such as Squid Game or House of the Dragon), including parodies, roleplays, recreations in other games (Squid Game in Minecraft), and recaps, theories or commentary about them. Dimensions are still scored on what is actually shown.',
   },
   {
     key: 'loot_box',
@@ -325,7 +325,7 @@ export function verdictFromScores(
 }
 
 // Short parent-readable description of a driver, e.g. "Violence 3 (limit 1)"
-// or "Adult-rated game: never surfaced by discovery". Rubric names and
+// or "Adult-rated franchise: never surfaced by discovery". Rubric names and
 // numbers only, so it is safe in logs and summaries.
 export function describeDriver(d: VerdictDriver): string {
   switch (d.kind) {

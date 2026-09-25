@@ -63,7 +63,7 @@ const AGE_BANDS: Array<[string | null | undefined, LimitsBand]> = [
 
 describe('rubric shape', () => {
   it('is rubric-v1 with 8 dimensions, 4 hard stops and 2 flags, each dimension with 4 anchors', () => {
-    expect(RUBRIC_VERSION).toBe('rubric-v1.2');
+    expect(RUBRIC_VERSION).toBe('rubric-v1.3');
     expect(DIMENSIONS.map((d) => d.key)).toEqual([...DIMENSION_KEYS]);
     expect(HARD_STOPS.map((h) => h.key)).toEqual([...HARD_STOP_KEYS]);
     expect(FLAGS.map((f) => f.key)).toEqual([...FLAG_KEYS]);

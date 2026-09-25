@@ -1,10 +1,10 @@
-# Guard rubric — v1.2
+# Guard rubric — v1.3
 
 The parent's standards the guard judges against. Models score the dimensions and detect hard stops and flags; the limits table decides the verdict. One versioned source read by the guard prompt, the offline teacher, parent reason chips, and any trained student (brief §9, Phase 6a, §22; ADR-0014). Every label records the rubric version it was made under.
 
 Examples here are generic on purpose — never drawn from household viewing.
 
-The guard reads this rubric as code from `src/modules/guard/rubric.ts` (`rubric-v1.2`); change both together — a test fails if the limits or flag tables diverge.
+The guard reads this rubric as code from `src/modules/guard/rubric.ts` (`rubric-v1.3`); change both together — a test fails if the limits or flag tables diverge.
 
 Scale per dimension: 0 None · 1 Mild · 2 Moderate · 3 Severe.
 
@@ -19,7 +19,7 @@ Hard stops fire only on clear evidence. Suspected but unclear → uncertain (esc
 
 ## Flags (facts, not scales — the limits table decides per band)
 
-- Adult-rated game — gameplay or content from a PEGI 18 / ESRB M title (GTA, Call of Duty, …). Dimensions are still scored on what is actually shown; the flag lets bands treat 18-rated games differently.
+- Adult-rated franchise — gameplay or content from an adult-rated game, film or show (PEGI 18 / ESRB M games such as GTA or Call of Duty; 15- or 18-rated films and shows such as Squid Game or House of the Dragon), including parodies, roleplays, recreations in other games (Squid Game in Minecraft), and recaps, theories or commentary about them. Dimensions are still scored on what is actually shown; the flag lets bands treat adult-rated franchises differently.
 - Loot-box / pack opening — pack or case openings with loot-box mechanics (EA FC Ultimate Team, etc.). Scored Commercial 2 on its own facts; the flag carries the parent's preference (see Flags under the limits table).
 
 Detection is general-purpose (any parent would agree the flag applies); the action is the parent's, per kid. Flags are the mechanism for "things this parent specifically cares about".
@@ -108,7 +108,7 @@ Discovery is stricter than requests by construction: it surfaces only clear_yes,
 
 | Flag | Under 10 | 10–12 | 13–15 |
 |---|---|---|---|
-| Adult-rated game | Request: escalate · Discovery: never | Request: escalate · Discovery: never | Request: allow (scored on content) · Discovery: never |
+| Adult-rated franchise | Request: escalate · Discovery: never | Request: escalate · Discovery: never | Request: allow (scored on content) · Discovery: never |
 | Loot-box / pack opening | Request: escalate · Discovery: never | Request: allow · Discovery: never | Request: allow · Discovery: never |
 
 A flag's request action can only make a verdict stricter (allow leaves the dimension verdict as is), never looser.
