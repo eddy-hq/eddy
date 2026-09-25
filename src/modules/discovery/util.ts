@@ -125,3 +125,16 @@ export function automatedDownloadAllowance(
 ): number {
   return Math.min(globalBudget - globalSpent, perUserBudget - perUserSpent);
 }
+
+export type GuardVerdictValue = 'clear_yes' | 'clear_no' | 'uncertain';
+export type GuardedCandidateStatus = 'scored' | 'guard_rejected' | 'guard_pending';
+
+// Where a kid's candidate lands after a guard verdict. Only clear_yes makes it
+// eligible for the slate; clear_no is rejected; uncertain stays parked for a
+// parent. Discovery's recheck and the parked re-run both go through this, so
+// the mapping cannot drift between them.
+export function statusForGuardVerdict(verdict: GuardVerdictValue): GuardedCandidateStatus {
+  return verdict === 'clear_yes' ? 'scored'
+    : verdict === 'clear_no' ? 'guard_rejected'
+    : 'guard_pending';
+}

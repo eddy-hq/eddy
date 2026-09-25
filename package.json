@@ -22,6 +22,7 @@
     "discovery:preview-html": "tsx src/scripts/preview-html.ts",
     "eval:scoring-why": "tsx src/scripts/eval-scoring-why.ts",
     "label-guard": "tsx src/scripts/label-guard.ts",
+    "guard:rerun-parked": "tsx src/scripts/rerun-parked.ts",
     "thumbs:backfill": "tsx src/scripts/thumbs-backfill.ts",
     "thumbs:quality": "tsx src/scripts/thumb-quality-test.ts",
     "thumbs:frame-test": "tsx src/scripts/frame-quality-test.ts",
