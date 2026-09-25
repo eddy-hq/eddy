@@ -1,6 +1,6 @@
 # Eddy — Implementation Document
 
-**Status:** Phases 0–5 shipped (feed, guard shadow mode, RSS poller, channel follow, search, discovery). Discovery engine, interest picker, balance prompts, channel→interest inference, profile-editing surface (Interests + People), freeform-interest input, person bio/photo capture, topic→interest schema rename, "why this?" hard filter plus inline explanation, and kid interest-add through the guard are all live. Recommendation extraction and related-people expansion are deferred to Phase 7. Phase 6 (guard live) is next.
+**Status:** Phases 0–5 shipped (feed, guard shadow mode, RSS poller, channel follow, search, discovery). Discovery engine, interest picker, channel→interest inference, profile-editing surface (Interests + People), freeform-interest input, person bio/photo capture, topic→interest schema rename, "why this?" hard filter plus inline explanation, and kid interest-add through the guard are all live. Recommendation extraction and related-people expansion are deferred to Phase 7. Phase 6 (guard live) is next.
 
 Load-bearing decisions live in `docs/adr/`; prose-form design rationale lives in `docs/design-notes.md`; domain vocabulary lives in `CONTEXT.md`. This document is the spec.
 
@@ -1119,7 +1119,7 @@ Specs in Sections 4a and 9a. ~2-3 sessions.
 - Gemma scoring in batches, `why_text` stored per candidate; two-axis scoring (relevance + quality) and time-sensitivity classification on `candidate_pool` (migrations 018–020)
 - Shadow guard runs on discovered items the same way it runs on requested items
 - "Picked for you" cluster in Today, with end-of-list state (*"That's Today."*)
-- Balance prompt (>70% concentration, max once per 1-2 weeks)
+- Balance prompt (>70% concentration, max once per 1-2 weeks) — *not live:* its UI went with the Phase 5 discovery cards (#134) and its server half with the dead `/discovery/feed` route (#199); the `balance_prompts` table remains
 - Schema rename: topics → interests across tables and columns (migration 014)
 - `age_gate` flag and `emoji` column dropped from interests (migrations 016, 017)
 - Standalone `/interests` PWA route removed — Profile is the only edit surface; `/interests/*` API endpoints retained
