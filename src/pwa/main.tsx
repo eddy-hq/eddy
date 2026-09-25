@@ -6,6 +6,7 @@ import { RequestLanding } from './pages/RequestLanding';
 import { Feed } from './pages/Feed';
 import { Saved } from './pages/Saved';
 import { Admin } from './pages/Admin';
+import { Decisions } from './pages/Decisions';
 import { Watch } from './pages/Watch';
 import { Search } from './pages/Search';
 import { Profile } from './pages/Profile';
@@ -33,6 +34,7 @@ createRoot(root).render(
           <Route path="/feed"      element={<Feed />} />
           <Route path="/saved"     element={<Saved />} />
           <Route path="/admin"     element={<Admin />} />
+          <Route path="/decisions" element={<Decisions />} />
           <Route path="/watch/:requestId" element={<Watch />} />
           <Route path="/search"    element={<Search />} />
           <Route path="/profile"   element={<Profile />} />

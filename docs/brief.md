@@ -1167,7 +1167,8 @@ Discovery candidates are already enforced (kids only surface `clear_yes`), and ~
   - Daily queue capped ~15 items, escalations first; escalations older than 14 days appear only in **catch-up mode**, which lifts the cap and draws further spot checks from older verdict history.
   - Optional reason chips per decision, one per rubric dimension, plus free text.
   - Decisions are per kid (age bands differ); "same for both" when a video is pending for both.
-  - Every decision writes `guard_eval.human_verdict` with its source (escalation / spot check), rubric version, and age band at decision time.
+  - Every decision writes a `guard_decisions` row: the video, the kid, source (escalation / spot check / catch-up), rubric version and age band at decision time, the guard verdict it carried and the parent's verdict. A label is about a video for a kid, not one model run, so it lives apart from `guard_eval`; it is mirrored onto `guard_eval.human_verdict` when the verdict row shown is unambiguous (candidate verdicts record the kid and candidate from migration 044 on).
+  Built (slice 1): `/decisions?userId=<parent>` in the PWA over `/parent/decisions`. Today shows recent escalations then the day's spot checks, with the spot checks keeping their slots inside the cap; catch-up works through either pile (escalations of any age, or spot-check batches drawn from all history). Parent-only by id (a kid's id is refused), on the same network posture as the other PWA routes. Reason chips and the daily nudge are slice 2.
 - **Daily nudge** via `notify()` — "N decisions waiting", only when the queue is non-empty. No per-item push in 6a.
 
 **Ends with:** parked candidates resolvable in a few minutes a day, and a labelled set growing at ~5 spot checks + escalations per day. ~150 clear-yes spot checks (≈ ±3.5% on precision) in about five weeks, sooner with catch-up sessions.

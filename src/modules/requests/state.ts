@@ -98,6 +98,24 @@ export function findActiveDuplicateRequest(
   return row ? { requestId: row.request_id, status: row.status } : null;
 }
 
+// The slate-pick request a picked candidate became (discovery flips the
+// candidate to 'requested' and creates the request with the same kid and
+// video). Latest one wins; null when there is none.
+export function findSlatePickRequest(
+  userId: string,
+  youtubeId: string,
+): { requestId: string; status: string; source: string } | null {
+  const placeholders = SLATE_PICK_SOURCES.map(() => '?').join(', ');
+  const row = db.prepare(
+    `SELECT request_id, status, source FROM requests
+      WHERE user_id = ? AND youtube_id = ? AND source IN (${placeholders})
+      ORDER BY requested_at DESC LIMIT 1`,
+  ).get(userId, youtubeId, ...SLATE_PICK_SOURCES) as
+    | { request_id: string; status: string; source: string }
+    | undefined;
+  return row ? { requestId: row.request_id, status: row.status, source: row.source } : null;
+}
+
 // Whether a completed download must pass the download-time second pass before
 // it becomes visible: a slate pick (candidate-pool provenance) for a kid.
 // Adults' slate picks are never guarded (ADR-0009: the guard is the only
@@ -259,6 +277,8 @@ export type Event =
   | { kind: 'mark_downloaded_for_second_pass'; requestId: string; fields: DownloadedFields }
   | { kind: 'mark_second_pass_cleared'; requestId: string; reason: string }
   | { kind: 'mark_second_pass_parked'; requestId: string; verdict: 'uncertain' | 'clear_no'; reason: string }
+  | { kind: 'mark_parent_allowed'; requestId: string; parentId: string }
+  | { kind: 'mark_parent_blocked'; requestId: string; parentId: string; reason: string }
   | { kind: 'mark_rejected'; requestId: string; reason: string }
   | { kind: 'mark_guard_blocked'; requestId: string; reason: string }
   | { kind: 'mark_cancelled'; requestId: string }
@@ -348,6 +368,29 @@ function downloadedSql(
       requestId,
     ],
   };
+}
+
+// A slate pick becoming visible (second-pass clear, parent allow) fires the
+// two effects a plain mark_downloaded does: the kid's video_ready
+// notification and person capture for the channel.
+function becameVisibleEffects(requestId: string, result: TransitionResult): Effect[] {
+  if (!result.transitioned) return [];
+  const sqlResult = (result as SqlResultCarrier).__sqlResult;
+  const list: Effect[] = [{
+    kind: 'notify_video_ready',
+    userId: result.userId,
+    requestId,
+    title: (sqlResult?.['title'] as string | null | undefined) ?? '',
+  }];
+  const channelId = sqlResult?.['youtube_channel_id'] as string | null | undefined;
+  if (channelId) {
+    list.push({
+      kind: 'ensure_person_capture',
+      channelId,
+      channelName: (sqlResult?.['channel'] as string | null | undefined) ?? '',
+    });
+  }
+  return list;
 }
 
 // Cancel allow-list (was the standalone CANCELLABLE_FROM array): user-intent
@@ -567,25 +610,7 @@ export const TRANSITIONS = {
       params: [event.reason, event.requestId],
     }),
     // The same two effects mark_downloaded fires, deferred to here.
-    effects: (event, result) => {
-      if (!result.transitioned) return [];
-      const sqlResult = (result as SqlResultCarrier).__sqlResult;
-      const list: Effect[] = [{
-        kind: 'notify_video_ready',
-        userId: result.userId,
-        requestId: event.requestId,
-        title: (sqlResult?.['title'] as string | null | undefined) ?? '',
-      }];
-      const channelId = sqlResult?.['youtube_channel_id'] as string | null | undefined;
-      if (channelId) {
-        list.push({
-          kind: 'ensure_person_capture',
-          channelId,
-          channelName: (sqlResult?.['channel'] as string | null | undefined) ?? '',
-        });
-      }
-      return list;
-    },
+    effects: (event, result) => becameVisibleEffects(event.requestId, result),
   } as Descriptor<Extract<Event, { kind: 'mark_second_pass_cleared' }>>,
 
   // Second pass returned anything but clear_yes, or could not run: the row is
@@ -605,6 +630,65 @@ export const TRANSITIONS = {
     }),
     effects: () => [],
   } as Descriptor<Extract<Event, { kind: 'mark_second_pass_parked' }>>,
+
+  // A parent allowed a parked slate pick (an Escalation): it becomes visible
+  // exactly as a second-pass clear would have made it. guard_verdict keeps
+  // the guard's own verdict; the parent's label lives in guard_decisions.
+  mark_parent_allowed: {
+    sources: ['guard_pending'],
+    target: 'ready',
+    buildSql: (event, now) => ({
+      sql: `UPDATE requests
+              SET status     = 'ready',
+                  decided_by = ?,
+                  decided_at = ?
+            WHERE request_id = ? AND status = 'guard_pending'
+            RETURNING user_id, title, channel, youtube_channel_id`,
+      params: [event.parentId, now, event.requestId],
+    }),
+    effects: (event, result) => becameVisibleEffects(event.requestId, result),
+  } as Descriptor<Extract<Event, { kind: 'mark_parent_allowed' }>>,
+
+  // A parent blocked a parked slate pick, or a visible one on a Spot check:
+  // it leaves every kid surface, with the same row symmetry as
+  // mark_soft_deleted. The reason is kept for the audit trail. Downloads
+  // share one <youtubeId>.mp4 across kids, so the file is only removed when
+  // no other live request still points at it — blocking a video for one kid
+  // must not break the other's copy.
+  mark_parent_blocked: {
+    sources: ['guard_pending', 'ready', 'watched'],
+    target: 'deleted',
+    preFetch: (event) => ({
+      sql: `SELECT COUNT(*) AS other_live_refs
+              FROM requests o
+              JOIN requests r ON r.request_id = ?
+             WHERE o.file_path = r.file_path
+               AND o.request_id != r.request_id
+               AND o.file_state = 'live'
+               AND o.status != 'deleted'`,
+      params: [event.requestId],
+    }),
+    buildSql: (event, now) => ({
+      sql: `UPDATE requests
+              SET status           = 'deleted',
+                  file_state       = 'gone',
+                  file_size_bytes  = NULL,
+                  deleted_at       = ?,
+                  rejection_reason = ?,
+                  decided_by       = ?,
+                  decided_at       = ?
+            WHERE request_id = ? AND status IN ('guard_pending', 'ready', 'watched')
+            RETURNING user_id, file_path`,
+      params: [now, event.reason, event.parentId, now, event.requestId],
+    }),
+    effects: (event, result) => {
+      const sqlResult = (result as SqlResultCarrier).__sqlResult;
+      const filePath = sqlResult?.['file_path'] as string | null | undefined;
+      const otherLiveRefs = Number(sqlResult?.['other_live_refs'] ?? 0);
+      if (!result.transitioned || !filePath || otherLiveRefs > 0) return [];
+      return [{ kind: 'enqueue_delete', jobData: { requestId: event.requestId, filePath }, requestId: event.requestId }];
+    },
+  } as Descriptor<Extract<Event, { kind: 'mark_parent_blocked' }>>,
 
   // mark_rejected and mark_guard_blocked share identical SQL — kept distinct so
   // call sites reflect the actual cause. Both gate on `downloading` only:

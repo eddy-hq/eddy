@@ -127,6 +127,28 @@ describe('migration 043', () => {
   });
 });
 
+describe('migration 044', () => {
+  it('records the kid and candidate on a candidate verdict, for both prompts', async () => {
+    generate.mockResolvedValue('{"reason":"Fine.","verdict":"clear_yes","confidence":0.9}');
+    await evaluateCandidate(candidate());
+    mockConfig.GUARD_CANDIDATE_PROMPT = 'v4';
+    generate.mockResolvedValue(modelOutput());
+    await evaluateCandidate(candidate({ candidateId: 'cand-2' }));
+
+    const rows = db.prepare('SELECT user_id, candidate_id FROM guard_eval ORDER BY rowid').all();
+    expect(rows).toEqual([
+      { user_id: KID_OLDER, candidate_id: 'cand-1' },
+      { user_id: KID_OLDER, candidate_id: 'cand-2' },
+    ]);
+  });
+
+  it('records the kid on the age-restricted short-circuit too', async () => {
+    await evaluateCandidate(candidate({ ageRestricted: true }));
+    expect(db.prepare('SELECT user_id, candidate_id FROM guard_eval').get())
+      .toEqual({ user_id: KID_OLDER, candidate_id: 'cand-1' });
+  });
+});
+
 describe('GUARD_CANDIDATE_PROMPT switch', () => {
   it('defaults to v3: the verdict prompt, with the rubric columns left null', async () => {
     expect(liveCandidatePrompt()).toBe('v3');

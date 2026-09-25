@@ -32,6 +32,7 @@ export {
   CANCELLED_REASON,
   displayRejectionReason,
   findActiveDuplicateRequest,
+  findSlatePickRequest,
   needsDownloadSecondPass,
   readSecondPassInput,
   SLATE_PICK_SOURCES,

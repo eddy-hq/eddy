@@ -13,6 +13,7 @@ export const API_PREFIXES = [
   '/watch-events',
   '/devices',
   '/notifications',
+  '/parent',
   '/health',
   '/action',
   '/ios',

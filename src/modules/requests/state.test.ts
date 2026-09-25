@@ -1464,6 +1464,10 @@ function buildEvent(kind: Event['kind'], requestId: string): Event {
       return { kind, requestId, reason: 'prop clear reason' };
     case 'mark_second_pass_parked':
       return { kind, requestId, verdict: 'uncertain', reason: 'prop park reason' };
+    case 'mark_parent_allowed':
+      return { kind, requestId, parentId: USER_ID };
+    case 'mark_parent_blocked':
+      return { kind, requestId, parentId: USER_ID, reason: 'prop parent reason' };
     case 'mark_rejected':
       return { kind, requestId, reason: 'prop reject reason' };
     case 'mark_guard_blocked':

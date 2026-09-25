@@ -21,6 +21,7 @@ import { interestsRouter } from './modules/interests/index';
 import { avatarsRouter } from './modules/avatars/index';
 import { watchEventsRouter } from './modules/watch-events/index';
 import { iosEnrolRouter } from './modules/ios-enrol/index';
+import { decisionsRouter } from './modules/decisions/index';
 import {
   createNotifications,
   registerDefaultNotifications,
@@ -98,6 +99,7 @@ app.use('/discovery', discoveryRouter);
 app.use('/watch-events', watchEventsRouter);
 app.use('/devices', devicesRouter);
 app.use('/notifications', notificationsRouter);
+app.use('/parent/decisions', decisionsRouter);
 
 app.get('/health', async (_req: Request, res: Response) => {
   // DB — synchronous probe; throws if SQLite is broken
@@ -173,7 +175,10 @@ app.use((_req: Request, _res: Response, next: NextFunction) => {
 app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
   if (err instanceof EddyError) {
     logger.warn({ code: err.code, message: err.message }, 'Request error');
-    const status = err.code === 'NOT_FOUND' ? 404 : err.code === 'VALIDATION_ERROR' ? 400 : 500;
+    const status = err.code === 'NOT_FOUND' ? 404
+      : err.code === 'VALIDATION_ERROR' ? 400
+      : err.code === 'FORBIDDEN' ? 403
+      : 500;
     res.status(status).json({ error: err.code, message: err.message });
     return;
   }
