@@ -6,9 +6,12 @@ import { ollamaGenerate, parseOllamaJson } from '../../ollama';
 import { config } from '../../config';
 import { redis } from '../../queue';
 import { getAgeBand } from '../users';
+import { categoryName } from './metadata';
+
+export { ensureVideoMetadata, type StoredVideoMetadata } from './metadata';
 
 const PROMPT_VERSION = 'v2';
-const CANDIDATE_PROMPT_VERSION = 'candidate-v2';
+const CANDIDATE_PROMPT_VERSION = 'candidate-v3';
 const KID_INTEREST_PROMPT_VERSION = 'kid-interest-v2';
 export const KID_INTEREST_EVAL_JOB = 'kid-interest-eval';
 
@@ -72,12 +75,43 @@ interface PromptParams extends ScoreParams {
   // Null when the channel is unknown — the history line is then left out
   // rather than claiming there is no history.
   channelHistory: ChannelHistory | null;
+  // Data API fields, candidate flow only (Phase 6a). Each line is left out
+  // when the field is blank or unknown.
+  tags?: string[];
+  category?: string | null;
+  madeForKids?: boolean | null;
+}
+
+// Upper bound on the rendered tags line. Uploaders stuff tags; a few hundred
+// characters carries the signal without crowding out the rest of the prompt.
+const TAGS_MAX_CHARS = 300;
+
+function formatTags(tags: string[] | undefined): string {
+  let out = '';
+  for (const raw of tags ?? []) {
+    const tag = raw.trim();
+    if (!tag) continue;
+    const next = out ? `${out}, ${tag}` : tag;
+    if (next.length > TAGS_MAX_CHARS) break;
+    out = next;
+  }
+  return out;
 }
 
 function buildPrompt(params: PromptParams): string {
   const { title, channel, description, transcript, ageBand, channelHistory } = params;
 
   const desc = description.length > 500 ? description.slice(0, 500) + '...' : description;
+  const tags = formatTags(params.tags);
+  const category = params.category?.trim() ?? '';
+  // The uploader's audience setting, stated as a fact about the upload and
+  // never as a safety assurance: uploaders set it themselves, and Elsagate
+  // content was marked made for kids. Same caution as the follow line below.
+  const audience = params.madeForKids === true
+    ? 'YouTube audience setting: made for kids'
+    : params.madeForKids === false
+      ? 'YouTube audience setting: not made for kids'
+      : null;
   const txScript = transcript
     ? `\nTranscript excerpt:\n${transcript.slice(0, 2000)}${transcript.length > 2000 ? '...' : ''}`
     : '';
@@ -95,7 +129,10 @@ function buildPrompt(params: PromptParams): string {
   const details = [
     `Title: ${title}`,
     channel ? `Channel: ${channel}` : null,
+    category ? `Category: ${category}` : null,
     desc ? `Description: ${desc}` : null,
+    tags ? `Tags: ${tags}` : null,
+    audience,
   ].filter((line) => line !== null).join('\n');
 
   return `You are a content safety guard for a family media system. A child (aged ${ageBand}) wants to watch a YouTube video.
@@ -166,6 +203,14 @@ async function runGuardEvaluation(
     verdict = { verdict: 'uncertain', reason: 'Guard scoring error', confidence: 0 };
   }
 
+  recordGuardEval(verdict, ctx);
+  return verdict;
+}
+
+// Write one guard_eval row. Every verdict lands here — model-scored or
+// decided by rule (the age-restricted short-circuit) — so the eval set sees
+// all of them.
+function recordGuardEval(verdict: GuardVerdict, ctx: RunGuardCtx): void {
   const now = new Date().toISOString();
   db.prepare(`
     INSERT INTO guard_eval
@@ -189,8 +234,6 @@ async function runGuardEvaluation(
     interest_id: ctx.interestId ?? null,
     scored_at: now,
   });
-
-  return verdict;
 }
 
 export async function scoreForRequest(params: ScoreParams): Promise<GuardVerdict> {
@@ -236,12 +279,38 @@ export interface CandidateEvalParams {
   title: string;
   channel?: string | null;
   ageBand?: string;
+  // Data API metadata (Phase 6a), from video_metadata. All optional: a
+  // candidate without a stored row is guarded on title, channel and history
+  // alone, as before.
+  description?: string | null;
+  tags?: string[] | null;
+  categoryId?: string | null;
+  madeForKids?: boolean | null;
+  ageRestricted?: boolean;
 }
 
+export const AGE_RESTRICTED_REASON = 'Age-restricted on YouTube';
+
 // Evaluate a discovery candidate. The candidate flow has no request row, so
-// guard_eval.request_id is NULL and description/transcript are unavailable —
-// the title, the channel and the child's history with it carry the signal.
+// guard_eval.request_id is NULL and there is no transcript — the title,
+// channel, the child's history with it and any stored Data API metadata carry
+// the signal. A video YouTube itself age-restricts is a clear_no by rule, with
+// no model call; the verdict is still written to guard_eval so it counts in
+// the eval set.
 export async function evaluateCandidate(params: CandidateEvalParams): Promise<GuardVerdict> {
+  const ctx: RunGuardCtx = {
+    requestId: null,
+    url: params.url,
+    requestType: 'candidate',
+    promptVersion: CANDIDATE_PROMPT_VERSION,
+  };
+
+  if (params.ageRestricted === true) {
+    const verdict: GuardVerdict = { verdict: 'clear_no', reason: AGE_RESTRICTED_REASON, confidence: 1 };
+    recordGuardEval(verdict, ctx);
+    return verdict;
+  }
+
   const channel = params.channel?.trim() ?? '';
   const prompt = buildPrompt({
     requestId: params.candidateId,
@@ -249,17 +318,15 @@ export async function evaluateCandidate(params: CandidateEvalParams): Promise<Gu
     url: params.url,
     title: params.title,
     channel,
-    description: '',
+    description: params.description ?? '',
     transcript: null,
     ageBand: params.ageBand ?? getAgeBand(params.userId),
     channelHistory: channel ? getChannelHistory(params.userId, channel) : null,
+    tags: params.tags ?? [],
+    category: categoryName(params.categoryId),
+    madeForKids: params.madeForKids ?? null,
   });
-  return runGuardEvaluation(prompt, {
-    requestId: null,
-    url: params.url,
-    requestType: 'candidate',
-    promptVersion: CANDIDATE_PROMPT_VERSION,
-  });
+  return runGuardEvaluation(prompt, ctx);
 }
 
 // ── Kid-authored interest guard (shadow mode) ────────────────────────────────

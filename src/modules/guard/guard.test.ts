@@ -295,7 +295,7 @@ describe('evaluateCandidate', () => {
     expect(row['request_id']).toBeNull();
     expect(row['url']).toBe('https://youtube.com/watch?v=abc');
     expect(row['gemma_verdict']).toBe('clear_yes');
-    expect(row['prompt_version']).toBe('candidate-v2');
+    expect(row['prompt_version']).toBe('candidate-v3');
     expect(row['request_type']).toBe('candidate');
     expect(row['subject_text']).toBeNull();
     expect(row['interest_id']).toBeNull();
@@ -309,6 +309,111 @@ describe('evaluateCandidate', () => {
     });
     expect(result.verdict).toBe('uncertain');
     expect(result.confidence).toBe(0);
+  });
+});
+
+describe('evaluateCandidate with Data API metadata', () => {
+  function insertRow(): Record<string, unknown> | undefined {
+    const call = mockRun.mock.calls.find(
+      (c) => typeof c[0] === 'object' && c[0] !== null && 'eval_id' in (c[0] as Record<string, unknown>)
+    );
+    return call?.[0] as Record<string, unknown> | undefined;
+  }
+
+  it('rejects an age-restricted video without calling the model, and records the verdict', async () => {
+    const result = await evaluateCandidate({
+      candidateId: 'cand-ar', userId: 'user-1',
+      url: 'https://youtube.com/watch?v=ar1', title: 'Some video',
+      description: 'Anything', madeForKids: true, ageRestricted: true,
+    });
+
+    expect(result).toEqual({ verdict: 'clear_no', reason: 'Age-restricted on YouTube', confidence: 1 });
+    expect(ollamaGenerate).not.toHaveBeenCalled();
+
+    const row = insertRow();
+    expect(row).toBeDefined();
+    expect(row?.['gemma_verdict']).toBe('clear_no');
+    expect(row?.['gemma_reason']).toBe('Age-restricted on YouTube');
+    expect(row?.['gemma_confidence']).toBe(1);
+    expect(row?.['request_type']).toBe('candidate');
+    expect(row?.['prompt_version']).toBe('candidate-v3');
+    expect(row?.['request_id']).toBeNull();
+    expect(row?.['url']).toBe('https://youtube.com/watch?v=ar1');
+  });
+
+  it('still calls the model when the video is not age-restricted', async () => {
+    vi.mocked(ollamaGenerate).mockResolvedValue('{"reason":"ok","verdict":"clear_yes","confidence":0.9}');
+    const result = await evaluateCandidate({
+      candidateId: 'cand-ok', userId: 'user-1', url: 'https://x', title: 'Some video',
+      ageRestricted: false,
+    });
+    expect(ollamaGenerate).toHaveBeenCalledTimes(1);
+    expect(result.verdict).toBe('clear_yes');
+  });
+
+  it('adds description, category, tags and the audience setting when present', async () => {
+    vi.mocked(ollamaGenerate).mockResolvedValue('{"reason":"ok","verdict":"clear_yes","confidence":0.9}');
+    await evaluateCandidate({
+      candidateId: 'cand-3', userId: 'user-1', url: 'https://x', title: 'Some video',
+      description: 'A video about volcanoes.',
+      tags: ['volcano', 'geology'],
+      categoryId: '27',
+      madeForKids: true,
+    });
+    const prompt = vi.mocked(ollamaGenerate).mock.calls[0]?.[0] ?? '';
+    expect(prompt).toContain('Description: A video about volcanoes.');
+    expect(prompt).toContain('Tags: volcano, geology');
+    expect(prompt).toContain('Category: Education');
+    expect(prompt).toContain('YouTube audience setting: made for kids');
+  });
+
+  it('states the audience setting neutrally when not made for kids', async () => {
+    vi.mocked(ollamaGenerate).mockResolvedValue('{"reason":"ok","verdict":"clear_yes","confidence":0.9}');
+    await evaluateCandidate({
+      candidateId: 'cand-4', userId: 'user-1', url: 'https://x', title: 'Some video',
+      madeForKids: false,
+    });
+    const prompt = vi.mocked(ollamaGenerate).mock.calls[0]?.[0] ?? '';
+    const line = prompt.split('\n').find((l) => l.includes('audience setting'));
+    // A bare fact about the upload — no safety or suitability framing.
+    expect(line).toBe('YouTube audience setting: not made for kids');
+  });
+
+  it('omits every metadata line when fields are blank or unknown', async () => {
+    vi.mocked(ollamaGenerate).mockResolvedValue('{"reason":"ok","verdict":"clear_yes","confidence":0.9}');
+    await evaluateCandidate({
+      candidateId: 'cand-5', userId: 'user-1', url: 'https://x', title: 'Some video',
+      description: '', tags: [' ', ''], categoryId: '999', madeForKids: null,
+    });
+    const prompt = vi.mocked(ollamaGenerate).mock.calls[0]?.[0] ?? '';
+    expect(prompt).not.toContain('Description:');
+    expect(prompt).not.toContain('Tags:');
+    expect(prompt).not.toContain('Category:');
+    expect(prompt).not.toContain('audience setting');
+  });
+
+  it('truncates long descriptions to 500 characters', async () => {
+    vi.mocked(ollamaGenerate).mockResolvedValue('{"reason":"ok","verdict":"clear_yes","confidence":0.9}');
+    await evaluateCandidate({
+      candidateId: 'cand-6', userId: 'user-1', url: 'https://x', title: 'Some video',
+      description: 'x'.repeat(800),
+    });
+    const prompt = vi.mocked(ollamaGenerate).mock.calls[0]?.[0] ?? '';
+    expect(prompt).toContain(`Description: ${'x'.repeat(500)}...`);
+    expect(prompt).not.toContain('x'.repeat(501));
+  });
+
+  it('caps the tags line at whole tags', async () => {
+    vi.mocked(ollamaGenerate).mockResolvedValue('{"reason":"ok","verdict":"clear_yes","confidence":0.9}');
+    const tags = Array.from({ length: 100 }, (_, i) => `tag${i}`);
+    await evaluateCandidate({
+      candidateId: 'cand-7', userId: 'user-1', url: 'https://x', title: 'Some video', tags,
+    });
+    const prompt = vi.mocked(ollamaGenerate).mock.calls[0]?.[0] ?? '';
+    const line = prompt.split('\n').find((l) => l.startsWith('Tags: ')) ?? '';
+    expect(line.length - 'Tags: '.length).toBeLessThanOrEqual(300);
+    expect(line).toContain('tag0, tag1');
+    expect(line.endsWith(',')).toBe(false);
   });
 });
 

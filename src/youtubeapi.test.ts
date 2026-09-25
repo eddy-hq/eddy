@@ -384,6 +384,62 @@ describe('fetchVideoMetadata', () => {
     expect(map.get('b')).toMatchObject({ durationSecs: null, viewCount: null });
   });
 
+  it('requests the status part alongside snippet, contentDetails and statistics', async () => {
+    fetchMock.mockResolvedValue(fetchResult({ items: [] }));
+    await fetchVideoMetadata(['a']);
+    const url = fetchMock.mock.calls[0]?.[0] as URL;
+    expect(url.searchParams.get('part')).toBe('snippet,contentDetails,statistics,status');
+  });
+
+  it('maps description, tags, category, age restriction and made-for-kids', async () => {
+    fetchMock.mockResolvedValue(
+      fetchResult({
+        items: [
+          {
+            id: 'a',
+            snippet: { title: 'A', description: 'About A', tags: ['one', 'two'], categoryId: '27' },
+            contentDetails: { contentRating: { ytRating: 'ytAgeRestricted' } },
+            status: { madeForKids: false },
+          },
+          {
+            id: 'b',
+            snippet: { title: 'B', description: 'About B', categoryId: '10' },
+            contentDetails: { contentRating: {} },
+            status: { madeForKids: true },
+          },
+        ],
+      }),
+    );
+    const map = await fetchVideoMetadata(['a', 'b']);
+    expect(map.get('a')).toMatchObject({
+      description: 'About A',
+      tags: ['one', 'two'],
+      categoryId: '27',
+      ageRestricted: true,
+      madeForKids: false,
+    });
+    expect(map.get('b')).toMatchObject({
+      tags: [],
+      categoryId: '10',
+      ageRestricted: false,
+      madeForKids: true,
+    });
+  });
+
+  it('leaves guard fields empty or unknown when the API omits them', async () => {
+    fetchMock.mockResolvedValue(
+      fetchResult({ items: [{ id: 'a', snippet: { title: 'A', description: '   ' } }] }),
+    );
+    const map = await fetchVideoMetadata(['a']);
+    expect(map.get('a')).toMatchObject({
+      description: null,
+      tags: [],
+      categoryId: null,
+      ageRestricted: false,
+      madeForKids: null,
+    });
+  });
+
   it('returns an empty map for no ids without calling the API', async () => {
     const map = await fetchVideoMetadata([]);
     expect(map.size).toBe(0);
