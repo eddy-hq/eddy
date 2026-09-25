@@ -54,6 +54,16 @@ export interface VideoMetadata {
   uploadDate: string | null; // YYYYMMDD, matching yt-dlp's upload_date contract
   thumbnailUrl: string | null;
   liveStatus: string | null;
+  // Guard inputs (Phase 6a). Description is null when blank; tags is empty
+  // when the uploader set none (the API omits the field).
+  description: string | null;
+  tags: string[];
+  categoryId: string | null;
+  // contentRating.ytRating === 'ytAgeRestricted'. Age-restricted videos ARE
+  // returned to a plain API key, with this rating set.
+  ageRestricted: boolean;
+  // status.madeForKids — the uploader's audience setting. Null when absent.
+  madeForKids: boolean | null;
 }
 
 interface SearchListResponse {
@@ -82,9 +92,13 @@ interface VideoItem {
     publishedAt?: string;
     liveBroadcastContent?: string;
     thumbnails?: Record<string, { url?: string }>;
+    description?: string;
+    tags?: unknown;
+    categoryId?: string;
   };
-  contentDetails?: { duration?: string };
+  contentDetails?: { duration?: string; contentRating?: { ytRating?: string } };
   statistics?: { viewCount?: string };
+  status?: { madeForKids?: unknown };
 }
 
 interface VideosListResponse {
@@ -231,16 +245,24 @@ function toViewCount(raw: unknown): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-// Batched videos.list — up to 50 ids per call, 1 quota unit each. Returns a map
-// keyed by video id; ids the API omits (private / removed / age-gated) are
-// simply absent. Reused by the back-catalogue and duration slices.
+function toTags(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((t): t is string => typeof t === 'string' && t.trim() !== '');
+}
+
+// Batched videos.list — up to 50 ids per call, 1 quota unit each regardless of
+// how many parts are requested. Returns a map keyed by video id; ids the API
+// omits (private / removed) are simply absent. Age-restricted videos are NOT
+// omitted: checked 2026-09-25 against a batch of red-band trailers, every id
+// came back and the restricted ones carried contentRating.ytRating =
+// 'ytAgeRestricted'. Reused by the back-catalogue, duration and guard slices.
 export async function fetchVideoMetadata(ids: string[]): Promise<Map<string, VideoMetadata>> {
   const out = new Map<string, VideoMetadata>();
   for (let i = 0; i < ids.length; i += 50) {
     const batch = ids.slice(i, i + 50);
     if (batch.length === 0) continue;
     const data = await apiGet<VideosListResponse>('videos', {
-      part: 'snippet,contentDetails,statistics',
+      part: 'snippet,contentDetails,statistics,status',
       id: batch.join(','),
       maxResults: '50',
     });
@@ -250,6 +272,10 @@ export async function fetchVideoMetadata(ids: string[]): Promise<Map<string, Vid
       const sn = item.snippet ?? {};
       const cd = item.contentDetails ?? {};
       const st = item.statistics ?? {};
+      const status = item.status ?? {};
+      const description = typeof sn.description === 'string' && sn.description.trim()
+        ? sn.description
+        : null;
       out.set(id, {
         videoId: id,
         title: String(sn.title ?? ''),
@@ -260,6 +286,11 @@ export async function fetchVideoMetadata(ids: string[]): Promise<Map<string, Vid
         uploadDate: publishedAtToYmd(sn.publishedAt),
         thumbnailUrl: pickThumbnail(sn.thumbnails),
         liveStatus: mapLiveStatus(sn.liveBroadcastContent),
+        description,
+        tags: toTags(sn.tags),
+        categoryId: typeof sn.categoryId === 'string' && sn.categoryId ? sn.categoryId : null,
+        ageRestricted: cd.contentRating?.ytRating === 'ytAgeRestricted',
+        madeForKids: typeof status.madeForKids === 'boolean' ? status.madeForKids : null,
       });
     }
   }

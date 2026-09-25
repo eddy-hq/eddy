@@ -10,7 +10,8 @@
 //
 // Discovery reads dispatched here: searchVideosWithDates (#190),
 // flatPlaylistChannel (#191), channelInfo (#192), videoDurations (#193,
-// batched), recentUploads (the daily follow poll). Interactive parent-facing UI
+// batched), recentUploads (the daily follow poll), videoMetadata (guard inputs
+// for discovery candidates, Phase 6a). Interactive parent-facing UI
 // searches also dispatch here: searchVideosFlat (search-videos route) and
 // searchChannelsFlat (people-search route) — the same source switch, but with
 // no freshness bound.
@@ -74,4 +75,15 @@ export function recentUploads(channelId: string): Promise<api.RecentUpload[] | n
 // missing id means "no usable duration", which the caller treats as unknown.
 export function videoDurations(ids: string[]) {
   return useApi() ? api.videoDurations(ids) : ytdlp.videoDurations(ids);
+}
+
+export type { VideoMetadata } from './youtubeapi';
+
+// Guard inputs for discovery candidates (Phase 6a): description, tags,
+// category, age restriction and the made-for-kids setting, batched 50 ids per
+// call at 1 unit each. Like recentUploads there is no yt-dlp equivalent on
+// purpose — a per-candidate scrape is extra IP exposure (ADR-0011/0012) — so
+// the fallback source returns null and the guard runs on its existing inputs.
+export function videoMetadata(ids: string[]): Promise<Map<string, api.VideoMetadata> | null> {
+  return useApi() ? api.fetchVideoMetadata(ids) : Promise.resolve(null);
 }
