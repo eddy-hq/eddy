@@ -39,6 +39,7 @@ vi.mock('../../queue', () => ({
   guardQueue: { add: vi.fn() },
   discoveryQueue: {},
   thumbsQueue: {},
+  decisionsQueue: {},
 }));
 
 vi.mock('../notifications', () => ({
@@ -56,8 +57,15 @@ vi.mock('../watchdog', () => ({ checkStuckDownloads: vi.fn() }));
 import { db } from '../../db/client';
 import { runMigrations } from '../../db/migrate';
 import { EddyError } from '../../errors';
-import { RUBRIC_VERSION } from '../guard';
-import { decisionsRouter, readDecisionQueue, recordDecision } from './index';
+import { DIMENSIONS, RUBRIC_VERSION } from '../guard';
+import {
+  countDecisionsWaiting,
+  decisionsRouter,
+  nudgeDay,
+  readDecisionQueue,
+  recordDecision,
+  sendDecisionsNudge,
+} from './index';
 import { DAILY_CARD_CAP } from './util';
 
 const KID_1 = '11111111-1111-7111-8111-111111111111';
@@ -90,6 +98,7 @@ beforeAll(() => {
 });
 
 beforeEach(() => {
+  db.exec('DELETE FROM decision_nudges');
   db.exec('DELETE FROM guard_decisions');
   db.exec('DELETE FROM guard_spot_checks');
   db.exec('DELETE FROM guard_eval');
@@ -522,5 +531,199 @@ describe('Block channel', () => {
     expect(res.status).toBe(400);
     expect(decisions()).toEqual([]);
     expect(db.prepare('SELECT COUNT(*) AS n FROM blocked_channels').get()).toEqual({ n: 0 });
+  });
+});
+
+describe('Reason chips', () => {
+  const post = (decisions: Array<Record<string, unknown>>) =>
+    supertest(app).post('/parent/decisions').send({ userId: PARENT, decisions });
+
+  it('serves the rubric dimensions with the queue, in rubric order', () => {
+    expect(queue().reasons).toEqual({
+      dimensions: DIMENSIONS.map((d) => ({ key: d.key, label: d.label })),
+      textMax: 280,
+    });
+  });
+
+  it('records the chips and note with the decision', async () => {
+    seedCandidate('c1');
+    const res = await post([{
+      subjectType: 'candidate', subjectId: 'c1', verdict: 'clear_no',
+      reasonDimensions: ['violence', 'frightening', 'violence'], reasonText: '  Too intense for this age  ',
+    }]);
+    expect(res.status).toBe(200);
+    expect(decisions()).toEqual([expect.objectContaining({
+      subject_id: 'c1', human_verdict: 'clear_no',
+      reason_dimensions_json: JSON.stringify(['violence', 'frightening']),
+      reason_text: 'Too intense for this age',
+    })]);
+  });
+
+  it('records a note on its own, or chips on their own', async () => {
+    seedCandidate('c1');
+    seedCandidate('c2');
+    await post([{ subjectType: 'candidate', subjectId: 'c1', verdict: 'clear_yes', reasonText: 'Fine' }]);
+    await post([{ subjectType: 'candidate', subjectId: 'c2', verdict: 'clear_no', reasonDimensions: ['commercial'] }]);
+    const byId = new Map(decisions().map((d) => [d['subject_id'], d]));
+    expect(byId.get('c1')).toMatchObject({ reason_dimensions_json: null, reason_text: 'Fine' });
+    expect(byId.get('c2')).toMatchObject({ reason_dimensions_json: '["commercial"]', reason_text: null });
+  });
+
+  it('a bare decision still works and stores no reason', async () => {
+    seedCandidate('c1');
+    const res = await post([{ subjectType: 'candidate', subjectId: 'c1', verdict: 'clear_yes' }]);
+    expect(res.status).toBe(200);
+    expect(decisions()).toEqual([expect.objectContaining({
+      subject_id: 'c1', reason_dimensions_json: null, reason_text: null,
+    })]);
+  });
+
+  it('treats an empty chip list and a blank note as no reason', async () => {
+    seedCandidate('c1');
+    await post([{ subjectType: 'candidate', subjectId: 'c1', verdict: 'clear_yes', reasonDimensions: [], reasonText: '   ' }]);
+    expect(decisions()).toEqual([expect.objectContaining({ reason_dimensions_json: null, reason_text: null })]);
+  });
+
+  it('refuses a dimension that is not in the rubric, and records nothing', async () => {
+    seedCandidate('c1');
+    for (const key of ['gore', 'self_harm', 'adult_game']) {
+      const res = await post([{ subjectType: 'candidate', subjectId: 'c1', verdict: 'clear_no', reasonDimensions: ['violence', key] }]);
+      expect(res.status).toBe(400);
+    }
+    expect(decisions()).toEqual([]);
+    expect(status('candidate_pool', 'c1')).toMatchObject({ status: 'guard_pending' });
+  });
+
+  it('refuses a note over 280 characters', async () => {
+    seedCandidate('c1');
+    const res = await post([{ subjectType: 'candidate', subjectId: 'c1', verdict: 'clear_no', reasonText: 'x'.repeat(281) }]);
+    expect(res.status).toBe(400);
+    expect(decisions()).toEqual([]);
+  });
+
+  it('records the same reason for each kid on a "same for both" card', async () => {
+    seedCandidate('both-k1', { userId: KID_1, yt: 'both' });
+    seedCandidate('both-k2', { userId: KID_2, yt: 'both' });
+    const reason = { reasonDimensions: ['language'], reasonText: 'Swearing' };
+    await post([
+      { subjectType: 'candidate', subjectId: 'both-k1', verdict: 'clear_no', ...reason },
+      { subjectType: 'candidate', subjectId: 'both-k2', verdict: 'clear_no', ...reason },
+    ]);
+    expect(decisions().map((d) => [d['reason_dimensions_json'], d['reason_text']])).toEqual([
+      ['["language"]', 'Swearing'],
+      ['["language"]', 'Swearing'],
+    ]);
+  });
+
+  it('records a Spot check reason with the source it was drawn under', async () => {
+    seedCandidate('sc', { status: 'scored', verdict: 'clear_yes', createdAt: daysAgo(2) });
+    const card = queue().cards.find((c) => c.source === 'spot_check')!;
+    await post([{ ...card.subjects.map((x) => ({ subjectType: x.subjectType, subjectId: x.subjectId }))[0]!, verdict: 'clear_no', reasonDimensions: ['dangerous'] }]);
+    expect(decisions()).toEqual([expect.objectContaining({
+      source: 'spot_check', reason_dimensions_json: '["dangerous"]',
+    })]);
+  });
+
+  describe('on Block channel', () => {
+    afterEach(() => {
+      db.exec('DELETE FROM blocked_channels');
+    });
+
+    it("records the card's reason on each kid's Block", async () => {
+      seedCandidate('bc-k1', { userId: KID_1, yt: 'bc' });
+      seedCandidate('bc-k2', { userId: KID_2, yt: 'bc' });
+      db.prepare("UPDATE candidate_pool SET channel_id = 'UCreasonreasonreason000' WHERE candidate_id LIKE 'bc-%'").run();
+      const res = await supertest(app).post('/parent/decisions/block-channel').send({
+        userId: PARENT,
+        subjects: [{ subjectType: 'candidate', subjectId: 'bc-k1' }, { subjectType: 'candidate', subjectId: 'bc-k2' }],
+        reasonDimensions: ['attitude'],
+        reasonText: 'Not for us',
+      });
+      expect(res.status).toBe(200);
+      expect(decisions().map((d) => [d['subject_id'], d['human_verdict'], d['reason_dimensions_json'], d['reason_text']])).toEqual([
+        ['bc-k1', 'clear_no', '["attitude"]', 'Not for us'],
+        ['bc-k2', 'clear_no', '["attitude"]', 'Not for us'],
+      ]);
+    });
+
+    it('refuses an unknown dimension and blocks nothing', async () => {
+      seedCandidate('bc');
+      db.prepare("UPDATE candidate_pool SET channel_id = 'UCreasonreasonreason000' WHERE candidate_id = 'bc'").run();
+      const res = await supertest(app).post('/parent/decisions/block-channel').send({
+        userId: PARENT, subjects: [{ subjectType: 'candidate', subjectId: 'bc' }], reasonDimensions: ['nope'],
+      });
+      expect(res.status).toBe(400);
+      expect(decisions()).toEqual([]);
+      expect(db.prepare('SELECT COUNT(*) AS n FROM blocked_channels').get()).toEqual({ n: 0 });
+    });
+  });
+});
+
+describe('Daily nudge', () => {
+  // 18:00 UTC is 19:00 in London in September (BST).
+  const EVENING = new Date('2026-09-25T18:00:00.000Z');
+  const TZ = 'Europe/London';
+  const PARENT_2 = '44444444-4444-7444-8444-444444444444';
+
+  beforeAll(() => {
+    db.prepare(
+      'INSERT INTO users (user_id, display_name, role, age_gate, birth_year, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+    ).run(PARENT_2, 'Parent2', 'parent', 0, null, NOW.toISOString());
+  });
+
+  it("counts exactly the cards in Today's queue", () => {
+    seedCandidate('e1');
+    seedCandidate('both-k1', { userId: KID_1, yt: 'both' });
+    seedCandidate('both-k2', { userId: KID_2, yt: 'both' });
+    seedCandidate('sc', { status: 'scored', verdict: 'clear_yes', createdAt: daysAgo(2) });
+    const today = readDecisionQueue({ mode: 'today', now: EVENING }).cards;
+    // Two escalation cards (one for both kids) and one spot check.
+    expect(today).toHaveLength(3);
+    expect(countDecisionsWaiting(EVENING)).toBe(today.length);
+  });
+
+  it('notifies each parent once with the count when decisions wait', async () => {
+    seedCandidate('e1');
+    seedCandidate('e2');
+    const result = await sendDecisionsNudge(EVENING, TZ);
+    expect(result).toEqual({ count: 2, notified: [PARENT, PARENT_2] });
+    expect(notify).toHaveBeenCalledTimes(2);
+    expect(notify).toHaveBeenCalledWith({ kind: 'decisions_waiting', count: 2 }, PARENT);
+    expect(notify).toHaveBeenCalledWith({ kind: 'decisions_waiting', count: 2 }, PARENT_2);
+    // Never a kid.
+    expect(notify.mock.calls.map((c) => c[1])).not.toContain(KID_1);
+  });
+
+  it('carries a count only: no titles, channels or kid names', async () => {
+    seedCandidate('e1');
+    await sendDecisionsNudge(EVENING, TZ);
+    for (const [event] of notify.mock.calls) {
+      expect(Object.keys(event as object).sort()).toEqual(['count', 'kind']);
+    }
+  });
+
+  it('sends nothing when the queue is empty', async () => {
+    const result = await sendDecisionsNudge(EVENING, TZ);
+    expect(result).toEqual({ count: 0, notified: [] });
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it('sends at most once a day, and again the next day', async () => {
+    seedCandidate('e1');
+    await sendDecisionsNudge(EVENING, TZ);
+    // A second firing the same evening (a restart, a changed schedule).
+    const again = await sendDecisionsNudge(new Date('2026-09-25T20:30:00.000Z'), TZ);
+    expect(again.notified).toEqual([]);
+    expect(notify).toHaveBeenCalledTimes(2);
+
+    const nextDay = await sendDecisionsNudge(new Date('2026-09-26T18:00:00.000Z'), TZ);
+    expect(nextDay.notified).toEqual([PARENT, PARENT_2]);
+    expect(notify).toHaveBeenCalledTimes(4);
+  });
+
+  it("keys the day in the nudge's time zone, not UTC", () => {
+    // 23:30 UTC on the 25th is 00:30 on the 26th in London.
+    expect(nudgeDay(new Date('2026-09-25T23:30:00.000Z'), TZ)).toBe('2026-09-26');
+    expect(nudgeDay(new Date('2026-09-25T23:30:00.000Z'), 'UTC')).toBe('2026-09-25');
   });
 });

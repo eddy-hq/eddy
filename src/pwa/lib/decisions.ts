@@ -38,11 +38,19 @@ export interface DecisionCard {
   subjects: CardSubject[];
 }
 
+// Reason chips offered on each card: the rubric's scored dimensions, served
+// with the queue (the rubric's one source is on the server).
+export interface ReasonOptions {
+  dimensions: Array<{ key: string; label: string }>;
+  textMax: number;
+}
+
 export interface DecisionQueue {
   mode: 'today' | 'catch_up';
   focus: 'escalations' | 'spot_checks' | null;
   cards: DecisionCard[];
   counts: { escalations: number; escalationsRecent: number; spotChecksToday: number };
+  reasons: ReasonOptions;
 }
 
 export interface DecisionOutcome {
@@ -54,18 +62,79 @@ export interface DecisionOutcome {
   guard: ShownEval;
 }
 
-export interface DecisionPayloadItem {
+// ── Reason chips ─────────────────────────────────────────────────────────────
+//
+// Optional, picked on the card before Allow / Block, and sent with the
+// decision in the same request. Nothing picked is a bare decision.
+
+export interface ReasonDraft {
+  dimensions: string[];
+  text: string;
+}
+
+export const EMPTY_REASON: ReasonDraft = { dimensions: [], text: '' };
+
+// Toggle a chip. Selected chips stay in the offered (rubric) order whatever
+// order they were tapped in; a key not on offer is ignored.
+export function toggleReasonDimension(draft: ReasonDraft, key: string, options: ReasonOptions): ReasonDraft {
+  const offered = options.dimensions.map((d) => d.key);
+  if (!offered.includes(key)) return draft;
+  const selected = new Set(draft.dimensions);
+  if (selected.has(key)) selected.delete(key);
+  else selected.add(key);
+  return { ...draft, dimensions: offered.filter((k) => selected.has(k)) };
+}
+
+// The note, cut to the server's cap.
+export function setReasonText(draft: ReasonDraft, text: string, options: ReasonOptions): ReasonDraft {
+  return { ...draft, text: text.slice(0, options.textMax) };
+}
+
+export function hasReason(draft: ReasonDraft): boolean {
+  return draft.dimensions.length > 0 || draft.text.trim().length > 0;
+}
+
+export interface ReasonFields {
+  reasonDimensions?: string[];
+  reasonText?: string;
+}
+
+// The fields a decision request carries; empty ones are left out, so a card
+// with no reason posts exactly what a bare decision always has.
+export function reasonFields(draft: ReasonDraft): ReasonFields {
+  const out: ReasonFields = {};
+  if (draft.dimensions.length > 0) out.reasonDimensions = [...draft.dimensions];
+  const text = draft.text.trim();
+  if (text) out.reasonText = text;
+  return out;
+}
+
+// "Add a reason" collapsed: a short summary of what's picked, if anything.
+export function reasonSummary(draft: ReasonDraft, options: ReasonOptions): string | null {
+  if (!hasReason(draft)) return null;
+  const labels = draft.dimensions.map((k) => options.dimensions.find((d) => d.key === k)?.label ?? k);
+  if (draft.text.trim()) labels.push('note');
+  return labels.join(', ');
+}
+
+export interface DecisionPayloadItem extends ReasonFields {
   subjectType: SubjectType;
   subjectId: string;
   verdict: HumanVerdict;
 }
 
 // One card's decisions: every kid on the card ("same for both"), or only the
-// named kid.
-export function decisionsForCard(card: DecisionCard, verdict: HumanVerdict, onlyUserId?: string): DecisionPayloadItem[] {
+// named kid. The card's reason, if any, goes on each.
+export function decisionsForCard(
+  card: DecisionCard,
+  verdict: HumanVerdict,
+  onlyUserId?: string,
+  reason: ReasonDraft = EMPTY_REASON,
+): DecisionPayloadItem[] {
+  const fields = reasonFields(reason);
   return card.subjects
     .filter((s) => !onlyUserId || s.userId === onlyUserId)
-    .map((s) => ({ subjectType: s.subjectType, subjectId: s.subjectId, verdict }));
+    .map((s) => ({ subjectType: s.subjectType, subjectId: s.subjectId, verdict, ...fields }));
 }
 
 // Drop decided subjects from the local queue; a card goes once every kid on
@@ -100,6 +169,16 @@ export function canBlockChannel(card: DecisionCard): boolean {
 // Every kid on the card: the video is recorded as a Block for each of them.
 export function blockChannelSubjects(card: DecisionCard): Array<{ subjectType: SubjectType; subjectId: string }> {
   return card.subjects.map((s) => ({ subjectType: s.subjectType, subjectId: s.subjectId }));
+}
+
+// The Block channel request: every kid on the card, plus the card's reason
+// (recorded on each kid's Block, as on the Block button).
+export function blockChannelBody(
+  userId: string,
+  card: DecisionCard,
+  reason: ReasonDraft = EMPTY_REASON,
+): { userId: string; subjects: Array<{ subjectType: SubjectType; subjectId: string }> } & ReasonFields {
+  return { userId, subjects: blockChannelSubjects(card), ...reasonFields(reason) };
 }
 
 export function channelLabel(card: DecisionCard): string {

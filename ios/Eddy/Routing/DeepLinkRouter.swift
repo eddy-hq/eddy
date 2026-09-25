@@ -14,7 +14,7 @@ enum DeepLinkRouter {
     static let scheme = "eddy"
     static let fallbackPath = "/feed"
 
-    static let leafRoutes: Set<String> = ["feed", "saved", "search", "profile", "request", "admin"]
+    static let leafRoutes: Set<String> = ["feed", "saved", "search", "profile", "request", "admin", "decisions"]
     static let parameterisedRoutes: Set<String> = ["watch", "person"]
 
     /// Pure: URL in, intent out. Returns nil for anything that isn't `eddy://`.

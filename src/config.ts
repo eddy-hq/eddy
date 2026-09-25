@@ -2,6 +2,15 @@ import os from 'os';
 import path from 'path';
 import { z } from 'zod';
 
+function isTimeZone(tz: string): boolean {
+  try {
+    new Intl.DateTimeFormat('en-GB', { timeZone: tz });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 const schema = z.object({
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
   PORT: z.coerce.number().default(3737),
@@ -182,6 +191,16 @@ const schema = z.object({
   // rubric (docs/guard-rubric.md) and lets the limits table decide. Kid
   // requests (shadow mode) are unaffected.
   GUARD_CANDIDATE_PROMPT: z.enum(['v3', 'v4']).default('v3'),
+  // ── Decisions nudge (Phase 6a) ───────────────────────────────────────────
+  // When the daily "N decisions waiting" notification goes to the parent(s):
+  // a five-field cron pattern read in DECISIONS_NUDGE_TZ. Sent only when
+  // Today's Decisions queue is non-empty, at most once a day per parent.
+  DECISIONS_NUDGE_CRON: z.string().trim()
+    .regex(/^\S+(\s+\S+){4}$/, 'DECISIONS_NUDGE_CRON must be a five-field cron pattern')
+    .default('0 19 * * *'),
+  DECISIONS_NUDGE_TZ: z.string().trim()
+    .refine(isTimeZone, 'DECISIONS_NUDGE_TZ must be an IANA time zone, e.g. Europe/London')
+    .default('Europe/London'),
 }).superRefine((env, ctx) => {
   if (env.DISCOVERY_SOURCE === 'api' && !env.YOUTUBE_API_KEY) {
     ctx.addIssue({

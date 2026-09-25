@@ -70,6 +70,7 @@ function levelFor(kind: NotificationEvent['kind']): LogLevel {
       return 'warn';
     case 'video_ready':
     case 'parent_review':
+    case 'decisions_waiting':
       return 'info';
   }
 }
@@ -94,6 +95,9 @@ function detailsFor(event: NotificationEvent): Record<string, unknown> {
 
     case 'circuit_open':
       return { consecutiveTrips: event.consecutiveTrips };
+
+    case 'decisions_waiting':
+      return { count: event.count };
 
     case 'download_failure_streak':
       // `lastError` is already reduced to the first line of a yt-dlp failure
@@ -147,6 +151,13 @@ export function contentFor(event: NotificationEvent): NotificationContent {
         title: 'Downloads paused',
         body: `yt-dlp was blocked ${event.consecutiveTrips} times in a row. Downloads stay paused until you resume them.`,
         actionUrl: '/admin',
+      };
+
+    case 'decisions_waiting':
+      return {
+        title: 'Decisions',
+        body: `${event.count} decision${event.count === 1 ? '' : 's'} waiting`,
+        actionUrl: '/decisions',
       };
 
     case 'download_failure_streak':

@@ -19,6 +19,11 @@ final class NotificationTapRouterTests: XCTestCase {
         XCTAssertEqual(route("/admin"), "/admin")
     }
 
+    /// The daily Decisions nudge.
+    func testDecisionsRoutes() {
+        XCTAssertEqual(route("/decisions"), "/decisions")
+    }
+
     func testAQueryIsCarried() {
         let link = NotificationTapRouter.deepLink(forActionPath: "/search?q=trains")
         guard case .route(let path, let query)? = link.flatMap(DeepLinkRouter.parse) else {

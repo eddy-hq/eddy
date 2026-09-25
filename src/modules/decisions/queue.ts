@@ -4,6 +4,7 @@
 // goes through the owning module (decide.ts).
 import { db } from '../../db/client';
 import {
+  DIMENSIONS,
   cleanDescription,
   readVideoMetadata,
   shownEvalForCandidate,
@@ -15,6 +16,7 @@ import { notBlockedChannelSql } from '../blocked-channels';
 import {
   CATCH_UP_BATCH_MIX,
   CATCH_UP_PAGE,
+  REASON_TEXT_MAX,
   DAILY_CARD_CAP,
   ESCALATION_RECENT_DAYS,
   SPOT_CHECK_MIX,
@@ -73,10 +75,26 @@ export interface DecisionCard {
   subjects: CardSubject[];
 }
 
+// What a card's optional reason may carry: one chip per rubric scored
+// dimension, in rubric order, and a capped note. Served with the queue so the
+// PWA never holds its own copy of the rubric.
+export interface ReasonOptions {
+  dimensions: Array<{ key: string; label: string }>;
+  textMax: number;
+}
+
+export function reasonOptions(): ReasonOptions {
+  return {
+    dimensions: DIMENSIONS.map((d) => ({ key: d.key, label: d.label })),
+    textMax: REASON_TEXT_MAX,
+  };
+}
+
 export interface DecisionQueue {
   mode: 'today' | 'catch_up';
   focus: 'escalations' | 'spot_checks' | null;
   cards: DecisionCard[];
+  reasons: ReasonOptions;
   counts: {
     escalations: number;        // undecided, any age
     escalationsRecent: number;  // undecided, within the daily window
@@ -350,13 +368,13 @@ export function readDecisionQueue(opts: QueueOptions): DecisionQueue {
       return fresh <= allowance;
     });
     const cards = [...escalations, ...spotChecks];
-    return { mode: 'today', focus: null, cards, counts };
+    return { mode: 'today', focus: null, cards, counts, reasons: reasonOptions() };
   }
 
   const focus = opts.focus ?? 'escalations';
   if (focus === 'escalations') {
     const cards = toCards(readEscalations(''), 'escalation', bands).slice(0, CATCH_UP_PAGE);
-    return { mode: 'catch_up', focus, cards, counts };
+    return { mode: 'catch_up', focus, cards, counts, reasons: reasonOptions() };
   }
 
   // Spot checks: today's first, then catch-up draws from all history, a
@@ -370,5 +388,5 @@ export function readDecisionQueue(opts: QueueOptions): DecisionQueue {
     ...toCards(readDrawn(day, 'spot_check'), 'spot_check', bands),
     ...toCards(catchUp, 'catch_up', bands),
   ].slice(0, CATCH_UP_PAGE);
-  return { mode: 'catch_up', focus, cards, counts };
+  return { mode: 'catch_up', focus, cards, counts, reasons: reasonOptions() };
 }

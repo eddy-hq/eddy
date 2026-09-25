@@ -2,27 +2,33 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { AnimatePresence, motion } from 'framer-motion';
-import { Ban, Check, ExternalLink, SkipForward, X } from 'lucide-react';
+import { Ban, Check, ChevronDown, ChevronUp, ExternalLink, SkipForward, X } from 'lucide-react';
 import {
+  EMPTY_REASON,
   SOURCE_LABEL,
   agreement,
+  blockChannelBody,
   blockChannelFlash,
   blockChannelPrompt,
-  blockChannelSubjects,
   canBlockChannel,
   decisionsForCard,
   effectLabel,
   formatScores,
   keyAction,
   removeChannelCards,
+  reasonSummary,
   removeDecided,
+  setReasonText,
   skipCard,
+  toggleReasonDimension,
   verdictLabel,
   type BlockChannelResult,
   type DecisionCard,
   type DecisionOutcome,
   type DecisionQueue,
   type HumanVerdict,
+  type ReasonDraft,
+  type ReasonOptions,
   type ShownEval,
 } from '../lib/decisions';
 
@@ -54,11 +60,11 @@ async function postDecisions(
   return ((await res.json()) as { outcomes: DecisionOutcome[] }).outcomes;
 }
 
-async function postBlockChannel(userId: string, card: DecisionCard): Promise<BlockChannelResult> {
+async function postBlockChannel(userId: string, card: DecisionCard, reason: ReasonDraft): Promise<BlockChannelResult> {
   const res = await fetch('/parent/decisions/block-channel', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ userId, subjects: blockChannelSubjects(card) }),
+    body: JSON.stringify(blockChannelBody(userId, card, reason)),
   });
   if (!res.ok) throw new Error(`Could not block the channel (${res.status})`);
   return (await res.json()) as BlockChannelResult;
@@ -149,6 +155,76 @@ function VideoSummary({ card }: { card: DecisionCard }) {
   );
 }
 
+// Optional reason for the card's decision: collapsed behind "Add a reason" so
+// a bare Allow / Block stays one tap. Chips are the rubric's dimensions.
+function ReasonPicker({ options, draft, open, disabled, onToggleOpen, onChange }: {
+  options: ReasonOptions;
+  draft: ReasonDraft;
+  open: boolean;
+  disabled: boolean;
+  onToggleOpen: () => void;
+  onChange: (next: ReasonDraft) => void;
+}) {
+  const summary = reasonSummary(draft, options);
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <button
+        type="button"
+        onClick={onToggleOpen}
+        aria-expanded={open}
+        style={{
+          alignSelf: 'flex-start', display: 'flex', alignItems: 'center', gap: 4,
+          border: 'none', background: 'transparent', padding: 0, cursor: 'pointer',
+          fontSize: 'var(--text-sm)', color: 'var(--text-secondary)',
+        }}
+      >
+        {open ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+        {summary ? `Reason: ${summary}` : 'Add a reason'}
+      </button>
+      {open && (
+        <>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+            {options.dimensions.map((d) => {
+              const on = draft.dimensions.includes(d.key);
+              return (
+                <button
+                  key={d.key}
+                  type="button"
+                  disabled={disabled}
+                  aria-pressed={on}
+                  onClick={() => onChange(toggleReasonDimension(draft, d.key, options))}
+                  style={{
+                    padding: '5px 10px', borderRadius: 20, cursor: 'pointer',
+                    fontSize: 'var(--text-xs)', fontWeight: 600,
+                    border: on ? '1px solid var(--accent)' : '1px solid var(--border-subtle)',
+                    background: on ? 'var(--accent)' : 'var(--bg-surface)',
+                    color: on ? '#fff' : 'var(--text-secondary)',
+                  }}
+                >
+                  {d.label}
+                </button>
+              );
+            })}
+          </div>
+          <input
+            type="text"
+            value={draft.text}
+            maxLength={options.textMax}
+            disabled={disabled}
+            placeholder="Note (optional)"
+            aria-label="Reason note"
+            onChange={(e) => onChange(setReasonText(draft, e.target.value, options))}
+            style={{
+              padding: '8px 10px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-subtle)',
+              background: 'var(--bg-surface)', color: 'var(--text-primary)', fontSize: 'var(--text-sm)',
+            }}
+          />
+        </>
+      )}
+    </div>
+  );
+}
+
 const actionButton = (colour: string, filled: boolean): React.CSSProperties => ({
   flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
   padding: '12px 10px', borderRadius: 'var(--radius-md)', cursor: 'pointer',
@@ -173,6 +249,9 @@ export function Decisions() {
   const [error, setError] = useState<string | null>(null);
   // The card key "Block channel" is waiting on a confirm for, if any.
   const [confirmBlockKey, setConfirmBlockKey] = useState<string | null>(null);
+  // The current card's optional reason, and whether its picker is open.
+  const [reason, setReason] = useState<ReasonDraft>(EMPTY_REASON);
+  const [reasonOpen, setReasonOpen] = useState(false);
 
   const queryKey = ['decisions', userId, mode, focus];
   const { data, isLoading, error: loadError, dataUpdatedAt } = useQuery({
@@ -197,6 +276,13 @@ export function Decisions() {
 
   const current = cards[0] ?? null;
 
+  // A reason belongs to one card: a new card starts bare.
+  const currentKey = current?.key ?? null;
+  useEffect(() => {
+    setReason(EMPTY_REASON);
+    setReasonOpen(false);
+  }, [currentKey]);
+
   const refetchIfEmpty = useCallback((next: DecisionCard[]) => {
     if (next.length === 0) void queryClient.invalidateQueries({ queryKey: ['decisions', userId] });
   }, [queryClient, userId]);
@@ -206,10 +292,13 @@ export function Decisions() {
     setBusy(true);
     setError(null);
     try {
-      const outcomes = await postDecisions(userId, decisionsForCard(current, verdict, onlyUserId));
+      const outcomes = await postDecisions(userId, decisionsForCard(current, verdict, onlyUserId, reason));
       const decided = new Set(outcomes.map((o) => o.subjectId));
       const next = removeDecided(cards, decided);
       setCards(next);
+      // Deciding one kid of two keeps the card; its next decision starts bare.
+      setReason(EMPTY_REASON);
+      setReasonOpen(false);
       if (current.source === 'escalation') {
         setFlash(outcomes.map((o) => effectLabel(o.effect)).filter((v, i, a) => a.indexOf(v) === i).join(' · '));
         refetchIfEmpty(next);
@@ -222,14 +311,14 @@ export function Decisions() {
     } finally {
       setBusy(false);
     }
-  }, [current, busy, userId, cards, refetchIfEmpty]);
+  }, [current, busy, userId, cards, refetchIfEmpty, reason]);
 
   const blockChannel = useCallback(async () => {
     if (!current || busy) return;
     setBusy(true);
     setError(null);
     try {
-      const result = await postBlockChannel(userId, current);
+      const result = await postBlockChannel(userId, current, reason);
       const decided = new Set(result.outcomes.map((o) => o.subjectId));
       const next = removeChannelCards(removeDecided(cards, decided), result.channel);
       setCards(next);
@@ -241,7 +330,7 @@ export function Decisions() {
     } finally {
       setBusy(false);
     }
-  }, [current, busy, userId, cards, refetchIfEmpty]);
+  }, [current, busy, userId, cards, refetchIfEmpty, reason]);
 
   const skip = useCallback(() => {
     if (current) setCards((cs) => skipCard(cs, current.key));
@@ -332,6 +421,17 @@ export function Decisions() {
             {current.source === 'escalation' && current.subjects.map((s) => s.guard && (
               <GuardPanel key={s.subjectId} guard={s.guard} title={multi ? `Guard for ${s.kidName}` : 'Guard'} />
             ))}
+
+            {data?.reasons && (
+              <ReasonPicker
+                options={data.reasons}
+                draft={reason}
+                open={reasonOpen}
+                disabled={busy}
+                onToggleOpen={() => setReasonOpen((o) => !o)}
+                onChange={setReason}
+              />
+            )}
 
             <div style={{ display: 'flex', gap: 8 }}>
               <button disabled={busy} onClick={() => void decide('clear_yes')} style={actionButton('var(--save)', true)}>

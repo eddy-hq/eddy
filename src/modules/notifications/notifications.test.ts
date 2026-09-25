@@ -112,6 +112,14 @@ describe('createNotifications — log level by event kind', () => {
     expect(fields['action']).toBe('failed');
   });
 
+  it('logs decisions_waiting at info, with the count only', async () => {
+    const mod = createNotifications();
+    await mod.notify({ kind: 'decisions_waiting', count: 4 }, RECIPIENT);
+    expect(infoMock).toHaveBeenCalledTimes(1);
+    expect(warnMock).not.toHaveBeenCalled();
+    expect(lastFields(infoMock)).toMatchObject({ kind: 'decisions_waiting', count: 4, recipient: RECIPIENT });
+  });
+
   it('logs circuit_open at warn, with the consecutive trip count', async () => {
     const mod = createNotifications();
     await mod.notify({ kind: 'circuit_open', consecutiveTrips: 3 }, RECIPIENT);
