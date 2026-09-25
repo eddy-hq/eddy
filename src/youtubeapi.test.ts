@@ -20,6 +20,7 @@ import {
   flatPlaylistChannel,
   recentUploads,
   channelInfo,
+  channelIdentity,
   videoDuration,
   videoDurations,
   getQuotaUsage,
@@ -634,6 +635,32 @@ describe('channelInfo', () => {
   it('throws when the channel is missing', async () => {
     fetchMock.mockResolvedValue(fetchResult({ items: [] }));
     await expect(channelInfo('UCx')).rejects.toBeInstanceOf(YoutubeApiError);
+  });
+});
+
+describe('channelIdentity', () => {
+  const CHANNEL_ID = 'UCaaaaaaaaaaaaaaaaaaaaaa';
+
+  it('looks a handle up with channels.list forHandle', async () => {
+    fetchMock.mockResolvedValue(fetchResult({ items: [{ id: CHANNEL_ID, snippet: { title: 'Placeholder channel' } }] }));
+    const out = await channelIdentity({ kind: 'handle', handle: '@placeholder' });
+    expect(out).toEqual({ channelId: CHANNEL_ID, displayName: 'Placeholder channel' });
+    const url = new URL(String(fetchMock.mock.calls[0]![0]));
+    expect(url.pathname).toMatch(/\/channels$/);
+    expect(url.searchParams.get('forHandle')).toBe('@placeholder');
+  });
+
+  it("reads a video's channel from videos.list", async () => {
+    fetchMock.mockResolvedValue(fetchResult({
+      items: [{ id: 'abcdefghijk', snippet: { title: 'V', channelTitle: 'Placeholder channel', channelId: CHANNEL_ID }, contentDetails: { duration: 'PT3M' } }],
+    }));
+    expect(await channelIdentity({ kind: 'video', videoId: 'abcdefghijk' }))
+      .toEqual({ channelId: CHANNEL_ID, displayName: 'Placeholder channel' });
+  });
+
+  it('returns null when nothing matches', async () => {
+    fetchMock.mockResolvedValue(fetchResult({ items: [] }));
+    expect(await channelIdentity({ kind: 'channel_id', channelId: CHANNEL_ID })).toBeNull();
   });
 });
 

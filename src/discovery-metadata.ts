@@ -14,7 +14,8 @@
 // for discovery candidates, Phase 6a). Interactive parent-facing UI
 // searches also dispatch here: searchVideosFlat (search-videos route) and
 // searchChannelsFlat (people-search route) — the same source switch, but with
-// no freshness bound.
+// no freshness bound. The block-channel CLI resolves a channel reference
+// through channelIdentity here too.
 import { config } from './config';
 import * as ytdlp from './ytdlp';
 import * as api from './youtubeapi';
@@ -25,6 +26,8 @@ export type {
   SearchChannel,
   PlaylistEntry,
   ChannelInfo,
+  ChannelLookup,
+  ChannelIdentity,
 } from './ytdlp';
 
 const useApi = (): boolean => config.DISCOVERY_SOURCE === 'api';
@@ -70,6 +73,11 @@ export function flatPlaylistChannel(channelId: string) {
 
 export function channelInfo(channelId: string) {
   return useApi() ? api.channelInfo(channelId) : ytdlp.channelInfo(channelId);
+}
+
+// Channel id + title for a channel reference (block-channel CLI).
+export function channelIdentity(lookup: ytdlp.ChannelLookup): Promise<ytdlp.ChannelIdentity | null> {
+  return useApi() ? api.channelIdentity(lookup) : ytdlp.channelIdentity(lookup);
 }
 
 export type { RecentUpload } from './youtubeapi';

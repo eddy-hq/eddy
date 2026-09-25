@@ -168,6 +168,10 @@ _Avoid_: preferences, settings, account
 A keyword on a kid's **Profile** that auto-rejects any matching candidate or request — invisible to the kid, set only by a parent.
 _Avoid_: blocklist, ban, filter
 
+**Blocked channel**:
+A YouTube channel a parent has blocked for every kid in the household (`blocked_channels`, set from a **Decisions** card or `npm run block-channel`). Its videos never enter or surface from a kid's **Candidate pool**, and a kid's **Request** from it is rejected before **The guard** runs, with a reason and the usual **Appeal**. Follows are kept; adults are unaffected. Distinct from a **Hard exclusion** (a per-kid keyword) and from a Block on a **Decisions** card (one video, one kid).
+_Avoid_: banned channel, blacklist, channel filter
+
 **Relevance axis / Quality axis**:
 The two independent scores Gemma assigns each **Candidate** — *does this match what this user wants now?* and *is this good on its own terms?* Kept separate so failures are diagnosable.
 _Avoid_: score (the single-number form was deliberately rejected)

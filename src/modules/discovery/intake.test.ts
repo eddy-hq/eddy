@@ -87,11 +87,14 @@ function searchResult(opts: {
   durationSecs?: number | null;
   uploadDate?: string | null;
   liveStatus?: string | null;
+  channel?: string;
+  channelId?: string;
 }): SearchVideoWithDate {
   return {
     videoId: opts.videoId,
     title: opts.title ?? `Title ${opts.videoId}`,
-    channel: 'Some Channel',
+    channel: opts.channel ?? 'Some Channel',
+    channelId: opts.channelId ?? '',
     durationSecs: opts.durationSecs ?? 600,
     viewCount: 1000,
     uploadDate: opts.uploadDate ?? uploadDateStr(7),
@@ -405,6 +408,7 @@ describe('refreshCandidatePool — channel dismissal filter (issue #147)', () =>
         videoId: 'fresh-vid',
         title: 'Title',
         channel: 'Quiet Channel',
+        channelId: '',
         durationSecs: 600,
         viewCount: 1000,
         uploadDate: uploadDateStr(7),
@@ -437,6 +441,7 @@ describe('refreshCandidatePool — channel dismissal filter (issue #147)', () =>
         videoId: 'noisy-vid',
         title: 'Title',
         channel: 'Noisy Channel',
+        channelId: '',
         durationSecs: 600,
         viewCount: 1000,
         uploadDate: uploadDateStr(7),
@@ -448,6 +453,7 @@ describe('refreshCandidatePool — channel dismissal filter (issue #147)', () =>
         videoId: 'other-vid',
         title: 'Title',
         channel: 'Other Channel',
+        channelId: '',
         durationSecs: 600,
         viewCount: 1000,
         uploadDate: uploadDateStr(7),
@@ -494,6 +500,7 @@ describe('refreshCandidatePool — channel dismissal filter (issue #147)', () =>
         videoId: 'incoming-vid',
         title: 'Title',
         channel: 'Mixed Channel',
+        channelId: '',
         durationSecs: 600,
         viewCount: 1000,
         uploadDate: uploadDateStr(7),
@@ -527,6 +534,7 @@ describe('refreshCandidatePool — channel dismissal filter (issue #147)', () =>
         videoId: 'still-fresh',
         title: 'Title',
         channel: 'Heavily Dismissed',
+        channelId: '',
         durationSecs: 600,
         viewCount: 1000,
         uploadDate: uploadDateStr(7),
@@ -735,5 +743,89 @@ describe('seedBackCatalogCandidates — dedup switch to isDuplicateCandidate', (
     } finally {
       mockConfig.BACK_CATALOGUE_ENABLED = true;
     }
+  });
+});
+
+describe('Blocked channels at intake', () => {
+  const ADULT_ID = '22222222-2222-7222-8222-222222222222';
+  const BLOCKED_ID = 'UCblockedblockedblocked0';
+  const OTHER_ID = 'UCotherotherotherother00';
+  const PERSON_ID = 'person-blocked-1';
+
+  const interests = (): UserInterestRow[] => [
+    makeInterest({ interestId: 'i1', rank: 1, searchTerms: JSON.stringify(['term']) }),
+  ];
+
+  beforeAll(() => {
+    db.prepare(
+      'INSERT OR IGNORE INTO users (user_id, display_name, role, age_gate, created_at) VALUES (?, ?, ?, ?, ?)',
+    ).run(ADULT_ID, 'Parent1', 'parent', 0, new Date().toISOString());
+  });
+
+  beforeEach(() => {
+    db.exec('DELETE FROM blocked_channels');
+    db.exec('DELETE FROM followed_people');
+    db.exec('DELETE FROM person_outputs');
+    db.exec('DELETE FROM people');
+    mockedPlaylist.mockReset();
+    db.prepare(
+      'INSERT INTO blocked_channels (channel_id, display_name, blocked_by, blocked_at) VALUES (?, ?, ?, ?)',
+    ).run(BLOCKED_ID, 'Placeholder blocked channel', ADULT_ID, new Date().toISOString());
+  });
+
+  function poolIds(userId: string): string[] {
+    return (db.prepare('SELECT external_id FROM candidate_pool WHERE user_id = ? ORDER BY external_id')
+      .all(userId) as Array<{ external_id: string }>).map((r) => r.external_id);
+  }
+
+  it("drops a blocked channel's search results for a kid and records the channel id on the rest", async () => {
+    mockedSearch.mockResolvedValue([
+      searchResult({ videoId: 'blocked-vid', channel: 'Placeholder blocked channel', channelId: BLOCKED_ID }),
+      searchResult({ videoId: 'other-vid', channel: 'Placeholder other channel', channelId: OTHER_ID }),
+    ]);
+
+    const added = await refreshCandidatePool(USER_ID, interests());
+
+    expect(added).toBe(1);
+    expect(poolIds(USER_ID)).toEqual(['other-vid']);
+    const row = db.prepare('SELECT channel_id FROM candidate_pool WHERE external_id = ?').get('other-vid') as { channel_id: string };
+    expect(row.channel_id).toBe(OTHER_ID);
+  });
+
+  it('falls back to the display name when a result carries no channel id', async () => {
+    mockedSearch.mockResolvedValue([
+      searchResult({ videoId: 'nameless-id', channel: 'Placeholder blocked channel', channelId: '' }),
+    ]);
+
+    expect(await refreshCandidatePool(USER_ID, interests())).toBe(0);
+  });
+
+  it("leaves an adult's intake alone", async () => {
+    mockedSearch.mockResolvedValue([
+      searchResult({ videoId: 'blocked-vid', channel: 'Placeholder blocked channel', channelId: BLOCKED_ID }),
+    ]);
+
+    expect(await refreshCandidatePool(ADULT_ID, interests())).toBe(1);
+    expect(poolIds(ADULT_ID)).toEqual(['blocked-vid']);
+  });
+
+  it("skips a followed, blocked channel's back catalogue for a kid but keeps the follow", async () => {
+    db.prepare('INSERT INTO people (person_id, display_name, created_at) VALUES (?, ?, ?)')
+      .run(PERSON_ID, 'Placeholder blocked channel', new Date().toISOString());
+    db.prepare(
+      `INSERT INTO person_outputs (output_id, person_id, output_type, external_id, active, last_polled)
+       VALUES (?, ?, 'youtube', ?, 1, NULL)`,
+    ).run('output-blocked-1', PERSON_ID, BLOCKED_ID);
+    db.prepare(
+      `INSERT INTO followed_people (user_id, person_id, trust_weight, followed_at, followed_via)
+       VALUES (?, ?, 1.0, ?, 'manual')`,
+    ).run(USER_ID, PERSON_ID, new Date().toISOString());
+    mockedPlaylist.mockResolvedValue([
+      { videoId: 'backcat-vid', title: 'Placeholder title', durationSecs: 600, liveStatus: null },
+    ]);
+
+    expect(await seedBackCatalogCandidates(USER_ID)).toBe(0);
+    expect(mockedPlaylist).not.toHaveBeenCalled();
+    expect(db.prepare('SELECT 1 FROM followed_people WHERE user_id = ? AND person_id = ?').get(USER_ID, PERSON_ID)).toBeDefined();
   });
 });

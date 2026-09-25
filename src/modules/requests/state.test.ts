@@ -1472,6 +1472,8 @@ function buildEvent(kind: Event['kind'], requestId: string): Event {
       return { kind, requestId, reason: 'prop reject reason' };
     case 'mark_guard_blocked':
       return { kind, requestId, reason: 'prop guard reason' };
+    case 'mark_channel_blocked':
+      return { kind, requestId, reason: 'prop channel reason', youtubeChannelId: PROP_CHANNEL_ID, channel: 'Placeholder channel' };
     case 'mark_cancelled':
       return { kind, requestId };
     case 'mark_failed':

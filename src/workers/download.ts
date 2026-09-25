@@ -126,6 +126,25 @@ async function processJob(job: Job<DownloadJobData>, token?: string): Promise<vo
   // from an earlier rough patch (#185 follow-on). Fail-open, don't block the job.
   await clearBotDetectionEscalation(redis);
 
+  // Blocked channels: now the channel is known, ask the M4 before spending a
+  // download or a guard call. A kid's request from a blocked channel comes
+  // back rejected (with its reason) and the job ends here. A failed check
+  // throws, so BullMQ retries rather than downloading unchecked. Restores
+  // skip it: the file was already the kid's.
+  if (!isRestore) {
+    const check = await postSigned(`/internal/requests/${requestId}/channel-check`, {
+      requestId,
+      youtubeChannelId: metadata.youtubeChannelId,
+      channel: metadata.channel,
+    });
+    const { blocked } = (await check.json()) as { blocked?: boolean };
+    if (blocked) {
+      await redis.del(PROGRESS_KEY(requestId));
+      log.info('Channel blocked for this kid — request rejected before download');
+      return;
+    }
+  }
+
   // Start guard score (skipped on restore) and download concurrently — guard
   // runs while video downloads.
   log.info(isRestore ? 'Starting download (guard skipped — restore)' : 'Starting guard score and download in parallel');

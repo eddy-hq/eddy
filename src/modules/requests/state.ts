@@ -281,6 +281,7 @@ export type Event =
   | { kind: 'mark_parent_blocked'; requestId: string; parentId: string; reason: string }
   | { kind: 'mark_rejected'; requestId: string; reason: string }
   | { kind: 'mark_guard_blocked'; requestId: string; reason: string }
+  | { kind: 'mark_channel_blocked'; requestId: string; reason: string; youtubeChannelId: string | null; channel: string | null }
   | { kind: 'mark_cancelled'; requestId: string }
   | { kind: 'mark_failed'; requestId: string }
   | { kind: 'retry'; requestId: string }
@@ -718,6 +719,26 @@ export const TRANSITIONS = {
     }),
     effects: () => [],
   } as Descriptor<Extract<Event, { kind: 'mark_guard_blocked' }>>,
+
+  // A kid's request from a Blocked channel, caught by the worker after the
+  // metadata fetch and before the download or the guard. Same landing as a
+  // guard rejection (a reason, and the Appeal under it); the channel is kept
+  // on the row so the card can say whose it was.
+  mark_channel_blocked: {
+    sources: ['downloading'],
+    target: 'rejected',
+    buildSql: (event) => ({
+      sql: `UPDATE requests
+              SET status             = 'rejected',
+                  rejection_reason   = ?,
+                  youtube_channel_id = COALESCE(youtube_channel_id, ?),
+                  channel            = COALESCE(channel, ?)
+            WHERE request_id = ? AND status = 'downloading'
+            RETURNING user_id`,
+      params: [event.reason, event.youtubeChannelId, event.channel, event.requestId],
+    }),
+    effects: () => [],
+  } as Descriptor<Extract<Event, { kind: 'mark_channel_blocked' }>>,
 
   mark_cancelled: {
     sources: CANCELLABLE_SOURCES,

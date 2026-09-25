@@ -7,9 +7,11 @@ import { z } from 'zod';
 import { ValidationError } from '../../errors';
 import { recordDecision, requireParent, type DecisionOutcome } from './decide';
 import { readDecisionQueue } from './queue';
+import { blockChannelFromCard } from './block-channel';
 
 export { readDecisionQueue, type DecisionQueue, type DecisionCard, type CardSubject } from './queue';
 export { recordDecision, requireParent, type DecisionOutcome, type DecisionEffect } from './decide';
+export { blockChannelFromCard, channelForSubjects, type BlockChannelResult, type CardSubjectRef } from './block-channel';
 
 export const decisionsRouter = Router();
 
@@ -26,6 +28,15 @@ const decideBody = z.object({
     subjectId: z.string().min(1),
     verdict: z.enum(['clear_yes', 'clear_no']),
   })).min(1).max(4),
+});
+
+const blockChannelBody = z.object({
+  userId: z.string().min(1),
+  subjects: z.array(z.object({
+    subjectType: z.enum(['candidate', 'request']),
+    subjectId: z.string().min(1),
+  })).min(1).max(4),
+  reason: z.string().trim().max(500).optional(),
 });
 
 function parse<S extends z.ZodTypeAny>(schema: S, value: unknown): z.output<S> {
@@ -51,4 +62,14 @@ decisionsRouter.post('/', async (req: Request, res: Response) => {
     outcomes.push(await recordDecision(parentId, d));
   }
   res.json({ outcomes });
+});
+
+// POST /parent/decisions/block-channel { userId, subjects: [{ subjectType, subjectId }], reason? }
+// One card: its video is recorded as a Block for each kid on it, and its
+// channel is blocked household-wide (every kid's queued candidates from the
+// channel leave the pool; the channel's other cards leave the queue).
+decisionsRouter.post('/block-channel', async (req: Request, res: Response) => {
+  const body = parse(blockChannelBody, req.body);
+  const parentId = requireParent(body.userId);
+  res.json(await blockChannelFromCard(parentId, body.subjects, body.reason || null));
 });

@@ -2,17 +2,23 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { AnimatePresence, motion } from 'framer-motion';
-import { Check, ExternalLink, SkipForward, X } from 'lucide-react';
+import { Ban, Check, ExternalLink, SkipForward, X } from 'lucide-react';
 import {
   SOURCE_LABEL,
   agreement,
+  blockChannelFlash,
+  blockChannelPrompt,
+  blockChannelSubjects,
+  canBlockChannel,
   decisionsForCard,
   effectLabel,
   formatScores,
   keyAction,
+  removeChannelCards,
   removeDecided,
   skipCard,
   verdictLabel,
+  type BlockChannelResult,
   type DecisionCard,
   type DecisionOutcome,
   type DecisionQueue,
@@ -46,6 +52,16 @@ async function postDecisions(
   });
   if (!res.ok) throw new Error(`Could not record the decision (${res.status})`);
   return ((await res.json()) as { outcomes: DecisionOutcome[] }).outcomes;
+}
+
+async function postBlockChannel(userId: string, card: DecisionCard): Promise<BlockChannelResult> {
+  const res = await fetch('/parent/decisions/block-channel', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ userId, subjects: blockChannelSubjects(card) }),
+  });
+  if (!res.ok) throw new Error(`Could not block the channel (${res.status})`);
+  return (await res.json()) as BlockChannelResult;
 }
 
 interface Reveal {
@@ -155,6 +171,8 @@ export function Decisions() {
   const [flash, setFlash] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // The card key "Block channel" is waiting on a confirm for, if any.
+  const [confirmBlockKey, setConfirmBlockKey] = useState<string | null>(null);
 
   const queryKey = ['decisions', userId, mode, focus];
   const { data, isLoading, error: loadError, dataUpdatedAt } = useQuery({
@@ -206,6 +224,25 @@ export function Decisions() {
     }
   }, [current, busy, userId, cards, refetchIfEmpty]);
 
+  const blockChannel = useCallback(async () => {
+    if (!current || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await postBlockChannel(userId, current);
+      const decided = new Set(result.outcomes.map((o) => o.subjectId));
+      const next = removeChannelCards(removeDecided(cards, decided), result.channel);
+      setCards(next);
+      setConfirmBlockKey(null);
+      setFlash(blockChannelFlash(result));
+      refetchIfEmpty(next);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Something went wrong');
+    } finally {
+      setBusy(false);
+    }
+  }, [current, busy, userId, cards, refetchIfEmpty]);
+
   const skip = useCallback(() => {
     if (current) setCards((cs) => skipCard(cs, current.key));
   }, [current]);
@@ -238,6 +275,7 @@ export function Decisions() {
 
   const counts = data?.counts;
   const multi = (current?.subjects.length ?? 0) > 1;
+  const confirmingBlock = !!current && confirmBlockKey === current.key;
 
   return (
     <Shell>
@@ -306,6 +344,29 @@ export function Decisions() {
                 <SkipForward size={18} /> <span style={{ opacity: 0.6, fontSize: 'var(--text-xs)' }}>S</span>
               </button>
             </div>
+
+            {canBlockChannel(current) && (confirmingBlock ? (
+              <div style={{ border: '1px solid var(--dismiss)', borderRadius: 'var(--radius-md)', padding: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <p style={{ fontSize: 'var(--text-sm)', color: 'var(--text-primary)', fontWeight: 600 }}>{blockChannelPrompt(current)}</p>
+                <p style={{ fontSize: 'var(--text-xs)', color: 'var(--text-secondary)', lineHeight: 1.45 }}>
+                  This video is blocked{multi ? ' for both' : ''}, queued videos from the channel leave every kid's pool, and new ones never reach them. A kid who asks for one is told a grown-up blocked the channel.
+                </p>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button disabled={busy} onClick={() => void blockChannel()} style={actionButton('var(--dismiss)', true)}>
+                    <Ban size={16} /> Block channel
+                  </button>
+                  <button disabled={busy} onClick={() => setConfirmBlockKey(null)} style={actionButton('', false)}>Cancel</button>
+                </div>
+              </div>
+            ) : (
+              <button
+                disabled={busy}
+                onClick={() => setConfirmBlockKey(current.key)}
+                style={{ ...actionButton('', false), flex: '0 0 auto', padding: '8px 12px', fontSize: 'var(--text-sm)', color: 'var(--dismiss)' }}
+              >
+                <Ban size={16} /> Block channel{current.channel ? `: ${current.channel}` : ''}
+              </button>
+            ))}
 
             {multi && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>

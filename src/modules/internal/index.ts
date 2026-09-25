@@ -3,7 +3,7 @@ import { db } from '../../db/client';
 import { logger } from '../../logger';
 import { downloadQueue } from '../../queue';
 import { verifySignedJson } from '../../signed-channel';
-import { getRequestsState, needsDownloadSecondPass } from '../requests';
+import { getRequestsState, needsDownloadSecondPass, rejectIfChannelBlocked } from '../requests';
 import { getNotifications, parseRelayPayload } from '../notifications';
 import { checkStuckDownloads } from '../watchdog';
 import { scoreForRequest, classifyThumbnail, classifyYtImage, enqueueDownloadSecondPass, scoreThumbnailSafety } from '../guard';
@@ -138,6 +138,27 @@ internalRouter.post('/requests/:id/rejected', verifySignedJson<{ requestId: stri
     );
   }
   res.status(204).end();
+}));
+
+// POST /internal/requests/:id/channel-check — called by the Ubuntu worker
+// after the metadata fetch, before the download and the guard. A kid's
+// request from a Blocked channel is rejected here (with a kid-facing reason)
+// and the worker stops; the guard never sees it. Adults always proceed.
+interface ChannelCheckPayload {
+  requestId: string;
+  youtubeChannelId: string | null;
+  channel: string | null;
+}
+internalRouter.post('/requests/:id/channel-check', verifySignedJson<ChannelCheckPayload>((_req, res, payload) => {
+  if (typeof payload.requestId !== 'string' || !payload.requestId) {
+    return res.status(400).json({ error: 'requestId required' });
+  }
+  const out = rejectIfChannelBlocked({
+    requestId: payload.requestId,
+    youtubeChannelId: typeof payload.youtubeChannelId === 'string' ? payload.youtubeChannelId : null,
+    channel: typeof payload.channel === 'string' ? payload.channel : null,
+  });
+  res.json(out);
 }));
 
 // POST /internal/requests/:id/failed — called by the Ubuntu worker when a

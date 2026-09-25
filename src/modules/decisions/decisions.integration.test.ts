@@ -1,7 +1,7 @@
 import express, { type NextFunction, type Request, type Response } from 'express';
 import 'express-async-errors';
 import supertest from 'supertest';
-import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Decisions (Phase 6a) on an in-memory DB with real migrations and the real
 // requests state machine. Queues, notifications and person capture are
@@ -442,5 +442,85 @@ describe('Spot checks', () => {
     expect(second.length).toBe(5);
     expect(second.map((c) => c.key)).not.toEqual(expect.arrayContaining(first.map((c) => c.key)));
     expect(decisions().every((d) => d['source'] === 'catch_up')).toBe(true);
+  });
+});
+
+describe('Block channel', () => {
+  const BLOCKED_ID = 'UCblockedblockedblocked0';
+  const OTHER_ID = 'UCotherotherotherother00';
+
+  const setCandidateChannel = (id: string, channelId: string | null, channel = 'Placeholder channel') =>
+    db.prepare('UPDATE candidate_pool SET channel_id = ?, channel = ? WHERE candidate_id = ?').run(channelId, channel, id);
+  const setRequestChannel = (id: string, channelId: string | null, channel = 'Placeholder channel') =>
+    db.prepare('UPDATE requests SET youtube_channel_id = ?, channel = ? WHERE request_id = ?').run(channelId, channel, id);
+
+  const blockCard = (userId: string, subjects: Array<{ subjectType: string; subjectId: string }>) =>
+    supertest(app).post('/parent/decisions/block-channel').send({ userId, subjects });
+
+  // The blocked name would otherwise hide later tests' placeholder cards.
+  afterEach(() => {
+    db.exec('DELETE FROM blocked_channels');
+  });
+
+  it('refuses a kid with 403 and an unknown id with 404, and blocks nothing', async () => {
+    seedCandidate('c1');
+    setCandidateChannel('c1', BLOCKED_ID);
+    expect((await blockCard(KID_1, [{ subjectType: 'candidate', subjectId: 'c1' }])).status).toBe(403);
+    expect((await blockCard('00000000-0000-7000-8000-000000000000', [{ subjectType: 'candidate', subjectId: 'c1' }])).status).toBe(404);
+    expect(db.prepare('SELECT COUNT(*) AS n FROM blocked_channels').get()).toEqual({ n: 0 });
+    expect(status('candidate_pool', 'c1')).toMatchObject({ status: 'guard_pending' });
+  });
+
+  it('carries the channel id on each card', () => {
+    seedCandidate('c1');
+    setCandidateChannel('c1', BLOCKED_ID);
+    seedRequest('r1');
+    setRequestChannel('r1', OTHER_ID);
+    const byVideo = new Map(queue().cards.map((c) => [c.youtubeId, c.channelId]));
+    expect(byVideo.get('c1')).toBe(BLOCKED_ID);
+    expect(byVideo.get('r1')).toBe(OTHER_ID);
+  });
+
+  it("blocks the card's video like Block, blocks the channel, and clears its other cards and pool rows", async () => {
+    seedCandidate('card', { userId: KID_1 });
+    setCandidateChannel('card', BLOCKED_ID);
+    seedCandidate('same-channel-k2', { userId: KID_2 });
+    setCandidateChannel('same-channel-k2', BLOCKED_ID);
+    seedCandidate('same-channel-scored', { userId: KID_2, status: 'scored', verdict: 'clear_yes' });
+    setCandidateChannel('same-channel-scored', BLOCKED_ID);
+    seedRequest('same-channel-parked-pick');
+    setRequestChannel('same-channel-parked-pick', BLOCKED_ID);
+    seedCandidate('other', { userId: KID_1 });
+    setCandidateChannel('other', OTHER_ID, 'Other placeholder channel');
+
+    const res = await blockCard(PARENT, [{ subjectType: 'candidate', subjectId: 'card' }]);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      channel: { channelId: BLOCKED_ID, displayName: 'Placeholder channel' },
+      alreadyBlocked: false,
+      poolRowsRemoved: 2,
+      outcomes: [{ subjectId: 'card', effect: 'blocked' }],
+    });
+    // The card's own video: exactly what Block records.
+    expect(status('candidate_pool', 'card')).toEqual({ status: 'guard_rejected', guard_verdict: 'clear_no' });
+    expect(decisions()).toEqual([expect.objectContaining({
+      subject_id: 'card', human_verdict: 'clear_no', decided_by: PARENT, source: 'escalation',
+    })]);
+    // The channel: blocked by this parent, other kids' queued rows out.
+    expect(db.prepare('SELECT blocked_by FROM blocked_channels WHERE channel_id = ?').get(BLOCKED_ID)).toEqual({ blocked_by: PARENT });
+    expect(status('candidate_pool', 'same-channel-k2')).toMatchObject({ status: 'guard_rejected' });
+    expect(status('candidate_pool', 'same-channel-scored')).toMatchObject({ status: 'guard_rejected' });
+    // Every other card from the channel has left the queue.
+    expect(queue().cards.map((c) => c.youtubeId)).toEqual(['other']);
+    expect(queue().counts.escalations).toBe(1);
+  });
+
+  it('refuses a card with no channel id and changes nothing', async () => {
+    seedCandidate('c1');
+    const res = await blockCard(PARENT, [{ subjectType: 'candidate', subjectId: 'c1' }]);
+    expect(res.status).toBe(400);
+    expect(decisions()).toEqual([]);
+    expect(db.prepare('SELECT COUNT(*) AS n FROM blocked_channels').get()).toEqual({ n: 0 });
   });
 });

@@ -60,8 +60,12 @@ beforeEach(() => {
 
 describe('kidGuardClause', () => {
   it('requires an explicit clear_yes for kids and admits nothing unguarded', () => {
-    expect(kidGuardClause(true)).toBe("AND c.guard_verdict = 'clear_yes'");
-    expect(kidGuardClause(true)).not.toMatch(/IS NULL/);
+    expect(kidGuardClause(true)).toContain("AND c.guard_verdict = 'clear_yes'");
+    expect(kidGuardClause(true)).not.toMatch(/guard_verdict IS NULL/);
+  });
+
+  it('keeps Blocked channels out of a kid surface', () => {
+    expect(kidGuardClause(true)).toMatch(/NOT EXISTS \(\s*SELECT 1 FROM blocked_channels/);
   });
 
   it('adds no guard filter for adults', () => {

@@ -636,6 +636,8 @@ For each active user:
        - Two-axis scoring per candidate (relevance + quality), combined with person-trust and freshness
        - Time-sensitivity classification (livestream / dated / evergreen) drives ranking decay
        - Reject dismissed-pattern matches, blocked people, hard-exclusions
+         (blocked people: built as household-wide Blocked channels for kids —
+          dropped at intake, before scoring, and filtered again at surfacing)
   3. Guard pipeline for kids
        - Clear-yes → surface. Uncertain → parent queue. Clear-no → logged.
   4. Apply daily cap

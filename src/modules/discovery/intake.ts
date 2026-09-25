@@ -14,6 +14,7 @@ import { type YtdlpError } from '../../ytdlp';
 import { botDetectionCooldownMs, engageBotDetectionCooldown } from '../../botdetect';
 import { tripCircuitIfNeeded } from '../../circuit-breaker';
 import { getDeclaredChannelInterest } from '../interests';
+import { loadBlockedChannels, type BlockedChannelSet } from '../blocked-channels';
 import { daysSince, uploadDateToIso, sleep, jitteredDelayMs } from './util';
 
 export interface UserInterestRow {
@@ -43,6 +44,15 @@ function isDuplicateCandidate(userId: string, videoId: string): boolean {
     "SELECT 1 FROM requests WHERE user_id = ? AND youtube_id = ? AND status != 'failed' LIMIT 1"
   ).get(userId, videoId);
   return !!inRequests;
+}
+
+// Blocked channels (household-wide, kids only): the set to filter intake by,
+// or null for an adult or when nothing is blocked.
+function blockedChannelsFor(userId: string): BlockedChannelSet | null {
+  const row = db.prepare('SELECT role FROM users WHERE user_id = ?').get(userId) as { role: string } | undefined;
+  if (row?.role !== 'kid') return null;
+  const blocked = loadBlockedChannels();
+  return blocked.size > 0 ? blocked : null;
 }
 
 // Per-user channel dismissal counts, keyed by free-text channel name as
@@ -137,6 +147,9 @@ export async function refreshCandidatePool(
     ? loadChannelDismissalCounts(userId)
     : null;
 
+  // Blocked channels never enter a kid's pool.
+  const blocked = blockedChannelsFor(userId);
+
   const plan = planInterestQueries(userInterests);
 
   logger.info(
@@ -191,6 +204,11 @@ export async function refreshCandidatePool(
       if (result.durationSecs !== null && result.durationSecs <= SHORTS_MAX_SECS) continue;
       if (result.liveStatus === 'is_live' || result.liveStatus === 'is_upcoming') continue;
 
+      if (blocked?.has(result.channelId || null, result.channel || null)) {
+        logger.info({ userId, videoId: result.videoId }, 'Discovery intake: dropped candidate from a blocked channel');
+        continue;
+      }
+
       // Channel-level dismissal cap: skip candidates from channels the user
       // has rejected at or above the configured threshold. Channels without
       // a name (yt-dlp returned empty) bypass the filter — we'd be matching
@@ -219,14 +237,14 @@ export async function refreshCandidatePool(
       db.prepare(`
         INSERT OR IGNORE INTO candidate_pool
           (candidate_id, user_id, content_type, source_type, interest_id,
-           url, external_id, title, channel, duration_secs, thumbnail_url,
+           url, external_id, title, channel, channel_id, duration_secs, thumbnail_url,
            published_at, status, created_at)
         VALUES
-          (?, ?, 'video', 'interest_search', ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
+          (?, ?, 'video', 'interest_search', ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
       `).run(
         uuidv7(), userId, interest.interest_id,
         result.url, result.videoId, result.title,
-        result.channel || null, result.durationSecs,
+        result.channel || null, result.channelId || null, result.durationSecs,
         result.thumbnailUrl, publishedAt, now
       );
       added++;
@@ -303,6 +321,10 @@ export async function seedBackCatalogCandidates(userId: string): Promise<number>
 
   if (followed.length === 0) return 0;
 
+  // A followed channel that is now blocked is skipped for a kid: the follow
+  // stays, its back catalogue doesn't enter the pool.
+  const blocked = blockedChannelsFor(userId);
+
   // Process channels in a randomized order so a user with > MAX/PER_CHANNEL
   // followed channels gets a different mix sampled each day.
   shuffleInPlace(followed);
@@ -312,6 +334,7 @@ export async function seedBackCatalogCandidates(userId: string): Promise<number>
 
   for (const output of followed) {
     if (totalAdded >= MAX_BACKCATALOG_PER_USER) break;
+    if (blocked?.has(output.channel_id, output.display_name)) continue;
 
     let playlist: PlaylistEntry[];
     try {
@@ -367,14 +390,14 @@ export async function seedBackCatalogCandidates(userId: string): Promise<number>
       db.prepare(`
         INSERT OR IGNORE INTO candidate_pool
           (candidate_id, user_id, content_type, source_type, person_id, interest_id,
-           url, external_id, title, channel, duration_secs,
+           url, external_id, title, channel, channel_id, duration_secs,
            status, created_at)
         VALUES
-          (?, ?, 'video', 'person_backcatalog', ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
+          (?, ?, 'video', 'person_backcatalog', ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
       `).run(
         uuidv7(), userId, output.person_id, interestId,
         url, video.videoId, video.title || null,
-        output.display_name, video.durationSecs,
+        output.display_name, output.channel_id, video.durationSecs,
         now
       );
       totalAdded++;
