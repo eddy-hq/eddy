@@ -4,6 +4,8 @@ The parent's standards the guard judges against. Models score the dimensions and
 
 Examples here are generic on purpose — never drawn from household viewing.
 
+The guard reads this rubric as code from `src/modules/guard/rubric.ts` (`rubric-v1`); change both together — a test fails if the limits or flag tables diverge.
+
 Scale per dimension: 0 None · 1 Mild · 2 Moderate · 3 Severe.
 
 ## Hard stops (yes/no — any yes → clear_no)
