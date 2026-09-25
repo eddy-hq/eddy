@@ -161,7 +161,8 @@ describe('GUARD_CANDIDATE_PROMPT switch', () => {
     const [prompt, , , options, schema] = generate.mock.calls[0]!;
     expect(prompt.startsWith(RUBRIC_PROMPT_PREFIX)).toBe(true);
     expect((schema as { properties: Record<string, unknown> }).properties).toHaveProperty('att');
-    expect(options).toMatchObject({ temperature: 0, think: false });
+    // Over-long prompts must fail (→ uncertain), not be silently cut to a rubric-less tail.
+    expect(options).toMatchObject({ temperature: 0, think: false, truncate: false, shift: false });
 
     const row = lastEval();
     expect(row).toMatchObject({
@@ -226,7 +227,8 @@ describe('candidate-v4 verdicts', () => {
     generate.mockResolvedValue(raw);
     const v = await evaluateCandidate(candidate());
     expect(v).toMatchObject({ verdict: 'uncertain', reason: GUARD_SCORING_ERROR_REASON, confidence: 0, rubric: null });
-    expect(lastEval()).toMatchObject({ rubric_version: RUBRIC_VERSION, rubric_scores_json: null });
+    // A failed call is not a rule-decided verdict: confidence 0, no rubric version.
+    expect(lastEval()).toMatchObject({ gemma_confidence: 0, rubric_version: null, rubric_scores_json: null });
   });
 
   it('a model call that throws is uncertain', async () => {

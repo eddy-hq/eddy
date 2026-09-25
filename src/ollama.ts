@@ -11,6 +11,12 @@ interface OllamaOptions {
   // memory between calls (Ollama duration string, e.g. '30m').
   think?: boolean;
   keep_alive?: string;
+  // `truncate: false` makes Ollama reject a prompt longer than the context
+  // instead of silently dropping its start; `shift: false` stops it shifting
+  // the context mid-generation. Safety calls set both, so an over-long prompt
+  // is an error (→ uncertain) rather than a judgement on half a prompt.
+  truncate?: boolean;
+  shift?: boolean;
 }
 
 // 'json' asks for any valid JSON; an object is a JSON schema the output is
@@ -26,6 +32,8 @@ interface OllamaGenerateRequest {
   format?: OllamaFormat;
   think?: boolean;
   keep_alive?: string;
+  truncate?: boolean;
+  shift?: boolean;
 }
 
 interface OllamaGenerateResponse {
@@ -49,10 +57,12 @@ export async function ollamaGenerate(
     const body: OllamaGenerateRequest = { model, prompt, stream: false };
     if (images?.length) body.images = images;
     if (options) {
-      const { think, keep_alive, ...modelOptions } = options;
+      const { think, keep_alive, truncate, shift, ...modelOptions } = options;
       if (Object.keys(modelOptions).length > 0) body.options = modelOptions;
       if (think !== undefined) body.think = think;
       if (keep_alive !== undefined) body.keep_alive = keep_alive;
+      if (truncate !== undefined) body.truncate = truncate;
+      if (shift !== undefined) body.shift = shift;
     }
     if (format) body.format = format;
     response = await fetch(`${config.OLLAMA_URL}/api/generate`, {

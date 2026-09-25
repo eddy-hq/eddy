@@ -91,12 +91,17 @@ export interface ScoreParams {
 // A verdict is a short classification, not an essay: no thinking pass, output
 // constrained to the verdict shape, deterministic, capped well above one
 // sentence of reason. keep_alive holds the model across a discovery run's
-// back-to-back calls.
+// back-to-back calls. truncate/shift off: by default Ollama silently drops the
+// start of a prompt longer than its 4096-token context — for the rubric prompt,
+// the rubric itself — and the schema still forces a well-formed answer. With
+// both off an over-long prompt is a 400, which the callers turn into uncertain.
 const GUARD_CALL_OPTIONS = {
   temperature: 0,
   num_predict: 200,
   think: false,
   keep_alive: '30m',
+  truncate: false,
+  shift: false,
 };
 
 // `reason` comes first so the model states its grounds before it commits to
@@ -297,13 +302,15 @@ function recordGuardEval(verdict: GuardVerdict, ctx: RunGuardCtx, rubric?: Rubri
     gemma_verdict: verdict.verdict,
     gemma_reason: verdict.reason,
     // A rubric verdict is decided by rule, not reported by the model, so
-    // there is no model confidence to record.
-    gemma_confidence: rubric ? null : verdict.confidence,
+    // there is no model confidence to record. A failed rubric call has no
+    // decision: it keeps the error's confidence (0), like a failed v3 call.
+    gemma_confidence: rubric?.decision ? null : verdict.confidence,
     prompt_version: ctx.promptVersion ?? PROMPT_VERSION,
     request_type: ctx.requestType,
     subject_text: ctx.subjectText ?? null,
     interest_id: ctx.interestId ?? null,
-    rubric_version: rubric ? RUBRIC_VERSION : null,
+    // Set only when scores exist; prompt_version already marks a v4 attempt.
+    rubric_version: rubric?.decision ? RUBRIC_VERSION : null,
     rubric_scores_json: scoresJson,
     scored_at: now,
   });
