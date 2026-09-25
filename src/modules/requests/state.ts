@@ -29,7 +29,24 @@ export type Status =
   | 'failed'
   | 'watched'
   | 'dismissed'
-  | 'deleted';
+  | 'deleted'
+  | 'guard_pending';
+
+// Request sources a discovery slate pick carries (ADR-0009): subscription /
+// back-catalogue picks land as 'channel_subscription', delighters as
+// 'recommended'. A kid's slate pick gets the download-time second pass
+// (Phase 6a) — the transcript-aware guard runs before the card is visible.
+export const SLATE_PICK_SOURCES: readonly string[] = ['recommended', 'channel_subscription'];
+
+// Statuses no kid-facing surface may show. `guard_review`: a downloaded slate
+// pick whose second pass hasn't finished. `guard_pending`: a slate pick the
+// second pass parked — waiting on an Escalation, never deleted. Mirrors the
+// candidate pool's `guard_pending` (parked, doesn't surface).
+export const HIDDEN_STATUSES: readonly Status[] = ['guard_review', 'guard_pending'];
+
+// HIDDEN_STATUSES as a quoted SQL list for `status NOT IN (...)` filters.
+// Built from the literals above, never from input.
+export const HIDDEN_STATUSES_SQL = HIDDEN_STATUSES.map((s) => `'${s}'`).join(', ');
 
 // Stable sentinel stored in `rejection_reason` when a user cancels their own
 // download — distinct from freeform reasons set by the guard / parent review.
@@ -79,6 +96,61 @@ export function findActiveDuplicateRequest(
       | { request_id: string; status: string }
       | undefined;
   return row ? { requestId: row.request_id, status: row.status } : null;
+}
+
+// Whether a completed download must pass the download-time second pass before
+// it becomes visible: a slate pick (candidate-pool provenance) for a kid.
+// Adults' slate picks are never guarded (ADR-0009: the guard is the only
+// kid/adult difference) and kid-initiated requests stay in shadow mode.
+export function needsDownloadSecondPass(requestId: string): boolean {
+  const row = db.prepare(
+    `SELECT r.source, u.role
+       FROM requests r
+       JOIN users u ON u.user_id = r.user_id
+      WHERE r.request_id = ?`,
+  ).get(requestId) as { source: string; role: string } | undefined;
+  if (!row) return false;
+  return row.role === 'kid' && SLATE_PICK_SOURCES.includes(row.source);
+}
+
+export interface SecondPassInput {
+  requestId: string;
+  userId: string;
+  url: string;
+  youtubeId: string | null;
+  title: string | null;
+  channel: string | null;
+  description: string | null;
+  transcript: string | null;
+  status: string;
+}
+
+// The columns the second pass guards on, written by the download transition
+// (title, channel, description and transcript arrive with the worker's
+// callback). Null when the row is gone.
+export function readSecondPassInput(requestId: string): SecondPassInput | null {
+  const row = db.prepare(
+    `SELECT request_id, user_id, url, youtube_id, title, channel, description, transcript, status
+       FROM requests WHERE request_id = ?`,
+  ).get(requestId) as
+    | {
+        request_id: string; user_id: string; url: string; youtube_id: string | null;
+        title: string | null; channel: string | null; description: string | null;
+        transcript: string | null; status: string;
+      }
+    | undefined;
+  if (!row) return null;
+  return {
+    requestId: row.request_id,
+    userId: row.user_id,
+    url: row.url,
+    youtubeId: row.youtube_id,
+    title: row.title,
+    channel: row.channel,
+    description: row.description,
+    transcript: row.transcript,
+    status: row.status,
+  };
 }
 
 // ─── Ports ───────────────────────────────────────────────────────────────────
@@ -184,6 +256,9 @@ export type Event =
   | { kind: 'mark_recycled'; requestId: string }
   | { kind: 'mark_restored'; requestId: string; fields: RestoredFields }
   | { kind: 'mark_downloaded'; requestId: string; fields: DownloadedFields }
+  | { kind: 'mark_downloaded_for_second_pass'; requestId: string; fields: DownloadedFields }
+  | { kind: 'mark_second_pass_cleared'; requestId: string; reason: string }
+  | { kind: 'mark_second_pass_parked'; requestId: string; verdict: 'uncertain' | 'clear_no'; reason: string }
   | { kind: 'mark_rejected'; requestId: string; reason: string }
   | { kind: 'mark_guard_blocked'; requestId: string; reason: string }
   | { kind: 'mark_cancelled'; requestId: string }
@@ -229,6 +304,50 @@ interface Descriptor<E extends Event> {
   // sees the post-update row). Returning undefined means "no pre-fetch".
   preFetch?: (event: E) => { sql: string; params: unknown[] } | undefined;
   effects: (event: E, result: TransitionResult) => Effect[];
+}
+
+// Shared by mark_downloaded and mark_downloaded_for_second_pass: the same
+// worker-supplied columns, differing only in the status the row lands in.
+function downloadedSql(
+  status: 'ready' | 'guard_review',
+  fields: DownloadedFields,
+  requestId: string,
+  now: string,
+): { sql: string; params: unknown[] } {
+  return {
+    sql: `UPDATE requests
+            SET status             = ?,
+                title              = ?,
+                channel            = ?,
+                youtube_channel_id = ?,
+                description        = ?,
+                duration_secs      = ?,
+                transcript         = ?,
+                file_path          = ?,
+                nginx_url          = ?,
+                thumbnail_url      = ?,
+                published_at       = ?,
+                file_size_bytes    = ?,
+                downloaded_at      = ?
+          WHERE request_id = ? AND status IN ('downloading')
+          RETURNING user_id`,
+    params: [
+      status,
+      fields.title,
+      fields.channel,
+      fields.youtubeChannelId,
+      fields.description,
+      fields.durationSecs,
+      fields.transcript,
+      fields.filePath,
+      fields.nginxUrl,
+      fields.thumbnailUrl,
+      fields.publishedAt,
+      fields.fileSizeBytes,
+      now,
+      requestId,
+    ],
+  };
 }
 
 // Cancel allow-list (was the standalone CANCELLABLE_FROM array): user-intent
@@ -389,39 +508,7 @@ export const TRANSITIONS = {
   mark_downloaded: {
     sources: ['downloading'],
     target: 'ready',
-    buildSql: (event, now) => ({
-      sql: `UPDATE requests
-              SET status             = 'ready',
-                  title              = ?,
-                  channel            = ?,
-                  youtube_channel_id = ?,
-                  description        = ?,
-                  duration_secs      = ?,
-                  transcript         = ?,
-                  file_path          = ?,
-                  nginx_url          = ?,
-                  thumbnail_url      = ?,
-                  published_at       = ?,
-                  file_size_bytes    = ?,
-                  downloaded_at      = ?
-            WHERE request_id = ? AND status IN ('downloading')
-            RETURNING user_id`,
-      params: [
-        event.fields.title,
-        event.fields.channel,
-        event.fields.youtubeChannelId,
-        event.fields.description,
-        event.fields.durationSecs,
-        event.fields.transcript,
-        event.fields.filePath,
-        event.fields.nginxUrl,
-        event.fields.thumbnailUrl,
-        event.fields.publishedAt,
-        event.fields.fileSizeBytes,
-        now,
-        event.requestId,
-      ],
-    }),
+    buildSql: (event, now) => downloadedSql('ready', event.fields, event.requestId, now),
     effects: (event, result) => {
       if (!result.transitioned) return [];
       const list: Effect[] = [
@@ -447,6 +534,72 @@ export const TRANSITIONS = {
       return list;
     },
   } as Descriptor<Extract<Event, { kind: 'mark_downloaded' }>>,
+
+  // Download-time second pass (Phase 6a): a kid's slate pick lands with the
+  // same columns as mark_downloaded but in `guard_review`, hidden from every
+  // kid surface, until the transcript-aware guard clears or parks it. No
+  // effects: the video_ready notification and person capture both wait for
+  // clearance, so a parked pick leaves no trace outside its own row.
+  mark_downloaded_for_second_pass: {
+    sources: ['downloading'],
+    target: 'guard_review',
+    buildSql: (event, now) => downloadedSql('guard_review', event.fields, event.requestId, now),
+    effects: () => [],
+  } as Descriptor<Extract<Event, { kind: 'mark_downloaded_for_second_pass' }>>,
+
+  // Second pass returned clear_yes: the card becomes visible exactly as a
+  // plain mark_downloaded would have made it, notification included.
+  mark_second_pass_cleared: {
+    sources: ['guard_review'],
+    target: 'ready',
+    buildSql: (event) => ({
+      sql: `UPDATE requests
+              SET status        = 'ready',
+                  guard_verdict = 'clear_yes',
+                  guard_reason  = ?
+            WHERE request_id = ? AND status = 'guard_review'
+            RETURNING user_id, title, channel, youtube_channel_id`,
+      params: [event.reason, event.requestId],
+    }),
+    // The same two effects mark_downloaded fires, deferred to here.
+    effects: (event, result) => {
+      if (!result.transitioned) return [];
+      const sqlResult = (result as SqlResultCarrier).__sqlResult;
+      const list: Effect[] = [{
+        kind: 'notify_video_ready',
+        userId: result.userId,
+        requestId: event.requestId,
+        title: (sqlResult?.['title'] as string | null | undefined) ?? '',
+      }];
+      const channelId = sqlResult?.['youtube_channel_id'] as string | null | undefined;
+      if (channelId) {
+        list.push({
+          kind: 'ensure_person_capture',
+          channelId,
+          channelName: (sqlResult?.['channel'] as string | null | undefined) ?? '',
+        });
+      }
+      return list;
+    },
+  } as Descriptor<Extract<Event, { kind: 'mark_second_pass_cleared' }>>,
+
+  // Second pass returned anything but clear_yes, or could not run: the row is
+  // parked in `guard_pending` with its file kept, for a parent to resolve as
+  // an Escalation. Never deleted, never notified to the kid.
+  mark_second_pass_parked: {
+    sources: ['guard_review'],
+    target: 'guard_pending',
+    buildSql: (event) => ({
+      sql: `UPDATE requests
+              SET status        = 'guard_pending',
+                  guard_verdict = ?,
+                  guard_reason  = ?
+            WHERE request_id = ? AND status = 'guard_review'
+            RETURNING user_id`,
+      params: [event.verdict, event.reason, event.requestId],
+    }),
+    effects: () => [],
+  } as Descriptor<Extract<Event, { kind: 'mark_second_pass_parked' }>>,
 
   // mark_rejected and mark_guard_blocked share identical SQL — kept distinct so
   // call sites reflect the actual cause. Both gate on `downloading` only:

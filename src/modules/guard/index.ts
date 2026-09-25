@@ -4,16 +4,22 @@ import { db } from '../../db/client';
 import { logger } from '../../logger';
 import { ollamaGenerate, parseOllamaJson } from '../../ollama';
 import { config } from '../../config';
-import { redis } from '../../queue';
+import { redis, guardQueue } from '../../queue';
 import { getAgeBand } from '../users';
-import { categoryName } from './metadata';
+import { categoryName, readVideoMetadata, type StoredVideoMetadata } from './metadata';
 
-export { ensureVideoMetadata, type StoredVideoMetadata } from './metadata';
+export { ensureVideoMetadata, readVideoMetadata, type StoredVideoMetadata } from './metadata';
 
 const PROMPT_VERSION = 'v2';
 export const CANDIDATE_PROMPT_VERSION = 'candidate-v3';
 const KID_INTEREST_PROMPT_VERSION = 'kid-interest-v2';
 export const KID_INTEREST_EVAL_JOB = 'kid-interest-eval';
+// Download-time second pass on slate picks (Phase 6a). Two versions so
+// guard_eval says whether the transcript was there: the no-transcript variant
+// is the same prompt guarded on metadata alone.
+export const SECOND_PASS_PROMPT_VERSION = 'candidate-transcript-v1';
+export const SECOND_PASS_NO_TRANSCRIPT_PROMPT_VERSION = 'candidate-transcript-v1-no-transcript';
+export const DOWNLOAD_SECOND_PASS_JOB = 'download-second-pass';
 
 export interface ScoreParams {
   requestId: string;
@@ -334,6 +340,154 @@ export async function evaluateCandidate(params: CandidateEvalParams): Promise<Gu
   return runGuardEvaluation(prompt, ctx);
 }
 
+// ── Download-time second pass (Phase 6a) ─────────────────────────────────────
+// A kid's slate pick passed the candidate guard on metadata alone. Once it
+// downloads, the transcript that arrived with it (yt-dlp's auto-captions,
+// fetched with the info JSON — no extra yt-dlp or Data API traffic) is guarded
+// together with the stored video_metadata before the card becomes visible.
+// Only clear_yes shows; anything else, or any failure, parks the request for
+// an Escalation.
+
+export interface DownloadedPickEvalParams {
+  requestId: string;
+  userId: string;
+  url: string;
+  title: string;
+  channel: string | null;
+  // yt-dlp's description, used when there is no stored Data API row.
+  description: string | null;
+  transcript: string | null;
+  metadata: StoredVideoMetadata | null;
+}
+
+export interface DownloadedPickVerdict extends GuardVerdict {
+  transcriptAvailable: boolean;
+}
+
+export async function evaluateDownloadedPick(params: DownloadedPickEvalParams): Promise<DownloadedPickVerdict> {
+  const transcript = params.transcript?.trim() ? params.transcript : null;
+  const transcriptAvailable = transcript !== null;
+  const ctx: RunGuardCtx = {
+    requestId: params.requestId,
+    url: params.url,
+    requestType: 'video',
+    promptVersion: transcriptAvailable ? SECOND_PASS_PROMPT_VERSION : SECOND_PASS_NO_TRANSCRIPT_PROMPT_VERSION,
+  };
+  const meta = params.metadata;
+
+  // Same rule as the candidate guard: YouTube's own age restriction is a
+  // clear_no with no model call, still recorded.
+  if (meta?.ageRestricted === true) {
+    const verdict: GuardVerdict = { verdict: 'clear_no', reason: AGE_RESTRICTED_REASON, confidence: 1 };
+    recordGuardEval(verdict, ctx);
+    return { ...verdict, transcriptAvailable };
+  }
+
+  const channel = params.channel?.trim() ?? '';
+  const prompt = buildPrompt({
+    requestId: params.requestId,
+    userId: params.userId,
+    url: params.url,
+    title: params.title,
+    channel,
+    description: meta?.description ?? params.description ?? '',
+    transcript,
+    ageBand: getAgeBand(params.userId),
+    channelHistory: channel ? getChannelHistory(params.userId, channel) : null,
+    tags: meta?.tags ?? [],
+    category: categoryName(meta?.categoryId),
+    madeForKids: meta?.madeForKids ?? null,
+  });
+  const verdict = await runGuardEvaluation(prompt, ctx);
+  return { ...verdict, transcriptAvailable };
+}
+
+// Reason recorded on a pick parked because the second pass never produced a
+// verdict (enqueue or evaluation failure). Distinct from the model-error
+// reason so the parent surface can tell "the guard doubted it" from "the
+// guard never ran".
+export const SECOND_PASS_FAILED_REASON = 'Download-time guard check could not run';
+
+// The requests module is imported lazily: statically it would pull the
+// requests state machine (and people/registry behind it) into every importer
+// of the guard, including modules that only want a job-name constant. The
+// guard stays a leaf at load time; only the second pass reaches into requests.
+function loadRequests(): Promise<typeof import('../requests')> {
+  return import('../requests');
+}
+
+async function parkPick(requestId: string, verdict: 'uncertain' | 'clear_no', reason: string): Promise<void> {
+  try {
+    const { getRequestsState } = await loadRequests();
+    const { result } = getRequestsState().apply({ kind: 'mark_second_pass_parked', requestId, verdict, reason });
+    if (!result.transitioned) {
+      logger.info({ requestId, currentStatus: result.currentStatus }, 'Second pass: park skipped — request no longer awaiting the guard');
+    }
+  } catch (err) {
+    // The row stays in guard_review, which no kid surface shows.
+    logger.error({ err, requestId }, 'Second pass: failed to park request');
+  }
+}
+
+// Queue the second pass for a request just moved to guard_review. Kid safety
+// first: if the job can't be queued the pick is parked, never shown.
+export async function enqueueDownloadSecondPass(requestId: string): Promise<void> {
+  try {
+    await guardQueue.add(DOWNLOAD_SECOND_PASS_JOB, { requestId }, { jobId: `second-pass-${requestId}` });
+  } catch (err) {
+    logger.error({ err, requestId }, 'Second pass: failed to enqueue — parking the pick');
+    await parkPick(requestId, 'uncertain', SECOND_PASS_FAILED_REASON);
+  }
+}
+
+// Run the second pass for one request. Never shows a pick on failure: a
+// missing transcript guards on metadata alone (recorded as such), a model
+// error comes back as uncertain, and anything that throws parks the pick.
+export async function runDownloadSecondPass(requestId: string): Promise<void> {
+  const { getRequestsState, readSecondPassInput } = await loadRequests();
+  const input = readSecondPassInput(requestId);
+  if (!input) {
+    logger.warn({ requestId }, 'Second pass: request not found');
+    return;
+  }
+  if (input.status !== 'guard_review') {
+    logger.info({ requestId, currentStatus: input.status }, 'Second pass: request no longer awaiting the guard — skipping');
+    return;
+  }
+
+  let outcome: DownloadedPickVerdict;
+  try {
+    outcome = await evaluateDownloadedPick({
+      requestId,
+      userId: input.userId,
+      url: input.url,
+      title: input.title ?? '',
+      channel: input.channel,
+      description: input.description,
+      transcript: input.transcript,
+      metadata: input.youtubeId ? readVideoMetadata(input.youtubeId) : null,
+    });
+  } catch (err) {
+    logger.error({ err, requestId }, 'Second pass: evaluation failed — parking the pick');
+    await parkPick(requestId, 'uncertain', SECOND_PASS_FAILED_REASON);
+    return;
+  }
+
+  logger.info(
+    { requestId, verdict: outcome.verdict, transcriptAvailable: outcome.transcriptAvailable },
+    'Second pass verdict',
+  );
+
+  if (outcome.verdict === 'clear_yes') {
+    const { result } = getRequestsState().apply({ kind: 'mark_second_pass_cleared', requestId, reason: outcome.reason });
+    if (!result.transitioned) {
+      logger.info({ requestId, currentStatus: result.currentStatus }, 'Second pass: clear skipped — request no longer awaiting the guard');
+    }
+    return;
+  }
+  await parkPick(requestId, outcome.verdict, outcome.reason);
+}
+
 // ── Kid-authored interest guard (shadow mode) ────────────────────────────────
 // Phase 5 chain: kid types a freeform interest → search-terms job populates
 // `interests.search_terms` → this evaluator runs against raw label + terms and
@@ -399,9 +553,9 @@ export async function evaluateKidInterest(params: KidInterestEvalParams): Promis
   });
 }
 
-// guardQueue worker — currently handles the kid-interest chain only. Other
-// guard flows (scoreForRequest / evaluateCandidate) still run synchronously
-// inside their HTTP / discovery code paths.
+// guardQueue worker — handles the kid-interest chain and the download-time
+// second pass. The other guard flows (scoreForRequest / evaluateCandidate)
+// still run synchronously inside their HTTP / discovery code paths.
 
 let guardWorker: Worker | null = null;
 
@@ -411,10 +565,18 @@ interface KidInterestJob {
   rawLabel: string;
 }
 
+interface SecondPassJob {
+  requestId: string;
+}
+
 export function startGuardWorker(): void {
-  guardWorker = new Worker<KidInterestJob>('guard', async (job) => {
+  guardWorker = new Worker<KidInterestJob | SecondPassJob>('guard', async (job) => {
     if (job.name === KID_INTEREST_EVAL_JOB) {
-      await evaluateKidInterest(job.data);
+      await evaluateKidInterest(job.data as KidInterestJob);
+      return;
+    }
+    if (job.name === DOWNLOAD_SECOND_PASS_JOB) {
+      await runDownloadSecondPass((job.data as SecondPassJob).requestId);
       return;
     }
     throw new Error(`Guard worker: unknown job name '${job.name}'`);

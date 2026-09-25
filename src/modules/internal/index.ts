@@ -3,10 +3,10 @@ import { db } from '../../db/client';
 import { logger } from '../../logger';
 import { downloadQueue } from '../../queue';
 import { verifySignedJson } from '../../signed-channel';
-import { getRequestsState } from '../requests';
+import { getRequestsState, needsDownloadSecondPass } from '../requests';
 import { getNotifications, parseRelayPayload } from '../notifications';
 import { checkStuckDownloads } from '../watchdog';
-import { scoreForRequest, classifyThumbnail, classifyYtImage } from '../guard';
+import { scoreForRequest, classifyThumbnail, classifyYtImage, enqueueDownloadSecondPass } from '../guard';
 import { ollamaGenerate } from '../../ollama';
 import { config } from '../../config';
 
@@ -39,12 +39,17 @@ interface DownloadedPayload {
   fileSizeBytes?: number | null;
 }
 
-// POST /internal/videos/:youtube_id/downloaded — called by Ubuntu worker on success
-internalRouter.post('/videos/:youtube_id/downloaded', verifySignedJson<DownloadedPayload>((req, res, payload) => {
+// POST /internal/videos/:youtube_id/downloaded — called by Ubuntu worker on success.
+// A kid's slate pick doesn't go straight to ready: it lands in guard_review
+// (hidden) and the download-time second pass (Phase 6a) decides whether it
+// becomes visible. The guard runs on the M4's queue, not inside this request,
+// so a busy Ollama can't time out the worker's callback and trigger a retry.
+internalRouter.post('/videos/:youtube_id/downloaded', verifySignedJson<DownloadedPayload>(async (req, res, payload) => {
   const { requestId, filePath, nginxUrl, thumbnailUrl, title, channel, youtubeChannelId, description, durationSecs, transcript, publishedAt, fileSizeBytes } = payload;
 
+  const secondPass = needsDownloadSecondPass(requestId);
   const { result } = getRequestsState().apply({
-    kind: 'mark_downloaded',
+    kind: secondPass ? 'mark_downloaded_for_second_pass' : 'mark_downloaded',
     requestId,
     fields: {
       title,
@@ -61,7 +66,10 @@ internalRouter.post('/videos/:youtube_id/downloaded', verifySignedJson<Downloade
     },
   });
 
-  if (result.transitioned) {
+  if (result.transitioned && secondPass) {
+    logger.info({ requestId, youtubeId: req.params['youtube_id'] }, 'Slate pick downloaded — queued for the second pass');
+    await enqueueDownloadSecondPass(requestId);
+  } else if (result.transitioned) {
     logger.info({ requestId, youtubeId: req.params['youtube_id'] }, 'Request marked ready');
   } else {
     // No-op: row was no longer `downloading` (e.g. user cancelled mid-download).
@@ -380,6 +388,12 @@ internalRouter.post('/guard/score', verifySignedJson<GuardScorePayload>(async (_
     UPDATE requests SET title = @title, channel = @channel
     WHERE request_id = @request_id AND title IS NULL
   `).run({ title: payload.title, channel: payload.channel, request_id: payload.requestId });
+
+  // A kid's slate pick is guarded after download instead (the second pass,
+  // which enforces). A shadow score here would only duplicate that Gemma call.
+  if (needsDownloadSecondPass(payload.requestId)) {
+    return res.json({ proceed: true, verdict: 'deferred', reason: 'Guarded after download' });
+  }
 
   let verdict;
   try {
