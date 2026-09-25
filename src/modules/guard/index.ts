@@ -11,7 +11,7 @@ import { categoryName } from './metadata';
 export { ensureVideoMetadata, type StoredVideoMetadata } from './metadata';
 
 const PROMPT_VERSION = 'v2';
-const CANDIDATE_PROMPT_VERSION = 'candidate-v3';
+export const CANDIDATE_PROMPT_VERSION = 'candidate-v3';
 const KID_INTEREST_PROMPT_VERSION = 'kid-interest-v2';
 export const KID_INTEREST_EVAL_JOB = 'kid-interest-eval';
 
@@ -176,6 +176,11 @@ function parseVerdict(response: string): GuardVerdict {
   return verdict;
 }
 
+// The reason on the uncertain verdict a failed model call falls back to. Batch
+// callers (the parked re-run) use it to tell "the model said uncertain" from
+// "the model never answered", so the latter can be retried.
+export const GUARD_SCORING_ERROR_REASON = 'Guard scoring error';
+
 export type GuardRequestType = 'video' | 'candidate' | 'kid_interest';
 
 interface RunGuardCtx {
@@ -200,7 +205,7 @@ async function runGuardEvaluation(
     verdict = parseVerdict(raw);
   } catch (err) {
     logger.warn({ err, requestId: ctx.requestId, url: ctx.url }, 'Guard scoring failed — defaulting to uncertain');
-    verdict = { verdict: 'uncertain', reason: 'Guard scoring error', confidence: 0 };
+    verdict = { verdict: 'uncertain', reason: GUARD_SCORING_ERROR_REASON, confidence: 0 };
   }
 
   recordGuardEval(verdict, ctx);

@@ -4,7 +4,7 @@ import { db } from '../../db/client';
 import { logger } from '../../logger';
 import { config } from '../../config';
 import { redis, discoveryQueue } from '../../queue';
-import { evaluateCandidate, ensureVideoMetadata } from '../guard/index';
+import { ensureVideoMetadata } from '../guard/index';
 import { getRequestsState } from '../requests';
 import { runRssPollPass } from '../people';
 import { getAgeBand } from '../users';
@@ -21,6 +21,7 @@ import {
   readScoredCandidatesByBucket,
   updateCandidatePoolStatus,
 } from './surface';
+import { guardCandidate } from './guard-candidate';
 
 interface UserRow {
   user_id: string;
@@ -164,25 +165,7 @@ export async function runDiscoveryForUser(user: UserRow, options: { force?: bool
       scored.map((c) => c.external_id).filter((id): id is string => !!id),
     );
     for (const c of scored) {
-      const meta = c.external_id ? metadata.get(c.external_id) : undefined;
-      const verdict = await evaluateCandidate({
-        candidateId: c.candidate_id,
-        userId: user.user_id,
-        url: c.url,
-        title: c.title ?? '',
-        channel: c.channel,
-        ageBand,
-        description: meta?.description ?? null,
-        tags: meta?.tags ?? null,
-        categoryId: meta?.categoryId ?? null,
-        madeForKids: meta?.madeForKids ?? null,
-        ageRestricted: meta?.ageRestricted ?? false,
-      });
-
-      const nextStatus = verdict.verdict === 'clear_yes' ? 'scored'
-        : verdict.verdict === 'clear_no' ? 'guard_rejected'
-        : 'guard_pending';
-
+      const { verdict, nextStatus } = await guardCandidate(c, user.user_id, ageBand, metadata);
       updateCandidatePoolStatus(c.candidate_id, verdict.verdict, nextStatus);
     }
   }
@@ -422,4 +405,15 @@ export async function stopDiscoveryScheduler(): Promise<void> {
 }
 
 export { scoreCandidates } from './scoring';
+export {
+  evaluateParkedBacklog,
+  applyParkedRerun,
+  readRerunResults,
+  summariseRerun,
+  ParkedRerunError,
+  type ParkedRerunResult,
+  type ParkedRerunSummary,
+  type EvaluateParkedReport,
+  type ApplyParkedReport,
+} from './parked-rerun';
 export { discoveryRouter } from './router';
