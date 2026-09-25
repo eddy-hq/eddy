@@ -650,11 +650,24 @@ export const TRANSITIONS = {
   } as Descriptor<Extract<Event, { kind: 'mark_parent_allowed' }>>,
 
   // A parent blocked a parked slate pick, or a visible one on a Spot check:
-  // it leaves every kid surface and its file is removed, with the same row
-  // symmetry as mark_soft_deleted. The reason is kept for the audit trail.
+  // it leaves every kid surface, with the same row symmetry as
+  // mark_soft_deleted. The reason is kept for the audit trail. Downloads
+  // share one <youtubeId>.mp4 across kids, so the file is only removed when
+  // no other live request still points at it — blocking a video for one kid
+  // must not break the other's copy.
   mark_parent_blocked: {
     sources: ['guard_pending', 'ready', 'watched'],
     target: 'deleted',
+    preFetch: (event) => ({
+      sql: `SELECT COUNT(*) AS other_live_refs
+              FROM requests o
+              JOIN requests r ON r.request_id = ?
+             WHERE o.file_path = r.file_path
+               AND o.request_id != r.request_id
+               AND o.file_state = 'live'
+               AND o.status != 'deleted'`,
+      params: [event.requestId],
+    }),
     buildSql: (event, now) => ({
       sql: `UPDATE requests
               SET status           = 'deleted',
@@ -671,7 +684,8 @@ export const TRANSITIONS = {
     effects: (event, result) => {
       const sqlResult = (result as SqlResultCarrier).__sqlResult;
       const filePath = sqlResult?.['file_path'] as string | null | undefined;
-      if (!result.transitioned || !filePath) return [];
+      const otherLiveRefs = Number(sqlResult?.['other_live_refs'] ?? 0);
+      if (!result.transitioned || !filePath || otherLiveRefs > 0) return [];
       return [{ kind: 'enqueue_delete', jobData: { requestId: event.requestId, filePath }, requestId: event.requestId }];
     },
   } as Descriptor<Extract<Event, { kind: 'mark_parent_blocked' }>>,

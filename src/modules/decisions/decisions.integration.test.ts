@@ -116,16 +116,17 @@ function seedCandidate(id: string, opts: {
 }
 
 function seedRequest(id: string, opts: {
-  userId?: string; status?: string; verdict?: string; source?: string; requestedAt?: string;
+  userId?: string; status?: string; verdict?: string; source?: string; requestedAt?: string; yt?: string;
 } = {}): void {
+  const yt = opts.yt ?? id;
   db.prepare(`
     INSERT INTO requests
       (request_id, user_id, source, url, youtube_id, title, channel, status, guard_verdict,
        file_path, requested_at)
     VALUES (?, ?, ?, ?, ?, 'Placeholder title', 'Placeholder channel', ?, ?, ?, ?)
   `).run(
-    id, opts.userId ?? KID_1, opts.source ?? 'recommended', `https://www.youtube.com/watch?v=${id}`, id,
-    opts.status ?? 'guard_pending', opts.verdict ?? 'uncertain', `/videos/${id}.mp4`,
+    id, opts.userId ?? KID_1, opts.source ?? 'recommended', `https://www.youtube.com/watch?v=${yt}`, yt,
+    opts.status ?? 'guard_pending', opts.verdict ?? 'uncertain', `/videos/${yt}.mp4`,
     opts.requestedAt ?? daysAgo(1),
   );
 }
@@ -275,6 +276,25 @@ describe('Escalations', () => {
     expect(deleteQueueAdd).toHaveBeenCalledWith('delete', { requestId: 'r1', filePath: '/videos/r1.mp4' }, expect.anything());
   });
 
+  it('keeps a shared file when the other kid still has the video', async () => {
+    seedRequest('r-k1', { userId: KID_1, yt: 'shared' });
+    seedRequest('r-k2', { userId: KID_2, yt: 'shared', status: 'ready', verdict: 'clear_yes' });
+    const out = await recordDecision(PARENT, { subjectType: 'request', subjectId: 'r-k1', verdict: 'clear_no' }, NOW);
+    expect(out.effect).toBe('removed');
+    expect(status('requests', 'r-k1').status).toBe('deleted');
+    expect(status('requests', 'r-k2').status).toBe('ready');
+    expect(deleteQueueAdd).not.toHaveBeenCalled();
+  });
+
+  it('removes a shared file once no live request is left on it', async () => {
+    seedRequest('r-k1', { userId: KID_1, yt: 'shared' });
+    seedRequest('r-k2', { userId: KID_2, yt: 'shared' });
+    await recordDecision(PARENT, { subjectType: 'request', subjectId: 'r-k1', verdict: 'clear_no' }, NOW);
+    await recordDecision(PARENT, { subjectType: 'request', subjectId: 'r-k2', verdict: 'clear_no' }, NOW);
+    expect(deleteQueueAdd).toHaveBeenCalledTimes(1);
+    expect(deleteQueueAdd).toHaveBeenCalledWith('delete', { requestId: 'r-k2', filePath: '/videos/shared.mp4' }, expect.anything());
+  });
+
   it('records a second decision on the same subject once only', async () => {
     seedCandidate('c1');
     await recordDecision(PARENT, { subjectType: 'candidate', subjectId: 'c1', verdict: 'clear_yes' }, NOW);
@@ -321,6 +341,26 @@ describe('Spot checks', () => {
     expect(cards).toHaveLength(DAILY_CARD_CAP);
     expect(cards.filter((c) => c.source === 'spot_check')).toHaveLength(5);
     expect(cards.slice(0, 10).every((c) => c.source === 'escalation')).toBe(true);
+  });
+
+  it('caps Today per day: decided escalations use up the allowance across reloads', async () => {
+    seedRecentVerdicts();
+    for (let i = 0; i < 20; i++) seedCandidate(`parked${String(i).padStart(2, '0')}`);
+    for (const card of queue().cards.filter((c) => c.source === 'escalation').slice(0, 3)) {
+      const s = card.subjects[0]!;
+      await recordDecision(PARENT, { subjectType: s.subjectType, subjectId: s.subjectId, verdict: 'clear_yes' }, NOW);
+    }
+    expect(queue().cards.filter((c) => c.source === 'escalation')).toHaveLength(7);
+
+    for (const card of queue().cards.filter((c) => c.source === 'escalation')) {
+      const s = card.subjects[0]!;
+      await recordDecision(PARENT, { subjectType: s.subjectType, subjectId: s.subjectId, verdict: 'clear_yes' }, NOW);
+    }
+    const after = queue().cards;
+    expect(after.filter((c) => c.source === 'escalation')).toHaveLength(0);
+    expect(after.filter((c) => c.source === 'spot_check')).toHaveLength(5);
+    // The rest of the backlog is still there for catch-up.
+    expect(queue('catch_up', 'escalations').cards).toHaveLength(10);
   });
 
   it('puts escalations before spot checks', () => {

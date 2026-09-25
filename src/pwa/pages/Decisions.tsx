@@ -323,6 +323,7 @@ export function Decisions() {
         ) : !isLoading && data ? (
           <motion.p key="empty" initial={{ opacity: 0 }} animate={{ opacity: 1 }} style={{ color: 'var(--text-secondary)', textAlign: 'center', padding: '40px 0' }}>
             Nothing waiting{mode === 'today' ? ' today' : ''}.
+            {mode === 'today' && counts && counts.escalations > 0 && ` ${counts.escalations} more escalations in Catch-up.`}
           </motion.p>
         ) : null}
       </AnimatePresence>

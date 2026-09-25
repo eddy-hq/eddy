@@ -224,6 +224,21 @@ function drawBatch(
   return tx();
 }
 
+function drawnCount(day: string, source: 'spot_check' | 'catch_up'): number {
+  return (db.prepare(
+    'SELECT COUNT(*) AS n FROM guard_spot_checks WHERE day = ? AND source = ?',
+  ).get(day, source) as { n: number }).n;
+}
+
+// Escalation cards decided on a UTC day. A two-kid card is one card, so
+// decisions are counted per video, not per kid.
+function escalationsDecidedOn(day: string): number {
+  return (db.prepare(`
+    SELECT COUNT(DISTINCT COALESCE(youtube_id, url)) AS n FROM guard_decisions
+     WHERE source = 'escalation' AND substr(decided_at, 1, 10) = ?
+  `).get(day) as { n: number }).n;
+}
+
 // Today's Spot checks are drawn once, on the first queue read of the UTC day.
 function ensureTodaysSpotChecks(now: Date): void {
   const drawn = db.prepare(
@@ -298,9 +313,14 @@ export function readDecisionQueue(opts: QueueOptions): DecisionQueue {
     // Escalations first, then today's Spot checks, capped by card. The
     // Spot checks keep their slots inside the cap: they are the blind labels,
     // and a backlog of escalations would otherwise crowd them out every day.
+    //
+    // The cap is per UTC day, not per read: escalations decided today (in
+    // either mode) and the whole day's spot-check draw count against it, so
+    // finishing or reloading doesn't serve another 15. The rest waits for
+    // catch-up.
     const spotChecks = toCards(readDrawn(day, 'spot_check'), 'spot_check', bands).slice(0, DAILY_CARD_CAP);
-    const escalations = toCards(readEscalations(recentSince), 'escalation', bands)
-      .slice(0, DAILY_CARD_CAP - spotChecks.length);
+    const allowance = Math.max(0, DAILY_CARD_CAP - drawnCount(day, 'spot_check') - escalationsDecidedOn(day));
+    const escalations = toCards(readEscalations(recentSince), 'escalation', bands).slice(0, allowance);
     const cards = [...escalations, ...spotChecks];
     return { mode: 'today', focus: null, cards, counts };
   }
