@@ -7,6 +7,7 @@ import { readProgress, writeProgress, clearProgress } from '../lib/videoProgress
 import { useWatchEventTracker, type WatchSource } from '../lib/watchEvents';
 import { canShare, shareVideo } from '../lib/webShare';
 import { useResolvePersonId } from '../hooks/useResolvePersonId';
+import { thumbnailSrc } from '../lib/thumbnailSrc';
 import { PersonRow } from './PersonRow';
 import type { CardData } from './Card';
 
@@ -37,6 +38,8 @@ interface RequestDetail {
   // Canonical YouTube watch URL stored on the request. Distinct from
   // `videoUrl` (local nginx stream) — used by the Share tile.
   youtubeWatchUrl: string | null;
+  // Eddy's own thumbnail (public URL) or null; never a YouTube-hosted image.
+  thumbnailUrl: string | null;
   whyText: string | null;
   source: string;
   requestedAt: string;
@@ -77,6 +80,7 @@ function SheetWithCard({
       status={card.status}
       videoUrl={card.nginxUrl}
       youtubeWatchUrl={card.youtubeWatchUrl}
+      thumbnailUrl={card.thumbnailUrl}
       progress={null}
       rejectionReason={card.rejectionReason}
       whyText={card.whyText}
@@ -127,6 +131,7 @@ function SheetById({
       status={data?.status ?? 'pending'}
       videoUrl={data?.videoUrl ?? null}
       youtubeWatchUrl={data?.youtubeWatchUrl ?? null}
+      thumbnailUrl={data?.thumbnailUrl ?? null}
       progress={data?.progress ?? null}
       rejectionReason={data?.rejectionReason ?? null}
       whyText={data?.whyText ?? null}
@@ -156,6 +161,7 @@ interface BodyProps {
   // the row hasn't loaded yet in id-mode, in which case the tile is hidden
   // for that render.
   youtubeWatchUrl: string | null;
+  thumbnailUrl: string | null;
   progress: number | null;
   rejectionReason: string | null;
   whyText: string | null;
@@ -174,7 +180,7 @@ interface BodyProps {
 function SheetBody({
   requestId, userId,
   title, channel, youtubeId, youtubeChannelId,
-  status, videoUrl, youtubeWatchUrl,
+  status, videoUrl, youtubeWatchUrl, thumbnailUrl,
   progress, rejectionReason,
   whyText, requestSource,
   requestedAt, watchedAt, savedAt,
@@ -274,9 +280,7 @@ function SheetBody({
   // Gesture state shared across all swipe zones
   const gestureRef = useRef<{ startY: number; event: PointerEvent } | null>(null);
 
-  const thumbnail = youtubeId
-    ? `https://i.ytimg.com/vi/${youtubeId}/hqdefault.jpg`
-    : null;
+  const thumbnail = thumbnailSrc(thumbnailUrl);
 
   // Lock body scroll
   useEffect(() => {

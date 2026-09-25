@@ -482,7 +482,7 @@ requestsRouter.delete('/:id', async (req: Request, res: Response) => {
 // GET /requests/:id — polled by PWA to check status
 requestsRouter.get('/:id', async (req: Request, res: Response) => {
   const row = db.prepare(
-    'SELECT request_id, user_id, url, youtube_id, youtube_channel_id, status, title, channel, rejection_reason, nginx_url, why_text, source, requested_at, watched_at, saved_at FROM requests WHERE request_id = ?'
+    'SELECT request_id, user_id, url, youtube_id, youtube_channel_id, status, title, channel, rejection_reason, nginx_url, thumbnail_url, why_text, source, requested_at, watched_at, saved_at FROM requests WHERE request_id = ?'
   ).get(req.params['id']) as
     | {
         request_id: string; user_id: string; url: string;
@@ -490,6 +490,7 @@ requestsRouter.get('/:id', async (req: Request, res: Response) => {
         youtube_channel_id: string | null;
         status: string; title: string | null; channel: string | null;
         rejection_reason: string | null; nginx_url: string | null;
+        thumbnail_url: string | null;
         why_text: string | null;
         source: string;
         requested_at: string;
@@ -528,6 +529,10 @@ requestsRouter.get('/:id', async (req: Request, res: Response) => {
     // for the PWA's Web Share tile so the recipient gets the canonical
     // YouTube link rather than a household-only nginx path.
     youtubeWatchUrl: row.url,
+    // Eddy's own thumbnail for the detail sheet (the PWA no longer falls back
+    // to i.ytimg). Hidden like videoUrl while a slate pick awaits its second
+    // pass, so nothing from an un-guarded file shows.
+    thumbnailUrl: HIDDEN_STATUSES.includes(row.status as Status) ? null : toPublicMediaUrl(row.thumbnail_url),
     whyText: row.why_text,
     source: row.source,
     requestedAt: row.requested_at,
