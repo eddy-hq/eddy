@@ -4,9 +4,28 @@ import { db } from '../../db/client';
 import { logger } from '../../logger';
 import { ollamaGenerate, parseOllamaJson } from '../../ollama';
 import { config } from '../../config';
+import { GuardError } from '../../errors';
 import { redis, guardQueue } from '../../queue';
 import { getAgeBand } from '../users';
 import { categoryName, readVideoMetadata, type StoredVideoMetadata } from './metadata';
+import {
+  CANDIDATE_V4_PROMPT_VERSION,
+  RUBRIC_SCORES_SCHEMA,
+  SECOND_PASS_V4_NO_TRANSCRIPT_PROMPT_VERSION,
+  SECOND_PASS_V4_PROMPT_VERSION,
+  buildRubricPrompt,
+  formatTags,
+  parseRubricOutput,
+  type RubricPromptInput,
+} from './rubric-prompt';
+import {
+  RUBRIC_VERSION,
+  describeDriver,
+  verdictFromScores,
+  type RubricContext,
+  type RubricDecision,
+  type RubricScores,
+} from './rubric';
 
 export { ensureVideoMetadata, readVideoMetadata, type StoredVideoMetadata } from './metadata';
 export {
@@ -19,6 +38,14 @@ export {
   type ThumbSafetyDimension,
   type ThumbSafetyError,
 } from './thumb-safety';
+export * from './rubric';
+export {
+  CANDIDATE_V4_PROMPT_VERSION,
+  SECOND_PASS_V4_PROMPT_VERSION,
+  SECOND_PASS_V4_NO_TRANSCRIPT_PROMPT_VERSION,
+  RUBRIC_PROMPT_PREFIX,
+  buildRubricPrompt,
+} from './rubric-prompt';
 
 const PROMPT_VERSION = 'v2';
 export const CANDIDATE_PROMPT_VERSION = 'candidate-v3';
@@ -30,6 +57,26 @@ export const KID_INTEREST_EVAL_JOB = 'kid-interest-eval';
 export const SECOND_PASS_PROMPT_VERSION = 'candidate-transcript-v1';
 export const SECOND_PASS_NO_TRANSCRIPT_PROMPT_VERSION = 'candidate-transcript-v1-no-transcript';
 export const DOWNLOAD_SECOND_PASS_JOB = 'download-second-pass';
+
+// Which prompt judges discovery candidates and the second pass (Phase 6a):
+// v3 asks for a verdict, v4 scores the rubric and code decides. Chosen by
+// GUARD_CANDIDATE_PROMPT; anything other than 'v4' is v3.
+export type CandidatePromptId = 'v3' | 'v4';
+
+export function liveCandidatePrompt(): CandidatePromptId {
+  return config.GUARD_CANDIDATE_PROMPT === 'v4' ? 'v4' : 'v3';
+}
+
+export function candidatePromptVersion(prompt: CandidatePromptId): string {
+  return prompt === 'v4' ? CANDIDATE_V4_PROMPT_VERSION : CANDIDATE_PROMPT_VERSION;
+}
+
+function secondPassPromptVersion(prompt: CandidatePromptId, transcriptAvailable: boolean): string {
+  if (prompt === 'v4') {
+    return transcriptAvailable ? SECOND_PASS_V4_PROMPT_VERSION : SECOND_PASS_V4_NO_TRANSCRIPT_PROMPT_VERSION;
+  }
+  return transcriptAvailable ? SECOND_PASS_PROMPT_VERSION : SECOND_PASS_NO_TRANSCRIPT_PROMPT_VERSION;
+}
 
 export interface ScoreParams {
   requestId: string;
@@ -96,22 +143,6 @@ interface PromptParams extends ScoreParams {
   tags?: string[];
   category?: string | null;
   madeForKids?: boolean | null;
-}
-
-// Upper bound on the rendered tags line. Uploaders stuff tags; a few hundred
-// characters carries the signal without crowding out the rest of the prompt.
-const TAGS_MAX_CHARS = 300;
-
-function formatTags(tags: string[] | undefined): string {
-  let out = '';
-  for (const raw of tags ?? []) {
-    const tag = raw.trim();
-    if (!tag) continue;
-    const next = out ? `${out}, ${tag}` : tag;
-    if (next.length > TAGS_MAX_CHARS) break;
-    out = next;
-  }
-  return out;
 }
 
 function buildPrompt(params: PromptParams): string {
@@ -208,6 +239,13 @@ interface RunGuardCtx {
   promptVersion?: string;
 }
 
+// What a rubric-scored (v4) call adds to its guard_eval row. `decision` is
+// null when the model call failed and no scores exist.
+interface RubricRecord {
+  scores: RubricScores | null;
+  decision: RubricDecision | null;
+}
+
 // Shared Gemma round-trip + parse + guard_eval insert. Used by every guard
 // flow (scoreForRequest / evaluateCandidate / evaluateKidInterest) so the
 // eval logic exists in one place.
@@ -231,16 +269,26 @@ async function runGuardEvaluation(
 // Write one guard_eval row. Every verdict lands here — model-scored or
 // decided by rule (the age-restricted short-circuit) — so the eval set sees
 // all of them.
-function recordGuardEval(verdict: GuardVerdict, ctx: RunGuardCtx): void {
+function recordGuardEval(verdict: GuardVerdict, ctx: RunGuardCtx, rubric?: RubricRecord): void {
   const now = new Date().toISOString();
+  const scoresJson = rubric?.scores && rubric.decision
+    ? JSON.stringify({
+      ...rubric.scores,
+      limitsBand: rubric.decision.limitsBand,
+      context: rubric.decision.context,
+      drivers: rubric.decision.drivers,
+    })
+    : null;
   db.prepare(`
     INSERT INTO guard_eval
       (eval_id, request_id, url, gemma_verdict, gemma_reason, gemma_confidence,
        prompt_version, request_type, subject_text, interest_id,
+       rubric_version, rubric_scores_json,
        scored_at, created_at)
     VALUES
       (@eval_id, @request_id, @url, @gemma_verdict, @gemma_reason, @gemma_confidence,
        @prompt_version, @request_type, @subject_text, @interest_id,
+       @rubric_version, @rubric_scores_json,
        @scored_at, @scored_at)
   `).run({
     eval_id: uuidv7(),
@@ -248,26 +296,77 @@ function recordGuardEval(verdict: GuardVerdict, ctx: RunGuardCtx): void {
     url: ctx.url,
     gemma_verdict: verdict.verdict,
     gemma_reason: verdict.reason,
-    gemma_confidence: verdict.confidence,
+    // A rubric verdict is decided by rule, not reported by the model, so
+    // there is no model confidence to record.
+    gemma_confidence: rubric ? null : verdict.confidence,
     prompt_version: ctx.promptVersion ?? PROMPT_VERSION,
     request_type: ctx.requestType,
     subject_text: ctx.subjectText ?? null,
     interest_id: ctx.interestId ?? null,
+    rubric_version: rubric ? RUBRIC_VERSION : null,
+    rubric_scores_json: scoresJson,
     scored_at: now,
   });
+}
+
+// Same call options as the verdict prompts, with room for the longer score
+// object (~110 tokens measured; truncated output would be a scoring error).
+const RUBRIC_CALL_OPTIONS = { ...GUARD_CALL_OPTIONS, num_predict: 256 };
+
+// A v4 verdict: the model's scores plus the rule decision on them. `rubric`
+// is null when the model never produced a valid score set.
+export interface RubricGuardVerdict extends GuardVerdict {
+  rubric: { scores: RubricScores; decision: RubricDecision } | null;
+}
+
+// Rubric round-trip (candidate-v4 and its second-pass counterpart): the model
+// scores dimensions, hard stops and flags; verdictFromScores decides for this
+// age band and context. Any failure is uncertain, never a pass. Confidence is
+// reported as 1 because the verdict is rule-decided (stored as NULL).
+async function runRubricEvaluation(
+  input: RubricPromptInput,
+  ageBand: string,
+  context: RubricContext,
+  ctx: RunGuardCtx,
+): Promise<RubricGuardVerdict> {
+  let parsed: ReturnType<typeof parseRubricOutput>;
+  try {
+    const raw = await ollamaGenerate(
+      buildRubricPrompt(input), undefined, undefined, RUBRIC_CALL_OPTIONS, RUBRIC_SCORES_SCHEMA,
+    );
+    parsed = parseRubricOutput(raw);
+    if (!parsed) throw new GuardError('Could not parse Gemma rubric scores');
+  } catch (err) {
+    logger.warn({ err, requestId: ctx.requestId, url: ctx.url }, 'Guard rubric scoring failed — defaulting to uncertain');
+    const verdict: GuardVerdict = { verdict: 'uncertain', reason: GUARD_SCORING_ERROR_REASON, confidence: 0 };
+    recordGuardEval(verdict, ctx, { scores: null, decision: null });
+    return { ...verdict, rubric: null };
+  }
+
+  const decision = verdictFromScores(parsed.scores, ageBand, context);
+  // The model's reason, plus what the limits table found — so a verdict the
+  // model didn't express (a flag, a limit it didn't know about) still names
+  // its cause.
+  const reason = decision.drivers.length > 0
+    ? `${parsed.reason} (${decision.drivers.map(describeDriver).join('; ')})`
+    : parsed.reason;
+  const verdict: GuardVerdict = { verdict: decision.verdict, reason, confidence: 1 };
+  recordGuardEval(verdict, ctx, { scores: parsed.scores, decision });
+  return { ...verdict, rubric: { scores: parsed.scores, decision } };
 }
 
 export async function scoreForRequest(params: ScoreParams): Promise<GuardVerdict> {
   const prior = db.prepare(
     'SELECT gemma_verdict, gemma_reason, gemma_confidence FROM guard_eval WHERE request_id = ? ORDER BY scored_at ASC LIMIT 1'
-  ).get(params.requestId) as { gemma_verdict: string; gemma_reason: string; gemma_confidence: number } | undefined;
+  ).get(params.requestId) as { gemma_verdict: string; gemma_reason: string; gemma_confidence: number | null } | undefined;
 
   if (prior) {
     logger.info({ requestId: params.requestId }, 'Guard already scored for this request — skipping retry');
     return {
       verdict: prior.gemma_verdict as GuardVerdict['verdict'],
       reason: prior.gemma_reason,
-      confidence: prior.gemma_confidence,
+      // NULL on a rubric (v4) row: rule-decided, reported as 1 like a fresh one.
+      confidence: prior.gemma_confidence ?? 1,
     };
   }
 
@@ -308,6 +407,16 @@ export interface CandidateEvalParams {
   categoryId?: string | null;
   madeForKids?: boolean | null;
   ageRestricted?: boolean;
+  // Which candidate prompt to use. Defaults to the live one
+  // (GUARD_CANDIDATE_PROMPT); the parked re-run passes it explicitly.
+  prompt?: CandidatePromptId;
+}
+
+// A candidate verdict. `rubric` is set only for a v4 call that produced
+// scores; v3 verdicts and the age-restricted short-circuit leave it null.
+export interface CandidateVerdict extends GuardVerdict {
+  promptVersion: string;
+  rubric: RubricGuardVerdict['rubric'];
 }
 
 export const AGE_RESTRICTED_REASON = 'Age-restricted on YouTube';
@@ -318,21 +427,40 @@ export const AGE_RESTRICTED_REASON = 'Age-restricted on YouTube';
 // the signal. A video YouTube itself age-restricts is a clear_no by rule, with
 // no model call; the verdict is still written to guard_eval so it counts in
 // the eval set.
-export async function evaluateCandidate(params: CandidateEvalParams): Promise<GuardVerdict> {
+export async function evaluateCandidate(params: CandidateEvalParams): Promise<CandidateVerdict> {
+  const promptId = params.prompt ?? liveCandidatePrompt();
+  const promptVersion = candidatePromptVersion(promptId);
   const ctx: RunGuardCtx = {
     requestId: null,
     url: params.url,
     requestType: 'candidate',
-    promptVersion: CANDIDATE_PROMPT_VERSION,
+    promptVersion,
   };
 
   if (params.ageRestricted === true) {
     const verdict: GuardVerdict = { verdict: 'clear_no', reason: AGE_RESTRICTED_REASON, confidence: 1 };
     recordGuardEval(verdict, ctx);
-    return verdict;
+    return { ...verdict, promptVersion, rubric: null };
   }
 
   const channel = params.channel?.trim() ?? '';
+  const ageBand = params.ageBand ?? getAgeBand(params.userId);
+  const channelHistory = channel ? getChannelHistory(params.userId, channel) : null;
+
+  if (promptId === 'v4') {
+    const verdict = await runRubricEvaluation({
+      title: params.title,
+      channel,
+      description: params.description ?? '',
+      tags: params.tags ?? [],
+      category: categoryName(params.categoryId),
+      madeForKids: params.madeForKids ?? null,
+      channelHistory,
+      transcript: null,
+    }, ageBand, 'discovery', ctx);
+    return { ...verdict, promptVersion };
+  }
+
   const prompt = buildPrompt({
     requestId: params.candidateId,
     userId: params.userId,
@@ -341,13 +469,14 @@ export async function evaluateCandidate(params: CandidateEvalParams): Promise<Gu
     channel,
     description: params.description ?? '',
     transcript: null,
-    ageBand: params.ageBand ?? getAgeBand(params.userId),
-    channelHistory: channel ? getChannelHistory(params.userId, channel) : null,
+    ageBand,
+    channelHistory,
     tags: params.tags ?? [],
     category: categoryName(params.categoryId),
     madeForKids: params.madeForKids ?? null,
   });
-  return runGuardEvaluation(prompt, ctx);
+  const verdict = await runGuardEvaluation(prompt, ctx);
+  return { ...verdict, promptVersion, rubric: null };
 }
 
 // ── Download-time second pass (Phase 6a) ─────────────────────────────────────
@@ -377,11 +506,12 @@ export interface DownloadedPickVerdict extends GuardVerdict {
 export async function evaluateDownloadedPick(params: DownloadedPickEvalParams): Promise<DownloadedPickVerdict> {
   const transcript = params.transcript?.trim() ? params.transcript : null;
   const transcriptAvailable = transcript !== null;
+  const promptId = liveCandidatePrompt();
   const ctx: RunGuardCtx = {
     requestId: params.requestId,
     url: params.url,
     requestType: 'video',
-    promptVersion: transcriptAvailable ? SECOND_PASS_PROMPT_VERSION : SECOND_PASS_NO_TRANSCRIPT_PROMPT_VERSION,
+    promptVersion: secondPassPromptVersion(promptId, transcriptAvailable),
   };
   const meta = params.metadata;
 
@@ -394,6 +524,25 @@ export async function evaluateDownloadedPick(params: DownloadedPickEvalParams): 
   }
 
   const channel = params.channel?.trim() ?? '';
+  const ageBand = getAgeBand(params.userId);
+  const channelHistory = channel ? getChannelHistory(params.userId, channel) : null;
+
+  // v4: same rubric and static prefix as the candidate guard, transcript
+  // excerpt last. A slate pick is a discovery surface, so flags never show.
+  if (promptId === 'v4') {
+    const verdict = await runRubricEvaluation({
+      title: params.title,
+      channel,
+      description: meta?.description ?? params.description ?? '',
+      tags: meta?.tags ?? [],
+      category: categoryName(meta?.categoryId),
+      madeForKids: meta?.madeForKids ?? null,
+      channelHistory,
+      transcript,
+    }, ageBand, 'discovery', ctx);
+    return { verdict: verdict.verdict, reason: verdict.reason, confidence: verdict.confidence, transcriptAvailable };
+  }
+
   const prompt = buildPrompt({
     requestId: params.requestId,
     userId: params.userId,
@@ -402,8 +551,8 @@ export async function evaluateDownloadedPick(params: DownloadedPickEvalParams): 
     channel,
     description: meta?.description ?? params.description ?? '',
     transcript,
-    ageBand: getAgeBand(params.userId),
-    channelHistory: channel ? getChannelHistory(params.userId, channel) : null,
+    ageBand,
+    channelHistory,
     tags: meta?.tags ?? [],
     category: categoryName(meta?.categoryId),
     madeForKids: meta?.madeForKids ?? null,

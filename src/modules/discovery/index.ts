@@ -410,10 +410,15 @@ export {
   applyParkedRerun,
   readRerunResults,
   summariseRerun,
+  sampleCandidates,
   ParkedRerunError,
+  MAX_RERUN_CONCURRENCY,
+  DEFAULT_SAMPLE_SEED,
+  type RerunPopulation,
   type ParkedRerunResult,
   type ParkedRerunSummary,
   type EvaluateParkedReport,
   type ApplyParkedReport,
 } from './parked-rerun';
+export { parseRerunArgs, resolveRerunPrompt, type RerunArgs } from './parked-rerun-args';
 export { discoveryRouter } from './router';

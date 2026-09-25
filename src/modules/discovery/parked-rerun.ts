@@ -1,24 +1,31 @@
 // Re-run the parked backlog (Phase 6a). Kid candidates parked at
 // `guard_pending` were judged by older candidate prompts on title + channel
 // alone; this re-judges them with the stored Data API metadata the current
-// candidate prompt reads.
+// candidate prompts read, under a chosen prompt (v3 verdict or v4 rubric).
 //
 // Two steps, so the model pass and the candidate_pool change are separable:
-//   1. evaluateParkedBacklog — guards every parked candidate serially and
-//      records the verdicts in a results file. Writes guard_eval and
-//      video_metadata rows (via the guard) but never candidate_pool.
+//   1. evaluateParkedBacklog — guards candidates and records the verdicts in
+//      a results file. Writes guard_eval and video_metadata rows (via the
+//      guard) but never candidate_pool.
 //   2. applyParkedRerun — backs up the DB, then moves each still-parked row
 //      per its recorded verdict, exactly as discovery's recheck would.
 //
-// The results file carries ids, verdicts and timestamps only — never titles,
-// channels, reasons or URLs (ADR-0004).
+// For fast measurement the evaluation can draw a deterministic sample,
+// stratified by kid, from either the parked backlog or from candidates the
+// guard already decided (to check a new prompt doesn't flip an earlier
+// clear_no into clear_yes), with a small bounded concurrency.
+//
+// The results file carries ids, verdicts, timings and rubric driver names
+// only — never titles, channels, reasons or URLs (ADR-0004).
 import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { db } from '../../db/client';
 import { EddyError } from '../../errors';
 import {
-  CANDIDATE_PROMPT_VERSION,
   GUARD_SCORING_ERROR_REASON,
+  candidatePromptVersion,
+  driverCountKey,
   ensureVideoMetadata,
+  type CandidatePromptId,
 } from '../guard/index';
 import { getAgeBand } from '../users';
 import { guardCandidate, type GuardableCandidate } from './guard-candidate';
@@ -32,6 +39,10 @@ export class ParkedRerunError extends EddyError {
   }
 }
 
+// 'pending': parked candidates (guard_pending). 'decided': candidates the
+// guard already decided — scored (clear_yes) or guard_rejected (clear_no).
+export type RerunPopulation = 'pending' | 'decided';
+
 export interface ParkedRerunResult {
   candidateId: string;
   userId: string;
@@ -40,10 +51,17 @@ export interface ParkedRerunResult {
   ageRestricted: boolean;
   evaluatedAt: string;
   promptVersion: string;
+  population: RerunPopulation;
+  // Wall time of the guard call in ms; null for the age-restricted
+  // short-circuit (no model call) and for entries from older files.
+  durationMs: number | null;
+  // Rubric driver keys (v4), e.g. "over by 1: attitude". Null for v3.
+  drivers: string[] | null;
 }
 
 const RESULT_KEYS: ReadonlyArray<keyof ParkedRerunResult> = [
   'candidateId', 'userId', 'oldVerdict', 'newVerdict', 'ageRestricted', 'evaluatedAt', 'promptVersion',
+  'population', 'durationMs', 'drivers',
 ];
 
 // Consecutive "model never answered" verdicts before the run stops. Ollama
@@ -54,7 +72,14 @@ const MAX_CONSECUTIVE_SCORING_ERRORS = 5;
 // Candidates added within this many days count as "recent" in the summary.
 const RECENT_CANDIDATE_DAYS = 14;
 
-interface ParkedCandidateRow extends GuardableCandidate {
+// Ollama on the M4 is shared with live traffic; a handful of parallel calls
+// at most.
+export const MAX_RERUN_CONCURRENCY = 4;
+
+// Fixed so two runs with the same population draw the same sample.
+export const DEFAULT_SAMPLE_SEED = 1;
+
+export interface RerunCandidateRow extends GuardableCandidate {
   user_id: string;
   guard_verdict: string | null;
 }
@@ -62,7 +87,7 @@ interface ParkedCandidateRow extends GuardableCandidate {
 // Every kid candidate currently parked for a parent. Adults' candidates are
 // never guarded, so a guard_pending row on one would be stale state, not
 // something to re-judge. Oldest first, so --limit trials a stable slice.
-export function selectParkedCandidates(): ParkedCandidateRow[] {
+export function selectParkedCandidates(): RerunCandidateRow[] {
   return db.prepare(`
     SELECT cp.candidate_id, cp.user_id, cp.url, cp.title, cp.channel,
            cp.external_id, cp.guard_verdict
@@ -70,7 +95,88 @@ export function selectParkedCandidates(): ParkedCandidateRow[] {
     INNER JOIN users u ON u.user_id = cp.user_id
     WHERE cp.status = 'guard_pending' AND u.role = 'kid'
     ORDER BY cp.created_at ASC, cp.candidate_id ASC
-  `).all() as ParkedCandidateRow[];
+  `).all() as RerunCandidateRow[];
+}
+
+// Kid candidates the guard already decided and that are still in that state:
+// scored with clear_yes, or guard_rejected with clear_no. A scored row with
+// no verdict hasn't been guarded yet and is left out.
+export function selectDecidedCandidates(): RerunCandidateRow[] {
+  return db.prepare(`
+    SELECT cp.candidate_id, cp.user_id, cp.url, cp.title, cp.channel,
+           cp.external_id, cp.guard_verdict
+    FROM candidate_pool cp
+    INNER JOIN users u ON u.user_id = cp.user_id
+    WHERE u.role = 'kid'
+      AND ((cp.status = 'scored' AND cp.guard_verdict = 'clear_yes')
+        OR (cp.status = 'guard_rejected' AND cp.guard_verdict = 'clear_no'))
+    ORDER BY cp.created_at ASC, cp.candidate_id ASC
+  `).all() as RerunCandidateRow[];
+}
+
+// FNV-1a, for turning (seed, kid) into a PRNG seed.
+function hash32(text: string): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return h >>> 0;
+}
+
+// mulberry32: small, fast, deterministic.
+function prng(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+// Deterministic sample of up to `n` rows, stratified evenly by kid: each
+// kid's rows are shuffled with a PRNG seeded from (seed, kid), then drawn
+// round-robin across kids, so a kid with fewer rows than its share gives the
+// rest to the others. Independent of the input order.
+export function sampleCandidates<T extends { candidate_id: string; user_id: string }>(
+  rows: readonly T[],
+  n: number,
+  seed: number = DEFAULT_SAMPLE_SEED,
+): T[] {
+  const byKid = new Map<string, T[]>();
+  for (const r of rows) {
+    const list = byKid.get(r.user_id) ?? [];
+    list.push(r);
+    byKid.set(r.user_id, list);
+  }
+  const kids = [...byKid.keys()].sort();
+  const queues = kids.map((kid) => {
+    const list = [...byKid.get(kid)!].sort((a, b) => (a.candidate_id < b.candidate_id ? -1 : a.candidate_id > b.candidate_id ? 1 : 0));
+    const rand = prng(hash32(`${seed}:${kid}`));
+    for (let i = list.length - 1; i > 0; i--) {
+      const j = Math.floor(rand() * (i + 1));
+      [list[i], list[j]] = [list[j]!, list[i]!];
+    }
+    return list;
+  });
+  const out: T[] = [];
+  let depth = 0;
+  while (out.length < n) {
+    let took = false;
+    for (const q of queues) {
+      if (out.length >= n) break;
+      const row = q[depth];
+      if (row) {
+        out.push(row);
+        took = true;
+      }
+    }
+    if (!took) break;
+    depth += 1;
+  }
+  return out;
 }
 
 function isVerdict(v: unknown): v is GuardVerdictValue {
@@ -90,6 +196,13 @@ function parseResult(raw: unknown, index: number): ParkedRerunResult {
   if (typeof r['ageRestricted'] !== 'boolean') bad('ageRestricted');
   if (typeof r['evaluatedAt'] !== 'string') bad('evaluatedAt');
   if (typeof r['promptVersion'] !== 'string') bad('promptVersion');
+  // Fields added with the v4 tooling; absent in files written before it.
+  const population = r['population'] ?? 'pending';
+  if (population !== 'pending' && population !== 'decided') bad('population');
+  const durationMs = r['durationMs'] ?? null;
+  if (durationMs !== null && (typeof durationMs !== 'number' || !Number.isFinite(durationMs))) bad('durationMs');
+  const drivers = r['drivers'] ?? null;
+  if (drivers !== null && (!Array.isArray(drivers) || drivers.some((d) => typeof d !== 'string'))) bad('drivers');
   // Rebuild from the known keys so nothing else in the file is carried along.
   return {
     candidateId: r['candidateId'] as string,
@@ -99,6 +212,9 @@ function parseResult(raw: unknown, index: number): ParkedRerunResult {
     ageRestricted: r['ageRestricted'] as boolean,
     evaluatedAt: r['evaluatedAt'] as string,
     promptVersion: r['promptVersion'] as string,
+    population: population as RerunPopulation,
+    durationMs: durationMs as number | null,
+    drivers: drivers as string[] | null,
   };
 }
 
@@ -127,13 +243,26 @@ export function writeRerunResults(path: string, results: ParkedRerunResult[]): v
 
 export interface EvaluateParkedOptions {
   resultsPath: string;
+  prompt: CandidatePromptId;
+  population?: RerunPopulation;
+  // Draw a deterministic, kid-stratified sample of this size from the
+  // population before skipping already-evaluated candidates.
+  sample?: number;
+  seed?: number;
   // Evaluate at most this many not-yet-evaluated candidates this run.
   limit?: number;
+  // Guard calls in flight at once, 1..MAX_RERUN_CONCURRENCY. Default 1.
+  concurrency?: number;
   onProgress?: (done: number, total: number) => void;
 }
 
 export interface EvaluateParkedReport {
-  parked: number;
+  promptVersion: string;
+  population: RerunPopulation;
+  // Size of the population (parked or decided), before sampling.
+  eligible: number;
+  // After sampling (equal to eligible without --sample).
+  selected: number;
   alreadyEvaluated: number;
   attempted: number;
   recorded: number;
@@ -144,31 +273,49 @@ export interface EvaluateParkedReport {
   // Candidates with no stored Data API metadata after the fetch. Not
   // evaluated and not written, so the next run retries them.
   missingMetadata: number;
+  // Wall-clock seconds for the evaluation loop, and mean seconds per model
+  // call this run (null when no model call was made).
+  wallSeconds: number;
+  meanCallSeconds: number | null;
 }
 
-// Guard every parked kid candidate not already in the results file at the
-// current prompt version. Serial by design: Ollama on the M4 is shared with
-// live traffic. The results file is rewritten after every verdict, so a crash
-// loses at most the one in flight.
+// Guard every candidate in the chosen population (or a sample of it) not
+// already in the results file at the chosen prompt version. Entries at other
+// prompt versions stay in the file, so v3 and v4 results sit side by side.
+// The results file is rewritten after every verdict, so a crash loses at
+// most the calls in flight.
 export async function evaluateParkedBacklog(opts: EvaluateParkedOptions): Promise<EvaluateParkedReport> {
-  const existing = readRerunResults(opts.resultsPath);
-  // Entries from an older prompt version are re-evaluated and replaced.
-  const results = existing.filter((r) => r.promptVersion === CANDIDATE_PROMPT_VERSION);
-  const done = new Set(results.map((r) => r.candidateId));
+  const concurrency = opts.concurrency ?? 1;
+  if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > MAX_RERUN_CONCURRENCY) {
+    throw new ParkedRerunError(`Concurrency must be an integer from 1 to ${MAX_RERUN_CONCURRENCY}`);
+  }
+  const population = opts.population ?? 'pending';
+  const promptVersion = candidatePromptVersion(opts.prompt);
 
-  const parked = selectParkedCandidates();
-  let todo = parked.filter((c) => !done.has(c.candidate_id));
-  const alreadyEvaluated = parked.length - todo.length;
+  const results = readRerunResults(opts.resultsPath);
+  const done = new Set(results.filter((r) => r.promptVersion === promptVersion).map((r) => r.candidateId));
+
+  const eligible = population === 'decided' ? selectDecidedCandidates() : selectParkedCandidates();
+  const selected = opts.sample !== undefined
+    ? sampleCandidates(eligible, opts.sample, opts.seed ?? DEFAULT_SAMPLE_SEED)
+    : eligible;
+  let todo = selected.filter((c) => !done.has(c.candidate_id));
+  const alreadyEvaluated = selected.length - todo.length;
   if (opts.limit !== undefined) todo = todo.slice(0, opts.limit);
 
   const report: EvaluateParkedReport = {
-    parked: parked.length,
+    promptVersion,
+    population,
+    eligible: eligible.length,
+    selected: selected.length,
     alreadyEvaluated,
     attempted: 0,
     recorded: 0,
     scoringErrors: 0,
     abortedAfterErrors: false,
     missingMetadata: 0,
+    wallSeconds: 0,
+    meanCallSeconds: null,
   };
   if (todo.length === 0) return report;
 
@@ -186,54 +333,86 @@ export async function evaluateParkedBacklog(opts: EvaluateParkedOptions): Promis
   report.missingMetadata = todo.length - guardable.length;
 
   const ageBands = new Map<string, string>();
+  const bandFor = (userId: string): string => {
+    let band = ageBands.get(userId);
+    if (band === undefined) {
+      band = getAgeBand(userId);
+      ageBands.set(userId, band);
+    }
+    return band;
+  };
+
+  const started = Date.now();
+  let callMs = 0;
+  let calls = 0;
   let consecutiveErrors = 0;
-  for (const c of guardable) {
-    let ageBand = ageBands.get(c.user_id);
-    if (ageBand === undefined) {
-      ageBand = getAgeBand(c.user_id);
-      ageBands.set(c.user_id, ageBand);
-    }
+  let next = 0;
 
-    const { verdict, ageRestricted } = await guardCandidate(c, c.user_id, ageBand, metadata);
-    report.attempted += 1;
-
-    if (verdict.reason === GUARD_SCORING_ERROR_REASON && verdict.confidence === 0) {
-      report.scoringErrors += 1;
-      consecutiveErrors += 1;
-      opts.onProgress?.(report.attempted, guardable.length);
-      if (consecutiveErrors >= MAX_CONSECUTIVE_SCORING_ERRORS) {
-        report.abortedAfterErrors = true;
-        break;
+  // A small worker pool: each worker takes the next candidate until the list
+  // is done or the run aborts. Node is single-threaded, so the shared
+  // counters and the results-file rewrite need no locking.
+  const worker = async (): Promise<void> => {
+    while (!report.abortedAfterErrors && next < guardable.length) {
+      const c = guardable[next++]!;
+      const t0 = Date.now();
+      const { verdict, ageRestricted } = await guardCandidate(c, c.user_id, bandFor(c.user_id), metadata, opts.prompt);
+      const durationMs = Date.now() - t0;
+      report.attempted += 1;
+      if (!ageRestricted) {
+        calls += 1;
+        callMs += durationMs;
       }
-      continue;
-    }
-    consecutiveErrors = 0;
 
-    results.push({
-      candidateId: c.candidate_id,
-      userId: c.user_id,
-      oldVerdict: c.guard_verdict,
-      newVerdict: verdict.verdict,
-      ageRestricted,
-      evaluatedAt: new Date().toISOString(),
-      promptVersion: CANDIDATE_PROMPT_VERSION,
-    });
-    writeRerunResults(opts.resultsPath, results);
-    report.recorded += 1;
-    opts.onProgress?.(report.attempted, guardable.length);
-  }
+      if (verdict.reason === GUARD_SCORING_ERROR_REASON && verdict.confidence === 0) {
+        report.scoringErrors += 1;
+        consecutiveErrors += 1;
+        opts.onProgress?.(report.attempted, guardable.length);
+        if (consecutiveErrors >= MAX_CONSECUTIVE_SCORING_ERRORS) report.abortedAfterErrors = true;
+        continue;
+      }
+      consecutiveErrors = 0;
+
+      results.push({
+        candidateId: c.candidate_id,
+        userId: c.user_id,
+        oldVerdict: c.guard_verdict,
+        newVerdict: verdict.verdict,
+        ageRestricted,
+        evaluatedAt: new Date().toISOString(),
+        promptVersion,
+        population,
+        durationMs: ageRestricted ? null : durationMs,
+        drivers: verdict.rubric ? verdict.rubric.decision.drivers.map(driverCountKey) : null,
+      });
+      writeRerunResults(opts.resultsPath, results);
+      report.recorded += 1;
+      opts.onProgress?.(report.attempted, guardable.length);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(concurrency, guardable.length) }, () => worker()));
+
+  report.wallSeconds = (Date.now() - started) / 1000;
+  report.meanCallSeconds = calls > 0 ? callMs / calls / 1000 : null;
   return report;
 }
 
 export type TransitionCounts = Record<string, number>;
 
 export interface ParkedRerunSummary {
+  promptVersion: string;
   total: number;
   ageRestricted: number;
   transitions: TransitionCounts;
+  // An earlier clear_no the new prompt would now surface. Called out on its
+  // own: on the decided population this is the number that must stay at 0.
+  clearNoToClearYes: number;
   // Keyed by placeholder (kid_1, kid_2, ...), never a user id or name.
   byUser: Record<string, TransitionCounts>;
   byCandidateAge: { recent: TransitionCounts; older: TransitionCounts; unknown: TransitionCounts };
+  // Mean guard-call wall time over entries that made a model call.
+  meanSecondsPerCall: number | null;
+  // Rubric driver counts (v4): e.g. { "over by 1: attitude": 12 }. Empty for v3.
+  drivers: Record<string, number>;
 }
 
 function bump(counts: TransitionCounts, key: string): void {
@@ -259,10 +438,15 @@ function kidPlaceholders(userIds: string[]): Map<string, string> {
   return out;
 }
 
-// Old → new verdict counts over the current-prompt results, overall, per kid
-// placeholder, and split by how long the candidate has been in the pool.
-export function summariseRerun(results: ParkedRerunResult[], now: Date = new Date()): ParkedRerunSummary {
-  const current = results.filter((r) => r.promptVersion === CANDIDATE_PROMPT_VERSION);
+// Old → new verdict counts over one prompt version's results, overall, per
+// kid placeholder, and split by how long the candidate has been in the pool;
+// plus timing and (v4) rubric driver counts.
+export function summariseRerun(
+  results: ParkedRerunResult[],
+  promptVersion: string,
+  now: Date = new Date(),
+): ParkedRerunSummary {
+  const current = results.filter((r) => r.promptVersion === promptVersion);
   const createdAt = new Map<string, string>();
   if (current.length > 0) {
     const rows = db.prepare(`
@@ -275,15 +459,22 @@ export function summariseRerun(results: ParkedRerunResult[], now: Date = new Dat
   const recentCutoff = now.getTime() - RECENT_CANDIDATE_DAYS * 24 * 60 * 60 * 1000;
 
   const summary: ParkedRerunSummary = {
+    promptVersion,
     total: current.length,
     ageRestricted: 0,
     transitions: {},
+    clearNoToClearYes: 0,
     byUser: {},
     byCandidateAge: { recent: {}, older: {}, unknown: {} },
+    meanSecondsPerCall: null,
+    drivers: {},
   };
+  let callMs = 0;
+  let calls = 0;
   for (const r of current) {
     const key = transitionKey(r);
     if (r.ageRestricted) summary.ageRestricted += 1;
+    if (r.oldVerdict === 'clear_no' && r.newVerdict === 'clear_yes') summary.clearNoToClearYes += 1;
     bump(summary.transitions, key);
     const kid = placeholders.get(r.userId) ?? 'kid_unknown';
     bump(summary.byUser[kid] ??= {}, key);
@@ -291,29 +482,41 @@ export function summariseRerun(results: ParkedRerunResult[], now: Date = new Dat
     const createdMs = created ? Date.parse(created) : Number.NaN;
     const bucket = Number.isNaN(createdMs) ? 'unknown' : createdMs >= recentCutoff ? 'recent' : 'older';
     bump(summary.byCandidateAge[bucket], key);
+    if (r.durationMs !== null) {
+      calls += 1;
+      callMs += r.durationMs;
+    }
+    for (const d of r.drivers ?? []) bump(summary.drivers, d);
   }
+  summary.meanSecondsPerCall = calls > 0 ? callMs / calls / 1000 : null;
   return summary;
 }
 
 export interface ApplyParkedOptions {
   resultsPath: string;
   backupPath: string;
+  // Only results at this prompt version are applied. The script passes the
+  // live prompt's version unless --prompt was given explicitly.
+  promptVersion: string;
   forceBackup?: boolean;
 }
 
 export interface ApplyParkedReport {
   results: number;
-  // Results from an older prompt version; not applied.
-  staleVersion: number;
+  promptVersion: string;
+  // Results at another prompt version (or from the decided population);
+  // not applied.
+  otherVersion: number;
   // Candidates no longer guard_pending (or gone) since evaluation; not applied.
   statusChanged: number;
   applied: { scored: number; guard_rejected: number; guard_pending: number };
 }
 
 // Apply a results file to candidate_pool. Never calls the model. Backs up the
-// DB first, then applies every current-prompt verdict whose candidate is
-// still parked, in one transaction, via the same verdict → status mapping and
-// update as discovery's recheck. Uncertain leaves the row parked.
+// DB first, then applies every verdict at the given prompt version whose
+// candidate is still parked, in one transaction, via the same verdict →
+// status mapping and update as discovery's recheck. Uncertain leaves the row
+// parked.
 export async function applyParkedRerun(opts: ApplyParkedOptions): Promise<ApplyParkedReport> {
   if (!existsSync(opts.resultsPath)) {
     throw new ParkedRerunError(`No results file at ${opts.resultsPath} — run the evaluation first`);
@@ -332,7 +535,8 @@ export async function applyParkedRerun(opts: ApplyParkedOptions): Promise<ApplyP
 
   const report: ApplyParkedReport = {
     results: results.length,
-    staleVersion: 0,
+    promptVersion: opts.promptVersion,
+    otherVersion: 0,
     statusChanged: 0,
     applied: { scored: 0, guard_rejected: 0, guard_pending: 0 },
   };
@@ -340,8 +544,8 @@ export async function applyParkedRerun(opts: ApplyParkedOptions): Promise<ApplyP
 
   db.transaction(() => {
     for (const r of results) {
-      if (r.promptVersion !== CANDIDATE_PROMPT_VERSION) {
-        report.staleVersion += 1;
+      if (r.promptVersion !== opts.promptVersion || r.population !== 'pending') {
+        report.otherVersion += 1;
         continue;
       }
       const row = readStatus.get(r.candidateId) as { status: string } | undefined;

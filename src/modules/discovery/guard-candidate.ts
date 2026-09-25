@@ -1,6 +1,7 @@
 import {
   evaluateCandidate,
-  type GuardVerdict,
+  type CandidatePromptId,
+  type CandidateVerdict,
   type StoredVideoMetadata,
 } from '../guard/index';
 import { statusForGuardVerdict, type GuardedCandidateStatus } from './util';
@@ -14,7 +15,7 @@ export interface GuardableCandidate {
 }
 
 export interface CandidateGuardOutcome {
-  verdict: GuardVerdict;
+  verdict: CandidateVerdict;
   nextStatus: GuardedCandidateStatus;
   ageRestricted: boolean;
 }
@@ -24,12 +25,13 @@ export interface CandidateGuardOutcome {
 // arguments: discovery's recheck and the parked re-run both call this, so the
 // two can't feed the guard different inputs. Writes a guard_eval row (via the
 // guard) but never touches candidate_pool — the caller decides whether to
-// apply `nextStatus`.
+// apply `nextStatus`. `prompt` defaults to the live candidate prompt.
 export async function guardCandidate(
   c: GuardableCandidate,
   userId: string,
   ageBand: string,
   metadata: Map<string, StoredVideoMetadata>,
+  prompt?: CandidatePromptId,
 ): Promise<CandidateGuardOutcome> {
   const meta = c.external_id ? metadata.get(c.external_id) : undefined;
   const ageRestricted = meta?.ageRestricted ?? false;
@@ -45,6 +47,7 @@ export async function guardCandidate(
     categoryId: meta?.categoryId ?? null,
     madeForKids: meta?.madeForKids ?? null,
     ageRestricted,
+    prompt,
   });
   return { verdict, nextStatus: statusForGuardVerdict(verdict.verdict), ageRestricted };
 }
