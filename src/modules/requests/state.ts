@@ -434,6 +434,24 @@ function downloadedSql(
   };
 }
 
+// Downloads share one <youtubeId>.mp4 across kids, so a transition that
+// takes a row off its file only unlinks the file when no other live request
+// still points at it. Run as a preFetch (before the UPDATE clears anything),
+// exposed to effects as `other_live_refs`.
+const OTHER_LIVE_REFS_SQL = `
+  SELECT COUNT(*) AS other_live_refs
+    FROM requests o
+    JOIN requests r ON r.request_id = ?
+   WHERE o.file_path = r.file_path
+     AND o.request_id != r.request_id
+     AND o.file_state = 'live'
+     AND o.status != 'deleted'`;
+
+function fileStillShared(result: TransitionResult): boolean {
+  const sqlResult = (result as SqlResultCarrier).__sqlResult;
+  return Number(sqlResult?.['other_live_refs'] ?? 0) > 0;
+}
+
 // A slate pick becoming visible (second-pass clear, parent allow) fires the
 // two effects a plain mark_downloaded does: the kid's video_ready
 // notification and person capture for the channel.
@@ -502,6 +520,7 @@ export const TRANSITIONS = {
   mark_soft_deleted: {
     sources: ['ready', 'watched'],
     target: 'deleted',
+    preFetch: (event) => ({ sql: OTHER_LIVE_REFS_SQL, params: [event.requestId] }),
     buildSql: (event, now) => ({
       // file_size_bytes is cleared alongside the file_state flip so the
       // recycler's per-user accounting (#113) never counts bytes that aren't
@@ -520,9 +539,10 @@ export const TRANSITIONS = {
       // The file path is captured in the RETURNING clause and stashed on the
       // SqlResult below — we read it back here. Only emit the delete effect
       // when the transition actually fired AND the row had a file to remove.
+      // The other kid's copy of a shared file keeps it on disk.
       const sqlResult = (result as SqlResultCarrier).__sqlResult;
       const filePath = sqlResult?.['file_path'] as string | null | undefined;
-      if (!result.transitioned || !filePath) return [];
+      if (!result.transitioned || !filePath || fileStillShared(result)) return [];
       return [{ kind: 'enqueue_delete', jobData: { requestId: event.requestId, filePath }, requestId: event.requestId }];
     },
   } as Descriptor<Extract<Event, { kind: 'mark_soft_deleted' }>>,
@@ -544,8 +564,10 @@ export const TRANSITIONS = {
       // Capture the pre-UPDATE file_path; the SET clause below clears the
       // column and SQLite's RETURNING only sees the post-update value, so
       // without this peek there's nothing for the unlink effect to consume.
-      sql: `SELECT file_path AS pre_file_path FROM requests WHERE request_id = ?`,
-      params: [event.requestId],
+      // other_live_refs: see OTHER_LIVE_REFS_SQL.
+      sql: `SELECT r.file_path AS pre_file_path, (${OTHER_LIVE_REFS_SQL}) AS other_live_refs
+              FROM requests r WHERE r.request_id = ?`,
+      params: [event.requestId, event.requestId],
     }),
     buildSql: (event, now) => ({
       sql: `UPDATE requests
@@ -566,7 +588,8 @@ export const TRANSITIONS = {
       // exposes the pre-update path under `pre_file_path`.
       const sqlResult = (result as SqlResultCarrier).__sqlResult;
       const filePath = sqlResult?.['pre_file_path'] as string | null | undefined;
-      if (!result.transitioned || !filePath) return [];
+      // Reclaiming one kid's budget must not unlink the other kid's copy.
+      if (!result.transitioned || !filePath || fileStillShared(result)) return [];
       return [{ kind: 'enqueue_delete', jobData: { requestId: event.requestId, filePath }, requestId: event.requestId }];
     },
   } as Descriptor<Extract<Event, { kind: 'mark_recycled' }>>,
@@ -722,16 +745,7 @@ export const TRANSITIONS = {
   mark_parent_blocked: {
     sources: ['guard_pending', 'ready', 'watched'],
     target: 'deleted',
-    preFetch: (event) => ({
-      sql: `SELECT COUNT(*) AS other_live_refs
-              FROM requests o
-              JOIN requests r ON r.request_id = ?
-             WHERE o.file_path = r.file_path
-               AND o.request_id != r.request_id
-               AND o.file_state = 'live'
-               AND o.status != 'deleted'`,
-      params: [event.requestId],
-    }),
+    preFetch: (event) => ({ sql: OTHER_LIVE_REFS_SQL, params: [event.requestId] }),
     buildSql: (event, now) => ({
       sql: `UPDATE requests
               SET status           = 'deleted',
@@ -748,8 +762,7 @@ export const TRANSITIONS = {
     effects: (event, result) => {
       const sqlResult = (result as SqlResultCarrier).__sqlResult;
       const filePath = sqlResult?.['file_path'] as string | null | undefined;
-      const otherLiveRefs = Number(sqlResult?.['other_live_refs'] ?? 0);
-      if (!result.transitioned || !filePath || otherLiveRefs > 0) return [];
+      if (!result.transitioned || !filePath || fileStillShared(result)) return [];
       return [{ kind: 'enqueue_delete', jobData: { requestId: event.requestId, filePath }, requestId: event.requestId }];
     },
   } as Descriptor<Extract<Event, { kind: 'mark_parent_blocked' }>>,
