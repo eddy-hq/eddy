@@ -37,6 +37,8 @@ export interface SearchVideoWithDate {
   videoId: string;
   title: string;
   channel: string;
+  // YouTube channel id (UC...); '' when the source didn't report one.
+  channelId: string;
   durationSecs: number | null;
   viewCount: number | null;
   uploadDate: string | null;
@@ -59,6 +61,18 @@ export interface SearchChannel {
   channelId: string;
   channelName: string;
   channelUrl: string;
+}
+
+// What a parent can point the block-channel CLI at, once parsed.
+export type ChannelLookup =
+  | { kind: 'channel_id'; channelId: string }
+  | { kind: 'handle'; handle: string }
+  | { kind: 'username'; username: string }
+  | { kind: 'video'; videoId: string };
+
+export interface ChannelIdentity {
+  channelId: string;
+  displayName: string;
 }
 
 export interface PlaylistEntry {
@@ -129,7 +143,7 @@ export async function searchVideosWithDates(
     [
       `ytsearch${limit}:${query}`,
       '--print',
-      '%(.{id,title,channel,duration,view_count,upload_date,timestamp,thumbnail,live_status})j',
+      '%(.{id,title,channel,channel_id,duration,view_count,upload_date,timestamp,thumbnail,live_status})j',
       '--no-download',
       '--quiet',
       '--no-warnings',
@@ -146,6 +160,7 @@ export async function searchVideosWithDates(
       videoId,
       title: String(item['title'] ?? ''),
       channel: String(item['channel'] ?? ''),
+      channelId: String(item['channel_id'] ?? ''),
       durationSecs: typeof item['duration'] === 'number' ? item['duration'] : null,
       viewCount: typeof item['view_count'] === 'number' ? item['view_count'] : null,
       uploadDate: typeof item['upload_date'] === 'string' ? item['upload_date'] : null,
@@ -262,6 +277,29 @@ export async function channelInfo(channelId: string): Promise<ChannelInfo> {
   const avatarUrl = best?.url ?? null;
 
   return { description, avatarUrl };
+}
+
+// Resolve a channel reference to its id and title (block-channel CLI). A video
+// reads its own metadata; a channel page reads the playlist root without
+// enumerating any videos. Null when yt-dlp returns no channel id.
+export async function channelIdentity(lookup: ChannelLookup): Promise<ChannelIdentity | null> {
+  const isVideo = lookup.kind === 'video';
+  const url = lookup.kind === 'video' ? `https://www.youtube.com/watch?v=${lookup.videoId}`
+    : lookup.kind === 'channel_id' ? `https://www.youtube.com/channel/${lookup.channelId}`
+    : lookup.kind === 'handle' ? `https://www.youtube.com/${lookup.handle}`
+    : `https://www.youtube.com/user/${encodeURIComponent(lookup.username)}`;
+  const records = await runYtdlpLines(
+    isVideo
+      ? [url, '--dump-json', '--no-playlist', '--no-download', '--quiet', '--no-warnings']
+      : [url, '--dump-single-json', '--playlist-items', '0', '--no-download', '--quiet', '--no-warnings'],
+    { timeoutMs: 30_000, maxBufferMb: 20 },
+  );
+  const item = records[0];
+  if (!item) return null;
+  const channelId = typeof item['channel_id'] === 'string' ? item['channel_id'] : '';
+  if (!channelId) return null;
+  const name = [item['channel'], item['uploader']].find((v) => typeof v === 'string' && v.trim());
+  return { channelId, displayName: typeof name === 'string' ? name : channelId };
 }
 
 export async function flatPlaylistChannel(channelId: string): Promise<PlaylistEntry[]> {

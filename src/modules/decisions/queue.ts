@@ -11,6 +11,7 @@ import {
   type ShownEval,
 } from '../guard';
 import { getAgeBand } from '../users';
+import { notBlockedChannelSql } from '../blocked-channels';
 import {
   CATCH_UP_BATCH_MIX,
   CATCH_UP_PAGE,
@@ -40,6 +41,7 @@ interface SubjectRow {
   youtube_id: string | null;
   title: string | null;
   channel: string | null;
+  channel_id: string | null;
   guard_verdict: string | null;
   added_at: string;
   description: string | null;
@@ -63,6 +65,8 @@ export interface DecisionCard {
   youtubeId: string | null;
   title: string;
   channel: string | null;
+  // YouTube channel id, when known — what "Block channel" acts on.
+  channelId: string | null;
   description: string;
   thumbnailUrl: string | null;
   addedAt: string;
@@ -84,25 +88,32 @@ const NOT_DECIDED = (alias: string, type: SubjectType, idCol: string) => `
   NOT EXISTS (SELECT 1 FROM guard_decisions d
                WHERE d.subject_type = '${type}' AND d.subject_id = ${alias}.${idCol})`;
 
+// A Blocked channel's subjects leave the queue: the parent has already
+// answered for the whole channel.
+const CANDIDATE_NOT_BLOCKED = notBlockedChannelSql('cp.channel_id', 'cp.channel');
+const REQUEST_NOT_BLOCKED = notBlockedChannelSql('r.youtube_channel_id', 'r.channel');
+
 // Parked uncertain subjects for kids: discovery candidates the guard parked,
 // and downloaded slate picks the second pass parked. Newest first.
 function readEscalations(since: string): SubjectRow[] {
   return db.prepare(`
     SELECT 'candidate' AS subject_type, cp.candidate_id AS subject_id, cp.user_id,
            u.display_name AS kid_name, cp.url, cp.external_id AS youtube_id,
-           cp.title, cp.channel, cp.guard_verdict, cp.created_at AS added_at,
+           cp.title, cp.channel, cp.channel_id, cp.guard_verdict, cp.created_at AS added_at,
            NULL AS description
       FROM candidate_pool cp
       JOIN users u ON u.user_id = cp.user_id
      WHERE u.role = 'kid' AND cp.status = 'guard_pending' AND cp.created_at >= @since
        AND ${NOT_DECIDED('cp', 'candidate', 'candidate_id')}
+       AND ${CANDIDATE_NOT_BLOCKED}
     UNION ALL
     SELECT 'request', r.request_id, r.user_id, u.display_name, r.url, r.youtube_id,
-           r.title, r.channel, r.guard_verdict, r.requested_at, r.description
+           r.title, r.channel, r.youtube_channel_id, r.guard_verdict, r.requested_at, r.description
       FROM requests r
       JOIN users u ON u.user_id = r.user_id
      WHERE u.role = 'kid' AND r.status = 'guard_pending' AND r.requested_at >= @since
        AND ${NOT_DECIDED('r', 'request', 'request_id')}
+       AND ${REQUEST_NOT_BLOCKED}
      ORDER BY added_at DESC, subject_id
   `).all({ since }) as SubjectRow[];
 }
@@ -112,11 +123,13 @@ function countEscalations(since: string): number {
     SELECT
       (SELECT COUNT(*) FROM candidate_pool cp JOIN users u ON u.user_id = cp.user_id
         WHERE u.role = 'kid' AND cp.status = 'guard_pending' AND cp.created_at >= @since
-          AND ${NOT_DECIDED('cp', 'candidate', 'candidate_id')})
+          AND ${NOT_DECIDED('cp', 'candidate', 'candidate_id')}
+          AND ${CANDIDATE_NOT_BLOCKED})
       +
       (SELECT COUNT(*) FROM requests r JOIN users u ON u.user_id = r.user_id
         WHERE u.role = 'kid' AND r.status = 'guard_pending' AND r.requested_at >= @since
-          AND ${NOT_DECIDED('r', 'request', 'request_id')}) AS n
+          AND ${NOT_DECIDED('r', 'request', 'request_id')}
+          AND ${REQUEST_NOT_BLOCKED}) AS n
   `).get({ since }) as { n: number };
   return row.n;
 }
@@ -129,6 +142,7 @@ function readDrawn(day: string, source: 'spot_check' | 'catch_up'): SubjectRow[]
            COALESCE(cp.external_id, r.youtube_id) AS youtube_id,
            COALESCE(cp.title, r.title) AS title,
            COALESCE(cp.channel, r.channel) AS channel,
+           COALESCE(cp.channel_id, r.youtube_channel_id) AS channel_id,
            s.guard_verdict, s.created_at AS added_at, r.description
       FROM guard_spot_checks s
       JOIN users u ON u.user_id = s.user_id
@@ -138,6 +152,7 @@ function readDrawn(day: string, source: 'spot_check' | 'catch_up'): SubjectRow[]
        AND (cp.candidate_id IS NOT NULL OR r.request_id IS NOT NULL)
        AND NOT EXISTS (SELECT 1 FROM guard_decisions d
                         WHERE d.subject_type = s.subject_type AND d.subject_id = s.subject_id)
+       AND ${notBlockedChannelSql('COALESCE(cp.channel_id, r.youtube_channel_id)', 'COALESCE(cp.channel, r.channel)')}
      ORDER BY s.created_at, s.subject_id
   `).all({ day, source }) as SubjectRow[];
 }
@@ -173,6 +188,7 @@ function readDrawPool(from: string, day: string): PoolRow[] {
        AND ${NOT_DECIDED('cp', 'candidate', 'candidate_id')}
        AND ${decidedVideo('cp', 'external_id')}
        AND ${notDrawnToday('cp', 'candidate', 'candidate_id')}
+       AND ${CANDIDATE_NOT_BLOCKED}
     UNION ALL
     SELECT 'request', r.request_id, r.user_id, r.guard_verdict
       FROM requests r
@@ -184,6 +200,7 @@ function readDrawPool(from: string, day: string): PoolRow[] {
        AND ${NOT_DECIDED('r', 'request', 'request_id')}
        AND ${decidedVideo('r', 'youtube_id')}
        AND ${notDrawnToday('r', 'request', 'request_id')}
+       AND ${REQUEST_NOT_BLOCKED}
   `).all({ from, day }) as PoolRow[];
 }
 
@@ -272,6 +289,7 @@ function toCards(rows: SubjectRow[], source: DecisionSource, ageBands: Map<strin
       youtubeId: first.youtube_id,
       title: first.title ?? '(untitled)',
       channel: first.channel,
+      channelId: group.find((r) => r.channel_id)?.channel_id ?? null,
       description: descriptionFor(first),
       // Parent-facing: the creator thumbnail is fine here.
       thumbnailUrl: first.youtube_id ? `https://i.ytimg.com/vi/${first.youtube_id}/mqdefault.jpg` : null,

@@ -20,6 +20,7 @@ import { SHORTS_MAX_SECS } from '../content';
 import { recentUploads, videoDurations } from '../../discovery-metadata';
 import { applyChannelInfoToPerson } from './registry';
 import { getDeclaredChannelInterest } from '../interests';
+import { isChannelBlocked } from '../blocked-channels';
 
 // ── RSS parsing ───────────────────────────────────────────────────────────────
 
@@ -144,9 +145,15 @@ export async function pollChannel(output: OutputRow): Promise<boolean> {
   const videos = await listRecentUploads(output.channel_id);
   if (videos === null) return false;
 
-  const followers = db.prepare(
-    'SELECT user_id FROM followed_people WHERE person_id = ?'
-  ).all(output.person_id) as Array<{ user_id: string }>;
+  const followers = db.prepare(`
+    SELECT fp.user_id, u.role FROM followed_people fp
+      JOIN users u ON u.user_id = fp.user_id
+     WHERE fp.person_id = ?
+  `).all(output.person_id) as Array<{ user_id: string; role: string }>;
+  // A kid following a channel that is now blocked keeps the follow, but its
+  // new uploads don't enter the kid's pool (household-wide Blocked channel).
+  // Uploads are still marked seen below, so an unblock doesn't flood the pool.
+  const channelBlocked = isChannelBlocked(output.channel_id);
 
   if (followers.length === 0) return true;
 
@@ -203,6 +210,7 @@ export async function pollChannel(output: OutputRow): Promise<boolean> {
     const url = `https://www.youtube.com/watch?v=${video.videoId}`;
 
     for (const follower of followers) {
+      if (channelBlocked && follower.role === 'kid') continue;
       // The channel's inferred interest (from inferChannelInterests at follow
       // time) gives the candidate an interest_id so scoring can name the
       // connection and the per-interest cap engages for follow-provenance
@@ -228,14 +236,14 @@ export async function pollChannel(output: OutputRow): Promise<boolean> {
       db.prepare(`
         INSERT OR IGNORE INTO candidate_pool
           (candidate_id, user_id, content_type, source_type, person_id, interest_id,
-           url, external_id, title, channel, duration_secs, thumbnail_url,
+           url, external_id, title, channel, channel_id, duration_secs, thumbnail_url,
            published_at, status, created_at)
         VALUES
-          (?, ?, 'video', 'subscription', ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
+          (?, ?, 'video', 'subscription', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
       `).run(
         candidateId, follower.user_id, output.person_id, interestId,
         url, video.videoId, video.title || null,
-        output.channel_name, duration,
+        output.channel_name, output.channel_id, duration,
         video.thumbnailUrl, video.publishedAt, nowIso(),
       );
 

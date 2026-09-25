@@ -423,3 +423,8 @@ export {
 export { parseRerunArgs, resolveRerunPrompt, type RerunArgs } from './parked-rerun-args';
 export { discoveryRouter } from './router';
 export { applyCandidateParentVerdict, type CandidateParentOutcome } from './parent-decision';
+export {
+  blockChannel,
+  purgeBlockedChannelFromPool,
+  type ChannelBlockOutcome,
+} from './blocked-channel';

@@ -15,6 +15,8 @@ import type {
   SearchChannel,
   PlaylistEntry,
   ChannelInfo,
+  ChannelLookup,
+  ChannelIdentity,
 } from './ytdlp';
 
 const API_BASE = 'https://www.googleapis.com/youtube/v3';
@@ -336,6 +338,7 @@ export async function searchVideosWithDates(
       videoId: m.videoId,
       title: m.title,
       channel: m.channel,
+      channelId: m.channelId,
       durationSecs: m.durationSecs,
       viewCount: m.viewCount,
       uploadDate: m.uploadDate,
@@ -603,6 +606,26 @@ export async function channelInfo(channelId: string): Promise<ChannelInfo> {
   const description =
     typeof sn.description === 'string' && sn.description.trim() ? sn.description : null;
   return { description, avatarUrl: pickThumbnail(sn.thumbnails) };
+}
+
+// Resolve a channel reference to its id and title (block-channel CLI): a
+// video via videos.list, anything else via channels.list by id, handle or
+// legacy username. 1 unit either way. Null when the API finds nothing.
+export async function channelIdentity(lookup: ChannelLookup): Promise<ChannelIdentity | null> {
+  if (lookup.kind === 'video') {
+    const meta = (await fetchVideoMetadata([lookup.videoId])).get(lookup.videoId);
+    if (!meta?.channelId) return null;
+    return { channelId: meta.channelId, displayName: meta.channel || meta.channelId };
+  }
+  const params: Record<string, string> = { part: 'snippet' };
+  if (lookup.kind === 'channel_id') params['id'] = lookup.channelId;
+  else if (lookup.kind === 'handle') params['forHandle'] = lookup.handle;
+  else params['forUsername'] = lookup.username;
+  const data = await apiGet<ChannelDetailsResponse>('channels', params);
+  const item = data.items?.[0];
+  if (!item || typeof item.id !== 'string') return null;
+  const title = item.snippet?.title;
+  return { channelId: item.id, displayName: typeof title === 'string' && title.trim() ? title : item.id };
 }
 
 // Single-video duration (#193). Reuses the batched videos.list path (1 unit).

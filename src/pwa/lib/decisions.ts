@@ -30,6 +30,8 @@ export interface DecisionCard {
   youtubeId: string | null;
   title: string;
   channel: string | null;
+  // YouTube channel id, when known — what "Block channel" acts on.
+  channelId: string | null;
   description: string;
   thumbnailUrl: string | null;
   addedAt: string;
@@ -79,6 +81,51 @@ export function skipCard(cards: readonly DecisionCard[], key: string): DecisionC
   const card = cards.find((c) => c.key === key);
   if (!card) return [...cards];
   return [...cards.filter((c) => c.key !== key), card];
+}
+
+// ── Block channel ────────────────────────────────────────────────────────────
+
+export interface BlockChannelResult {
+  channel: { channelId: string; displayName: string };
+  alreadyBlocked: boolean;
+  poolRowsRemoved: number;
+  outcomes: DecisionOutcome[];
+}
+
+// Only a card whose channel id is known can block its channel.
+export function canBlockChannel(card: DecisionCard): boolean {
+  return !!card.channelId;
+}
+
+// Every kid on the card: the video is recorded as a Block for each of them.
+export function blockChannelSubjects(card: DecisionCard): Array<{ subjectType: SubjectType; subjectId: string }> {
+  return card.subjects.map((s) => ({ subjectType: s.subjectType, subjectId: s.subjectId }));
+}
+
+export function channelLabel(card: DecisionCard): string {
+  return card.channel?.trim() || 'this channel';
+}
+
+export function blockChannelPrompt(card: DecisionCard): string {
+  return `Block ${channelLabel(card)} for every kid?`;
+}
+
+// After a block, every queued card from the channel goes: by id, or by name
+// for a card whose channel id isn't known (the server matches the same way).
+export function removeChannelCards(
+  cards: readonly DecisionCard[],
+  channel: { channelId: string; displayName: string },
+): DecisionCard[] {
+  return cards.filter((c) => c.channelId
+    ? c.channelId !== channel.channelId
+    : !(c.channel && c.channel === channel.displayName));
+}
+
+export function blockChannelFlash(result: BlockChannelResult): string {
+  const name = result.channel.displayName;
+  const n = result.poolRowsRemoved;
+  const removed = n === 0 ? 'nothing else queued' : `${n} queued video${n === 1 ? '' : 's'} removed`;
+  return `${result.alreadyBlocked ? 'Already blocked' : 'Blocked'} ${name} · ${removed}`;
 }
 
 export type KeyAction = 'allow' | 'block' | 'skip' | 'next';

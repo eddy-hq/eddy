@@ -43,6 +43,11 @@ export {
   registerDefaultRequestsState,
   getRequestsState,
 } from './state-default';
+export {
+  rejectIfChannelBlocked,
+  type ChannelCheckInput,
+  type ChannelCheckResult,
+} from './blocked-channel';
 export type {
   Status,
   TransitionResult,

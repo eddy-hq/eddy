@@ -1,4 +1,5 @@
 import { db } from '../../db/client';
+import { notBlockedChannelSql } from '../blocked-channels';
 import { rank, isPicked, bucketFor, type Bucket, type RankerCandidate, type Verdict } from './ranker';
 
 export interface ScoredCandidateForGuard {
@@ -47,6 +48,7 @@ export function readScoredCandidatesByBucket(
              ) AS rn
       FROM candidate_pool
       WHERE user_id = ? AND status = 'scored' AND guard_verdict IS NULL
+        AND ${notBlockedChannelSql('candidate_pool.channel_id', 'candidate_pool.channel')}
     )
     SELECT candidate_id, title, url, channel, external_id FROM ranked WHERE rn <= ?
   `);
@@ -80,12 +82,15 @@ interface CandidateRow {
   guard_verdict: string | null;
 }
 
-// The kid guard filter on the candidate SELECT (alias `c` = candidate_pool):
-// a kid sees only an explicit `clear_yes`; NULL (never guarded) does not
-// surface. Shared with the preview surfaces so they cannot drift from what
-// production actually surfaces.
+// The kid filter on the candidate SELECT (alias `c` = candidate_pool): a kid
+// sees only an explicit `clear_yes`; NULL (never guarded) does not surface.
+// Nor does anything from a Blocked channel — the intake filter keeps new ones
+// out, this catches rows already in the pool (defence in depth). Shared with
+// the preview surfaces so they cannot drift from what production surfaces.
 export function kidGuardClause(isKid: boolean): string {
-  return isKid ? "AND c.guard_verdict = 'clear_yes'" : '';
+  return isKid
+    ? `AND c.guard_verdict = 'clear_yes' AND ${notBlockedChannelSql('c.channel_id', 'c.channel')}`
+    : '';
 }
 
 // Per-user slate size (ADR-0009). The numbers are role-blind — the only

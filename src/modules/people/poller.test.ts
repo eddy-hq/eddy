@@ -675,3 +675,42 @@ describe('pollChannel failure modes', () => {
     expect(lastDebug?.[0]).toMatchObject({ channelId: CHANNEL_ID });
   });
 });
+
+// ─── Blocked channels ────────────────────────────────────────────────────────
+
+describe('pollChannel — Blocked channel', () => {
+  const PARENT_ID = '33333333-3333-7333-8333-333333333333';
+
+  beforeAll(() => {
+    db.prepare(
+      `INSERT OR REPLACE INTO users (user_id, display_name, role, age_gate, created_at)
+       VALUES (?, 'Parent1', 'parent', 0, ?)`,
+    ).run(PARENT_ID, new Date().toISOString());
+  });
+
+  beforeEach(() => {
+    db.exec('DELETE FROM blocked_channels');
+  });
+
+  it("keeps a kid's follow but gives the kid no candidate; an adult follower still gets one", async () => {
+    insertFollower(USER_ID_A);
+    insertFollower(PARENT_ID);
+    insertSeenVideo('olderseen01'); // not a first poll
+    db.prepare(
+      'INSERT INTO blocked_channels (channel_id, display_name, blocked_by, blocked_at) VALUES (?, ?, ?, ?)',
+    ).run(CHANNEL_ID, CHANNEL_NAME, PARENT_ID, new Date().toISOString());
+    mockFetchOk(rssXml({ entries: [{ videoId: 'newupload01', title: 'Placeholder upload' }] }));
+    vi.mocked(videoDuration).mockResolvedValue(600);
+
+    await expect(pollChannel(OUTPUT)).resolves.toBe(true);
+
+    expect(subscriptionCandidates(USER_ID_A)).toHaveLength(0);
+    expect(subscriptionCandidates(PARENT_ID)).toHaveLength(1);
+    const row = db.prepare('SELECT channel_id FROM candidate_pool WHERE user_id = ?').get(PARENT_ID) as { channel_id: string };
+    expect(row.channel_id).toBe(CHANNEL_ID);
+    // The follow stays, and the upload is marked seen so an unblock doesn't
+    // replay it.
+    expect(db.prepare('SELECT 1 FROM followed_people WHERE user_id = ?').get(USER_ID_A)).toBeDefined();
+    expect(db.prepare('SELECT 1 FROM seen_videos WHERE video_id = ?').get('newupload01')).toBeDefined();
+  });
+});
