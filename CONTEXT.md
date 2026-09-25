@@ -95,8 +95,16 @@ A parent decision on a randomly sampled **Clear-yes** or **Clear-no** verdict, s
 _Avoid_: audit, sample review, labelling
 
 **Rubric**:
-The written statement of the parent's standards the guard judges against — dimensions (language, frightening, …), a severity scale with anchoring examples per dimension, and a per-age-band limits table mapping severities to **Clear-yes** / **Uncertain** / **Clear-no**. Models score dimensions; the limits table decides. One versioned source read by the guard prompt, the teacher, parent reason chips, and any trained student.
+The written statement of the parent's standards the guard judges against — dimensions (language, frightening, …), a severity scale with anchoring examples per dimension, and a per-age-band limits table mapping severities to **Clear-yes** / **Uncertain** / **Clear-no**. Models score dimensions; the limits table decides. One versioned source (`docs/guard-rubric.md`) read by the guard prompt, the teacher, parent reason chips, and any trained student.
 _Avoid_: policy, guidelines, criteria
+
+**Hard stop**:
+A **Rubric** yes/no check that always yields **Clear-no** at any age — self-harm, hate, sexualisation of children, manosphere worldview. Fires only on clear evidence; suspected-but-unclear is **Uncertain**.
+_Avoid_: blocklist, ban
+
+**Flag**:
+A **Rubric** fact about a video that isn't a severity (adult-rated game, loot-box / pack opening). Detection is general-purpose; what a flag does — per age band, separately for a **Request** and for discovery — is the parent's preference. Can only make a verdict stricter.
+_Avoid_: tag, label, category
 
 **Appeal**:
 The kid's one-tap "Ask a grown-up" affordance on a **Clear-no** rejection. Routes the request to the parent with Gemma's reasoning attached.
