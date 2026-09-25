@@ -346,3 +346,28 @@ describe('driver descriptions', () => {
     ]);
   });
 });
+
+// The text the model reads (anchors, rules, tests, hard stops, flag
+// descriptions) is copied from the doc too. Each piece must appear in the doc,
+// compared case- and whitespace-insensitively and ignoring trailing
+// punctuation (the flag descriptions deliberately stop before the doc's clause
+// about the parent's preference, which the model doesn't need), so editing one
+// without the other fails here.
+describe('rubric text parity with docs/guard-rubric.md', () => {
+  const norm = (s: string): string => s.toLowerCase().replace(/[\s*`]+/g, ' ').trim();
+  const doc = norm(readFileSync(path.resolve(__dirname, '../../../docs/guard-rubric.md'), 'utf8'));
+
+  const pieces: Array<[string, string]> = [
+    ...DIMENSIONS.flatMap((d) => [
+      ...d.anchors.map((a, i): [string, string] => [`${d.label} anchor ${i}`, a]),
+      ...d.rules.map((r, i): [string, string] => [`${d.label} rule ${i}`, r]),
+      ...(d.test ? [[`${d.label} test`, d.test] as [string, string]] : []),
+    ]),
+    ...HARD_STOPS.map((h): [string, string] => [`hard stop ${h.key}`, h.description]),
+    ...FLAGS.map((f): [string, string] => [`flag ${f.key}`, f.description]),
+  ];
+
+  it.each(pieces)('%s appears in the doc', (_label, text) => {
+    expect(doc).toContain(norm(text).replace(/[.;:,]+$/, ''));
+  });
+});
