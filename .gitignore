@@ -9,6 +9,7 @@ dist/
 !.env.example
 dump.rdb
 logs/
+.local/
 .claude/settings.local.json
 .claude/scheduled_tasks.lock
 .claude/worktrees/
@@ -17,6 +18,7 @@ logs/
 ios/Eddy.xcodeproj/
 ios/Config/Local.xcconfig
 ios/Config/release.env
+ios/Config/apns.env
 ios/build/
 ios/DerivedData/
 **/xcuserdata/
