@@ -33,7 +33,7 @@ vi.mock('../guard/index', async () => {
   const rubric = await import('../guard/rubric');
   return {
     GUARD_SCORING_ERROR_REASON: 'Guard scoring error',
-    candidatePromptVersion: (p: string) => (p === 'v4' ? 'candidate-v4' : 'candidate-v3'),
+    rerunVersionKey: (p: string) => (p === 'v4' ? 'candidate-v4' : 'candidate-v3'),
     driverCountKey: rubric.driverCountKey,
     evaluateCandidate: vi.fn(),
     ensureVideoMetadata: vi.fn(),
