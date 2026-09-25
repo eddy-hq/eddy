@@ -4,7 +4,7 @@ import { db } from '../../db/client';
 import { logger } from '../../logger';
 import { config } from '../../config';
 import { redis, discoveryQueue } from '../../queue';
-import { evaluateCandidate } from '../guard/index';
+import { evaluateCandidate, ensureVideoMetadata } from '../guard/index';
 import { getRequestsState } from '../requests';
 import { runRssPollPass } from '../people';
 import { getAgeBand } from '../users';
@@ -157,7 +157,14 @@ export async function runDiscoveryForUser(user: UserRow, options: { force?: bool
     // (subscription quota = cap − 6) can't outrun the rechecked set.
     const perBucket = Math.max(KID_GUARD_RECHECK_PER_BUCKET, cap);
     const scored = readScoredCandidatesByBucket(user.user_id, perBucket);
+    // Richer guard inputs (Phase 6a): fetch Data API metadata for any
+    // candidate without a stored row. Never throws — a failure leaves those
+    // candidates on title + channel alone.
+    const metadata = await ensureVideoMetadata(
+      scored.map((c) => c.external_id).filter((id): id is string => !!id),
+    );
     for (const c of scored) {
+      const meta = c.external_id ? metadata.get(c.external_id) : undefined;
       const verdict = await evaluateCandidate({
         candidateId: c.candidate_id,
         userId: user.user_id,
@@ -165,6 +172,11 @@ export async function runDiscoveryForUser(user: UserRow, options: { force?: bool
         title: c.title ?? '',
         channel: c.channel,
         ageBand,
+        description: meta?.description ?? null,
+        tags: meta?.tags ?? null,
+        categoryId: meta?.categoryId ?? null,
+        madeForKids: meta?.madeForKids ?? null,
+        ageRestricted: meta?.ageRestricted ?? false,
       });
 
       const nextStatus = verdict.verdict === 'clear_yes' ? 'scored'
