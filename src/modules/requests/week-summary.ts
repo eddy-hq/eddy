@@ -59,6 +59,7 @@ const KIND_LABEL: Record<FeedKind, string> = {
   req: 'you asked for',
   follow: 'from a follow',
   pick: 'a pick',
+  sent: 'sent by a parent',
 };
 
 // Replace any household real name found in a title/channel string with a

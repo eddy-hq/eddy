@@ -38,6 +38,15 @@ export class ForbiddenError extends EddyError {
   }
 }
 
+// A valid request the current state refuses (e.g. sending a video from a
+// blocked channel to a kid). Mapped to 409; the message is shown to the user.
+export class ConflictError extends EddyError {
+  constructor(message: string) {
+    super(message, 'CONFLICT');
+    this.name = 'ConflictError';
+  }
+}
+
 export class GuardError extends EddyError {
   constructor(message: string) {
     super(message, 'GUARD_ERROR');

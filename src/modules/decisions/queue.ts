@@ -214,6 +214,8 @@ function readDrawPool(from: string, day: string): PoolRow[] {
      WHERE u.role = 'kid'
        AND r.guard_verdict IN ('clear_yes', 'clear_no')
        AND r.status IN ('ready', 'watched')
+       -- Parent picks (#217) skip the guard (no verdict to check); never label them.
+       AND r.source != 'parent_pick'
        AND r.requested_at >= @from
        AND ${NOT_DECIDED('r', 'request', 'request_id')}
        AND ${decidedVideo('r', 'youtube_id')}

@@ -457,3 +457,27 @@ describe('regenerateStaleWeekSummaries', () => {
     expect(vi.mocked(ollamaGenerate)).not.toHaveBeenCalled();
   });
 });
+
+// Parent picks (#217) are the parent's choice, not the kid's ask: they must
+// never be counted or described as "you asked for".
+describe('parent picks', () => {
+  const today = '2026-03-01';
+
+  it('are grouped as sent, never as requested', () => {
+    const rows: TierInputRow[] = [
+      { day: '2026-01-05', title: 'Asked', channel: 'C1', source: 'share_sheet' },
+      { day: '2026-01-06', title: 'Sent', channel: 'C2', source: 'parent_pick' },
+    ];
+    const [week] = groupTier4Weeks(rows, today);
+    expect(week?.items).toEqual([
+      { title: 'Asked', channel: 'C1', kind: 'req' },
+      { title: 'Sent', channel: 'C2', kind: 'sent' },
+    ]);
+  });
+
+  it('are labelled "sent by a parent" in the prompt, with no name', () => {
+    const prompt = buildWeekSummaryPrompt(1, [{ title: 'Sent', channel: 'C2', kind: 'sent' }], ['parent1']);
+    expect(prompt).toContain('"Sent" — C2 (sent by a parent)');
+    expect(prompt).not.toContain('(you asked for)');
+  });
+});

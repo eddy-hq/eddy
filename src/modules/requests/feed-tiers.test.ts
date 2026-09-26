@@ -19,6 +19,10 @@ describe('sourceToKind', () => {
     expect(sourceToKind('recommended')).toBe('pick');
   });
 
+  it('maps a parent pick to its own sent bucket, never req (#217)', () => {
+    expect(sourceToKind('parent_pick')).toBe('sent');
+  });
+
   it('buckets unknown/legacy sources to req rather than throwing', () => {
     expect(sourceToKind('search')).toBe('req');
     expect(sourceToKind('dns_landing')).toBe('req');
@@ -98,11 +102,24 @@ describe('buildTierSummaries', () => {
     expect(tier3Days).toHaveLength(1);
     const day = tier3Days[0]!;
     expect(day.count).toBe(4);
-    expect(day.provenanceMix).toEqual({ req: 2, follow: 1, pick: 1 });
+    expect(day.provenanceMix).toEqual({ req: 2, follow: 1, pick: 1, sent: 0 });
     expect(day.topTitles).toEqual([
       { title: 'A', kind: 'req' },
       { title: 'B', kind: 'pick' },
       { title: 'C', kind: 'follow' },
+    ]);
+  });
+
+  it('counts parent picks as sent in the tier3 provenanceMix, not req (#217)', () => {
+    const rows: TierInputRow[] = [
+      row('2026-05-15', 'share_sheet', 'A'),
+      row('2026-05-15', 'parent_pick', 'B'),
+    ];
+    const [day] = buildTierSummaries(rows, TODAY).tier3Days;
+    expect(day!.provenanceMix).toEqual({ req: 1, follow: 0, pick: 0, sent: 1 });
+    expect(day!.topTitles).toEqual([
+      { title: 'A', kind: 'req' },
+      { title: 'B', kind: 'sent' },
     ]);
   });
 

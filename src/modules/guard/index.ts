@@ -143,6 +143,9 @@ function getChannelHistory(userId: string, channel: string): ChannelHistory {
       COUNT(CASE WHEN status = 'rejected' THEN 1 END)            AS rejected
     FROM requests
     WHERE user_id = ? AND lower(channel) = lower(?)
+      -- Parent picks (#217) never met the guard; a parent's send isn't the
+      -- kid's history with the channel.
+      AND source != 'parent_pick'
   `).get(userId, channel) as { approved: number; rejected: number };
   return { approved: row?.approved ?? 0, rejected: row?.rejected ?? 0 };
 }

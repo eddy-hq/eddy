@@ -34,6 +34,7 @@ import {
 } from './state';
 
 const USER_ID = '11111111-1111-7111-8111-111111111111';
+const PARENT_ID = '99999999-9999-7999-8999-999999999999';
 
 // All known DB statuses. Used by the property test to walk illegal sources
 // (every status that isn't in a descriptor's `sources` list).
@@ -111,6 +112,9 @@ beforeAll(() => {
   db.prepare(
     'INSERT INTO users (user_id, display_name, role, age_gate, created_at) VALUES (?, ?, ?, ?, ?)',
   ).run(USER_ID, 'Boy1', 'kid', 12, new Date().toISOString());
+  db.prepare(
+    'INSERT INTO users (user_id, display_name, role, age_gate, created_at) VALUES (?, ?, ?, ?, ?)',
+  ).run(PARENT_ID, 'Parent1', 'parent', 0, new Date().toISOString());
 });
 
 beforeEach(() => {
@@ -1375,6 +1379,79 @@ describe('create_candidate', () => {
   });
 });
 
+describe('create_parent_pick', () => {
+  const SHARED = '/mnt/ssd/eddy/videos/pp1xxxxxxxx.mp4';
+  const input = {
+    userId: USER_ID,
+    sentBy: PARENT_ID,
+    url: 'https://www.youtube.com/watch?v=pp1xxxxxxxx',
+    youtubeId: 'pp1xxxxxxxx',
+    youtubeChannelId: 'UCplaceholderchannel0001',
+    title: 'Placeholder title',
+    channel: 'Placeholder channel',
+    description: 'd',
+    transcript: null,
+    durationSecs: 120,
+    filePath: SHARED,
+    nginxUrl: 'http://mediaserver/videos/pp1xxxxxxxx.mp4',
+    thumbnailUrl: 'http://mediaserver/thumbs/pp1xxxxxxxx.jpg',
+    publishedAt: '2026-09-01T00:00:00.000Z',
+    fileSizeBytes: 1234,
+  };
+
+  it('inserts a ready parent_pick row sharing the parent\'s file, with the sender recorded', async () => {
+    const { result, settled } = state.apply({ kind: 'create_parent_pick', requestId: 'req-pp1', input });
+    await settled;
+
+    expect(result.transitioned).toBe(true);
+    const row = db.prepare(
+      `SELECT user_id, source, sent_by, status, file_path, file_state, nginx_url, file_size_bytes,
+              decided_by, guard_verdict, downloaded_at, added_at
+         FROM requests WHERE request_id = ?`,
+    ).get('req-pp1') as Record<string, unknown>;
+    expect(row).toMatchObject({
+      user_id: USER_ID,
+      source: 'parent_pick',
+      sent_by: PARENT_ID,
+      status: 'ready',
+      file_path: SHARED,
+      file_state: 'live',
+      nginx_url: input.nginxUrl,
+      file_size_bytes: 1234,
+      decided_by: PARENT_ID,
+      guard_verdict: null,
+    });
+    expect(row['downloaded_at']).toEqual(expect.any(String));
+    expect(row['added_at']).toEqual(expect.any(String));
+  });
+
+  it('skips the guard and the download: no enqueue, only the kid\'s video_ready notification', async () => {
+    const { settled } = state.apply({ kind: 'create_parent_pick', requestId: 'req-pp2', input });
+    await settled;
+
+    expect(fakePorts.enqueueDownload).not.toHaveBeenCalled();
+    expect(fakePorts.enqueueDelete).not.toHaveBeenCalled();
+    expect(fakePorts.ensurePerson).not.toHaveBeenCalled();
+    expect(fakePorts.notifyVideoReady).toHaveBeenCalledWith(USER_ID, 'req-pp2', 'Placeholder title');
+  });
+
+  it('keeps the shared file when the kid deletes their copy while the parent still has theirs', async () => {
+    insertRequest({ request_id: 'req-parent', status: 'watched', file_path: SHARED });
+    db.prepare('UPDATE requests SET user_id = ? WHERE request_id = ?').run(PARENT_ID, 'req-parent');
+    const { settled } = state.apply({ kind: 'create_parent_pick', requestId: 'req-pp3', input });
+    await settled;
+
+    state.apply({ kind: 'mark_soft_deleted', requestId: 'req-pp3' });
+    expect(fakePorts.enqueueDelete).not.toHaveBeenCalled();
+
+    // And the other way round: the parent deleting theirs leaves the kid's.
+    const { settled: s2 } = state.apply({ kind: 'create_parent_pick', requestId: 'req-pp4', input });
+    await s2;
+    state.apply({ kind: 'mark_soft_deleted', requestId: 'req-parent' });
+    expect(fakePorts.enqueueDelete).not.toHaveBeenCalled();
+  });
+});
+
 describe('findActiveDuplicateRequest', () => {
   const YT_ID = 'dedup12345x';
 
@@ -1565,6 +1642,28 @@ function buildEvent(kind: Event['kind'], requestId: string): Event {
           youtubeId: PROP_YT_ID,
           title: PROP_DOWNLOADED_FIELDS.title,
           whyText: null,
+        },
+      };
+    case 'create_parent_pick':
+      return {
+        kind,
+        requestId,
+        input: {
+          userId: USER_ID,
+          sentBy: USER_ID,
+          url: PROP_URL,
+          youtubeId: PROP_YT_ID,
+          youtubeChannelId: PROP_CHANNEL_ID,
+          title: PROP_DOWNLOADED_FIELDS.title,
+          channel: PROP_DOWNLOADED_FIELDS.channel,
+          description: null,
+          transcript: null,
+          durationSecs: 10,
+          filePath: PROP_FILE_PATH,
+          nginxUrl: null,
+          thumbnailUrl: null,
+          publishedAt: null,
+          fileSizeBytes: 42,
         },
       };
   }

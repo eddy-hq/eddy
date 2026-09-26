@@ -237,6 +237,13 @@ describe('getEngagedChannelsLackingInterestLinks', () => {
     expect(getEngagedChannelsLackingInterestLinks()).toEqual([]);
   });
 
+  it('ignores a parent pick (#217): the parent chose it, the kid did not engage with the channel', () => {
+    request(KID, CHANNEL_A, { watchedAt: '2026-05-01T00:00:00.000Z' });
+    db.exec("UPDATE requests SET source = 'parent_pick'");
+
+    expect(getEngagedChannelsLackingInterestLinks()).toEqual([]);
+  });
+
   it('keeps a channel when at least one engaging user does not follow it', () => {
     // KID follows the channel; OTHER engaged but does not follow → keep.
     request(KID, CHANNEL_A, { watchedAt: '2026-05-01T00:00:00.000Z' });

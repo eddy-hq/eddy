@@ -146,6 +146,8 @@ export function buildAffinityDigest(userId: string): AffinityDigest {
     INNER JOIN interests i      ON i.id = cp.interest_id
     WHERE we.user_id = @user_id
       AND cp.interest_id IS NOT NULL
+      -- Parent picks (#217) don't feed inferred interests or affinities.
+      AND r.source != 'parent_pick'
       AND (
         we.reason = 'ended'
         OR (we.duration_s > 0 AND CAST(we.position_s AS REAL) / we.duration_s >= @watched_ratio)
@@ -171,6 +173,7 @@ export function buildAffinityDigest(userId: string): AffinityDigest {
     INNER JOIN requests r ON r.request_id = we.request_id
     WHERE we.user_id = ?
       AND r.title IS NOT NULL
+      AND r.source != 'parent_pick'
       AND (
         we.reason = 'ended'
         OR (we.duration_s > 0 AND CAST(we.position_s AS REAL) / we.duration_s >= ?)
@@ -187,6 +190,7 @@ export function buildAffinityDigest(userId: string): AffinityDigest {
     WHERE we.user_id = ?
       AND we.reason = 'dismissed'
       AND r.title IS NOT NULL
+      AND r.source != 'parent_pick'
     ORDER BY we.started_at DESC
     LIMIT ?
   `).all(userId, SAMPLE_TITLES_PER_BUCKET) as Array<{ title: string }>;

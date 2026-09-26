@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { v7 as uuidv7 } from 'uuid';
+import { z } from 'zod';
 import { db } from '../../db/client';
 import { logger } from '../../logger';
 import { ValidationError, NotFoundError } from '../../errors';
@@ -17,9 +18,11 @@ import {
   displayRejectionReason,
   HIDDEN_STATUSES,
   HIDDEN_STATUSES_SQL,
+  PARENT_PICK_SOURCE,
   type Status,
 } from './state';
 import { getRequestsState } from './state-default';
+import { listSendTargets, sendParentPick } from './parent-pick';
 import { buildTierSummaries } from './feed-tiers';
 import {
   readWeekSummaryCache,
@@ -36,9 +39,19 @@ export {
   needsDownloadSecondPass,
   readSecondPassInput,
   SLATE_PICK_SOURCES,
+  PARENT_PICK_SOURCE,
   HIDDEN_STATUSES,
   HIDDEN_STATUSES_SQL,
 } from './state';
+export {
+  listSendTargets,
+  sendParentPick,
+  PARENT_PICK_BLOCKED_MESSAGE,
+  PARENT_PICK_NOT_LIVE_MESSAGE,
+  type ParentPickOutcome,
+  type ParentPickResult,
+  type SendTarget,
+} from './parent-pick';
 export {
   registerDefaultRequestsState,
   getRequestsState,
@@ -59,6 +72,7 @@ export type {
   CreateFromShareSheetInput,
   CreateFromChannelPollInput,
   CreateFromCandidateInput,
+  CreateParentPickInput,
   Ports,
   RequestsState,
   SecondPassInput,
@@ -275,7 +289,8 @@ requestsRouter.get('/feed', (req: Request, res: Response) => {
     SELECT
       request_id, url, youtube_id, youtube_channel_id, title, channel, status, file_state,
       rejection_reason, nginx_url, thumbnail_url, duration_secs, why_text,
-      requested_at, published_at, added_at, watched_at, saved_at, source
+      requested_at, published_at, added_at, watched_at, saved_at, source,
+      (SELECT display_name FROM users WHERE user_id = requests.sent_by) AS sent_by_name
     FROM requests
     WHERE user_id = ?
       AND status NOT IN ('dismissed', 'deleted', ${HIDDEN_STATUSES_SQL})
@@ -296,6 +311,8 @@ requestsRouter.get('/feed', (req: Request, res: Response) => {
     requested_at: string; published_at: string | null;
     added_at: string; watched_at: string | null;
     saved_at: string | null; source: string;
+    // The sending parent's display name on a parent pick (#217), else null.
+    sent_by_name: string | null;
   }>;
 
   // Saved rows are read on their own, uncapped: a save is kept indefinitely
@@ -306,7 +323,8 @@ requestsRouter.get('/feed', (req: Request, res: Response) => {
     SELECT
       request_id, url, youtube_id, youtube_channel_id, title, channel, status, file_state,
       rejection_reason, nginx_url, thumbnail_url, duration_secs, why_text,
-      requested_at, published_at, added_at, watched_at, saved_at, source
+      requested_at, published_at, added_at, watched_at, saved_at, source,
+      (SELECT display_name FROM users WHERE user_id = requests.sent_by) AS sent_by_name
     FROM requests
     WHERE user_id = ?
       AND saved_at IS NOT NULL
@@ -362,7 +380,10 @@ requestsRouter.get('/feed', (req: Request, res: Response) => {
         {
           id: 'today',
           label: 'Today',
-          cards: cards.filter((c) => c.source === 'channel_subscription' || c.source === 'recommended'),
+          // A parent pick (#217) isn't the kid's own ask, so it joins the
+          // Today stream with its own "From <parent>" provenance.
+          cards: cards.filter((c) =>
+            c.source === 'channel_subscription' || c.source === 'recommended' || c.source === PARENT_PICK_SOURCE),
         },
       ],
     };
@@ -485,10 +506,39 @@ requestsRouter.delete('/:id', async (req: Request, res: Response) => {
   res.status(204).end();
 });
 
+// GET /requests/send-targets?userId=<caller> — the kids a parent can send a
+// video to (#217). Empty for a kid, so the PWA hides Send to without a 403 on
+// every sheet it opens. The send route below enforces the roles itself.
+requestsRouter.get('/send-targets', (req: Request, res: Response) => {
+  const { userId } = req.query as { userId?: string };
+  res.json({ kids: listSendTargets(userId ?? '') });
+});
+
+// POST /requests/:id/send — { userId: <parent>, kidIds: [<kid>, ...] }
+// A parent sends a video from their own library to kids' feeds (#217). One
+// parent pick per kid; a kid who already has the video is reported, not
+// duplicated. Refused (409) when the channel is blocked for the kids.
+const sendBody = z.object({
+  userId: z.string().min(1),
+  kidIds: z.array(z.string().min(1)).min(1).max(10),
+});
+
+requestsRouter.post('/:id/send', async (req: Request, res: Response) => {
+  const parsed = sendBody.safeParse(req.body);
+  if (!parsed.success) {
+    throw new ValidationError(parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; '));
+  }
+  const results = await sendParentPick(parsed.data.userId, req.params['id']!, parsed.data.kidIds);
+  res.json({ results });
+});
+
 // GET /requests/:id — polled by PWA to check status
 requestsRouter.get('/:id', async (req: Request, res: Response) => {
   const row = db.prepare(
-    'SELECT request_id, user_id, url, youtube_id, youtube_channel_id, status, title, channel, rejection_reason, nginx_url, thumbnail_url, why_text, source, requested_at, watched_at, saved_at FROM requests WHERE request_id = ?'
+    `SELECT request_id, user_id, url, youtube_id, youtube_channel_id, status, title, channel, rejection_reason,
+            nginx_url, thumbnail_url, why_text, source, requested_at, watched_at, saved_at,
+            (SELECT display_name FROM users WHERE user_id = requests.sent_by) AS sent_by_name
+       FROM requests WHERE request_id = ?`
   ).get(req.params['id']) as
     | {
         request_id: string; user_id: string; url: string;
@@ -502,6 +552,7 @@ requestsRouter.get('/:id', async (req: Request, res: Response) => {
         requested_at: string;
         watched_at: string | null;
         saved_at: string | null;
+        sent_by_name: string | null;
       }
     | undefined;
 
@@ -544,6 +595,8 @@ requestsRouter.get('/:id', async (req: Request, res: Response) => {
     requestedAt: row.requested_at,
     watchedAt: row.watched_at,
     savedAt: row.saved_at,
+    // Parent picks (#217): the sending parent's display name, else null.
+    sentByName: row.sent_by_name,
   });
 });
 

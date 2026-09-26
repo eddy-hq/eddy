@@ -117,6 +117,9 @@ export function getEngagedChannelsLackingInterestLinks(): EngagedChannelLackingL
       ON p.person_id = po.person_id
     WHERE r.youtube_channel_id IS NOT NULL
       AND (r.watched_at IS NOT NULL OR r.saved_at IS NOT NULL)
+      -- A parent pick (#217) was the parent's choice, not the kid's
+      -- engagement with the channel: it doesn't drive interest inference.
+      AND r.source != 'parent_pick'
       AND r.youtube_channel_id NOT IN (
         SELECT channel_id FROM channel_interest_links
       )
