@@ -405,9 +405,11 @@ export async function scoreForRequest(params: ScoreParams): Promise<GuardVerdict
     userId: params.userId,
   });
 
+  // A parent may have taken the request over as a parent pick (#217) while
+  // the model ran: its row carries no guard verdict.
   db.prepare(`
     UPDATE requests SET guard_verdict = @verdict, guard_reason = @reason
-    WHERE request_id = @request_id
+    WHERE request_id = @request_id AND source != 'parent_pick'
   `).run({ verdict: verdict.verdict, reason: verdict.reason, request_id: params.requestId });
 
   logger.info(

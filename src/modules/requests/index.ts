@@ -37,6 +37,7 @@ export {
   findActiveDuplicateRequest,
   findSlatePickRequest,
   needsDownloadSecondPass,
+  isParentPick,
   readSecondPassInput,
   SLATE_PICK_SOURCES,
   PARENT_PICK_SOURCE,

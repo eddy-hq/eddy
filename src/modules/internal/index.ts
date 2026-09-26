@@ -3,7 +3,7 @@ import { db } from '../../db/client';
 import { logger } from '../../logger';
 import { downloadQueue } from '../../queue';
 import { verifySignedJson } from '../../signed-channel';
-import { getRequestsState, needsDownloadSecondPass, rejectIfChannelBlocked } from '../requests';
+import { getRequestsState, isParentPick, needsDownloadSecondPass, rejectIfChannelBlocked } from '../requests';
 import { getNotifications, parseRelayPayload } from '../notifications';
 import { checkStuckDownloads } from '../watchdog';
 import { scoreForRequest, classifyThumbnail, classifyYtImage, enqueueDownloadSecondPass, scoreThumbnailSafety } from '../guard';
@@ -438,6 +438,14 @@ internalRouter.post('/guard/score', verifySignedJson<GuardScorePayload>(async (_
   // which enforces). A shadow score here would only duplicate that Gemma call.
   if (needsDownloadSecondPass(payload.requestId)) {
     return res.json({ proceed: true, verdict: 'deferred', reason: 'Guarded after download' });
+  }
+
+  // A parent took this request over as a parent pick (#217) while it was in
+  // flight: the parent's choice is the approval, so the guard doesn't judge
+  // it and no verdict is recorded. Proceed, never block: the worker deletes
+  // its download on a block, and the file is shared with the parent's copy.
+  if (isParentPick(payload.requestId)) {
+    return res.json({ proceed: true, verdict: 'skipped', reason: 'Parent pick — guard skipped' });
   }
 
   let verdict;

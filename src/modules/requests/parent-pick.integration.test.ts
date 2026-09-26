@@ -19,8 +19,21 @@ vi.mock('../../logger', () => ({
 }));
 
 vi.mock('../../config', () => ({
-  config: { PORT: 3737, TAILSCALE_IP: '127.0.0.1' },
+  config: {
+    PORT: 3737,
+    TAILSCALE_IP: '127.0.0.1',
+    INTERNAL_HMAC_SECRET: 'test-secret',
+    OLLAMA_URL: 'http://localhost:11434',
+    OLLAMA_GUARD_MODEL: 'gemma4:e4b',
+  },
 }));
+
+vi.mock('../../ollama', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../ollama')>()),
+  ollamaGenerate: vi.fn(),
+}));
+
+vi.mock('../watchdog', () => ({ checkStuckDownloads: vi.fn() }));
 
 vi.mock('../../queue', () => ({
   redis: { get: vi.fn().mockResolvedValue(null), del: vi.fn() },
@@ -33,6 +46,7 @@ vi.mock('../../queue', () => ({
 
 vi.mock('../notifications', () => ({
   getNotifications: () => ({ notify: vi.fn().mockResolvedValue(undefined) }),
+  parseRelayPayload: vi.fn(),
 }));
 
 vi.mock('../people/registry', () => ({
@@ -43,13 +57,21 @@ vi.mock('../people/registry', () => ({
 import { db } from '../../db/client';
 import { runMigrations } from '../../db/migrate';
 import { EddyError } from '../../errors';
+import { ollamaGenerate } from '../../ollama';
+import { sign } from '../../signed-channel';
+import { internalRouter } from '../internal';
 import { createRequestsState, type Ports } from './state';
 import { registerDefaultRequestsState } from './state-default';
 import { PARENT_PICK_BLOCKED_MESSAGE, PARENT_PICK_NOT_LIVE_MESSAGE } from './parent-pick';
 import { requestsRouter } from './index';
 
 const app = express();
-app.use(express.json());
+app.use(express.json({
+  verify: (req: Request & { rawBody?: Buffer }, _res, buf) => {
+    req.rawBody = buf;
+  },
+}));
+app.use('/internal', internalRouter);
 app.use('/requests', requestsRouter);
 app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
   if (err instanceof EddyError) {
@@ -194,6 +216,8 @@ describe('POST /requests/:id/send', () => {
     { status: 'pending', source: 'channel_subscription' },
     { status: 'failed', source: 'share_sheet' },
     { status: 'rejected', source: 'share_sheet' },
+    // The feed hides a dismissed card.
+    { status: 'dismissed', source: 'recommended' },
   ])(
     'turns an undelivered copy ($status $source) into the parent pick, with no second card',
     async ({ status, source }) => {
@@ -223,12 +247,15 @@ describe('POST /requests/:id/send', () => {
     expect(todayCards.map((c: { request_id: string }) => c.request_id)).toEqual(['req-kid1-old']);
   });
 
-  it('reports a dismissed copy as already in their feed', async () => {
-    insertRow({ requestId: 'req-kid1-dismissed', userId: KID_1, status: 'dismissed' });
+  it('puts the file back on a recycled card instead of reporting it as already there', async () => {
+    insertRow({ requestId: 'req-kid1-recycled', userId: KID_1, status: 'watched', fileState: 'recycled', filePath: null });
 
     const res = await send(PARENT_REQ, PARENT_ID, [KID_1]);
 
-    expect(res.body.results[0]).toMatchObject({ outcome: 'already', requestId: 'req-kid1-dismissed' });
+    expect(res.body.results[0]).toMatchObject({ outcome: 'sent', requestId: 'req-kid1-recycled' });
+    expect(kidRows()).toEqual([
+      { user_id: KID_1, source: 'parent_pick', sent_by: PARENT_ID, status: 'ready', file_path: FILE },
+    ]);
   });
 
   it('a kid\'s deleted copy does not block a fresh send', async () => {
@@ -322,5 +349,30 @@ describe('GET /requests/send-targets', () => {
 
     expect(res.status).toBe(200);
     expect(res.body.kids).toEqual([]);
+  });
+});
+
+describe('a worker guard call on a request a parent took over', () => {
+  it('is skipped: no model call, no verdict, no eval row, and the download is never blocked', async () => {
+    insertRow({ requestId: 'req-kid1-flight', userId: KID_1, status: 'downloading', source: 'channel_subscription', filePath: null });
+    await send(PARENT_REQ, PARENT_ID, [KID_1]);
+
+    // The worker's score call, already in flight when the parent sent it.
+    const body = JSON.stringify({
+      requestId: 'req-kid1-flight', url: `https://www.youtube.com/watch?v=${YT_ID}`,
+      title: 'Placeholder title', channel: 'Placeholder channel', description: '', transcript: null,
+    });
+    const res = await supertest(app)
+      .post('/internal/guard/score')
+      .set('content-type', 'application/json')
+      .set('x-eddy-signature', sign(body))
+      .send(body);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ proceed: true, verdict: 'skipped' });
+    expect(ollamaGenerate).not.toHaveBeenCalled();
+    expect((db.prepare('SELECT COUNT(*) AS n FROM guard_eval').get() as { n: number }).n).toBe(0);
+    const row = db.prepare('SELECT guard_verdict, status FROM requests WHERE request_id = ?').get('req-kid1-flight');
+    expect(row).toEqual({ guard_verdict: null, status: 'ready' });
   });
 });
