@@ -1520,6 +1520,28 @@ describe('mark_parent_picked', () => {
     expect(row.added_at >= before).toBe(true);
   });
 
+  it('takes over a recycled card, putting the parent\'s file back', () => {
+    insertRequest({ request_id: 'req-recycled', status: 'watched' });
+    db.prepare(`UPDATE requests SET file_state = 'recycled', file_path = NULL, recycled_at = ? WHERE request_id = 'req-recycled'`)
+      .run(new Date().toISOString());
+
+    const { result } = state.apply({ kind: 'mark_parent_picked', requestId: 'req-recycled', parentId: PARENT_ID, video });
+
+    expect(result.transitioned).toBe(true);
+    const row = db.prepare('SELECT status, file_state, file_path, recycled_at FROM requests WHERE request_id = ?').get('req-recycled');
+    expect(row).toEqual({ status: 'ready', file_state: 'live', file_path: SHARED, recycled_at: null });
+  });
+
+  it('never takes over a live card', () => {
+    insertRequest({ request_id: 'req-live', status: 'ready', file_path: SHARED });
+
+    const { result } = state.apply({ kind: 'mark_parent_picked', requestId: 'req-live', parentId: PARENT_ID, video });
+
+    expect(result).toEqual({ transitioned: false, currentStatus: 'ready' });
+    const row = db.prepare('SELECT source FROM requests WHERE request_id = ?').get('req-live');
+    expect(row).toEqual({ source: 'share_sheet' });
+  });
+
   it('leaves the second pass nothing to act on once picked', () => {
     insertRequest({ request_id: 'req-review', status: 'guard_review' });
     state.apply({ kind: 'mark_parent_picked', requestId: 'req-review', parentId: PARENT_ID, video });
@@ -1841,6 +1863,12 @@ describe('TRANSITIONS property test', () => {
         // still rejected by the status check, so the ILLEGAL_PAIRS coverage
         // stays correct without a parallel fix.
         if (kind === 'mark_restored') {
+          db.prepare('UPDATE requests SET file_state = ? WHERE request_id = ?')
+            .run('recycled', requestId);
+        }
+        // mark_parent_picked takes over a ready / watched card only when its
+        // file is no longer live (a live one is "already in their feed").
+        if (kind === 'mark_parent_picked' && (source === 'ready' || source === 'watched')) {
           db.prepare('UPDATE requests SET file_state = ? WHERE request_id = ?')
             .run('recycled', requestId);
         }

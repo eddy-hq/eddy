@@ -12,7 +12,7 @@ import { logger } from '../../logger';
 import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from '../../errors';
 import { isChannelBlocked } from '../blocked-channels';
 import { resolveUserById, type UserRow } from '../users';
-import { PARENT_PICKABLE_SOURCES, type ParentPickVideo, type Status } from './state';
+import { PARENT_PICKABLE_SOURCES, type ParentPickVideo } from './state';
 import { getRequestsState } from './state-default';
 
 export const PARENT_PICK_BLOCKED_MESSAGE =
@@ -67,17 +67,28 @@ interface SourceRow {
   status: string;
 }
 
-// A kid's copy that is already delivered: the send reports "already".
-const DELIVERED: Status[] = ['ready', 'watched', 'dismissed'];
+// The kid's live, playable card for the video, if any: the send reports
+// "already in their feed".
+function findLiveCopy(kidId: string, youtubeId: string): string | null {
+  const row = db.prepare(
+    `SELECT request_id FROM requests
+      WHERE user_id = ? AND youtube_id = ?
+        AND status IN ('ready', 'watched') AND file_state = 'live'
+      ORDER BY requested_at DESC LIMIT 1`,
+  ).get(kidId, youtubeId) as { request_id: string } | undefined;
+  return row?.request_id ?? null;
+}
 
-// The kid's latest request for the video in the given statuses, or null.
-function findKidCopy(kidId: string, youtubeId: string, statuses: readonly Status[]): string | null {
-  const placeholders = statuses.map(() => '?').join(', ');
+// The kid's latest request for the video that a parent pick can take over
+// (any status in PARENT_PICKABLE_SOURCES; a live card is found first by
+// findLiveCopy), or null.
+function findTakeoverCopy(kidId: string, youtubeId: string): string | null {
+  const placeholders = PARENT_PICKABLE_SOURCES.map(() => '?').join(', ');
   const row = db.prepare(
     `SELECT request_id FROM requests
       WHERE user_id = ? AND youtube_id = ? AND status IN (${placeholders})
       ORDER BY requested_at DESC LIMIT 1`,
-  ).get(kidId, youtubeId, ...statuses) as { request_id: string } | undefined;
+  ).get(kidId, youtubeId, ...PARENT_PICKABLE_SOURCES) as { request_id: string } | undefined;
   return row?.request_id ?? null;
 }
 
@@ -141,16 +152,17 @@ export async function sendParentPick(
 
   const results: ParentPickResult[] = [];
   for (const kid of kids) {
-    const delivered = findKidCopy(kid.user_id, source.youtube_id, DELIVERED);
-    if (delivered) {
-      results.push({ kidId: kid.user_id, displayName: kid.display_name, outcome: 'already', requestId: delivered });
+    const live = findLiveCopy(kid.user_id, source.youtube_id);
+    if (live) {
+      results.push({ kidId: kid.user_id, displayName: kid.display_name, outcome: 'already', requestId: live });
       continue;
     }
 
-    // The kid has a request for it that hasn't delivered (in flight, held by
-    // the guard, failed or rejected). The parent's send is the approval: that
-    // row becomes the parent pick, rather than a second card beside it.
-    const undelivered = findKidCopy(kid.user_id, source.youtube_id, PARENT_PICKABLE_SOURCES);
+    // The kid has a request for it that isn't a live card (in flight, held
+    // by the guard, failed, rejected, dismissed or recycled). The parent's
+    // send is the approval: that row becomes the parent pick, rather than a
+    // second card beside it.
+    const undelivered = findTakeoverCopy(kid.user_id, source.youtube_id);
     if (undelivered) {
       const { result, settled } = getRequestsState().apply({
         kind: 'mark_parent_picked',

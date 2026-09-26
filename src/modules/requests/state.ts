@@ -138,6 +138,16 @@ export function needsDownloadSecondPass(requestId: string): boolean {
   return row.role === 'kid' && SLATE_PICK_SOURCES.includes(row.source);
 }
 
+// Whether a request is (now) a parent pick (#217). The guard never judges
+// one: a worker's score call that arrives after a parent took the request
+// over is skipped.
+export function isParentPick(requestId: string): boolean {
+  const row = db.prepare('SELECT source FROM requests WHERE request_id = ?').get(requestId) as
+    | { source: string }
+    | undefined;
+  return row?.source === PARENT_PICK_SOURCE;
+}
+
 export interface SecondPassInput {
   requestId: string;
   userId: string;
@@ -535,10 +545,13 @@ const CANCELLABLE_SOURCES: Status[] = [
 const RETRY_SOURCES: Status[] = ['downloading', 'failed'];
 
 // A kid's request a parent pick (#217) takes over rather than sitting beside
-// as a second card: every status that is in (or headed for) the kid's feed
-// but hasn't delivered a playable video. `ready` / `watched` / `dismissed`
-// are delivered (the send reports "already"); `deleted` has left the feed (the
-// send makes a fresh card).
+// as a second card: anything that isn't a live, playable card in the kid's
+// feed. That is every in-flight, guard-held, failed or rejected request; a
+// dismissed card (the feed hides it); and a `ready` / `watched` card whose
+// file is no longer live (recycled or gone) — the descriptor's WHERE clause
+// keeps a live `ready` / `watched` card out, since that one is "already in
+// their feed". `deleted` has left the feed for good: the send makes a fresh
+// card instead.
 export const PARENT_PICKABLE_SOURCES: Status[] = [
   'pending',
   'downloading',
@@ -548,6 +561,9 @@ export const PARENT_PICKABLE_SOURCES: Status[] = [
   'guard_pending',
   'failed',
   'rejected',
+  'dismissed',
+  'ready',
+  'watched',
 ];
 
 // Exported for the property test in state.test.ts — it walks every
@@ -787,9 +803,10 @@ export const TRANSITIONS = {
   } as Descriptor<Extract<Event, { kind: 'mark_parent_allowed' }>>,
 
   // A parent sent (#217) a video the kid already has a request for, but not
-  // a delivered one: still pending or downloading (a follow upload hidden
-  // until ready), held by the guard (a slate pick awaiting or parked by its
-  // second pass), failed, or rejected. The parent's choice is the approval,
+  // as a live card in their feed: still pending or downloading (a follow
+  // upload hidden until ready), held by the guard (a slate pick awaiting or
+  // parked by its second pass), failed, rejected, dismissed, or with its file
+  // recycled (see PARENT_PICKABLE_SOURCES). The parent's choice is the approval,
   // so that row becomes the parent pick itself rather than a second card: it
   // takes the parent's ready file (downloads share one <youtubeId>.mp4, so
   // this is the path the row had or would have had), lands `ready` as of now
@@ -826,9 +843,11 @@ export const TRANSITIONS = {
                     published_at       = ?,
                     file_size_bytes    = ?,
                     file_state         = 'live',
+                    recycled_at        = NULL,
                     downloaded_at      = ?,
                     added_at           = ?
               WHERE request_id = ? AND status IN (${placeholders})
+                AND (status NOT IN ('ready', 'watched') OR file_state != 'live')
               RETURNING user_id, title, channel, youtube_channel_id`,
         params: [
           event.parentId, event.parentId, now,
