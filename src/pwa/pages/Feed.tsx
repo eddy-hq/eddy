@@ -4,7 +4,8 @@ import { useQuery } from '@tanstack/react-query';
 import { AnimatePresence, motion } from 'framer-motion';
 import { ChevronRight } from 'lucide-react';
 import { Card, type CardData } from '../components/Card';
-import { CompactCard, type SourceKind } from '../components/CompactCard';
+import { CompactCard } from '../components/CompactCard';
+import { SOURCE_DOT, sourceKind } from '../lib/provenance';
 import { VideoDetailSheet } from '../components/VideoDetailSheet';
 import { BottomNav } from '../components/BottomNav';
 import { AppHeader } from '../components/AppHeader';
@@ -58,6 +59,8 @@ interface FeedCard {
   watched_at: string | null;
   saved_at: string | null;
   source: string;
+  // The sending parent's display name on a parent pick (#217), else null.
+  sent_by_name?: string | null;
 }
 
 interface DaySection { id: string; label: string; cards: FeedCard[]; }
@@ -75,8 +78,8 @@ interface Day {
 interface Tier3Day {
   date: string;
   count: number;
-  provenanceMix: { req: number; follow: number; pick: number };
-  topTitles: Array<{ title: string; kind: 'req' | 'follow' | 'pick' }>;
+  provenanceMix: { req: number; follow: number; pick: number; sent?: number };
+  topTitles: Array<{ title: string; kind: 'req' | 'follow' | 'pick' | 'sent' }>;
 }
 
 interface Tier4Week {
@@ -122,23 +125,13 @@ function toCardData(row: FeedCard): CardData {
     watchedAt: row.watched_at,
     savedAt: row.saved_at,
     source: row.source,
+    sentByName: row.sent_by_name ?? null,
   };
 }
 
-function sourceKind(src: string): SourceKind | null {
-  if (src === 'share_sheet') return 'req';
-  if (src === 'channel_subscription') return 'follow';
-  if (src === 'recommended') return 'pick';
-  return null;
-}
-
-// Provenance colour map — kept literally in sync with the CompactCard DOT map
-// (and index.css). Used by the Tier 3 day-row's provenance bar + title dots.
-const PROVENANCE_DOT: Record<'req' | 'follow' | 'pick', string> = {
-  req: '#B8863C',          // amber-gold
-  follow: 'var(--accent)', // teal
-  pick: 'var(--save)',     // save green
-};
+// Provenance colour map, shared with the cards (../lib/provenance). Used by
+// the Tier 3 day-row's provenance bar + title dots.
+const PROVENANCE_DOT = SOURCE_DOT;
 
 // Today as a 'YYYY-MM-DD' string on the **UTC** calendar, for client-side tier
 // bucketing. The server buckets with `new Date().toISOString().slice(0, 10)`
@@ -316,7 +309,8 @@ function TodayBlock({
   const requestsCards = reqSection?.cards
     ?? flatCards.filter((c) => c.source === 'share_sheet');
   const todayCards = todaySection?.cards
-    ?? flatCards.filter((c) => c.source === 'channel_subscription' || c.source === 'recommended');
+    ?? flatCards.filter((c) =>
+      c.source === 'channel_subscription' || c.source === 'recommended' || c.source === 'parent_pick');
 
   const totalCount = requestsCards.length + todayCards.length;
 

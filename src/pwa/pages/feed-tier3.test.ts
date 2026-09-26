@@ -66,20 +66,26 @@ describe('isQuiet (quiet-variant threshold)', () => {
 });
 
 describe('provenanceSegments', () => {
-  it('orders segments follow → req → pick with raw counts as grow', () => {
-    expect(provenanceSegments({ req: 1, follow: 3, pick: 1 })).toEqual([
+  it('orders segments follow → req → pick → sent with raw counts as grow', () => {
+    expect(provenanceSegments({ req: 1, follow: 3, pick: 1, sent: 2 })).toEqual([
       { kind: 'follow', grow: 3 },
       { kind: 'req', grow: 1 },
       { kind: 'pick', grow: 1 },
+      { kind: 'sent', grow: 2 },
     ]);
   });
 
   it('collapses zero-count segments to grow 0', () => {
-    expect(provenanceSegments({ req: 0, follow: 5, pick: 0 })).toEqual([
+    expect(provenanceSegments({ req: 0, follow: 5, pick: 0, sent: 0 })).toEqual([
       { kind: 'follow', grow: 5 },
       { kind: 'req', grow: 0 },
       { kind: 'pick', grow: 0 },
+      { kind: 'sent', grow: 0 },
     ]);
+  });
+
+  it('reads a payload without a sent count as zero parent picks', () => {
+    expect(provenanceSegments({ req: 1, follow: 0, pick: 0 }).at(-1)).toEqual({ kind: 'sent', grow: 0 });
   });
 });
 

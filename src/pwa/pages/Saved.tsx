@@ -28,6 +28,7 @@ interface FeedCard {
   watched_at: string | null;
   saved_at: string | null;
   source: string;
+  sent_by_name?: string | null;
 }
 
 interface FeedResponse { days: { date: string; label: string; cards: FeedCard[]; sections?: { id: string; label: string; cards: FeedCard[] }[] }[]; saved?: FeedCard[]; }
@@ -58,6 +59,7 @@ function toCardData(row: FeedCard): CardData {
     watchedAt: row.watched_at,
     savedAt: row.saved_at,
     source: row.source,
+    sentByName: row.sent_by_name ?? null,
   };
 }
 

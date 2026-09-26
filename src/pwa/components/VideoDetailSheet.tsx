@@ -2,12 +2,22 @@ import React, { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion, useDragControls } from 'framer-motion';
 import { useQueryClient, useMutation, useQuery } from '@tanstack/react-query';
-import { X, Bookmark, BookmarkCheck, Trash2, Share, Download as DownloadIcon } from 'lucide-react';
+import { X, Bookmark, BookmarkCheck, Trash2, Share, Send, Download as DownloadIcon } from 'lucide-react';
 import { readProgress, writeProgress, clearProgress } from '../lib/videoProgress';
 import { useWatchEventTracker, type WatchSource } from '../lib/watchEvents';
 import { canShare, shareVideo } from '../lib/webShare';
 import { useResolvePersonId } from '../hooks/useResolvePersonId';
 import { thumbnailSrc } from '../lib/thumbnailSrc';
+import { SOURCE_DOT, sentFromLabel, sentWhyLine } from '../lib/provenance';
+import {
+  actionGridColumns,
+  armedDeleteSpan,
+  canSendTo,
+  pickerOptions,
+  sendResultMessage,
+  type SendResult,
+  type SendTarget,
+} from '../lib/sendTo';
 import { PersonRow } from './PersonRow';
 import type { CardData } from './Card';
 
@@ -45,12 +55,34 @@ interface RequestDetail {
   requestedAt: string;
   watchedAt: string | null;
   savedAt: string | null;
+  // The sending parent's display name on a parent pick (#217), else null.
+  sentByName?: string | null;
 }
 
 async function fetchRequest(id: string): Promise<RequestDetail> {
   const res = await fetch(`/requests/${id}`);
   if (!res.ok) throw new Error('Not found');
   return res.json() as Promise<RequestDetail>;
+}
+
+// Kids this user can send a video to (#217). Empty for a kid, which is what
+// keeps the Send-to tile parent-only.
+async function fetchSendTargets(userId: string): Promise<SendTarget[]> {
+  const res = await fetch(`/requests/send-targets?userId=${encodeURIComponent(userId)}`);
+  if (!res.ok) return [];
+  const body = await res.json() as { kids?: SendTarget[] };
+  return body.kids ?? [];
+}
+
+async function postSend(requestId: string, userId: string, kidIds: string[]): Promise<SendResult[]> {
+  const res = await fetch(`/requests/${requestId}/send`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ userId, kidIds }),
+  });
+  const body = await res.json().catch(() => ({})) as { results?: SendResult[]; message?: string };
+  if (!res.ok) throw new Error(body.message ?? 'Could not send');
+  return body.results ?? [];
 }
 
 export function VideoDetailSheet(props: Props) {
@@ -88,6 +120,7 @@ function SheetWithCard({
       requestedAt={card.requestedAt}
       watchedAt={card.watchedAt}
       savedAt={card.savedAt}
+      sentByName={card.sentByName ?? null}
       source={source}
       onClose={onClose}
       enableLayoutId
@@ -139,6 +172,7 @@ function SheetById({
       requestedAt={data?.requestedAt ?? null}
       watchedAt={data?.watchedAt ?? null}
       savedAt={data?.savedAt ?? null}
+      sentByName={data?.sentByName ?? null}
       source={source}
       onClose={onClose}
       enableLayoutId={false}
@@ -172,6 +206,7 @@ interface BodyProps {
   requestedAt: string | null;
   watchedAt: string | null;
   savedAt: string | null;
+  sentByName: string | null;
   source: WatchSource;
   onClose: () => void;
   enableLayoutId: boolean;
@@ -183,7 +218,7 @@ function SheetBody({
   status, videoUrl, youtubeWatchUrl, thumbnailUrl,
   progress, rejectionReason,
   whyText, requestSource,
-  requestedAt, watchedAt, savedAt,
+  requestedAt, watchedAt, savedAt, sentByName,
   source, onClose, enableLayoutId,
 }: BodyProps) {
   const dragControls = useDragControls();
@@ -222,6 +257,38 @@ function SheetBody({
   // server fine, but the post-mutation invalidateQueries needs a real userId
   // or the local feed cache stays stale.
   const showActions = !isRejected && !isDeleted && !!userId;
+
+  // Send to (#217): parent-only, on a playable video. The send-targets read
+  // returns kids only for a parent, so a kid never sees the tile.
+  const { data: sendTargets } = useQuery({
+    queryKey: ['send-targets', userId],
+    queryFn: () => fetchSendTargets(userId),
+    enabled: !!userId,
+    staleTime: 5 * 60_000,
+  });
+  const showSend = canSendTo(sendTargets, isReady);
+  const [sendOpen, setSendOpen] = useState(false);
+  const [sendMessage, setSendMessage] = useState<string | null>(null);
+  const sendMutation = useMutation({
+    mutationFn: (kidIds: string[]) => postSend(requestId, userId, kidIds),
+    onSuccess: (results) => {
+      setSendMessage(sendResultMessage(results));
+    },
+  });
+
+  function openSend() {
+    setConfirmDelete(false);
+    setDeleteError(false);
+    setSendMessage(null);
+    sendMutation.reset();
+    setSendOpen(true);
+  }
+
+  function closeSend() {
+    setSendOpen(false);
+    setSendMessage(null);
+    sendMutation.reset();
+  }
 
   const watchEvent = useWatchEventTracker({
     videoRef,
@@ -506,11 +573,25 @@ function SheetBody({
               confirmDelete={confirmDelete}
               deletePending={deleteMutation.isPending}
               deleteError={deleteError}
-              onArmDelete={() => setConfirmDelete(true)}
+              onArmDelete={() => { closeSend(); setConfirmDelete(true); }}
               onConfirmDelete={() => { setDeleteError(false); deleteMutation.mutate(); }}
               onCancelDelete={() => { setConfirmDelete(false); setDeleteError(false); }}
               youtubeWatchUrl={youtubeWatchUrl}
               shareTitle={title}
+              showSend={showSend}
+              sendOpen={sendOpen}
+              onOpenSend={openSend}
+            />
+          )}
+
+          {showActions && showSend && sendOpen && sendTargets && (
+            <SendPicker
+              kids={sendTargets}
+              pending={sendMutation.isPending}
+              error={sendMutation.isError ? sendMutation.error.message : null}
+              message={sendMessage}
+              onSend={(kidIds) => sendMutation.mutate(kidIds)}
+              onClose={closeSend}
             />
           )}
 
@@ -518,6 +599,7 @@ function SheetBody({
             requestSource={requestSource}
             whyText={whyText}
             channel={channel}
+            sentByName={sentByName}
           />
         </div>
       </motion.div>
@@ -698,6 +780,7 @@ function ActionGrid({
   confirmDelete, deletePending, deleteError,
   onArmDelete, onConfirmDelete, onCancelDelete,
   youtubeWatchUrl, shareTitle,
+  showSend, sendOpen, onOpenSend,
 }: {
   isSaved: boolean;
   saving: boolean;
@@ -710,7 +793,12 @@ function ActionGrid({
   onCancelDelete: () => void;
   youtubeWatchUrl: string | null;
   shareTitle: string | null;
+  // Send to (#217) — parent-only; makes the grid 2×2.
+  showSend: boolean;
+  sendOpen: boolean;
+  onOpenSend: () => void;
 }) {
+  const columns = actionGridColumns(showSend);
   // Bind to live navigator each render — supported flips can happen across
   // installed-PWA mode changes. Cheap call.
   const shareFn =
@@ -737,7 +825,7 @@ function ActionGrid({
       <div
         style={{
           display: 'grid',
-          gridTemplateColumns: '1fr 1fr 1fr',
+          gridTemplateColumns: columns === 2 ? '1fr 1fr' : '1fr 1fr 1fr',
           gap: 8,
           padding: confirmDelete ? '4px 16px 4px' : '4px 16px 16px',
         }}
@@ -774,7 +862,7 @@ function ActionGrid({
               : deleteError ? 'Delete failed — try again'
               : 'Confirm delete'
             }
-            style={{ gridColumn: 'span 2' }}
+            style={{ gridColumn: `span ${armedDeleteSpan(columns)}` }}
           />
         ) : (
           <Tile
@@ -800,6 +888,19 @@ function ActionGrid({
             icon={<Share size={20} strokeWidth={1.8} />}
             hoverColor="var(--teal)"
             onClick={() => { void handleShare(); }}
+          />
+        )}
+
+        {/* Send to (#217) — parent-only. Opens the inline picker below the
+            grid; hidden while Delete is armed, like Share. */}
+        {showSend && !confirmDelete && (
+          <Tile
+            label="Send to"
+            icon={<Send size={20} strokeWidth={1.8} />}
+            active={sendOpen}
+            activeColor={SOURCE_DOT.sent}
+            activeBg="rgba(91, 111, 168, 0.08)"
+            onClick={onOpenSend}
           />
         )}
       </div>
@@ -831,6 +932,93 @@ function ActionGrid({
           </button>
         </div>
       )}
+    </div>
+  );
+}
+
+// ── SendPicker — inline kid picker for Send to (#217) ───────────────────────
+//
+// Follows the Delete confirm's inline pattern: a caption, a row of option
+// tiles (each kid, then Both), and a quiet Cancel link. After a send the row
+// shows the outcome ("Sent" / "Already in their feed") and a Done link.
+
+function SendPicker({
+  kids, pending, error, message, onSend, onClose,
+}: {
+  kids: SendTarget[];
+  pending: boolean;
+  error: string | null;
+  message: string | null;
+  onSend: (kidIds: string[]) => void;
+  onClose: () => void;
+}) {
+  const options = pickerOptions(kids);
+  return (
+    <div style={{ margin: '0 -20px 16px', padding: '0 16px' }}>
+      <p style={{
+        fontSize: 10, fontWeight: 700, letterSpacing: '0.08em',
+        textTransform: 'uppercase', color: 'var(--text-tertiary)',
+        margin: '0 0 8px',
+      }}>
+        {pending ? 'Sending…' : 'Send to'}
+      </p>
+
+      {message ? (
+        <p role="status" style={{
+          margin: '0 0 4px', fontSize: 14, fontWeight: 600,
+          color: SOURCE_DOT.sent,
+        }}>
+          {message}
+        </p>
+      ) : (
+        <div style={{
+          display: 'grid',
+          gridTemplateColumns: `repeat(${Math.min(options.length, 3)}, 1fr)`,
+          gap: 8,
+        }}>
+          {options.map((o) => (
+            <Tile
+              key={o.key}
+              label={o.label}
+              icon={<Send size={16} strokeWidth={1.8} />}
+              hoverColor={SOURCE_DOT.sent}
+              disabled={pending}
+              onClick={() => onSend(o.kidIds)}
+              ariaLabel={`Send to ${o.label}`}
+            />
+          ))}
+        </div>
+      )}
+
+      {error && !message && (
+        <p role="alert" style={{ margin: '8px 0 0', fontSize: 13, color: 'var(--dismiss)' }}>
+          {error}
+        </p>
+      )}
+
+      <div style={{ display: 'flex', justifyContent: 'center' }}>
+        <button
+          type="button"
+          onClick={onClose}
+          disabled={pending}
+          style={{
+            background: 'none',
+            border: 'none',
+            padding: '11px 24px',
+            minHeight: 44,
+            fontFamily: 'inherit',
+            fontSize: 14,
+            fontWeight: 500,
+            color: 'var(--text-secondary)',
+            cursor: pending ? 'default' : 'pointer',
+            opacity: pending ? 0.5 : 1,
+            WebkitTapHighlightColor: 'transparent',
+            outline: 'none',
+          }}
+        >
+          {message ? 'Done' : 'Cancel'}
+        </button>
+      </div>
     </div>
   );
 }
@@ -967,17 +1155,19 @@ function Stat({ label, value }: { label: string; value: string }) {
 // For other sources a templated lead-in stands in so the block doesn't read
 // as a discovery-only chrome.
 
-type ProvenanceKind = 'req' | 'follow' | 'pick';
+type ProvenanceKind = 'req' | 'follow' | 'pick' | 'sent';
 
 function provenanceKind(source: string | null): ProvenanceKind {
   if (source === 'share_sheet') return 'req';
   if (source === 'channel_subscription') return 'follow';
+  if (source === 'parent_pick') return 'sent';
   return 'pick';
 }
 
-function provenanceLabel(kind: ProvenanceKind, channel: string | null): string {
+function provenanceLabel(kind: ProvenanceKind, channel: string | null, sentByName: string | null): string {
   if (kind === 'req') return 'You asked';
   if (kind === 'follow') return channel ?? 'A channel you follow';
+  if (kind === 'sent') return sentFromLabel(sentByName);
   return 'Picked';
 }
 
@@ -985,21 +1175,24 @@ const PROV_COLOR: Record<ProvenanceKind, string> = {
   req: 'var(--source-req, #B8863C)',
   follow: 'var(--source-follow, var(--accent))',
   pick: 'var(--source-pick, #8C4A6A)',
+  sent: SOURCE_DOT.sent,
 };
 
 function WhyThisVideo({
-  requestSource, whyText, channel,
+  requestSource, whyText, channel, sentByName,
 }: {
   requestSource: string | null;
   whyText: string | null;
   channel: string | null;
+  sentByName: string | null;
 }) {
   const kind = provenanceKind(requestSource);
-  const label = provenanceLabel(kind, channel);
+  const label = provenanceLabel(kind, channel, sentByName);
 
   const line = whyText
     ?? (kind === 'req' ? 'You asked for this.'
       : kind === 'follow' ? `New from ${channel ?? 'a channel you follow'}.`
+      : kind === 'sent' ? sentWhyLine(sentByName)
       : null);
 
   if (!line) return null;

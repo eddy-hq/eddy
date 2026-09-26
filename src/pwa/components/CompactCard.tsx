@@ -8,18 +8,12 @@ import { useResolvePersonId } from '../hooks/useResolvePersonId';
 import { useRestoreRequest } from '../hooks/useRestoreRequest';
 import { useRestoreStore } from '../store/restore';
 import { EddySpinner } from './EddySpinner';
+import { SOURCE_DOT as DOT, sentFromLabel, type SourceKind } from '../lib/provenance';
 import type { CardData } from './Card';
 
-export type SourceKind = 'req' | 'follow' | 'pick';
+export type { SourceKind } from '../lib/provenance';
 
-// Timeline palette — keep in sync with index.css
-const DOT: Record<SourceKind, string> = {
-  req:    '#B8863C',           // amber-gold
-  follow: 'var(--accent)',     // teal
-  pick:   'var(--save)',       // save green
-};
-
-const SOURCE_LABEL: Record<SourceKind, string> = {
+const SOURCE_LABEL: Record<Exclude<SourceKind, 'sent'>, string> = {
   req:    'You asked',
   follow: '',  // follow pills render channel name
   pick:   'Picked',
@@ -106,6 +100,8 @@ export function CompactCard({
   const sourceLabel =
     sourceKind === 'follow'
       ? (data.channel ?? 'Follow')
+      : sourceKind === 'sent'
+      ? sentFromLabel(data.sentByName)
       : sourceKind
       ? SOURCE_LABEL[sourceKind]
       : null;

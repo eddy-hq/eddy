@@ -10,6 +10,7 @@ import { useResolvePersonId } from '../hooks/useResolvePersonId';
 import { useRestoreRequest } from '../hooks/useRestoreRequest';
 import { useRetryDownload } from '../hooks/useRetryDownload';
 import { useRestoreStore } from '../store/restore';
+import { SOURCE_DOT, sentFromLabel, type SourceKind } from '../lib/provenance';
 import { EddySpinner } from './EddySpinner';
 
 export interface CardData {
@@ -36,6 +37,9 @@ export interface CardData {
   watchedAt: string | null;
   savedAt: string | null;
   source: string;
+  // The sending parent's display name on a parent pick (#217); absent or
+  // null on every other source.
+  sentByName?: string | null;
 }
 
 const STATUS_LABEL: Record<string, string> = {
@@ -99,7 +103,7 @@ export function Card({
   userId?: string;
   onSelect?: (data: CardData) => void;
   isSelected?: boolean;
-  sourceKind?: 'req' | 'follow' | 'pick' | null;
+  sourceKind?: SourceKind | null;
 }) {
   const navigate = useNavigate();
   const resolvePersonId = useResolvePersonId(userId ?? null);
@@ -458,19 +462,16 @@ export function Card({
             <span style={{
               display: 'inline-flex', alignItems: 'center', gap: 5,
               fontSize: 11, fontWeight: 600, letterSpacing: '0.02em',
-              color: sourceKind === 'req' ? '#B8863C'
-                : sourceKind === 'pick' ? 'var(--save)'
-                : 'var(--accent)',
+              color: SOURCE_DOT[sourceKind],
             }}>
               <span style={{
                 width: 5, height: 5, borderRadius: '50%',
-                background: sourceKind === 'req' ? '#B8863C'
-                  : sourceKind === 'pick' ? 'var(--save)'
-                  : 'var(--accent)',
+                background: SOURCE_DOT[sourceKind],
               }} />
               {sourceKind === 'follow'
                 ? <ChannelTap label={data.channel ?? 'Follow'} enabled={canTapToPerson} onTap={goToPerson} />
                 : sourceKind === 'req' ? 'You asked'
+                : sourceKind === 'sent' ? sentFromLabel(data.sentByName)
                 : 'Picked'}
             </span>
           )}
