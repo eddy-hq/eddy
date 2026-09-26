@@ -161,6 +161,7 @@ beforeEach(() => {
   db.exec('DELETE FROM requests');
   ports = makePorts();
   registerDefaultRequestsState(createRequestsState({ ports }));
+  vi.mocked(ollamaGenerate).mockReset();
   insertRow({ requestId: PARENT_REQ, userId: PARENT_ID, status: 'watched' });
 });
 
@@ -374,5 +375,37 @@ describe('a worker guard call on a request a parent took over', () => {
     expect((db.prepare('SELECT COUNT(*) AS n FROM guard_eval').get() as { n: number }).n).toBe(0);
     const row = db.prepare('SELECT guard_verdict, status FROM requests WHERE request_id = ?').get('req-kid1-flight');
     expect(row).toEqual({ guard_verdict: null, status: 'ready' });
+  });
+});
+
+describe('a guard evaluation running when a parent takes the request over', () => {
+  it('records no verdict and no eval row once the model returns', async () => {
+    insertRow({ requestId: 'req-kid1-racing', userId: KID_1, status: 'downloading', source: 'share_sheet', filePath: null });
+    let finishModel: (raw: string) => void = () => {};
+    vi.mocked(ollamaGenerate).mockReset().mockImplementation(
+      () => new Promise<string>((resolve) => { finishModel = resolve; }),
+    );
+
+    const body = JSON.stringify({
+      requestId: 'req-kid1-racing', url: `https://www.youtube.com/watch?v=${YT_ID}`,
+      title: 'Placeholder title', channel: 'Placeholder channel', description: '', transcript: null,
+    });
+    const scoring = supertest(app)
+      .post('/internal/guard/score')
+      .set('content-type', 'application/json')
+      .set('x-eddy-signature', sign(body))
+      .send(body)
+      .then((r) => r);
+    await vi.waitFor(() => expect(ollamaGenerate).toHaveBeenCalled());
+
+    // The parent sends it while the model is still thinking.
+    await send(PARENT_REQ, PARENT_ID, [KID_1]);
+    finishModel(JSON.stringify({ verdict: 'clear_no', reason: 'placeholder', confidence: 0.9 }));
+    const res = await scoring;
+
+    expect(res.body.proceed).toBe(true);
+    expect((db.prepare('SELECT COUNT(*) AS n FROM guard_eval').get() as { n: number }).n).toBe(0);
+    const row = db.prepare('SELECT guard_verdict, source, status FROM requests WHERE request_id = ?').get('req-kid1-racing');
+    expect(row).toEqual({ guard_verdict: null, source: 'parent_pick', status: 'ready' });
   });
 });

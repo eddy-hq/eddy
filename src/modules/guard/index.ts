@@ -291,6 +291,17 @@ async function runGuardEvaluation(
 // decided by rule (the age-restricted short-circuit) — so the eval set sees
 // all of them.
 function recordGuardEval(verdict: GuardVerdict, ctx: RunGuardCtx, rubric?: RubricRecord): void {
+  // A parent may have taken the request over as a parent pick (#217) while
+  // the model ran: the guard never judges one, so its verdict isn't kept.
+  if (ctx.requestId) {
+    const req = db.prepare('SELECT source FROM requests WHERE request_id = ?').get(ctx.requestId) as
+      | { source: string }
+      | undefined;
+    if (req?.source === 'parent_pick') {
+      logger.info({ requestId: ctx.requestId }, 'Guard verdict not recorded — request is now a parent pick');
+      return;
+    }
+  }
   const now = new Date().toISOString();
   const scoresJson = rubric?.scores && rubric.decision
     ? JSON.stringify({

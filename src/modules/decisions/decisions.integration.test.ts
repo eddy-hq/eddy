@@ -454,6 +454,24 @@ describe('Spot checks', () => {
   });
 });
 
+describe('Spot checks on a request a parent later sent (#217)', () => {
+  it('drops the drawn card and refuses a stale decision', async () => {
+    seedRequest('picked', { status: 'watched', verdict: 'clear_yes', requestedAt: daysAgo(2) });
+    const drawn = queue().cards.filter((c) => c.source === 'spot_check');
+    expect(drawn.flatMap((c) => c.subjects.map((s) => s.subjectId))).toContain('picked');
+
+    // The kid's copy was recycled, then a parent sent the video: the row is
+    // now a parent pick.
+    db.prepare(`UPDATE requests SET source = 'parent_pick', sent_by = ?, status = 'ready' WHERE request_id = 'picked'`)
+      .run(PARENT);
+
+    expect(queue().cards.flatMap((c) => c.subjects.map((s) => s.subjectId))).not.toContain('picked');
+    await expect(recordDecision(PARENT, { subjectType: 'request', subjectId: 'picked', verdict: 'clear_yes' }, NOW))
+      .rejects.toThrow(/not in the Decisions queue/);
+    expect(decisions()).toEqual([]);
+  });
+});
+
 describe('Block channel', () => {
   const BLOCKED_ID = 'UCblockedblockedblocked0';
   const OTHER_ID = 'UCotherotherotherother00';

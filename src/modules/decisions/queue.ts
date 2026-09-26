@@ -168,6 +168,9 @@ function readDrawn(day: string, source: 'spot_check' | 'catch_up'): SubjectRow[]
       LEFT JOIN requests r        ON s.subject_type = 'request'   AND r.request_id   = s.subject_id
      WHERE s.day = @day AND s.source = @source
        AND (cp.candidate_id IS NOT NULL OR r.request_id IS NOT NULL)
+       -- A request drawn earlier that a parent has since sent as a parent
+       -- pick (#217) leaves the queue: the parent's choice replaced the guard's.
+       AND (r.request_id IS NULL OR r.source != 'parent_pick')
        AND NOT EXISTS (SELECT 1 FROM guard_decisions d
                         WHERE d.subject_type = s.subject_type AND d.subject_id = s.subject_id)
        AND ${notBlockedChannelSql('COALESCE(cp.channel_id, r.youtube_channel_id)', 'COALESCE(cp.channel, r.channel)')}
