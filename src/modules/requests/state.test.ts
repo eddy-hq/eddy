@@ -1499,6 +1499,15 @@ describe('mark_parent_picked', () => {
     expect(result).toEqual({ transitioned: false, currentStatus: 'ready' });
   });
 
+  it('clears a converted discovery pick\'s "why this?" line', () => {
+    insertRequest({ request_id: 'req-why', status: 'guard_pending' });
+    db.prepare(`UPDATE requests SET source = 'recommended', why_text = 'Placeholder why' WHERE request_id = 'req-why'`).run();
+
+    state.apply({ kind: 'mark_parent_picked', requestId: 'req-why', parentId: PARENT_ID, video });
+
+    expect(db.prepare('SELECT why_text FROM requests WHERE request_id = ?').get('req-why')).toEqual({ why_text: null });
+  });
+
   it('clears a rejected row\'s reason', () => {
     insertRequest({ request_id: 'req-rej', status: 'rejected' });
     db.prepare(`UPDATE requests SET rejection_reason = 'r' WHERE request_id = 'req-rej'`).run();

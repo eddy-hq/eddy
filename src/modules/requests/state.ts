@@ -830,6 +830,9 @@ export const TRANSITIONS = {
                     decided_by         = ?,
                     decided_at         = ?,
                     rejection_reason   = NULL,
+                    -- A discovery pick's "why this?" no longer applies: the
+                    -- parent sent it.
+                    why_text           = NULL,
                     url                = ?,
                     youtube_channel_id = ?,
                     title              = ?,
