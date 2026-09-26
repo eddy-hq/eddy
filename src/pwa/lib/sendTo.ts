@@ -12,7 +12,7 @@ export interface SendTarget {
 export interface SendResult {
   kidId: string;
   displayName: string;
-  outcome: 'sent' | 'already' | 'in_review';
+  outcome: 'sent' | 'already';
   requestId: string;
 }
 
@@ -67,7 +67,6 @@ export function sendResultMessage(results: SendResult[]): string {
   if (results.length === 0) return 'Nothing sent';
   const sent = results.filter((r) => r.outcome === 'sent').map((r) => r.displayName);
   const already = results.filter((r) => r.outcome === 'already').map((r) => r.displayName);
-  const inReview = results.filter((r) => r.outcome === 'in_review').map((r) => r.displayName);
 
   if (sent.length === results.length) return 'Sent';
   if (already.length === results.length) return 'Already in their feed';
@@ -75,6 +74,5 @@ export function sendResultMessage(results: SendResult[]): string {
   const parts: string[] = [];
   if (sent.length) parts.push(`Sent to ${joinNames(sent)}`);
   if (already.length) parts.push(`${joinNames(already)} already ${already.length === 1 ? 'has' : 'have'} it`);
-  if (inReview.length) parts.push(`${joinNames(inReview)}: waiting in Decisions`);
   return parts.join(' · ');
 }

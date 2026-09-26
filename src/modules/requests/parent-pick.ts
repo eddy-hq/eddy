@@ -21,10 +21,9 @@ export const PARENT_PICK_NOT_LIVE_MESSAGE =
   'This video is no longer on disk. Restore it first, then send it.';
 
 // What happened for one kid.
-//   sent       a new card is in the kid's feed
-//   already    the kid already has this video in their feed
-//   in_review  the kid has it, but parked for a parent's decision (Decisions)
-export type ParentPickOutcome = 'sent' | 'already' | 'in_review';
+//   sent     the video is now in the kid's feed as a parent pick
+//   already  the kid already has this video in their feed
+export type ParentPickOutcome = 'sent' | 'already';
 
 export interface ParentPickResult {
   kidId: string;
@@ -128,13 +127,26 @@ export async function sendParentPick(
   const results: ParentPickResult[] = [];
   for (const kid of kids) {
     const existing = findKidCopy(kid.user_id, source.youtube_id);
-    if (existing) {
+    if (existing && HIDDEN_STATUSES.includes(existing.status as Status)) {
+      // The guard is holding the kid's copy (a slate pick awaiting or parked
+      // by its second pass). The parent's send is the approval: that row
+      // becomes the parent pick, rather than a second card beside it.
+      const { result, settled } = getRequestsState().apply({
+        kind: 'mark_parent_picked',
+        requestId: existing.requestId,
+        parentId: parent.user_id,
+      });
+      await settled;
       results.push({
         kidId: kid.user_id,
         displayName: kid.display_name,
-        outcome: HIDDEN_STATUSES.includes(existing.status as Status) ? 'in_review' : 'already',
+        outcome: result.transitioned ? 'sent' : 'already',
         requestId: existing.requestId,
       });
+      continue;
+    }
+    if (existing) {
+      results.push({ kidId: kid.user_id, displayName: kid.display_name, outcome: 'already', requestId: existing.requestId });
       continue;
     }
 

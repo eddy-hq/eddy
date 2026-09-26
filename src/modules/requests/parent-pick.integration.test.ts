@@ -186,13 +186,20 @@ describe('POST /requests/:id/send', () => {
     expect(ports.notifyVideoReady).toHaveBeenCalledTimes(1);
   });
 
-  it('reports a copy parked for review rather than sending around it', async () => {
-    insertRow({ requestId: 'req-kid1-parked', userId: KID_1, status: 'guard_pending', source: 'recommended' });
+  it.each(['guard_pending', 'guard_review'])(
+    'turns a copy the guard is holding (%s) into the parent pick, with no second card',
+    async (status) => {
+      insertRow({ requestId: 'req-kid1-held', userId: KID_1, status, source: 'recommended' });
 
-    const res = await send(PARENT_REQ, PARENT_ID, [KID_1]);
+      const res = await send(PARENT_REQ, PARENT_ID, [KID_1]);
 
-    expect(res.body.results[0]).toMatchObject({ outcome: 'in_review', requestId: 'req-kid1-parked' });
-  });
+      expect(res.body.results[0]).toMatchObject({ outcome: 'sent', requestId: 'req-kid1-held' });
+      expect(kidRows()).toEqual([
+        { user_id: KID_1, source: 'parent_pick', sent_by: PARENT_ID, status: 'ready', file_path: FILE },
+      ]);
+      expect(ports.notifyVideoReady).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it('a kid\'s deleted copy does not block a fresh send', async () => {
     insertRow({ requestId: 'req-kid1-gone', userId: KID_1, status: 'deleted', fileState: 'gone' });

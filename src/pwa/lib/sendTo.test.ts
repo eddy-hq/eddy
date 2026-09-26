@@ -82,11 +82,6 @@ describe('sendResultMessage', () => {
       .toBe('Sent to Boy1 · Boy2 already has it');
   });
 
-  it('points a copy parked for review at Decisions', () => {
-    expect(sendResultMessage([result(BOY1, 'sent'), result(BOY2, 'in_review')]))
-      .toBe('Sent to Boy1 · Boy2: waiting in Decisions');
-  });
-
   it('handles an empty result list', () => {
     expect(sendResultMessage([])).toBe('Nothing sent');
   });

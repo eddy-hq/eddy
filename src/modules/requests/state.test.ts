@@ -1452,6 +1452,30 @@ describe('create_parent_pick', () => {
   });
 });
 
+describe('mark_parent_picked', () => {
+  it('makes a guard-held slate pick the parent pick: ready, sender recorded, kid notified', async () => {
+    insertRequest({ request_id: 'req-held', status: 'guard_pending' });
+    db.prepare(`UPDATE requests SET source = 'recommended', title = 'Placeholder title' WHERE request_id = 'req-held'`).run();
+
+    const { result, settled } = state.apply({ kind: 'mark_parent_picked', requestId: 'req-held', parentId: PARENT_ID });
+    await settled;
+
+    expect(result.transitioned).toBe(true);
+    const row = db.prepare('SELECT status, source, sent_by, decided_by FROM requests WHERE request_id = ?').get('req-held');
+    expect(row).toEqual({ status: 'ready', source: 'parent_pick', sent_by: PARENT_ID, decided_by: PARENT_ID });
+    expect(fakePorts.notifyVideoReady).toHaveBeenCalledWith(USER_ID, 'req-held', 'Placeholder title');
+  });
+
+  it('leaves the second pass nothing to act on once picked', () => {
+    insertRequest({ request_id: 'req-review', status: 'guard_review' });
+    state.apply({ kind: 'mark_parent_picked', requestId: 'req-review', parentId: PARENT_ID });
+
+    const { result } = state.apply({ kind: 'mark_second_pass_parked', requestId: 'req-review', verdict: 'uncertain', reason: 'r' });
+
+    expect(result).toEqual({ transitioned: false, currentStatus: 'ready' });
+  });
+});
+
 describe('findActiveDuplicateRequest', () => {
   const YT_ID = 'dedup12345x';
 
@@ -1597,6 +1621,8 @@ function buildEvent(kind: Event['kind'], requestId: string): Event {
     case 'mark_second_pass_parked':
       return { kind, requestId, verdict: 'uncertain', reason: 'prop park reason' };
     case 'mark_parent_allowed':
+      return { kind, requestId, parentId: USER_ID };
+    case 'mark_parent_picked':
       return { kind, requestId, parentId: USER_ID };
     case 'mark_parent_blocked':
       return { kind, requestId, parentId: USER_ID, reason: 'prop parent reason' };

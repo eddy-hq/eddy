@@ -308,6 +308,7 @@ export type Event =
   | { kind: 'mark_second_pass_cleared'; requestId: string; reason: string }
   | { kind: 'mark_second_pass_parked'; requestId: string; verdict: 'uncertain' | 'clear_no'; reason: string }
   | { kind: 'mark_parent_allowed'; requestId: string; parentId: string }
+  | { kind: 'mark_parent_picked'; requestId: string; parentId: string }
   | { kind: 'mark_parent_blocked'; requestId: string; parentId: string; reason: string }
   | { kind: 'mark_rejected'; requestId: string; reason: string }
   | { kind: 'mark_guard_blocked'; requestId: string; reason: string }
@@ -764,6 +765,29 @@ export const TRANSITIONS = {
     }),
     effects: (event, result) => becameVisibleEffects(event.requestId, result),
   } as Descriptor<Extract<Event, { kind: 'mark_parent_allowed' }>>,
+
+  // A parent sent (#217) a video the kid already has but that the guard is
+  // holding: a slate pick awaiting its second pass, or parked by it. The
+  // parent's choice is the approval, so the row becomes the parent pick
+  // itself — visible, with the sender's provenance — rather than a second
+  // card. A second pass finishing later gates on `guard_review` and so no
+  // longer matches. guard_verdict keeps whatever the guard said.
+  mark_parent_picked: {
+    sources: ['guard_review', 'guard_pending'],
+    target: 'ready',
+    buildSql: (event, now) => ({
+      sql: `UPDATE requests
+              SET status     = 'ready',
+                  source     = '${PARENT_PICK_SOURCE}',
+                  sent_by    = ?,
+                  decided_by = ?,
+                  decided_at = ?
+            WHERE request_id = ? AND status IN ('guard_review', 'guard_pending')
+            RETURNING user_id, title, channel, youtube_channel_id`,
+      params: [event.parentId, event.parentId, now, event.requestId],
+    }),
+    effects: (event, result) => becameVisibleEffects(event.requestId, result),
+  } as Descriptor<Extract<Event, { kind: 'mark_parent_picked' }>>,
 
   // A parent blocked a parked slate pick, or a visible one on a Spot check:
   // it leaves every kid surface, with the same row symmetry as
