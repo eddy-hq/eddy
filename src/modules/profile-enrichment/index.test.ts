@@ -242,6 +242,20 @@ describe('recomputeBehaviouralSnapshot + recomputeTrustWeights', () => {
     expect(getTrust(PERSON_A)).toBe(0.5);
   });
 
+  it('counts plays of a parent pick (#217) as ordinary watch weight', () => {
+    insertWatchEvent({
+      request_id: 'req-parent-pick', video_id: 'vid-pp', channel_id: CHANNEL_A,
+      reason: 'ended',
+    });
+    db.prepare("UPDATE requests SET source = 'parent_pick' WHERE request_id = 'req-parent-pick'").run();
+
+    recomputeBehaviouralSnapshot(USER_ID);
+
+    const row = db.prepare('SELECT watched_count FROM behavioural_signals WHERE user_id = ? AND person_id = ?')
+      .get(USER_ID, PERSON_A) as { watched_count: number } | undefined;
+    expect(row?.watched_count).toBe(1);
+  });
+
   it('counts a player-side delete (requests.status=deleted) as a dismiss signal', () => {
     // Five videos arrived (any source) and the user deleted them from the
     // player view. The aggregator should treat each as a dismiss against the

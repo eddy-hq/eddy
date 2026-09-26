@@ -92,14 +92,40 @@ function insertWatchEvent(opts: {
   return eventId;
 }
 
+// Seeds the raw engagement the person aggregate counts: `watched` completed
+// plays and `dismissed` mid-play bailouts, each on its own request from the
+// person's channel. `source` is the requests.source of those rows.
 function seedBehaviouralSignal(opts: {
-  user_id: string; person_id: string; watched: number; dismissed: number;
+  user_id: string; person_id: string; watched: number; dismissed: number; source?: string;
 }): void {
+  const channelId = `UC-${opts.person_id}`;
   db.prepare(`
-    INSERT OR REPLACE INTO behavioural_signals
-      (user_id, person_id, watched_count, dismissed_count, recomputed_at)
-    VALUES (?, ?, ?, ?, ?)
-  `).run(opts.user_id, opts.person_id, opts.watched, opts.dismissed, nowIso());
+    INSERT OR IGNORE INTO person_outputs (output_id, person_id, output_type, external_id)
+    VALUES (?, ?, 'youtube', ?)
+  `).run(`out-${opts.person_id}`, opts.person_id, channelId);
+  const seed = (reason: 'ended' | 'dismissed', n: number): void => {
+    for (let i = 0; i < n; i++) {
+      const videoId = `v-${opts.person_id}-${opts.source ?? 'rec'}-${reason}-${i}`;
+      const requestId = `req-${opts.user_id}-${videoId}`;
+      db.prepare(`
+        INSERT INTO requests
+          (request_id, user_id, source, url, youtube_id, youtube_channel_id, title, status, requested_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'ready', ?)
+      `).run(
+        requestId, opts.user_id, opts.source ?? 'recommended',
+        `https://www.youtube.com/watch?v=${videoId}`, videoId, channelId, `Title ${videoId}`, nowIso(),
+      );
+      db.prepare(`
+        INSERT INTO watch_events
+          (event_id, user_id, request_id, video_id, source, started_at, ended_at,
+           position_s, duration_s, reason)
+        VALUES (?, ?, ?, ?, 'feed', ?, ?, ?, 600, ?)
+      `).run(`evt-${requestId}`, opts.user_id, requestId, videoId, nowIso(), nowIso(),
+        reason === 'ended' ? 600 : 10, reason);
+    }
+  };
+  seed('ended', opts.watched);
+  seed('dismissed', opts.dismissed);
 }
 
 beforeAll(() => {
@@ -200,6 +226,17 @@ describe('buildAffinityDigest', () => {
     const digest = buildAffinityDigest(USER_KID);
     expect(digest.topDismissed[0]?.personId).toBe(PERSON_B);
     expect(digest.topDismissed[0]?.dismissedCount).toBe(7);
+  });
+
+  it('leaves parent picks (#217) out of the person counts', () => {
+    seedBehaviouralSignal({ user_id: USER_KID, person_id: PERSON_A, watched: 3, dismissed: 0 });
+    // Engagement that exists only on videos a parent sent: no inferred taste.
+    seedBehaviouralSignal({ user_id: USER_KID, person_id: PERSON_B, watched: 9, dismissed: 4, source: 'parent_pick' });
+
+    const digest = buildAffinityDigest(USER_KID);
+    expect(digest.topWatched.map((p) => p.personId)).toEqual([PERSON_A]);
+    expect(digest.topDismissed).toEqual([]);
+    expect(digest.sampleTitles.every((t) => !t.title.includes(PERSON_B))).toBe(true);
   });
 
   it('returns empty arrays when the user has no signal at all', () => {
