@@ -186,10 +186,18 @@ describe('POST /requests/:id/send', () => {
     expect(ports.notifyVideoReady).toHaveBeenCalledTimes(1);
   });
 
-  it.each(['guard_pending', 'guard_review'])(
-    'turns a copy the guard is holding (%s) into the parent pick, with no second card',
-    async (status) => {
-      insertRow({ requestId: 'req-kid1-held', userId: KID_1, status, source: 'recommended' });
+  it.each([
+    { status: 'guard_pending', source: 'recommended' },
+    { status: 'guard_review', source: 'recommended' },
+    // A fresh follow upload is hidden from the feed until it arrives ready.
+    { status: 'downloading', source: 'channel_subscription' },
+    { status: 'pending', source: 'channel_subscription' },
+    { status: 'failed', source: 'share_sheet' },
+    { status: 'rejected', source: 'share_sheet' },
+  ])(
+    'turns an undelivered copy ($status $source) into the parent pick, with no second card',
+    async ({ status, source }) => {
+      insertRow({ requestId: 'req-kid1-held', userId: KID_1, status, source, filePath: null });
 
       const res = await send(PARENT_REQ, PARENT_ID, [KID_1]);
 
@@ -198,8 +206,30 @@ describe('POST /requests/:id/send', () => {
         { user_id: KID_1, source: 'parent_pick', sent_by: PARENT_ID, status: 'ready', file_path: FILE },
       ]);
       expect(ports.notifyVideoReady).toHaveBeenCalledTimes(1);
+      expect(ports.enqueueDownload).not.toHaveBeenCalled();
     },
   );
+
+  it('brings a request held since long ago into Today\'s stream', async () => {
+    insertRow({ requestId: 'req-kid1-old', userId: KID_1, status: 'guard_pending', source: 'recommended' });
+    db.prepare(`UPDATE requests SET added_at = '2026-01-01T00:00:00.000Z', requested_at = '2026-01-01T00:00:00.000Z'
+                 WHERE request_id = 'req-kid1-old'`).run();
+
+    await send(PARENT_REQ, PARENT_ID, [KID_1]);
+
+    const feed = await supertest(app).get(`/requests/feed?userId=${KID_1}`);
+    const today = feed.body.days.find((d: { label: string }) => d.label === 'Today');
+    const todayCards = today.sections.find((s: { id: string }) => s.id === 'today').cards;
+    expect(todayCards.map((c: { request_id: string }) => c.request_id)).toEqual(['req-kid1-old']);
+  });
+
+  it('reports a dismissed copy as already in their feed', async () => {
+    insertRow({ requestId: 'req-kid1-dismissed', userId: KID_1, status: 'dismissed' });
+
+    const res = await send(PARENT_REQ, PARENT_ID, [KID_1]);
+
+    expect(res.body.results[0]).toMatchObject({ outcome: 'already', requestId: 'req-kid1-dismissed' });
+  });
 
   it('a kid\'s deleted copy does not block a fresh send', async () => {
     insertRow({ requestId: 'req-kid1-gone', userId: KID_1, status: 'deleted', fileState: 'gone' });

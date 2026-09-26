@@ -266,9 +266,13 @@ export interface CreateFromCandidateInput {
 // A parent pick (#217): the kid's row is a copy of the parent's ready row,
 // pointing at the same file on disk — no second download. Every column comes
 // from the parent's row; `sentBy` is the parent.
-export interface CreateParentPickInput {
+export interface CreateParentPickInput extends ParentPickVideo {
   userId: string;
   sentBy: string;
+}
+
+// The parent's ready video a parent pick copies: metadata plus the file.
+export interface ParentPickVideo {
   url: string;
   youtubeId: string;
   youtubeChannelId: string | null;
@@ -308,7 +312,7 @@ export type Event =
   | { kind: 'mark_second_pass_cleared'; requestId: string; reason: string }
   | { kind: 'mark_second_pass_parked'; requestId: string; verdict: 'uncertain' | 'clear_no'; reason: string }
   | { kind: 'mark_parent_allowed'; requestId: string; parentId: string }
-  | { kind: 'mark_parent_picked'; requestId: string; parentId: string }
+  | { kind: 'mark_parent_picked'; requestId: string; parentId: string; video: ParentPickVideo }
   | { kind: 'mark_parent_blocked'; requestId: string; parentId: string; reason: string }
   | { kind: 'mark_rejected'; requestId: string; reason: string }
   | { kind: 'mark_guard_blocked'; requestId: string; reason: string }
@@ -529,6 +533,22 @@ const CANCELLABLE_SOURCES: Status[] = [
 // the queue. Same SQL for both. Declared on the descriptor rather than via a
 // LEGAL allow-list: retry is operations-flavoured, not a typical transition.
 const RETRY_SOURCES: Status[] = ['downloading', 'failed'];
+
+// A kid's request a parent pick (#217) takes over rather than sitting beside
+// as a second card: every status that is in (or headed for) the kid's feed
+// but hasn't delivered a playable video. `ready` / `watched` / `dismissed`
+// are delivered (the send reports "already"); `deleted` has left the feed (the
+// send makes a fresh card).
+export const PARENT_PICKABLE_SOURCES: Status[] = [
+  'pending',
+  'downloading',
+  'approved',
+  'parent_review',
+  'guard_review',
+  'guard_pending',
+  'failed',
+  'rejected',
+];
 
 // Exported for the property test in state.test.ts — it walks every
 // `(Event type × source status)` pair off this table at runtime so the
@@ -766,27 +786,67 @@ export const TRANSITIONS = {
     effects: (event, result) => becameVisibleEffects(event.requestId, result),
   } as Descriptor<Extract<Event, { kind: 'mark_parent_allowed' }>>,
 
-  // A parent sent (#217) a video the kid already has but that the guard is
-  // holding: a slate pick awaiting its second pass, or parked by it. The
-  // parent's choice is the approval, so the row becomes the parent pick
-  // itself — visible, with the sender's provenance — rather than a second
-  // card. A second pass finishing later gates on `guard_review` and so no
-  // longer matches. guard_verdict keeps whatever the guard said.
+  // A parent sent (#217) a video the kid already has a request for, but not
+  // a delivered one: still pending or downloading (a follow upload hidden
+  // until ready), held by the guard (a slate pick awaiting or parked by its
+  // second pass), failed, or rejected. The parent's choice is the approval,
+  // so that row becomes the parent pick itself rather than a second card: it
+  // takes the parent's ready file (downloads share one <youtubeId>.mp4, so
+  // this is the path the row had or would have had), lands `ready` as of now
+  // (a fresh added_at puts it in Today), and the kid is notified.
+  //
+  // Any download job still queued is cancelled. A worker callback that
+  // arrives anyway (download finished, guard verdict, channel check, second
+  // pass) gates on `downloading` / `guard_review` and no longer matches.
+  // guard_verdict keeps whatever the guard said.
   mark_parent_picked: {
-    sources: ['guard_review', 'guard_pending'],
+    sources: PARENT_PICKABLE_SOURCES,
     target: 'ready',
-    buildSql: (event, now) => ({
-      sql: `UPDATE requests
-              SET status     = 'ready',
-                  source     = '${PARENT_PICK_SOURCE}',
-                  sent_by    = ?,
-                  decided_by = ?,
-                  decided_at = ?
-            WHERE request_id = ? AND status IN ('guard_review', 'guard_pending')
-            RETURNING user_id, title, channel, youtube_channel_id`,
-      params: [event.parentId, event.parentId, now, event.requestId],
-    }),
-    effects: (event, result) => becameVisibleEffects(event.requestId, result),
+    buildSql: (event, now) => {
+      const placeholders = PARENT_PICKABLE_SOURCES.map(() => '?').join(', ');
+      const v = event.video;
+      return {
+        sql: `UPDATE requests
+                SET status             = 'ready',
+                    source             = '${PARENT_PICK_SOURCE}',
+                    sent_by            = ?,
+                    decided_by         = ?,
+                    decided_at         = ?,
+                    rejection_reason   = NULL,
+                    url                = ?,
+                    youtube_channel_id = ?,
+                    title              = ?,
+                    channel            = ?,
+                    description        = ?,
+                    transcript         = ?,
+                    duration_secs      = ?,
+                    file_path          = ?,
+                    nginx_url          = ?,
+                    thumbnail_url      = ?,
+                    published_at       = ?,
+                    file_size_bytes    = ?,
+                    file_state         = 'live',
+                    downloaded_at      = ?,
+                    added_at           = ?
+              WHERE request_id = ? AND status IN (${placeholders})
+              RETURNING user_id, title, channel, youtube_channel_id`,
+        params: [
+          event.parentId, event.parentId, now,
+          v.url, v.youtubeChannelId, v.title, v.channel, v.description, v.transcript, v.durationSecs,
+          v.filePath, v.nginxUrl, v.thumbnailUrl, v.publishedAt, v.fileSizeBytes,
+          now, now,
+          event.requestId, ...PARENT_PICKABLE_SOURCES,
+        ],
+      };
+    },
+    effects: (event, result) => {
+      if (!result.transitioned) return [];
+      return [
+        { kind: 'cancel_download_job_fire', requestId: event.requestId },
+        { kind: 'redis_del', key: `eddy:progress:${event.requestId}`, requestId: event.requestId },
+        ...becameVisibleEffects(event.requestId, result),
+      ];
+    },
   } as Descriptor<Extract<Event, { kind: 'mark_parent_picked' }>>,
 
   // A parent blocked a parked slate pick, or a visible one on a Spot check:

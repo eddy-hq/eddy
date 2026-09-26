@@ -73,6 +73,7 @@ export type {
   CreateFromChannelPollInput,
   CreateFromCandidateInput,
   CreateParentPickInput,
+  ParentPickVideo,
   Ports,
   RequestsState,
   SecondPassInput,

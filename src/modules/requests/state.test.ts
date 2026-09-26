@@ -25,6 +25,7 @@ import {
   CANCELLED_REASON,
   TRANSITIONS,
   type DownloadedFields,
+  type ParentPickVideo,
   type Status,
   type Ports,
   type Event,
@@ -1453,11 +1454,28 @@ describe('create_parent_pick', () => {
 });
 
 describe('mark_parent_picked', () => {
+  const SHARED = '/mnt/ssd/eddy/videos/pp2xxxxxxxx.mp4';
+  const video: ParentPickVideo = {
+    url: 'https://www.youtube.com/watch?v=pp2xxxxxxxx',
+    youtubeId: 'pp2xxxxxxxx',
+    youtubeChannelId: null,
+    title: 'Placeholder title',
+    channel: 'Placeholder channel',
+    description: 'd',
+    transcript: null,
+    durationSecs: 120,
+    filePath: SHARED,
+    nginxUrl: 'http://mediaserver/videos/pp2xxxxxxxx.mp4',
+    thumbnailUrl: null,
+    publishedAt: null,
+    fileSizeBytes: 1234,
+  };
+
   it('makes a guard-held slate pick the parent pick: ready, sender recorded, kid notified', async () => {
     insertRequest({ request_id: 'req-held', status: 'guard_pending' });
-    db.prepare(`UPDATE requests SET source = 'recommended', title = 'Placeholder title' WHERE request_id = 'req-held'`).run();
+    db.prepare(`UPDATE requests SET source = 'recommended' WHERE request_id = 'req-held'`).run();
 
-    const { result, settled } = state.apply({ kind: 'mark_parent_picked', requestId: 'req-held', parentId: PARENT_ID });
+    const { result, settled } = state.apply({ kind: 'mark_parent_picked', requestId: 'req-held', parentId: PARENT_ID, video });
     await settled;
 
     expect(result.transitioned).toBe(true);
@@ -1466,9 +1484,45 @@ describe('mark_parent_picked', () => {
     expect(fakePorts.notifyVideoReady).toHaveBeenCalledWith(USER_ID, 'req-held', 'Placeholder title');
   });
 
+  it('takes over an in-flight download with the parent\'s file and cancels its job', async () => {
+    insertRequest({ request_id: 'req-flight', status: 'downloading' });
+
+    const { settled } = state.apply({ kind: 'mark_parent_picked', requestId: 'req-flight', parentId: PARENT_ID, video });
+    await settled;
+
+    const row = db.prepare('SELECT status, file_path, file_state, nginx_url FROM requests WHERE request_id = ?').get('req-flight');
+    expect(row).toEqual({ status: 'ready', file_path: SHARED, file_state: 'live', nginx_url: video.nginxUrl });
+    expect(fakePorts.cancelDownloadJob).toHaveBeenCalledWith('req-flight');
+    expect(fakePorts.redisDel).toHaveBeenCalledWith('eddy:progress:req-flight');
+    // A late worker callback no longer matches the row.
+    const { result } = state.apply({ kind: 'mark_rejected', requestId: 'req-flight', reason: 'late' });
+    expect(result).toEqual({ transitioned: false, currentStatus: 'ready' });
+  });
+
+  it('clears a rejected row\'s reason', () => {
+    insertRequest({ request_id: 'req-rej', status: 'rejected' });
+    db.prepare(`UPDATE requests SET rejection_reason = 'r' WHERE request_id = 'req-rej'`).run();
+
+    state.apply({ kind: 'mark_parent_picked', requestId: 'req-rej', parentId: PARENT_ID, video });
+
+    const row = db.prepare('SELECT status, rejection_reason FROM requests WHERE request_id = ?').get('req-rej');
+    expect(row).toEqual({ status: 'ready', rejection_reason: null });
+  });
+
+  it('moves the row into today, so an old held request lands in Today', () => {
+    insertRequest({ request_id: 'req-old', status: 'guard_pending' });
+    db.prepare(`UPDATE requests SET added_at = '2026-01-01T00:00:00.000Z' WHERE request_id = 'req-old'`).run();
+    const before = new Date(Date.now() - 1000).toISOString();
+
+    state.apply({ kind: 'mark_parent_picked', requestId: 'req-old', parentId: PARENT_ID, video });
+
+    const row = db.prepare('SELECT added_at FROM requests WHERE request_id = ?').get('req-old') as { added_at: string };
+    expect(row.added_at >= before).toBe(true);
+  });
+
   it('leaves the second pass nothing to act on once picked', () => {
     insertRequest({ request_id: 'req-review', status: 'guard_review' });
-    state.apply({ kind: 'mark_parent_picked', requestId: 'req-review', parentId: PARENT_ID });
+    state.apply({ kind: 'mark_parent_picked', requestId: 'req-review', parentId: PARENT_ID, video });
 
     const { result } = state.apply({ kind: 'mark_second_pass_parked', requestId: 'req-review', verdict: 'uncertain', reason: 'r' });
 
@@ -1593,6 +1647,22 @@ const PROP_DOWNLOADED_FIELDS: DownloadedFields = {
   fileSizeBytes: 42,
 };
 
+const PROP_PARENT_PICK_VIDEO: ParentPickVideo = {
+  url: PROP_URL,
+  youtubeId: PROP_YT_ID,
+  youtubeChannelId: PROP_CHANNEL_ID,
+  title: PROP_DOWNLOADED_FIELDS.title,
+  channel: PROP_DOWNLOADED_FIELDS.channel,
+  description: null,
+  transcript: null,
+  durationSecs: 10,
+  filePath: PROP_FILE_PATH,
+  nginxUrl: null,
+  thumbnailUrl: null,
+  publishedAt: null,
+  fileSizeBytes: 42,
+};
+
 function buildEvent(kind: Event['kind'], requestId: string): Event {
   switch (kind) {
     case 'mark_watched':
@@ -1623,7 +1693,9 @@ function buildEvent(kind: Event['kind'], requestId: string): Event {
     case 'mark_parent_allowed':
       return { kind, requestId, parentId: USER_ID };
     case 'mark_parent_picked':
-      return { kind, requestId, parentId: USER_ID };
+      // youtubeChannelId null: the fake result the expected effects are
+      // computed from carries no channel, so no person capture either way.
+      return { kind, requestId, parentId: USER_ID, video: { ...PROP_PARENT_PICK_VIDEO, youtubeChannelId: null } };
     case 'mark_parent_blocked':
       return { kind, requestId, parentId: USER_ID, reason: 'prop parent reason' };
     case 'mark_rejected':
@@ -1671,27 +1743,7 @@ function buildEvent(kind: Event['kind'], requestId: string): Event {
         },
       };
     case 'create_parent_pick':
-      return {
-        kind,
-        requestId,
-        input: {
-          userId: USER_ID,
-          sentBy: USER_ID,
-          url: PROP_URL,
-          youtubeId: PROP_YT_ID,
-          youtubeChannelId: PROP_CHANNEL_ID,
-          title: PROP_DOWNLOADED_FIELDS.title,
-          channel: PROP_DOWNLOADED_FIELDS.channel,
-          description: null,
-          transcript: null,
-          durationSecs: 10,
-          filePath: PROP_FILE_PATH,
-          nginxUrl: null,
-          thumbnailUrl: null,
-          publishedAt: null,
-          fileSizeBytes: 42,
-        },
-      };
+      return { kind, requestId, input: { ...PROP_PARENT_PICK_VIDEO, userId: USER_ID, sentBy: USER_ID } };
   }
 }
 

@@ -12,7 +12,7 @@ import { logger } from '../../logger';
 import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from '../../errors';
 import { isChannelBlocked } from '../blocked-channels';
 import { resolveUserById, type UserRow } from '../users';
-import { HIDDEN_STATUSES, type Status } from './state';
+import { PARENT_PICKABLE_SOURCES, type ParentPickVideo, type Status } from './state';
 import { getRequestsState } from './state-default';
 
 export const PARENT_PICK_BLOCKED_MESSAGE =
@@ -67,19 +67,18 @@ interface SourceRow {
   status: string;
 }
 
-// Statuses that don't count as "already in their feed": the kid's row is
-// gone, refused or failed, so a parent pick makes a fresh card.
-const NOT_IN_FEED: Status[] = ['rejected', 'dismissed', 'deleted', 'failed'];
+// A kid's copy that is already delivered: the send reports "already".
+const DELIVERED: Status[] = ['ready', 'watched', 'dismissed'];
 
-function findKidCopy(kidId: string, youtubeId: string): { requestId: string; status: string } | null {
-  const placeholders = NOT_IN_FEED.map(() => '?').join(', ');
+// The kid's latest request for the video in the given statuses, or null.
+function findKidCopy(kidId: string, youtubeId: string, statuses: readonly Status[]): string | null {
+  const placeholders = statuses.map(() => '?').join(', ');
   const row = db.prepare(
-    `SELECT request_id, status FROM requests
-      WHERE user_id = ? AND youtube_id = ?
-        AND status NOT IN (${placeholders})
+    `SELECT request_id FROM requests
+      WHERE user_id = ? AND youtube_id = ? AND status IN (${placeholders})
       ORDER BY requested_at DESC LIMIT 1`,
-  ).get(kidId, youtubeId, ...NOT_IN_FEED) as { request_id: string; status: string } | undefined;
-  return row ? { requestId: row.request_id, status: row.status } : null;
+  ).get(kidId, youtubeId, ...statuses) as { request_id: string } | undefined;
+  return row?.request_id ?? null;
 }
 
 function requireKid(kidId: string): UserRow {
@@ -124,29 +123,48 @@ export async function sendParentPick(
     throw new ConflictError(PARENT_PICK_BLOCKED_MESSAGE);
   }
 
+  const video: ParentPickVideo = {
+    url: source.url,
+    youtubeId: source.youtube_id,
+    youtubeChannelId: source.youtube_channel_id,
+    title: source.title,
+    channel: source.channel,
+    description: source.description,
+    transcript: source.transcript,
+    durationSecs: source.duration_secs,
+    filePath: source.file_path,
+    nginxUrl: source.nginx_url,
+    thumbnailUrl: source.thumbnail_url,
+    publishedAt: source.published_at,
+    fileSizeBytes: source.file_size_bytes,
+  };
+
   const results: ParentPickResult[] = [];
   for (const kid of kids) {
-    const existing = findKidCopy(kid.user_id, source.youtube_id);
-    if (existing && HIDDEN_STATUSES.includes(existing.status as Status)) {
-      // The guard is holding the kid's copy (a slate pick awaiting or parked
-      // by its second pass). The parent's send is the approval: that row
-      // becomes the parent pick, rather than a second card beside it.
+    const delivered = findKidCopy(kid.user_id, source.youtube_id, DELIVERED);
+    if (delivered) {
+      results.push({ kidId: kid.user_id, displayName: kid.display_name, outcome: 'already', requestId: delivered });
+      continue;
+    }
+
+    // The kid has a request for it that hasn't delivered (in flight, held by
+    // the guard, failed or rejected). The parent's send is the approval: that
+    // row becomes the parent pick, rather than a second card beside it.
+    const undelivered = findKidCopy(kid.user_id, source.youtube_id, PARENT_PICKABLE_SOURCES);
+    if (undelivered) {
       const { result, settled } = getRequestsState().apply({
         kind: 'mark_parent_picked',
-        requestId: existing.requestId,
+        requestId: undelivered,
         parentId: parent.user_id,
+        video,
       });
       await settled;
       results.push({
         kidId: kid.user_id,
         displayName: kid.display_name,
         outcome: result.transitioned ? 'sent' : 'already',
-        requestId: existing.requestId,
+        requestId: undelivered,
       });
-      continue;
-    }
-    if (existing) {
-      results.push({ kidId: kid.user_id, displayName: kid.display_name, outcome: 'already', requestId: existing.requestId });
       continue;
     }
 
@@ -154,23 +172,7 @@ export async function sendParentPick(
     const { settled } = getRequestsState().apply({
       kind: 'create_parent_pick',
       requestId,
-      input: {
-        userId: kid.user_id,
-        sentBy: parent.user_id,
-        url: source.url,
-        youtubeId: source.youtube_id,
-        youtubeChannelId: source.youtube_channel_id,
-        title: source.title,
-        channel: source.channel,
-        description: source.description,
-        transcript: source.transcript,
-        durationSecs: source.duration_secs,
-        filePath: source.file_path,
-        nginxUrl: source.nginx_url,
-        thumbnailUrl: source.thumbnail_url,
-        publishedAt: source.published_at,
-        fileSizeBytes: source.file_size_bytes,
-      },
+      input: { ...video, userId: kid.user_id, sentBy: parent.user_id },
     });
     await settled;
     results.push({ kidId: kid.user_id, displayName: kid.display_name, outcome: 'sent', requestId });
