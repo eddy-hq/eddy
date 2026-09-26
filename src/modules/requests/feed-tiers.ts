@@ -20,7 +20,7 @@
 // directly in unit tests.
 
 /** Provenance bucket a feed row maps to, mirroring Feed.tsx `sourceKind()`. */
-export type FeedKind = 'req' | 'follow' | 'pick';
+export type FeedKind = 'req' | 'follow' | 'pick' | 'sent';
 
 /** Minimal row shape the tier grouping needs. */
 export interface TierInputRow {
@@ -34,7 +34,7 @@ export interface TierInputRow {
 export interface Tier3Day {
   date: string;
   count: number;
-  provenanceMix: { req: number; follow: number; pick: number };
+  provenanceMix: { req: number; follow: number; pick: number; sent: number };
   topTitles: Array<{ title: string; kind: FeedKind }>;
 }
 
@@ -63,6 +63,9 @@ const MAX_TOP_CHANNELS = 3;
 export function sourceToKind(source: string): FeedKind {
   if (source === 'channel_subscription') return 'follow';
   if (source === 'recommended') return 'pick';
+  // A parent pick (#217) is its own bucket: the kid didn't ask for it, so it
+  // must never count as 'req'.
+  if (source === 'parent_pick') return 'sent';
   // 'share_sheet' and any other/unknown source.
   return 'req';
 }
@@ -125,7 +128,7 @@ export function buildTierSummaries(
   const tier3Days: Tier3Day[] = Array.from(tier3ByDate.entries())
     .sort((a, b) => (a[0] < b[0] ? 1 : -1)) // dates DESC (most recent first)
     .map(([date, dayRows]) => {
-      const provenanceMix = { req: 0, follow: 0, pick: 0 };
+      const provenanceMix = { req: 0, follow: 0, pick: 0, sent: 0 };
       const topTitles: Array<{ title: string; kind: FeedKind }> = [];
       for (const row of dayRows) {
         const kind = sourceToKind(row.source);

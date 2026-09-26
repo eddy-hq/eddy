@@ -2,12 +2,15 @@
 // stays thin and consumes these helpers; everything testable lives here so it
 // can be covered under the node-env Vitest harness (the PWA has no jsdom/RTL).
 
-export type ProvenanceKind = 'req' | 'follow' | 'pick';
+export type ProvenanceKind = 'req' | 'follow' | 'pick' | 'sent';
 
 export interface ProvenanceMix {
   req: number;
   follow: number;
   pick: number;
+  // Parent picks (#217). Optional: a payload from before the field existed
+  // reads as zero.
+  sent?: number;
 }
 
 // ── Tier boundaries ──────────────────────────────────────────────────────────
@@ -50,7 +53,8 @@ export function isQuiet(age: number): boolean {
 
 /**
  * Flex-grow weights for the vertical provenance bar, in render order
- * follow → req → pick (top → bottom, matching the prototype). Each segment's
+ * follow → req → pick → sent (top → bottom, matching the prototype, with
+ * parent picks last). Each segment's
  * grow value is its raw count; segments with a zero count collapse to grow 0
  * (no slither). When every count is zero (shouldn't happen for a real day) the
  * bar renders as the empty track.
@@ -62,6 +66,7 @@ export function provenanceSegments(
     { kind: 'follow', grow: mix.follow },
     { kind: 'req', grow: mix.req },
     { kind: 'pick', grow: mix.pick },
+    { kind: 'sent', grow: mix.sent ?? 0 },
   ];
 }
 

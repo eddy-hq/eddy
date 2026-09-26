@@ -77,7 +77,11 @@ app.use(express.json());
 app.use('/requests', requestsRouter);
 app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
   if (err instanceof EddyError) {
-    const status = err.code === 'NOT_FOUND' ? 404 : err.code === 'VALIDATION_ERROR' ? 400 : 500;
+    const status = err.code === 'NOT_FOUND' ? 404
+      : err.code === 'VALIDATION_ERROR' ? 400
+      : err.code === 'FORBIDDEN' ? 403
+      : err.code === 'CONFLICT' ? 409
+      : 500;
     res.status(status).json({ error: err.code, message: err.message });
     return;
   }
@@ -842,7 +846,7 @@ describe('GET /requests/feed', () => {
 
     const day10 = body.tier3Days.find((d) => d.date === isoAt(10).slice(0, 10))!;
     expect(day10.count).toBe(4);
-    expect(day10.provenanceMix).toEqual({ req: 2, follow: 1, pick: 1 });
+    expect(day10.provenanceMix).toEqual({ req: 2, follow: 1, pick: 1, sent: 0 });
     // Ordered most-recent-first (added_at DESC), capped at 3.
     expect(day10.topTitles).toEqual([
       { title: 'Asked Four', kind: 'req' },
@@ -987,7 +991,7 @@ describe('GET /requests/feed', () => {
     const body = resp.json<TierBody>();
 
     const day = body.tier3Days.find((d) => d.date === isoAt(10).slice(0, 10))!;
-    expect(day.provenanceMix).toEqual({ req: 2, follow: 0, pick: 0 });
+    expect(day.provenanceMix).toEqual({ req: 2, follow: 0, pick: 0, sent: 0 });
   });
 });
 
@@ -1298,5 +1302,78 @@ describe('GET /requests/:id thumbnailUrl', () => {
 
     const resp = await request('GET', '/requests/held-thumb');
     expect(resp.json<{ thumbnailUrl: string | null }>().thumbnailUrl).toBeNull();
+  });
+});
+
+// ─── POST /requests/:id/send (parent picks, #217) ────────────────────────────
+//
+// Role checks only: the state machine is mocked here, so these assert who may
+// call the route and who may be sent to. The end-to-end behaviour lives in
+// parent-pick.integration.test.ts.
+describe('POST /requests/:id/send', () => {
+  const PARENT_ID = '99999999-9999-7999-8999-999999999999';
+
+  beforeAll(() => {
+    db.prepare(
+      'INSERT INTO users (user_id, display_name, role, age_gate, created_at) VALUES (?, ?, ?, ?, ?)',
+    ).run(PARENT_ID, 'Parent1', 'parent', 0, new Date().toISOString());
+  });
+
+  function insertParentRow(requestId: string, userId = PARENT_ID): void {
+    const now = new Date().toISOString();
+    db.prepare(`
+      INSERT INTO requests
+        (request_id, user_id, source, url, youtube_id, status, file_path, file_state, requested_at, added_at)
+      VALUES (?, ?, 'share_sheet', 'https://www.youtube.com/watch?v=sendvideo01', 'sendvideo01',
+              'ready', '/mnt/ssd/eddy/videos/sendvideo01.mp4', 'live', ?, ?)
+    `).run(requestId, userId, now, now);
+  }
+
+  it('lets a parent send to a kid', async () => {
+    insertParentRow('req-send-1');
+
+    const resp = await request('POST', '/requests/req-send-1/send', {
+      body: { userId: PARENT_ID, kidIds: [USER_ID] },
+    });
+
+    expect(resp.status).toBe(200);
+    expect(applyMock).toHaveBeenCalledTimes(1);
+    expect(applyMock.mock.calls[0]![0]).toMatchObject({
+      kind: 'create_parent_pick',
+      input: { userId: USER_ID, sentBy: PARENT_ID },
+    });
+  });
+
+  it('refuses a kid caller with 403 and applies nothing', async () => {
+    insertParentRow('req-send-2', USER_ID);
+
+    const resp = await request('POST', '/requests/req-send-2/send', {
+      body: { userId: USER_ID, kidIds: [OTHER_USER_ID] },
+    });
+
+    expect(resp.status).toBe(403);
+    expect(applyMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses a non-kid target with 403 and applies nothing', async () => {
+    insertParentRow('req-send-3');
+
+    const resp = await request('POST', '/requests/req-send-3/send', {
+      body: { userId: PARENT_ID, kidIds: [USER_ID, PARENT_ID] },
+    });
+
+    expect(resp.status).toBe(403);
+    expect(applyMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects a body with no kids', async () => {
+    insertParentRow('req-send-4');
+
+    const resp = await request('POST', '/requests/req-send-4/send', {
+      body: { userId: PARENT_ID, kidIds: [] },
+    });
+
+    expect(resp.status).toBe(400);
+    expect(applyMock).not.toHaveBeenCalled();
   });
 });

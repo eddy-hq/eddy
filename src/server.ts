@@ -178,6 +178,7 @@ app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
     const status = err.code === 'NOT_FOUND' ? 404
       : err.code === 'VALIDATION_ERROR' ? 400
       : err.code === 'FORBIDDEN' ? 403
+      : err.code === 'CONFLICT' ? 409
       : 500;
     res.status(status).json({ error: err.code, message: err.message });
     return;

@@ -12,19 +12,7 @@
 import 'dotenv/config';
 import * as readline from 'readline/promises';
 import { db } from '../db/client';
-
-interface EvalRow {
-  eval_id: string;
-  request_id: string | null;
-  url: string;
-  title: string | null;
-  channel: string | null;
-  gemma_verdict: string | null;
-  gemma_reason: string | null;
-  gemma_confidence: number | null;
-  scored_at: string | null;
-  created_at: string;
-}
+import { readUnlabelledEvals } from './label-guard-lib';
 
 const VERDICT_KEYS: Record<string, string> = { a: 'clear_yes', d: 'clear_no', u: 'uncertain' };
 
@@ -36,17 +24,7 @@ function verdictLabel(v: string | null): string {
 }
 
 async function main(): Promise<void> {
-  const rows = db.prepare(`
-    SELECT
-      ge.eval_id, ge.request_id, ge.url,
-      r.title, r.channel,
-      ge.gemma_verdict, ge.gemma_reason, ge.gemma_confidence,
-      ge.scored_at, ge.created_at
-    FROM guard_eval ge
-    LEFT JOIN requests r ON ge.request_id = r.request_id
-    WHERE ge.human_verdict IS NULL
-    ORDER BY COALESCE(ge.scored_at, ge.created_at) ASC
-  `).all() as EvalRow[];
+  const rows = readUnlabelledEvals();
 
   if (rows.length === 0) {
     process.stdout.write('No unlabelled verdicts. All caught up.\n');

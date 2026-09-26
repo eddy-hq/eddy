@@ -309,6 +309,17 @@ describe('buildDisagreementObservations', () => {
     expect(buildDisagreementObservations(USER)).toHaveLength(1);
   });
 
+  it('leaves out plays of a parent pick (#217) — the parent chose the video', () => {
+    declareInterest(INTEREST_ECON, 1);
+    seedInterestInteraction({ interestId: INTEREST_ECON, videoId: 'e-w1', watchReason: 'ended' });
+    for (let i = 0; i < 6; i++) {
+      seedInterestInteraction({ interestId: INTEREST_ECON, videoId: `e-d${i}`, watchReason: 'dismissed' });
+    }
+    // The same plays, but on videos a parent sent: no disagreement to report.
+    db.exec("UPDATE requests SET source = 'parent_pick'");
+    expect(buildDisagreementObservations(USER)).toHaveLength(0);
+  });
+
   it('ignores interests the user has not declared (no user_interests row)', () => {
     // Heavy skipping but never declared → not in the explicit profile, so no
     // disagreement (an inferred-but-unkept interest can't disagree).

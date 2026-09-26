@@ -3,6 +3,7 @@ import { db } from '../../db/client';
 import { logger } from '../../logger';
 import { ollamaGenerate, parseOllamaJson } from '../../ollama';
 import { WATCHED_RATIO, WATCHED_TIME_FLOOR_S } from '../watch-events';
+import { PERSON_AGGREGATE_SQL, personAggregateParams } from './aggregate';
 
 // Layer 4 (brief §9a): Gemma-generated statements describing the shape of a
 // user's preference. Internal v1 — surfaced indirectly via discovery's
@@ -102,34 +103,38 @@ export function checkAffinityEligibility(userId: string): AffinityEligibility {
 // ── Digest build ───────────────────────────────────────────────────────────────
 //
 // The digest is the synchronous SQL feed the Gemma prompt is built from. We
-// keep it in plain better-sqlite3 selects (rather than CTEs the size of the
-// snapshot recompute) because the input rows are already aggregated in
-// behavioural_signals and the per-interest read is small.
+// keep it in plain better-sqlite3 selects. Person counts reuse the snapshot's
+// aggregate (./aggregate) rather than behavioural_signals, so parent picks can
+// be left out; the per-interest read is small.
 
 export function buildAffinityDigest(userId: string): AffinityDigest {
+  // Person counts come from the same aggregate as behavioural_signals, but
+  // with parent picks (#217) left out: the snapshot is watch weight, while
+  // this digest infers the user's own tastes.
+  const personParams = { ...personAggregateParams(userId, { excludeParentPicks: true }), limit: TOP_PERSONS };
   const topWatched = db.prepare(`
-    SELECT bs.person_id      AS personId,
-           p.display_name    AS displayName,
-           bs.watched_count  AS watchedCount,
-           bs.dismissed_count AS dismissedCount
-    FROM behavioural_signals bs
-    INNER JOIN people p ON p.person_id = bs.person_id
-    WHERE bs.user_id = ? AND bs.watched_count > 0
-    ORDER BY bs.watched_count DESC, p.display_name ASC
-    LIMIT ?
-  `).all(userId, TOP_PERSONS) as DigestPerson[];
+    SELECT agg.person_id      AS personId,
+           p.display_name     AS displayName,
+           agg.watched_count  AS watchedCount,
+           agg.dismissed_count AS dismissedCount
+    FROM (${PERSON_AGGREGATE_SQL}) agg
+    INNER JOIN people p ON p.person_id = agg.person_id
+    WHERE agg.watched_count > 0
+    ORDER BY agg.watched_count DESC, p.display_name ASC
+    LIMIT @limit
+  `).all(personParams) as DigestPerson[];
 
   const topDismissed = db.prepare(`
-    SELECT bs.person_id      AS personId,
-           p.display_name    AS displayName,
-           bs.watched_count  AS watchedCount,
-           bs.dismissed_count AS dismissedCount
-    FROM behavioural_signals bs
-    INNER JOIN people p ON p.person_id = bs.person_id
-    WHERE bs.user_id = ? AND bs.dismissed_count > 0
-    ORDER BY bs.dismissed_count DESC, p.display_name ASC
-    LIMIT ?
-  `).all(userId, TOP_PERSONS) as DigestPerson[];
+    SELECT agg.person_id      AS personId,
+           p.display_name     AS displayName,
+           agg.watched_count  AS watchedCount,
+           agg.dismissed_count AS dismissedCount
+    FROM (${PERSON_AGGREGATE_SQL}) agg
+    INNER JOIN people p ON p.person_id = agg.person_id
+    WHERE agg.dismissed_count > 0
+    ORDER BY agg.dismissed_count DESC, p.display_name ASC
+    LIMIT @limit
+  `).all(personParams) as DigestPerson[];
 
   // Per-interest counts: we go via candidate_pool, which is where the
   // interest tag lives. watch_events has no interest_id directly, so we
@@ -146,6 +151,8 @@ export function buildAffinityDigest(userId: string): AffinityDigest {
     INNER JOIN interests i      ON i.id = cp.interest_id
     WHERE we.user_id = @user_id
       AND cp.interest_id IS NOT NULL
+      -- Parent picks (#217) don't feed inferred interests or affinities.
+      AND r.source != 'parent_pick'
       AND (
         we.reason = 'ended'
         OR (we.duration_s > 0 AND CAST(we.position_s AS REAL) / we.duration_s >= @watched_ratio)
@@ -171,6 +178,7 @@ export function buildAffinityDigest(userId: string): AffinityDigest {
     INNER JOIN requests r ON r.request_id = we.request_id
     WHERE we.user_id = ?
       AND r.title IS NOT NULL
+      AND r.source != 'parent_pick'
       AND (
         we.reason = 'ended'
         OR (we.duration_s > 0 AND CAST(we.position_s AS REAL) / we.duration_s >= ?)
@@ -187,6 +195,7 @@ export function buildAffinityDigest(userId: string): AffinityDigest {
     WHERE we.user_id = ?
       AND we.reason = 'dismissed'
       AND r.title IS NOT NULL
+      AND r.source != 'parent_pick'
     ORDER BY we.started_at DESC
     LIMIT ?
   `).all(userId, SAMPLE_TITLES_PER_BUCKET) as Array<{ title: string }>;

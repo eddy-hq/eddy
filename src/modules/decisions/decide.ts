@@ -13,7 +13,7 @@ import {
   shownEvalForRequest,
   type ShownEval,
 } from '../guard';
-import { SLATE_PICK_SOURCES, findSlatePickRequest, getRequestsState } from '../requests';
+import { PARENT_PICK_SOURCE, SLATE_PICK_SOURCES, findSlatePickRequest, getRequestsState } from '../requests';
 import { getAgeBand, resolveUserById } from '../users';
 import {
   PARENT_BLOCKED_REASON,
@@ -165,6 +165,11 @@ export async function recordDecision(
   now: Date = new Date(),
 ): Promise<DecisionOutcome> {
   const s = readSubject(input.subjectType, input.subjectId);
+  // A parent pick (#217) never carries a guard label: a request that became
+  // one after it was drawn is no longer in the queue.
+  if (s.requestSource === PARENT_PICK_SOURCE) {
+    throw new ValidationError(`request ${s.subjectId} is not in the Decisions queue`);
+  }
   const guard = s.subjectType === 'request'
     ? shownEvalForRequest(s.subjectId)
     : shownEvalForCandidate(s.subjectId, s.url, s.guardVerdict);

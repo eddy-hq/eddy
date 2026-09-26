@@ -99,6 +99,15 @@ export function isoWeekRange(week: string): { start: string; end: string } {
   return { start: start.toISOString(), end: end.toISOString() };
 }
 
+// A play of a parent pick (#217) says nothing about the kid's own interests —
+// the parent chose the video — so Drift leaves it out. The request is looked
+// up by id; a play whose request was hard-deleted still counts, as before.
+// Literal source value: drift stays a leaf of the import graph.
+const NOT_PARENT_PICK_PLAY = `NOT EXISTS (
+  SELECT 1 FROM requests pr
+   WHERE pr.request_id = we.request_id AND pr.source = 'parent_pick'
+)`;
+
 // Returns declared interests for the user with their behavioural watched /
 // dismissed counts within the given ISO week. Only declared interests
 // (user_interests rows) are considered — an inferred-but-unkept interest has
@@ -120,6 +129,7 @@ export function readDeclaredInterestSignal(userId: string, week: string): Intere
       WHERE we.user_id = @user_id
         AND we.started_at >= @week_start AND we.started_at < @week_end
         AND cp.interest_id IS NOT NULL
+        AND ${NOT_PARENT_PICK_PLAY}
         AND (
           we.reason = 'ended'
           OR (we.duration_s > 0 AND CAST(we.position_s AS REAL) / we.duration_s >= @watched_ratio)
@@ -152,6 +162,7 @@ export function readDeclaredInterestSignal(userId: string, week: string): Intere
           AND we.started_at >= @week_start AND we.started_at < @week_end
           AND we.reason = 'dismissed'
           AND cp.interest_id IS NOT NULL
+          AND ${NOT_PARENT_PICK_PLAY}
       )
       GROUP BY interest_id
     )

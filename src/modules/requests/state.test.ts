@@ -25,6 +25,7 @@ import {
   CANCELLED_REASON,
   TRANSITIONS,
   type DownloadedFields,
+  type ParentPickVideo,
   type Status,
   type Ports,
   type Event,
@@ -34,6 +35,7 @@ import {
 } from './state';
 
 const USER_ID = '11111111-1111-7111-8111-111111111111';
+const PARENT_ID = '99999999-9999-7999-8999-999999999999';
 
 // All known DB statuses. Used by the property test to walk illegal sources
 // (every status that isn't in a descriptor's `sources` list).
@@ -111,6 +113,9 @@ beforeAll(() => {
   db.prepare(
     'INSERT INTO users (user_id, display_name, role, age_gate, created_at) VALUES (?, ?, ?, ?, ?)',
   ).run(USER_ID, 'Boy1', 'kid', 12, new Date().toISOString());
+  db.prepare(
+    'INSERT INTO users (user_id, display_name, role, age_gate, created_at) VALUES (?, ?, ?, ?, ?)',
+  ).run(PARENT_ID, 'Parent1', 'parent', 0, new Date().toISOString());
 });
 
 beforeEach(() => {
@@ -1375,6 +1380,187 @@ describe('create_candidate', () => {
   });
 });
 
+describe('create_parent_pick', () => {
+  const SHARED = '/mnt/ssd/eddy/videos/pp1xxxxxxxx.mp4';
+  const input = {
+    userId: USER_ID,
+    sentBy: PARENT_ID,
+    url: 'https://www.youtube.com/watch?v=pp1xxxxxxxx',
+    youtubeId: 'pp1xxxxxxxx',
+    youtubeChannelId: 'UCplaceholderchannel0001',
+    title: 'Placeholder title',
+    channel: 'Placeholder channel',
+    description: 'd',
+    transcript: null,
+    durationSecs: 120,
+    filePath: SHARED,
+    nginxUrl: 'http://mediaserver/videos/pp1xxxxxxxx.mp4',
+    thumbnailUrl: 'http://mediaserver/thumbs/pp1xxxxxxxx.jpg',
+    publishedAt: '2026-09-01T00:00:00.000Z',
+    fileSizeBytes: 1234,
+  };
+
+  it('inserts a ready parent_pick row sharing the parent\'s file, with the sender recorded', async () => {
+    const { result, settled } = state.apply({ kind: 'create_parent_pick', requestId: 'req-pp1', input });
+    await settled;
+
+    expect(result.transitioned).toBe(true);
+    const row = db.prepare(
+      `SELECT user_id, source, sent_by, status, file_path, file_state, nginx_url, file_size_bytes,
+              decided_by, guard_verdict, downloaded_at, added_at
+         FROM requests WHERE request_id = ?`,
+    ).get('req-pp1') as Record<string, unknown>;
+    expect(row).toMatchObject({
+      user_id: USER_ID,
+      source: 'parent_pick',
+      sent_by: PARENT_ID,
+      status: 'ready',
+      file_path: SHARED,
+      file_state: 'live',
+      nginx_url: input.nginxUrl,
+      file_size_bytes: 1234,
+      decided_by: PARENT_ID,
+      guard_verdict: null,
+    });
+    expect(row['downloaded_at']).toEqual(expect.any(String));
+    expect(row['added_at']).toEqual(expect.any(String));
+  });
+
+  it('skips the guard and the download: no enqueue, only the kid\'s video_ready notification', async () => {
+    const { settled } = state.apply({ kind: 'create_parent_pick', requestId: 'req-pp2', input });
+    await settled;
+
+    expect(fakePorts.enqueueDownload).not.toHaveBeenCalled();
+    expect(fakePorts.enqueueDelete).not.toHaveBeenCalled();
+    expect(fakePorts.ensurePerson).not.toHaveBeenCalled();
+    expect(fakePorts.notifyVideoReady).toHaveBeenCalledWith(USER_ID, 'req-pp2', 'Placeholder title');
+  });
+
+  it('keeps the shared file when the kid deletes their copy while the parent still has theirs', async () => {
+    insertRequest({ request_id: 'req-parent', status: 'watched', file_path: SHARED });
+    db.prepare('UPDATE requests SET user_id = ? WHERE request_id = ?').run(PARENT_ID, 'req-parent');
+    const { settled } = state.apply({ kind: 'create_parent_pick', requestId: 'req-pp3', input });
+    await settled;
+
+    state.apply({ kind: 'mark_soft_deleted', requestId: 'req-pp3' });
+    expect(fakePorts.enqueueDelete).not.toHaveBeenCalled();
+
+    // And the other way round: the parent deleting theirs leaves the kid's.
+    const { settled: s2 } = state.apply({ kind: 'create_parent_pick', requestId: 'req-pp4', input });
+    await s2;
+    state.apply({ kind: 'mark_soft_deleted', requestId: 'req-parent' });
+    expect(fakePorts.enqueueDelete).not.toHaveBeenCalled();
+  });
+});
+
+describe('mark_parent_picked', () => {
+  const SHARED = '/mnt/ssd/eddy/videos/pp2xxxxxxxx.mp4';
+  const video: ParentPickVideo = {
+    url: 'https://www.youtube.com/watch?v=pp2xxxxxxxx',
+    youtubeId: 'pp2xxxxxxxx',
+    youtubeChannelId: null,
+    title: 'Placeholder title',
+    channel: 'Placeholder channel',
+    description: 'd',
+    transcript: null,
+    durationSecs: 120,
+    filePath: SHARED,
+    nginxUrl: 'http://mediaserver/videos/pp2xxxxxxxx.mp4',
+    thumbnailUrl: null,
+    publishedAt: null,
+    fileSizeBytes: 1234,
+  };
+
+  it('makes a guard-held slate pick the parent pick: ready, sender recorded, kid notified', async () => {
+    insertRequest({ request_id: 'req-held', status: 'guard_pending' });
+    db.prepare(`UPDATE requests SET source = 'recommended' WHERE request_id = 'req-held'`).run();
+
+    const { result, settled } = state.apply({ kind: 'mark_parent_picked', requestId: 'req-held', parentId: PARENT_ID, video });
+    await settled;
+
+    expect(result.transitioned).toBe(true);
+    const row = db.prepare('SELECT status, source, sent_by, decided_by FROM requests WHERE request_id = ?').get('req-held');
+    expect(row).toEqual({ status: 'ready', source: 'parent_pick', sent_by: PARENT_ID, decided_by: PARENT_ID });
+    expect(fakePorts.notifyVideoReady).toHaveBeenCalledWith(USER_ID, 'req-held', 'Placeholder title');
+  });
+
+  it('takes over an in-flight download with the parent\'s file and cancels its job', async () => {
+    insertRequest({ request_id: 'req-flight', status: 'downloading' });
+
+    const { settled } = state.apply({ kind: 'mark_parent_picked', requestId: 'req-flight', parentId: PARENT_ID, video });
+    await settled;
+
+    const row = db.prepare('SELECT status, file_path, file_state, nginx_url FROM requests WHERE request_id = ?').get('req-flight');
+    expect(row).toEqual({ status: 'ready', file_path: SHARED, file_state: 'live', nginx_url: video.nginxUrl });
+    expect(fakePorts.cancelDownloadJob).toHaveBeenCalledWith('req-flight');
+    expect(fakePorts.redisDel).toHaveBeenCalledWith('eddy:progress:req-flight');
+    // A late worker callback no longer matches the row.
+    const { result } = state.apply({ kind: 'mark_rejected', requestId: 'req-flight', reason: 'late' });
+    expect(result).toEqual({ transitioned: false, currentStatus: 'ready' });
+  });
+
+  it('clears a converted discovery pick\'s "why this?" line', () => {
+    insertRequest({ request_id: 'req-why', status: 'guard_pending' });
+    db.prepare(`UPDATE requests SET source = 'recommended', why_text = 'Placeholder why' WHERE request_id = 'req-why'`).run();
+
+    state.apply({ kind: 'mark_parent_picked', requestId: 'req-why', parentId: PARENT_ID, video });
+
+    expect(db.prepare('SELECT why_text FROM requests WHERE request_id = ?').get('req-why')).toEqual({ why_text: null });
+  });
+
+  it('clears a rejected row\'s reason', () => {
+    insertRequest({ request_id: 'req-rej', status: 'rejected' });
+    db.prepare(`UPDATE requests SET rejection_reason = 'r' WHERE request_id = 'req-rej'`).run();
+
+    state.apply({ kind: 'mark_parent_picked', requestId: 'req-rej', parentId: PARENT_ID, video });
+
+    const row = db.prepare('SELECT status, rejection_reason FROM requests WHERE request_id = ?').get('req-rej');
+    expect(row).toEqual({ status: 'ready', rejection_reason: null });
+  });
+
+  it('moves the row into today, so an old held request lands in Today', () => {
+    insertRequest({ request_id: 'req-old', status: 'guard_pending' });
+    db.prepare(`UPDATE requests SET added_at = '2026-01-01T00:00:00.000Z' WHERE request_id = 'req-old'`).run();
+    const before = new Date(Date.now() - 1000).toISOString();
+
+    state.apply({ kind: 'mark_parent_picked', requestId: 'req-old', parentId: PARENT_ID, video });
+
+    const row = db.prepare('SELECT added_at FROM requests WHERE request_id = ?').get('req-old') as { added_at: string };
+    expect(row.added_at >= before).toBe(true);
+  });
+
+  it('takes over a recycled card, putting the parent\'s file back', () => {
+    insertRequest({ request_id: 'req-recycled', status: 'watched' });
+    db.prepare(`UPDATE requests SET file_state = 'recycled', file_path = NULL, recycled_at = ? WHERE request_id = 'req-recycled'`)
+      .run(new Date().toISOString());
+
+    const { result } = state.apply({ kind: 'mark_parent_picked', requestId: 'req-recycled', parentId: PARENT_ID, video });
+
+    expect(result.transitioned).toBe(true);
+    const row = db.prepare('SELECT status, file_state, file_path, recycled_at FROM requests WHERE request_id = ?').get('req-recycled');
+    expect(row).toEqual({ status: 'ready', file_state: 'live', file_path: SHARED, recycled_at: null });
+  });
+
+  it('never takes over a live card', () => {
+    insertRequest({ request_id: 'req-live', status: 'ready', file_path: SHARED });
+
+    const { result } = state.apply({ kind: 'mark_parent_picked', requestId: 'req-live', parentId: PARENT_ID, video });
+
+    expect(result).toEqual({ transitioned: false, currentStatus: 'ready' });
+    const row = db.prepare('SELECT source FROM requests WHERE request_id = ?').get('req-live');
+    expect(row).toEqual({ source: 'share_sheet' });
+  });
+
+  it('leaves the second pass nothing to act on once picked', () => {
+    insertRequest({ request_id: 'req-review', status: 'guard_review' });
+    state.apply({ kind: 'mark_parent_picked', requestId: 'req-review', parentId: PARENT_ID, video });
+
+    const { result } = state.apply({ kind: 'mark_second_pass_parked', requestId: 'req-review', verdict: 'uncertain', reason: 'r' });
+
+    expect(result).toEqual({ transitioned: false, currentStatus: 'ready' });
+  });
+});
+
 describe('findActiveDuplicateRequest', () => {
   const YT_ID = 'dedup12345x';
 
@@ -1492,6 +1678,22 @@ const PROP_DOWNLOADED_FIELDS: DownloadedFields = {
   fileSizeBytes: 42,
 };
 
+const PROP_PARENT_PICK_VIDEO: ParentPickVideo = {
+  url: PROP_URL,
+  youtubeId: PROP_YT_ID,
+  youtubeChannelId: PROP_CHANNEL_ID,
+  title: PROP_DOWNLOADED_FIELDS.title,
+  channel: PROP_DOWNLOADED_FIELDS.channel,
+  description: null,
+  transcript: null,
+  durationSecs: 10,
+  filePath: PROP_FILE_PATH,
+  nginxUrl: null,
+  thumbnailUrl: null,
+  publishedAt: null,
+  fileSizeBytes: 42,
+};
+
 function buildEvent(kind: Event['kind'], requestId: string): Event {
   switch (kind) {
     case 'mark_watched':
@@ -1521,6 +1723,10 @@ function buildEvent(kind: Event['kind'], requestId: string): Event {
       return { kind, requestId, verdict: 'uncertain', reason: 'prop park reason' };
     case 'mark_parent_allowed':
       return { kind, requestId, parentId: USER_ID };
+    case 'mark_parent_picked':
+      // youtubeChannelId null: the fake result the expected effects are
+      // computed from carries no channel, so no person capture either way.
+      return { kind, requestId, parentId: USER_ID, video: { ...PROP_PARENT_PICK_VIDEO, youtubeChannelId: null } };
     case 'mark_parent_blocked':
       return { kind, requestId, parentId: USER_ID, reason: 'prop parent reason' };
     case 'mark_rejected':
@@ -1567,6 +1773,8 @@ function buildEvent(kind: Event['kind'], requestId: string): Event {
           whyText: null,
         },
       };
+    case 'create_parent_pick':
+      return { kind, requestId, input: { ...PROP_PARENT_PICK_VIDEO, userId: USER_ID, sentBy: USER_ID } };
   }
 }
 
@@ -1664,6 +1872,12 @@ describe('TRANSITIONS property test', () => {
         // still rejected by the status check, so the ILLEGAL_PAIRS coverage
         // stays correct without a parallel fix.
         if (kind === 'mark_restored') {
+          db.prepare('UPDATE requests SET file_state = ? WHERE request_id = ?')
+            .run('recycled', requestId);
+        }
+        // mark_parent_picked takes over a ready / watched card only when its
+        // file is no longer live (a live one is "already in their feed").
+        if (kind === 'mark_parent_picked' && (source === 'ready' || source === 'watched')) {
           db.prepare('UPDATE requests SET file_state = ? WHERE request_id = ?')
             .run('recycled', requestId);
         }

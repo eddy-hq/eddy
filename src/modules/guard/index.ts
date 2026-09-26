@@ -143,6 +143,9 @@ function getChannelHistory(userId: string, channel: string): ChannelHistory {
       COUNT(CASE WHEN status = 'rejected' THEN 1 END)            AS rejected
     FROM requests
     WHERE user_id = ? AND lower(channel) = lower(?)
+      -- Parent picks (#217) never met the guard; a parent's send isn't the
+      -- kid's history with the channel.
+      AND source != 'parent_pick'
   `).get(userId, channel) as { approved: number; rejected: number };
   return { approved: row?.approved ?? 0, rejected: row?.rejected ?? 0 };
 }
@@ -288,6 +291,17 @@ async function runGuardEvaluation(
 // decided by rule (the age-restricted short-circuit) — so the eval set sees
 // all of them.
 function recordGuardEval(verdict: GuardVerdict, ctx: RunGuardCtx, rubric?: RubricRecord): void {
+  // A parent may have taken the request over as a parent pick (#217) while
+  // the model ran: the guard never judges one, so its verdict isn't kept.
+  if (ctx.requestId) {
+    const req = db.prepare('SELECT source FROM requests WHERE request_id = ?').get(ctx.requestId) as
+      | { source: string }
+      | undefined;
+    if (req?.source === 'parent_pick') {
+      logger.info({ requestId: ctx.requestId }, 'Guard verdict not recorded — request is now a parent pick');
+      return;
+    }
+  }
   const now = new Date().toISOString();
   const scoresJson = rubric?.scores && rubric.decision
     ? JSON.stringify({
@@ -402,9 +416,11 @@ export async function scoreForRequest(params: ScoreParams): Promise<GuardVerdict
     userId: params.userId,
   });
 
+  // A parent may have taken the request over as a parent pick (#217) while
+  // the model ran: its row carries no guard verdict.
   db.prepare(`
     UPDATE requests SET guard_verdict = @verdict, guard_reason = @reason
-    WHERE request_id = @request_id
+    WHERE request_id = @request_id AND source != 'parent_pick'
   `).run({ verdict: verdict.verdict, reason: verdict.reason, request_id: params.requestId });
 
   logger.info(

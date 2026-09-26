@@ -76,10 +76,12 @@ export function selectDeclaredInterests(userId: string): UserInterestRow[] {
 // so a plain COUNT over today's `requested_at` captures the lot — including the
 // explicit share-sheet / on-demand requests that count toward the tally but are
 // never themselves refused (they don't route through the budget gate below).
+// The one exception is a parent pick (#217): it shares the parent's file and
+// downloads nothing, so it doesn't spend budget.
 export function countDownloadsToday(now: Date = new Date()): number {
   const dayStart = utcDayStartIso(now);
   const row = db.prepare(
-    'SELECT COUNT(*) AS n FROM requests WHERE requested_at >= ?',
+    "SELECT COUNT(*) AS n FROM requests WHERE requested_at >= ? AND source != 'parent_pick'",
   ).get(dayStart) as { n: number };
   return row.n;
 }
@@ -91,7 +93,7 @@ export function countDownloadsToday(now: Date = new Date()): number {
 export function countDownloadsTodayForUser(userId: string, now: Date = new Date()): number {
   const dayStart = utcDayStartIso(now);
   const row = db.prepare(
-    'SELECT COUNT(*) AS n FROM requests WHERE user_id = ? AND requested_at >= ?',
+    "SELECT COUNT(*) AS n FROM requests WHERE user_id = ? AND requested_at >= ? AND source != 'parent_pick'",
   ).get(userId, dayStart) as { n: number };
   return row.n;
 }
