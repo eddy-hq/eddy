@@ -15,7 +15,7 @@ import { botDetectionCooldownMs, engageBotDetectionCooldown } from '../../botdet
 import { tripCircuitIfNeeded } from '../../circuit-breaker';
 import { getDeclaredChannelInterest } from '../interests';
 import { loadBlockedChannels, type BlockedChannelSet } from '../blocked-channels';
-import { daysSince, uploadDateToIso, sleep, jitteredDelayMs } from './util';
+import { daysSince, uploadDateToIso, sleep, jitteredDelayMs, planInterestQueries, utcDayNumber } from './util';
 
 export interface UserInterestRow {
   interest_id: string;
@@ -93,32 +93,6 @@ function loadChannelDismissalCounts(userId: string): Map<string, number> {
   return map;
 }
 
-// Build the ordered list of (interest, term) pairs the search loop runs:
-// top 3 interests contribute their first two terms, ranks 4–10 contribute
-// one. Worst-case length is 13 (3×2 + 7×1).
-//
-// ADR-0009: interest search no longer gates on person-sourced supply — it
-// always runs at full budget to fill the delighter bucket. The #149 gate
-// (skip / partial / full based on a person-sourced count) is gone.
-function planInterestQueries(userInterests: UserInterestRow[]): Array<{ interest: UserInterestRow; term: string }> {
-  const plan: Array<{ interest: UserInterestRow; term: string }> = [];
-  const interestsToSearch = userInterests.slice(0, 10);
-  for (const interest of interestsToSearch) {
-    let terms: string[];
-    try {
-      terms = JSON.parse(interest.search_terms) as string[];
-      if (!Array.isArray(terms)) terms = [];
-    } catch {
-      terms = [];
-    }
-    const termCount = interest.rank <= 3 ? 2 : 1;
-    for (const term of terms.slice(0, termCount)) {
-      plan.push({ interest, term });
-    }
-  }
-  return plan;
-}
-
 // Interest search supplies the delighter bucket (ADR-0009). Always runs at
 // full budget — no person-sourced gating.
 export async function refreshCandidatePool(
@@ -150,7 +124,7 @@ export async function refreshCandidatePool(
   // Blocked channels never enter a kid's pool.
   const blocked = blockedChannelsFor(userId);
 
-  const plan = planInterestQueries(userInterests);
+  const plan = planInterestQueries(userInterests, utcDayNumber());
 
   logger.info(
     { userId, interest_queries_planned: plan.length },

@@ -11,6 +11,7 @@ import {
   utcDayStartIso,
   planAutomatedDownloads,
   automatedDownloadAllowance,
+  planInterestQueries,
 } from './util';
 
 describe('uploadDateToIso', () => {
@@ -315,5 +316,63 @@ describe('automatedDownloadAllowance', () => {
     // Share-sheet fetches can push a user past their cap; the allowance goes
     // negative and planAutomatedDownloads floors it to a zero budget.
     expect(automatedDownloadAllowance(30, 30, 10, 12)).toBe(-2);
+  });
+});
+
+describe('planInterestQueries', () => {
+  const interest = (rank: number, terms: string[] | string) => ({
+    rank,
+    search_terms: typeof terms === 'string' ? terms : JSON.stringify(terms),
+  });
+  const terms4 = (p: string) => [`${p}1`, `${p}2`, `${p}3`, `${p}4`];
+
+  it('skips interests without search terms so they do not take a slot', () => {
+    const interests = [
+      interest(1, []),
+      interest(2, '__pending_specificity__'),
+      ...Array.from({ length: 10 }, (_, i) => interest(i + 3, terms4(`i${i + 3}-`))),
+    ];
+    const plan = planInterestQueries(interests, 0);
+    const ranks = new Set(plan.map((p) => p.interest.rank));
+    expect(ranks.size).toBe(10);
+    expect(ranks.has(1)).toBe(false);
+    expect(ranks.has(12)).toBe(true);
+  });
+
+  it('keeps per-run volume: 2 terms for rank ≤ 3, 1 otherwise', () => {
+    const interests = Array.from({ length: 10 }, (_, i) => interest(i + 1, terms4(`i${i + 1}-`)));
+    expect(planInterestQueries(interests, 5)).toHaveLength(3 * 2 + 7 * 1);
+  });
+
+  it('rotates terms by day and covers all of them without repeats in a day', () => {
+    const interests = [interest(1, terms4('a')), interest(5, terms4('b'))];
+    const day0 = planInterestQueries(interests, 0).map((p) => p.term);
+    const day1 = planInterestQueries(interests, 1).map((p) => p.term);
+    expect(day0).toEqual(['a1', 'a2', 'b1']);
+    expect(day1).toEqual(['a3', 'a4', 'b2']);
+    const bTerms = new Set([0, 1, 2, 3].map((d) => planInterestQueries(interests, d)[2]!.term));
+    expect(bTerms).toEqual(new Set(terms4('b')));
+  });
+
+  it('never repeats a term when an interest has fewer terms than it asks for', () => {
+    const plan = planInterestQueries([interest(1, ['only'])], 3);
+    expect(plan.map((p) => p.term)).toEqual(['only']);
+  });
+
+  it('pins the top 3 and cycles the rest through the window when past 10', () => {
+    const interests = Array.from({ length: 14 }, (_, i) => interest(i + 1, terms4(`i${i + 1}-`)));
+    const seen = new Set<number>();
+    for (let day = 0; day < 4; day++) {
+      const ranks = [...new Set(planInterestQueries(interests, day).map((p) => p.interest.rank))];
+      expect(ranks).toHaveLength(10);
+      expect(ranks.slice(0, 3)).toEqual([1, 2, 3]);
+      ranks.forEach((r) => seen.add(r));
+    }
+    expect(seen.size).toBe(14);
+  });
+
+  it('orders by rank regardless of input order', () => {
+    const plan = planInterestQueries([interest(7, ['x']), interest(2, ['y', 'z'])], 0);
+    expect(plan.map((p) => p.term)).toEqual(['y', 'z', 'x']);
   });
 });

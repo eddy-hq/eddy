@@ -138,3 +138,63 @@ export function statusForGuardVerdict(verdict: GuardVerdictValue): GuardedCandid
     : verdict === 'clear_no' ? 'guard_rejected'
     : 'guard_pending';
 }
+
+// Interest-search query plan for one discovery run (the delighter bucket,
+// ADR-0009). Only interests with search terms take a slot — broad labels kept
+// as scoring vocabulary (ADR-0008) would otherwise fill the window and yield
+// nothing. Both the interests searched and the terms used rotate by UTC day, so
+// the delighters don't repeat the same queries every morning. Per-run volume
+// is unchanged: at most MAX_SEARCHED_INTERESTS interests, 2 terms for rank ≤ 3
+// and 1 otherwise.
+export const MAX_SEARCHED_INTERESTS = 10;
+const PINNED_SEARCHED_INTERESTS = 3;
+
+export function utcDayNumber(now: Date = new Date()): number {
+  return Math.floor(now.getTime() / 86_400_000);
+}
+
+function parseSearchTerms(raw: string): string[] {
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+// `n` items from `items` starting at offset `start`, wrapping; never repeats.
+function rotatedWindow<T>(items: T[], start: number, n: number): T[] {
+  const take = Math.min(n, items.length);
+  const out: T[] = [];
+  for (let i = 0; i < take; i++) out.push(items[(start + i) % items.length]!);
+  return out;
+}
+
+export function planInterestQueries<T extends { rank: number; search_terms: string }>(
+  interests: T[],
+  day: number,
+): Array<{ interest: T; term: string }> {
+  const searchable = interests
+    .map((interest) => ({ interest, terms: parseSearchTerms(interest.search_terms) }))
+    .filter((s) => s.terms.length > 0)
+    .sort((a, b) => a.interest.rank - b.interest.rank);
+
+  // Past the window, the top-ranked few always search and the remaining slots
+  // cycle through the rest.
+  let chosen = searchable;
+  if (searchable.length > MAX_SEARCHED_INTERESTS) {
+    const pinned = searchable.slice(0, PINNED_SEARCHED_INTERESTS);
+    const rest = searchable.slice(PINNED_SEARCHED_INTERESTS);
+    const slots = MAX_SEARCHED_INTERESTS - PINNED_SEARCHED_INTERESTS;
+    chosen = [...pinned, ...rotatedWindow(rest, (day * slots) % rest.length, slots)];
+  }
+
+  const plan: Array<{ interest: T; term: string }> = [];
+  for (const { interest, terms } of chosen) {
+    const termCount = interest.rank <= 3 ? 2 : 1;
+    for (const term of rotatedWindow(terms, (day * termCount) % terms.length, termCount)) {
+      plan.push({ interest, term });
+    }
+  }
+  return plan;
+}

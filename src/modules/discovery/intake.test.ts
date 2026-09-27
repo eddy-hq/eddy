@@ -142,7 +142,7 @@ beforeEach(() => {
 });
 
 describe('refreshCandidatePool — search budget', () => {
-  it('top-3 interests get 2 terms each, ranks 4–10 get 1, rank 11+ skipped', () => {
+  it('top-3 interests get 2 terms each, 7 more get 1; the planner picks by UTC day', () => {
     const interests: UserInterestRow[] = [];
     for (let i = 1; i <= 12; i++) {
       interests.push(makeInterest({
@@ -153,26 +153,25 @@ describe('refreshCandidatePool — search budget', () => {
     }
 
     mockedSearch.mockResolvedValue([]);
+    // UTC day 0: every rotation offset is 0, so the plan is the first terms of
+    // ranks 1..10 (rotation itself is covered in util.test.ts).
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('1970-01-01T12:00:00Z'));
 
     return refreshCandidatePool(USER_ID, interests).then(() => {
-      // Expected: ranks 1..3 → 2 calls each = 6; ranks 4..10 → 1 each = 7;
-      // ranks 11..12 skipped (interestsToSearch.slice(0, 10)). Total 13.
+      // Ranks 1..3 → 2 calls each = 6; seven more → 1 each = 7. Total 13.
       expect(mockedSearch).toHaveBeenCalledTimes(13);
 
       const calledTerms = mockedSearch.mock.calls.map((c) => c[0]);
-      // First 3 interests contribute their first two terms.
       expect(calledTerms).toContain('t1a'); expect(calledTerms).toContain('t1b');
       expect(calledTerms).toContain('t2a'); expect(calledTerms).toContain('t2b');
       expect(calledTerms).toContain('t3a'); expect(calledTerms).toContain('t3b');
-      // Rank 4 onwards contributes only its first term.
       expect(calledTerms).toContain('t4a');
       expect(calledTerms).not.toContain('t4b');
       expect(calledTerms).toContain('t10a');
-      expect(calledTerms).not.toContain('t10b');
-      // Ranks 11+ are not called at all.
       expect(calledTerms).not.toContain('t11a');
       expect(calledTerms).not.toContain('t12a');
-    });
+    }).finally(() => { vi.useRealTimers(); });
   });
 });
 
