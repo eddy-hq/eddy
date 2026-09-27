@@ -1147,7 +1147,7 @@ Specs in Sections 4a and 9a. ~2-3 sessions.
 
 Spec in Section 9. The original plan assumed the Phase 3–5 eval set would be substantial by now; in practice it holds 4 labelled verdicts out of ~5,100 (2026-09-25), because labelling by CLI never became a habit. Prompts can't be tuned against a dataset that doesn't exist, so the phase splits: 6a builds the surface that produces labels as a side effect of parent decisions, 6b flips requests live once those labels show the thresholds are met.
 
-**Prerequisite: push (APNs) is live.** Uncertain verdicts have to reach a parent, and since ntfy's removal notifications are log-only — so stages 4–5 of the native shell (Section 21) ship before this phase does. A guard that escalates into a log file is a guard that blocks kids indefinitely.
+**Prerequisite: push (APNs) is live.** Uncertain verdicts have to reach a parent, and since ntfy's removal notifications are log-only — so stages 4–5 of the native shell (Section 21) ship before this phase does. A guard that escalates into a log file is a guard that blocks kids indefinitely. *Met 2026-09-27: push works on Steve's and both boys' phones.*
 
 #### Phase 6a — Rubric and parent decisions
 
@@ -1327,9 +1327,9 @@ Roughly 7–9 sessions. Sharing is the feature the household actually wants, so 
 
 1. **Xcode project** ✅ (simulator-verified) — WKWebView shell, `eddy://` deep links, Keychain identity, Tailscale fallback screen. Lives in `ios/`; see `ios/README.md`.
 2. **Share extension + App Intent** ✅ (simulator-verified; extension proven against the live server, the Shortcuts action not yet seen running) — the Shortcut's replacement. Same `POST /requests`, shows `message` inline (§5).
-3. **Signing + OTA distribution** — onto Steve's device, then the boys'. *Released and installed over the air on Steve's device (2026-09-19); the boys' devices still to register and install.* The Shortcut is retired per device once the extension is proven.
+3. **Signing + OTA distribution** — onto Steve's device, then the boys'. *Released and installed over the air on Steve's device (2026-09-19) and the boys' devices (2026-09-27).* The Shortcut is retired per device once the extension is proven.
 4. **Server push** ✅ (PR #203) — device registration (`POST`/`DELETE /devices`), `GET /notifications/:messageId`, and the APNs sender behind `notify()`. Payloads carry the opaque message id and the placeholder copy, nothing else.
-5. **APNs client + Notification Service Extension**, device-tested against a backgrounded VPN, then rolled out — Steve first, then the boys. *Built, not verified: registration, the extension, foreground presentation and tap routing are in and unit-tested, but none of it has run on real hardware — the simulator has no device token. Device checklist in `ios/README.md` under Push.*
+5. **APNs client + Notification Service Extension**, device-tested against a backgrounded VPN, then rolled out — Steve first, then the boys. *Working on real hardware (2026-09-27): Steve's and both boys' phones register for production APNs and receive notifications. Device checklist in `ios/README.md` under Push.*
 
 Stages 4–5 follow stage 3 directly. They used to wait for Phase 6, on the reasoning that ntfy was doing the job until parent approvals existed; ntfy's removal (ADR-0003) inverted that. Three of the five notification kinds are ops alerts to Steve — `circuit_open`, `download_failure_streak`, `download_alert` — and they are log-only now, so a blocked pipeline announces itself to a file nobody is watching. And Phase 6 cannot ship without stage 5.
 
@@ -1344,7 +1344,7 @@ Ad hoc provisioning, not TestFlight (ADR-0013 for why).
 
 ### Open questions
 
-1. **Will the kids' devices install it?** Screen Time's "Installing Apps" restriction, and whether iOS 16+ demands Developer Mode for an ad hoc build. Both untested.
+1. ~~Will the kids' devices install it?~~ — yes; both boys' Screen Time-managed phones installed the ad hoc build (2026-09-27).
 2. ~~Video inside `WKWebView`~~ — plays fine on a device (2026-09-19).
 3. ~~Where the Swift lives~~ — decided: `ios/` in this repo, so the API contract and its client change in one diff.
 4. ~~Service extension over a backgrounded VPN~~ — answered by a spike on 2026-09-21 (branch `apns-nse-spike`, not merged). On one iPhone, a Notification Service Extension that fetched `/health` on each mutable push reached Eddy in 66 ms with the phone in use, and succeeded again with the phone locked and idle for 16 minutes on mobile data, Tailscale backgrounded. With Tailscale switched off the fetch failed, so the successes went over the tailnet. Not yet covered: an iPad, a kid's Screen Time-managed device, Low Power Mode, and an overnight idle. Two things the spike surfaced for stage 5: a push that arrives while the app is on screen is dropped unless the app implements the foreground presentation delegate, and with the tailnet down the extension waits out its whole fetch timeout before the fallback copy shows, so that timeout should be a few seconds, not twenty.

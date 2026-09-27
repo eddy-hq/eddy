@@ -3,9 +3,9 @@
 A thin native wrapper around the PWA at `https://eddyhq.app`. Not a second
 client — see `docs/adr/0013-native-ios-is-a-thin-shell-with-apns-push.md`
 and brief §21. Stages 1 (shell foundation), 2 (share extension + App Intent)
-and 3 (signing + OTA) are built; stage 4 (server push) shipped in #203, and
-stage 5 (APNs client + notification service extension) is built here but has
-not yet been proven on a device.
+and 3 (signing + OTA) are built and installed on every household device;
+stage 4 (server push) shipped in #203, and stage 5 (APNs client + notification
+service extension) is working on real hardware (2026-09-27).
 
 ## Layout
 
@@ -378,13 +378,12 @@ which one the app asked for.
 - The release script has produced and published an ipa (2026-09-19), signing
   in with an Admin App Store Connect API key — a lesser role authenticates and
   then fails with `Cloud signing permission error`. Installing from the `/ios` page works on a device
-  (over a cable build, pairing kept). Still unproven: Developer Mode and Screen
-  Time on the boys' devices. Nothing in the repo carries a team id or a key.
-- **Push has never run on a device.** Stage 5 is built and unit-tested, and the
-  service extension's ability to reach the tailnet was proven separately by the
-  spike (brief §21, branch `apns-nse-spike`), but registration, delivery, the
-  foreground banner and the tap-through have not been seen working together on
-  real hardware. The device checklist is under *Push*.
+  (over a cable build, pairing kept), and on the boys' Screen Time-managed
+  devices (2026-09-27). Nothing in the repo carries a team id or a key.
+- **Push works on a device** (2026-09-27): Steve's and both boys' phones
+  register with the production APNs environment and receive notifications
+  sent through `notify()`. The narrower checklist cases under *Push* — locked,
+  Tailscale off, tap routing — have not each been recorded separately.
 - Every simulator build prints one `appintentsmetadataprocessor` notice —
   "Metadata extraction skipped. No AppIntents.framework dependency found" —
   for the `EddyShare` target, which has no App Intents and needs none.
