@@ -3,7 +3,7 @@
 // src/scripts/guard-harness.ts for the CLI.
 import { existsSync, mkdirSync, readdirSync } from 'node:fs';
 import path from 'node:path';
-import { openReadOnlyDatabase } from '../../db/client';
+import { openReadOnlyDatabase } from '../../db/read-only';
 import { buildSnapshot, type SnapshotResult } from './snapshot';
 import { scorePairs, type ConfusionMatrix, type Metrics, type ScoredPair } from './scorer';
 import {

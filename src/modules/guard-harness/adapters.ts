@@ -1,23 +1,24 @@
 // Guard configurations the harness can replay a dataset through. Each adapter
 // judges one item with no side effects; its id keys the result cache, so it
 // changes whenever what it measures changes.
+//
+// The guard is imported lazily: statically it would pull in the shared
+// writable DB connection (src/db/client.ts), and snapshot must not open one.
+// Only building an adapter (run, report) loads it.
 import { config } from '../../config';
-import {
-  GUARD_SCORING_ERROR_REASON,
-  judgeCandidate,
-  rerunVersionKey,
-  type CandidatePromptId,
-} from '../guard/index';
+import type { CandidatePromptId } from '../guard/index';
 import { AdapterScoringError, GuardHarnessError, type HarnessAdapter, type HarnessItem } from './util';
+
+type GuardModule = typeof import('../guard/index');
 
 // The live candidate guard (Gemma) under a given prompt. A v4 id carries the
 // rubric version too, so a rubric edit re-evaluates rather than resuming over
 // results scored under the old rubric.
-function gemmaCandidateAdapter(prompt: CandidatePromptId): HarnessAdapter {
+function gemmaCandidateAdapter(guard: GuardModule, prompt: CandidatePromptId): HarnessAdapter {
   return {
-    id: `gemma:${config.OLLAMA_GUARD_MODEL}:${rerunVersionKey(prompt)}`,
+    id: `gemma:${config.OLLAMA_GUARD_MODEL}:${guard.rerunVersionKey(prompt)}`,
     async judge(item: HarnessItem) {
-      const v = await judgeCandidate({
+      const v = await guard.judgeCandidate({
         title: item.title,
         channel: item.channel,
         description: item.description,
@@ -29,7 +30,7 @@ function gemmaCandidateAdapter(prompt: CandidatePromptId): HarnessAdapter {
         channelHistory: item.channelHistory,
         prompt,
       });
-      if (v.reason === GUARD_SCORING_ERROR_REASON) {
+      if (v.reason === guard.GUARD_SCORING_ERROR_REASON) {
         throw new AdapterScoringError('The model never answered');
       }
       return {
@@ -41,8 +42,8 @@ function gemmaCandidateAdapter(prompt: CandidatePromptId): HarnessAdapter {
 }
 
 // Adapters by CLI name. v3 is the next slice.
-const ADAPTERS: Record<string, () => HarnessAdapter> = {
-  'gemma-v4': () => gemmaCandidateAdapter('v4'),
+const ADAPTERS: Record<string, (guard: GuardModule) => HarnessAdapter> = {
+  'gemma-v4': (guard) => gemmaCandidateAdapter(guard, 'v4'),
 };
 
 export const DEFAULT_ADAPTER = 'gemma-v4';
@@ -51,8 +52,8 @@ export function adapterNames(): string[] {
   return Object.keys(ADAPTERS);
 }
 
-export function getAdapter(name: string): HarnessAdapter {
+export async function getAdapter(name: string): Promise<HarnessAdapter> {
   const make = ADAPTERS[name];
   if (!make) throw new GuardHarnessError(`Unknown adapter: ${name} (known: ${adapterNames().join(', ')})`);
-  return make();
+  return make(await import('../guard/index'));
 }

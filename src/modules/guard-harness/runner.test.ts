@@ -125,4 +125,21 @@ describe('resultsPathFor', () => {
   it('sits beside its dataset', () => {
     expect(resultsPathFor('/data/harness/dataset-2026-10-02.jsonl')).toBe('/data/harness/results-2026-10-02.jsonl');
   });
+
+  it('never resolves to the dataset itself for a custom name', () => {
+    expect(resultsPathFor('/data/harness/baseline.jsonl')).toBe('/data/harness/results-baseline.jsonl');
+    expect(resultsPathFor('/data/harness/results-x.jsonl')).toBe('/data/harness/results-results-x.jsonl');
+  });
+
+  it('a custom-named dataset runs without touching the dataset file', async () => {
+    const datasetPath = path.join(dir, 'baseline.jsonl');
+    const content = `${JSON.stringify(item('a'))}`;
+    writeFileSync(datasetPath, content);
+    await runHarness({
+      items: [item('a')], adapter: stub(async () => ({ verdict: 'clear_yes' })),
+      resultsPath: resultsPathFor(datasetPath), now: OUTSIDE,
+    });
+    expect(readFileSync(datasetPath, 'utf8')).toBe(content);
+    expect(readResults(resultsPathFor(datasetPath))).toHaveLength(1);
+  });
 });

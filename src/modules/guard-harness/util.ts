@@ -128,9 +128,12 @@ export function datasetFileName(now: Date): string {
   return `dataset-${now.toISOString().slice(0, 10)}.jsonl`;
 }
 
-// Results are cached per dataset, so two snapshots never mix.
+// Results are cached per dataset, so two snapshots never mix: beside the
+// dataset, dataset-X.jsonl → results-X.jsonl, any other name gains a
+// results- prefix. Never the dataset's own path.
 export function resultsPathFor(datasetPath: string): string {
-  const base = path.basename(datasetPath).replace(/^dataset-/, 'results-');
+  const name = path.basename(datasetPath);
+  const base = name.startsWith('dataset-') ? name.replace(/^dataset-/, 'results-') : `results-${name}`;
   return path.join(path.dirname(datasetPath), base);
 }
 

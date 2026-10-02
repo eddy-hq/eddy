@@ -110,7 +110,7 @@ function datasetPath(args: Args): string {
 }
 
 async function run(args: Args): Promise<number> {
-  const adapter = getAdapter(args.adapter);
+  const adapter = await getAdapter(args.adapter);
   const file = datasetPath(args);
   const resultsPath = resultsPathFor(file);
   console.log(`Dataset: ${file}`);
@@ -143,8 +143,8 @@ async function run(args: Args): Promise<number> {
   return r.abortedAfterErrors ? 1 : 0;
 }
 
-function report(args: Args): void {
-  const adapter = getAdapter(args.adapter);
+async function report(args: Args): Promise<void> {
+  const adapter = await getAdapter(args.adapter);
   const file = datasetPath(args);
   const r = reportForAdapter(readDataset(file), readResults(resultsPathFor(file)), adapter.id);
   console.log(`Dataset: ${path.basename(file)}`);
@@ -173,7 +173,7 @@ async function main(): Promise<number> {
     return 0;
   }
   if (args.command === 'run') return run(args);
-  report(args);
+  await report(args);
   return 0;
 }
 
