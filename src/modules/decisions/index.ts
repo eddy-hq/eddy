@@ -11,6 +11,7 @@ import { recordDecision, requireParent, type DecisionOutcome } from './decide';
 import { readDecisionQueue } from './queue';
 import { blockChannelFromCard } from './block-channel';
 import { readReview, reviseDecision } from './review';
+import { readGuardInputs, type GuardInputsRef } from './guard-inputs';
 import { REASON_TEXT_MAX, REVIEW_PAGE, type DecisionReason } from './util';
 
 export {
@@ -44,6 +45,7 @@ export {
   type RevisionInput,
   type RevisionOutcome,
 } from './review';
+export { readGuardInputs, type GuardInputs, type GuardInputsRef } from './guard-inputs';
 export { PARENT_BLOCKED_REASON, REASON_TEXT_MAX, type DecisionReason, type ReviewFilter } from './util';
 
 export const decisionsRouter = Router();
@@ -96,6 +98,16 @@ const reviewQuery = z.object({
   offset: z.coerce.number().int().min(0).default(0),
   limit: z.coerce.number().int().min(1).max(REVIEW_PAGE).default(REVIEW_PAGE),
 });
+
+// A queue card's subject, or a Review card's decision.
+const guardInputsQuery = z.union([
+  z.object({ userId: z.string().min(1), decisionId: z.string().min(1) }),
+  z.object({
+    userId: z.string().min(1),
+    subjectType: z.enum(['candidate', 'request']),
+    subjectId: z.string().min(1),
+  }),
+]);
 
 const reviseBody = z.object({
   userId: z.string().min(1),
@@ -163,6 +175,19 @@ decisionsRouter.get('/review', (req: Request, res: Response) => {
   const q = parse(reviewQuery, req.query);
   requireParent(q.userId);
   res.json(readReview({ filter: q.filter, offset: q.offset, limit: q.limit }));
+});
+
+// GET /parent/decisions/guard-inputs?userId=<parent>&subjectType=<t>&subjectId=<id>
+// GET /parent/decisions/guard-inputs?userId=<parent>&decisionId=<id>
+// What the guard saw for one subject (#225): fetched when the parent opens
+// the card's "What the guard saw" section.
+decisionsRouter.get('/guard-inputs', (req: Request, res: Response) => {
+  const q = parse(guardInputsQuery, req.query);
+  requireParent(q.userId);
+  const ref: GuardInputsRef = 'decisionId' in q
+    ? { decisionId: q.decisionId }
+    : { subjectType: q.subjectType, subjectId: q.subjectId };
+  res.json(readGuardInputs(ref));
 });
 
 // POST /parent/decisions/revisions

@@ -16,12 +16,16 @@ export interface ShownEval {
   // Rubric dimension scores when a rubric-scored row exists for the subject.
   // Severity is scored band-independently, so any kid's row serves.
   scores: Record<RubricDimension, number> | null;
+  // The prompt version on the row behind the verdict, or null when there is
+  // no row. Says which prompt judged it, and what that prompt was sent.
+  promptVersion: string | null;
 }
 
 interface EvalRow {
   eval_id: string;
   gemma_verdict: string | null;
   gemma_reason: string | null;
+  prompt_version: string | null;
 }
 
 function parseDimensions(json: string | null | undefined): ShownEval['scores'] {
@@ -44,7 +48,7 @@ function parseDimensions(json: string | null | undefined): ShownEval['scores'] {
 
 export function shownEvalForRequest(requestId: string): ShownEval {
   const row = db.prepare(
-    `SELECT eval_id, gemma_verdict, gemma_reason FROM guard_eval
+    `SELECT eval_id, gemma_verdict, gemma_reason, prompt_version FROM guard_eval
       WHERE request_id = ? ORDER BY scored_at DESC LIMIT 1`,
   ).get(requestId) as EvalRow | undefined;
   const scored = db.prepare(
@@ -57,6 +61,7 @@ export function shownEvalForRequest(requestId: string): ShownEval {
     verdict: row?.gemma_verdict ?? null,
     reason: row?.gemma_reason ?? null,
     scores: parseDimensions(scored?.rubric_scores_json),
+    promptVersion: row?.prompt_version ?? null,
   };
 }
 
@@ -64,12 +69,12 @@ export function shownEvalForRequest(requestId: string): ShownEval {
 // row with that verdict, preferring one that records this candidate.
 export function shownEvalForCandidate(candidateId: string, url: string, guardVerdict: string | null): ShownEval {
   const own = db.prepare(
-    `SELECT eval_id, gemma_verdict, gemma_reason FROM guard_eval
+    `SELECT eval_id, gemma_verdict, gemma_reason, prompt_version FROM guard_eval
       WHERE candidate_id = ? AND (? IS NULL OR gemma_verdict = ?)
       ORDER BY scored_at DESC LIMIT 1`,
   ).get(candidateId, guardVerdict, guardVerdict) as EvalRow | undefined;
   const byUrl = own ? undefined : db.prepare(
-    `SELECT eval_id, gemma_verdict, gemma_reason FROM guard_eval
+    `SELECT eval_id, gemma_verdict, gemma_reason, prompt_version FROM guard_eval
       WHERE url = ? AND candidate_id IS NULL AND request_type = 'candidate'
         AND (? IS NULL OR gemma_verdict = ?)
       ORDER BY scored_at DESC LIMIT 1`,
@@ -86,6 +91,7 @@ export function shownEvalForCandidate(candidateId: string, url: string, guardVer
     verdict: row?.gemma_verdict ?? guardVerdict,
     reason: row?.gemma_reason ?? null,
     scores: parseDimensions(scored?.rubric_scores_json),
+    promptVersion: row?.prompt_version ?? null,
   };
 }
 
@@ -100,7 +106,7 @@ export function labelGuardEval(evalId: string, humanVerdict: 'clear_yes' | 'clea
 // null when it no longer exists.
 export function shownEvalById(evalId: string): ShownEval | null {
   const row = db.prepare(
-    `SELECT eval_id, gemma_verdict, gemma_reason, rubric_scores_json FROM guard_eval WHERE eval_id = ?`,
+    `SELECT eval_id, gemma_verdict, gemma_reason, prompt_version, rubric_scores_json FROM guard_eval WHERE eval_id = ?`,
   ).get(evalId) as (EvalRow & { rubric_scores_json: string | null }) | undefined;
   if (!row) return null;
   return {
@@ -108,5 +114,6 @@ export function shownEvalById(evalId: string): ShownEval | null {
     verdict: row.gemma_verdict,
     reason: row.gemma_reason,
     scores: parseDimensions(row.rubric_scores_json),
+    promptVersion: row.prompt_version,
   };
 }

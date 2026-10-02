@@ -178,8 +178,11 @@ function revisionsFor(decisionIds: readonly string[]): Map<string, RevisionRow[]
 }
 
 // What the guard said, as the parent was shown it when an eval row was
-// recorded; otherwise the subject's row behind the decided verdict.
-function guardFor(row: ReviewRow): ShownEval {
+// recorded; otherwise the subject's row behind the decided verdict. Also
+// picks the row behind a Review card's "What the guard saw" (#225).
+export function shownEvalForDecision(
+  row: Pick<ReviewRow, 'eval_id' | 'subject_type' | 'subject_id' | 'url' | 'guard_verdict'>,
+): ShownEval {
   const shown = row.eval_id ? shownEvalById(row.eval_id) : null;
   if (shown) return shown;
   return row.subject_type === 'request'
@@ -207,7 +210,7 @@ function toCard(row: ReviewRow, revisions: readonly RevisionRow[]): ReviewCard {
       userId: row.user_id,
       kidName: row.kid_name,
       ageBand: row.age_band,
-      guard: guardFor(row),
+      guard: shownEvalForDecision(row),
     }],
     decision: {
       decisionId: row.decision_id,

@@ -106,6 +106,13 @@ export function excerptTranscript(transcript: string, max: number = TRANSCRIPT_M
   return slices.join(SLICE_SEPARATOR);
 }
 
+// The transcript excerpt a v4.1 rubric prompt carries, or null when there is
+// no transcript (the line is then left out). The parent's decision card shows
+// this same excerpt (#225).
+export function rubricTranscriptExcerpt(transcript: string | null | undefined): string | null {
+  return transcript?.trim() ? excerptTranscript(transcript) : null;
+}
+
 export const VIDEO_MARKER = 'VIDEO';
 
 // Compact output keys. Every key is decoded on every call and decode is the
@@ -234,9 +241,8 @@ export function renderVideoDetails(input: RubricPromptInput): string {
     : h.approved > 0 || h.rejected > 0
       ? `Channel history: ${h.approved} previously approved, ${h.rejected} previously rejected`
       : 'Channel history: no prior requests from this channel';
-  const transcript = input.transcript?.trim()
-    ? `Transcript excerpt:\n${excerptTranscript(input.transcript)}`
-    : null;
+  const excerpt = rubricTranscriptExcerpt(input.transcript);
+  const transcript = excerpt !== null ? `Transcript excerpt:\n${excerpt}` : null;
   return [
     `Title: ${input.title}`,
     input.channel ? `Channel: ${input.channel}` : null,

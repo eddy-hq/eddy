@@ -14,6 +14,8 @@ import {
   decisionsForCard,
   effectLabel,
   formatScores,
+  guardInputRows,
+  guardInputsParams,
   keyAction,
   removeChannelCards,
   reasonSummary,
@@ -26,10 +28,12 @@ import {
   type DecisionCard,
   type DecisionOutcome,
   type DecisionQueue,
+  type GuardInputs,
   type HumanVerdict,
   type ReasonDraft,
   type ReasonOptions,
   type ShownEval,
+  type CardSubject,
   REVIEW_FILTER_LABEL,
   answerLine,
   freshReviewList,
@@ -105,6 +109,12 @@ async function postBlockChannel(userId: string, card: DecisionCard, reason: Reas
   return (await res.json()) as BlockChannelResult;
 }
 
+async function fetchGuardInputs(params: URLSearchParams): Promise<GuardInputs> {
+  const res = await fetch(`/parent/decisions/guard-inputs?${params.toString()}`);
+  if (!res.ok) throw new Error(`Could not load what the guard saw (${res.status})`);
+  return res.json() as Promise<GuardInputs>;
+}
+
 interface Reveal {
   card: DecisionCard;
   verdict: HumanVerdict;
@@ -156,6 +166,65 @@ function GuardPanel({ guard, title }: { guard: ShownEval; title: string }) {
             <span key={s.label} style={{ fontSize: 'var(--text-xs)', color: s.high ? 'var(--dismiss)' : 'var(--text-secondary)', fontWeight: s.high ? 700 : 500 }}>
               {s.label} {s.value}
             </span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// "What the guard saw" (#225): collapsed so Allow / Block stays one tap, and
+// fetched only when opened. Remounted per card, so each card starts closed.
+function GuardInputsSection({ userId, subject, decisionId, title }: {
+  userId: string;
+  subject: CardSubject;
+  decisionId?: string;
+  title: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const params = guardInputsParams(userId, subject, decisionId);
+  const { data, error, isLoading } = useQuery({
+    queryKey: ['decisions-guard-inputs', params.toString()],
+    queryFn: () => fetchGuardInputs(params),
+    enabled: open,
+    staleTime: 60_000,
+  });
+  const rows = data ? guardInputRows(data) : [];
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+        style={{
+          alignSelf: 'flex-start', display: 'flex', alignItems: 'center', gap: 4,
+          border: 'none', background: 'transparent', padding: 0, cursor: 'pointer',
+          fontSize: 'var(--text-sm)', color: 'var(--text-secondary)',
+        }}
+      >
+        {open ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+        {title}
+      </button>
+      {open && (
+        <div style={{ background: 'var(--bg-elevated)', borderRadius: 'var(--radius-md)', padding: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {isLoading && <p style={{ fontSize: 'var(--text-sm)', color: 'var(--text-secondary)' }}>Loading…</p>}
+          {error && <p style={{ fontSize: 'var(--text-sm)', color: 'var(--dismiss)' }}>{(error as Error).message}</p>}
+          {data && rows.length === 0 && (
+            <p style={{ fontSize: 'var(--text-sm)', color: 'var(--text-secondary)' }}>Nothing beyond the title, channel and description.</p>
+          )}
+          {rows.map((r) => (
+            <div key={r.label} style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+              <span style={{ fontSize: 'var(--text-xs)', fontWeight: 700, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                {r.label}{r.notSent && <span style={{ fontWeight: 500, textTransform: 'none', letterSpacing: 0, color: 'var(--text-tertiary)' }}> · stored, not sent to this prompt</span>}
+              </span>
+              <p style={{
+                fontSize: 'var(--text-sm)', color: 'var(--text-primary)', lineHeight: 1.45,
+                whiteSpace: r.block ? 'pre-wrap' : 'normal',
+                maxHeight: r.block ? 240 : undefined, overflowY: r.block ? 'auto' : undefined,
+              }}>
+                {r.value}
+              </p>
+            </div>
           ))}
         </div>
       )}
@@ -477,6 +546,15 @@ export function Decisions() {
               <GuardPanel key={s.subjectId} guard={s.guard} title={multi ? `Guard for ${s.kidName}` : 'Guard'} />
             ))}
 
+            {current.subjects.map((s) => (
+              <GuardInputsSection
+                key={`${current.key}:${s.subjectId}`}
+                userId={userId}
+                subject={s}
+                title={multi ? `What the guard saw for ${s.kidName}` : 'What the guard saw'}
+              />
+            ))}
+
             {data?.reasons && (
               <ReasonPicker
                 options={data.reasons}
@@ -554,7 +632,8 @@ export function Decisions() {
 const formatDay = (iso: string): string =>
   new Date(iso).toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
 
-function ReviewItem({ card, reasons, busy, reasonOpen, reason, onToggleReason, onReasonChange, onChange }: {
+function ReviewItem({ userId, card, reasons, busy, reasonOpen, reason, onToggleReason, onReasonChange, onChange }: {
+  userId: string;
   card: ReviewCard;
   reasons: ReasonOptions | undefined;
   busy: boolean;
@@ -581,6 +660,8 @@ function ReviewItem({ card, reasons, busy, reasonOpen, reason, onToggleReason, o
       <VideoSummary card={card} />
 
       {subject?.guard && <GuardPanel guard={subject.guard} title="Guard" />}
+
+      {subject && <GuardInputsSection userId={userId} subject={subject} decisionId={d.decisionId} title="What the guard saw" />}
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
         <p style={{ fontSize: 'var(--text-sm)', color: 'var(--text-primary)', fontWeight: 600 }}>{answerLine(d)}</p>
@@ -712,6 +793,7 @@ function Review({ userId }: { userId: string }) {
       {cards.map((card) => (
         <ReviewItem
           key={card.key}
+          userId={userId}
           card={card}
           reasons={data?.reasons}
           busy={busyKey !== null}

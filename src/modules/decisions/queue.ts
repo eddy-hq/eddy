@@ -305,6 +305,19 @@ function descriptionFor(row: SubjectRow): string {
   return cardDescription(row.youtube_id, row.description);
 }
 
+// The guard_eval row behind a queue subject's verdict: what an Escalation's
+// guard panel shows, and what "What the guard saw" (#225) reads.
+export function shownEvalForSubject(
+  subjectType: SubjectType,
+  subjectId: string,
+  url: string,
+  guardVerdict: string | null,
+): ShownEval {
+  return subjectType === 'request'
+    ? shownEvalForRequest(subjectId)
+    : shownEvalForCandidate(subjectId, url, guardVerdict);
+}
+
 function toCards(rows: SubjectRow[], source: DecisionSource, ageBands: Map<string, string>): DecisionCard[] {
   const bandFor = (userId: string): string => {
     let band = ageBands.get(userId);
@@ -334,9 +347,7 @@ function toCards(rows: SubjectRow[], source: DecisionSource, ageBands: Map<strin
         kidName: r.kid_name,
         ageBand: bandFor(r.user_id),
         guard: source !== 'escalation' ? null
-          : r.subject_type === 'request'
-            ? shownEvalForRequest(r.subject_id)
-            : shownEvalForCandidate(r.subject_id, r.url, r.guard_verdict),
+          : shownEvalForSubject(r.subject_type, r.subject_id, r.url, r.guard_verdict),
       })),
     };
   });
