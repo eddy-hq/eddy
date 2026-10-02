@@ -1,4 +1,5 @@
-import { readFileSync } from 'node:fs';
+import Database from 'better-sqlite3';
+import { readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -24,6 +25,7 @@ const KID_1 = '11111111-1111-7111-8111-111111111111';
 const KID_2 = '22222222-2222-7222-8222-222222222222';
 const PARENT = '33333333-3333-7333-8333-333333333333';
 
+const MIGRATIONS = path.join(__dirname, '../../db/migrations');
 const DECIDED_AT = '2026-09-20T12:00:00.000Z';
 const BEFORE = '2026-09-19T12:00:00.000Z';
 const AFTER = '2026-09-21T12:00:00.000Z';
@@ -78,14 +80,15 @@ function seedMetadata(yt: string, opts: { ageRestricted?: boolean; madeForKids?:
 }
 
 function seedDecision(id: string, subjectType: 'candidate' | 'request', subjectId: string, opts: {
-  yt?: string | null; label?: 'clear_yes' | 'clear_no'; decidedAt?: string;
+  yt?: string | null; label?: 'clear_yes' | 'clear_no'; decidedAt?: string; blockKind?: 'unsafe' | 'not_for_us' | null;
 } = {}): void {
   db.prepare(`
     INSERT INTO guard_decisions (decision_id, subject_type, subject_id, user_id, url, youtube_id, age_band,
-                                 rubric_version, source, guard_verdict, human_verdict, decided_by, decided_at)
-    VALUES (?, ?, ?, ?, 'https://example.invalid/placeholder', ?, '10-12', 'rubric-v1.3', 'escalation', 'uncertain', ?, ?, ?)
+                                 rubric_version, source, guard_verdict, human_verdict, decided_by, decided_at,
+                                 block_kind)
+    VALUES (?, ?, ?, ?, 'https://example.invalid/placeholder', ?, '10-12', 'rubric-v1.3', 'escalation', 'uncertain', ?, ?, ?, ?)
   `).run(id, subjectType, subjectId, KID_1, opts.yt === undefined ? `yt-${subjectId}` : opts.yt,
-    opts.label ?? 'clear_yes', PARENT, opts.decidedAt ?? DECIDED_AT);
+    opts.label ?? 'clear_yes', PARENT, opts.decidedAt ?? DECIDED_AT, opts.blockKind ?? null);
 }
 
 describe('channel history as of the decision', () => {
@@ -274,6 +277,97 @@ describe('revised labels (#223)', () => {
       expect(buildSnapshot(db).items[0]).toMatchObject({ label: 'clear_no', firstPassLabel: 'clear_no', revisedAt: null });
     } finally {
       db.exec(readFileSync(path.join(__dirname, '../../db/migrations/048_guard_decision_revisions.sql'), 'utf8'));
+      db.exec(`ALTER TABLE guard_decision_revisions
+                 ADD COLUMN block_kind TEXT CHECK (block_kind IN ('unsafe', 'not_for_us'))`);
+    }
+  });
+});
+
+describe('block kinds (#227)', () => {
+  function seedRevision(id: string, decisionId: string, label: 'clear_yes' | 'clear_no', blockKind: string | null, revisedAt: string): void {
+    db.prepare(`
+      INSERT INTO guard_decision_revisions (revision_id, decision_id, human_verdict, block_kind, rubric_version, effect,
+                                            revised_by, revised_at)
+      VALUES (?, ?, ?, ?, 'rubric-v1.3', 'label_only', ?, ?)
+    `).run(id, decisionId, label, blockKind, PARENT, revisedAt);
+  }
+
+  function seedItem(id: string): void {
+    seedCandidate(id);
+    seedMetadata(`yt-${id}`);
+  }
+
+  it("carries the first pass's kind on an unrevised Block, and none on an Allow", () => {
+    seedItem('c1');
+    seedItem('c2');
+    seedItem('c3');
+    seedItem('c4');
+    seedDecision('d1', 'candidate', 'c1', { label: 'clear_no', blockKind: 'unsafe' });
+    seedDecision('d2', 'candidate', 'c2', { label: 'clear_no', blockKind: 'not_for_us' });
+    seedDecision('d3', 'candidate', 'c3', { label: 'clear_no' });
+    seedDecision('d4', 'candidate', 'c4', { label: 'clear_yes' });
+    const r = buildSnapshot(db);
+    expect(r.items.map((i) => [i.itemId, i.blockKind])).toEqual([
+      ['d1', 'unsafe'], ['d2', 'not_for_us'], ['d3', null], ['d4', null],
+    ]);
+    expect(summariseDataset(r.items).byBlockKind).toEqual({ unsafe: 1, not_for_us: 1, unrecorded: 1 });
+  });
+
+  it('takes the kind from the latest revision, beside its label', () => {
+    seedItem('c1');
+    seedItem('c2');
+    seedItem('c3');
+    // Kind set later on an old Block.
+    seedDecision('d1', 'candidate', 'c1', { label: 'clear_no' });
+    seedRevision('rv1', 'd1', 'clear_no', 'not_for_us', AFTER);
+    // Revised to Allow: no kind left behind.
+    seedDecision('d2', 'candidate', 'c2', { label: 'clear_no', blockKind: 'unsafe' });
+    seedRevision('rv2', 'd2', 'clear_yes', null, AFTER);
+    // Revised to a Block by an older client: the kind is not recorded.
+    seedDecision('d3', 'candidate', 'c3', { label: 'clear_yes' });
+    seedRevision('rv3', 'd3', 'clear_no', 'unsafe', AFTER);
+    seedRevision('rv4', 'd3', 'clear_yes', null, '2026-09-22T12:00:00.000Z');
+    seedRevision('rv5', 'd3', 'clear_no', null, '2026-09-23T12:00:00.000Z');
+    expect(buildSnapshot(db).items.map((i) => [i.itemId, i.label, i.blockKind])).toEqual([
+      ['d1', 'clear_no', 'not_for_us'], ['d2', 'clear_yes', null], ['d3', 'clear_no', null],
+    ]);
+  });
+
+  it('reads a dataset line frozen before block kinds as unrecorded, and refuses a bad kind', () => {
+    const line = { itemId: 'd1', label: 'clear_no', title: 't', ageBand: '10-12', holdout: false, tags: [], channelHistory: null };
+    expect(parseHarnessItem(line, 1).blockKind).toBeNull();
+    expect(parseHarnessItem({ ...line, blockKind: 'not_for_us' }, 1).blockKind).toBe('not_for_us');
+    expect(() => parseHarnessItem({ ...line, blockKind: 'icky' }, 1)).toThrow(/blockKind/);
+    expect(() => parseHarnessItem({ ...line, label: 'clear_yes', blockKind: 'unsafe' }, 1)).toThrow(/blockKind/);
+  });
+
+  it('reads a source DB from before block kinds existed', () => {
+    const old = new Database(':memory:');
+    try {
+      for (const f of readdirSync(MIGRATIONS).filter((n) => n.endsWith('.sql') && n < '049').sort()) {
+        old.exec(readFileSync(path.join(MIGRATIONS, f), 'utf8'));
+      }
+      old.prepare('INSERT INTO users (user_id, display_name, role, age_gate, birth_year, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+        .run(KID_1, 'Boy1', 'kid', 1, 2013, BEFORE);
+      old.prepare('INSERT INTO users (user_id, display_name, role, age_gate, birth_year, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+        .run(PARENT, 'Parent', 'parent', 0, null, BEFORE);
+      old.prepare(`
+        INSERT INTO candidate_pool (candidate_id, user_id, source_type, url, external_id, title, channel, status, created_at)
+        VALUES ('c1', ?, 'interest_search', 'https://example.invalid/c1', 'yt-c1', 'Placeholder title', 'Placeholder channel', 'guard_pending', ?)
+      `).run(KID_1, BEFORE);
+      old.prepare(`
+        INSERT INTO video_metadata (youtube_id, category_id, age_restricted, made_for_kids, fetched_at)
+        VALUES ('yt-c1', '27', 0, 1, ?)
+      `).run(BEFORE);
+      old.prepare(`
+        INSERT INTO guard_decisions (decision_id, subject_type, subject_id, user_id, url, youtube_id, age_band,
+                                     rubric_version, source, guard_verdict, human_verdict, decided_by, decided_at)
+        VALUES ('d1', 'candidate', 'c1', ?, 'https://example.invalid/c1', 'yt-c1', '10-12', 'rubric-v1.3', 'escalation',
+                'uncertain', 'clear_no', ?, ?)
+      `).run(KID_1, PARENT, DECIDED_AT);
+      expect(buildSnapshot(old).items.map((i) => [i.label, i.blockKind])).toEqual([['clear_no', null]]);
+    } finally {
+      old.close();
     }
   });
 });
