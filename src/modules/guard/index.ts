@@ -131,7 +131,7 @@ export interface GuardVerdict {
   confidence: number;
 }
 
-interface ChannelHistory {
+export interface ChannelHistory {
   approved: number;
   rejected: number;
 }
@@ -274,17 +274,27 @@ async function runGuardEvaluation(
   prompt: string,
   ctx: RunGuardCtx,
 ): Promise<GuardVerdict> {
-  let verdict: GuardVerdict;
-  try {
-    const raw = await ollamaGenerate(prompt, undefined, undefined, GUARD_CALL_OPTIONS, GUARD_VERDICT_SCHEMA);
-    verdict = parseVerdict(raw);
-  } catch (err) {
-    logger.warn({ err, requestId: ctx.requestId, url: ctx.url }, 'Guard scoring failed — defaulting to uncertain');
-    verdict = { verdict: 'uncertain', reason: GUARD_SCORING_ERROR_REASON, confidence: 0 };
-  }
-
+  const verdict = await judgeVerdict(prompt, ctx);
   recordGuardEval(verdict, ctx);
   return verdict;
+}
+
+// Where a failed model call is logged from. Log context only — never written.
+interface JudgeLogCtx {
+  requestId?: string | null;
+  url?: string;
+}
+
+// The verdict-prompt (v2 / v3) round-trip and parse, writing nothing. Any
+// failure is uncertain, never a pass.
+async function judgeVerdict(prompt: string, log: JudgeLogCtx): Promise<GuardVerdict> {
+  try {
+    const raw = await ollamaGenerate(prompt, undefined, undefined, GUARD_CALL_OPTIONS, GUARD_VERDICT_SCHEMA);
+    return parseVerdict(raw);
+  } catch (err) {
+    logger.warn({ err, requestId: log.requestId, url: log.url }, 'Guard scoring failed — defaulting to uncertain');
+    return { verdict: 'uncertain', reason: GUARD_SCORING_ERROR_REASON, confidence: 0 };
+  }
 }
 
 // Write one guard_eval row. Every verdict lands here — model-scored or
@@ -365,6 +375,19 @@ async function runRubricEvaluation(
   context: RubricContext,
   ctx: RunGuardCtx,
 ): Promise<RubricGuardVerdict> {
+  const verdict = await judgeRubric(input, ageBand, context, ctx);
+  recordGuardEval(verdict, ctx, verdict.rubric ?? { scores: null, decision: null });
+  return verdict;
+}
+
+// The rubric round-trip, parse and rule decision, writing nothing. A failed
+// call comes back as uncertain with `rubric` null.
+async function judgeRubric(
+  input: RubricPromptInput,
+  ageBand: string,
+  context: RubricContext,
+  log: JudgeLogCtx,
+): Promise<RubricGuardVerdict> {
   let parsed: ReturnType<typeof parseRubricOutput>;
   try {
     const raw = await ollamaGenerate(
@@ -373,10 +396,8 @@ async function runRubricEvaluation(
     parsed = parseRubricOutput(raw);
     if (!parsed) throw new GuardError('Could not parse Gemma rubric scores');
   } catch (err) {
-    logger.warn({ err, requestId: ctx.requestId, url: ctx.url }, 'Guard rubric scoring failed — defaulting to uncertain');
-    const verdict: GuardVerdict = { verdict: 'uncertain', reason: GUARD_SCORING_ERROR_REASON, confidence: 0 };
-    recordGuardEval(verdict, ctx, { scores: null, decision: null });
-    return { ...verdict, rubric: null };
+    logger.warn({ err, requestId: log.requestId, url: log.url }, 'Guard rubric scoring failed — defaulting to uncertain');
+    return { verdict: 'uncertain', reason: GUARD_SCORING_ERROR_REASON, confidence: 0, rubric: null };
   }
 
   const decision = verdictFromScores(parsed.scores, ageBand, context);
@@ -386,9 +407,7 @@ async function runRubricEvaluation(
   const reason = decision.drivers.length > 0
     ? `${parsed.reason} (${decision.drivers.map(describeDriver).join('; ')})`
     : parsed.reason;
-  const verdict: GuardVerdict = { verdict: decision.verdict, reason, confidence: 1 };
-  recordGuardEval(verdict, ctx, { scores: parsed.scores, decision });
-  return { ...verdict, rubric: { scores: parsed.scores, decision } };
+  return { verdict: decision.verdict, reason, confidence: 1, rubric: { scores: parsed.scores, decision } };
 }
 
 export async function scoreForRequest(params: ScoreParams): Promise<GuardVerdict> {
@@ -468,55 +487,105 @@ export const AGE_RESTRICTED_REASON = 'Age-restricted on YouTube';
 // the eval set.
 export async function evaluateCandidate(params: CandidateEvalParams): Promise<CandidateVerdict> {
   const promptId = params.prompt ?? liveCandidatePrompt();
-  const promptVersion = candidatePromptVersion(promptId);
   const ctx: RunGuardCtx = {
     requestId: null,
     url: params.url,
     requestType: 'candidate',
     userId: params.userId,
     candidateId: params.candidateId,
-    promptVersion,
+    promptVersion: candidatePromptVersion(promptId),
   };
 
-  if (params.ageRestricted === true) {
-    const verdict: GuardVerdict = { verdict: 'clear_no', reason: AGE_RESTRICTED_REASON, confidence: 1 };
-    recordGuardEval(verdict, ctx);
-    return { ...verdict, promptVersion, rubric: null };
+  // The age-restricted short-circuit needs neither the age band nor history.
+  const ageRestricted = params.ageRestricted === true;
+  const channel = params.channel?.trim() ?? '';
+  const ageBand = ageRestricted ? '' : params.ageBand ?? getAgeBand(params.userId);
+  const channelHistory = !ageRestricted && channel ? getChannelHistory(params.userId, channel) : null;
+
+  const verdict = await judgeCandidate({
+    title: params.title,
+    channel,
+    description: params.description,
+    tags: params.tags,
+    categoryId: params.categoryId,
+    madeForKids: params.madeForKids,
+    ageRestricted,
+    ageBand,
+    channelHistory,
+    prompt: promptId,
+    url: params.url,
+  });
+  // A v4 call that failed records like one, with no scores; v3 and the
+  // age-restricted short-circuit carry no rubric at all.
+  const rubric: RubricRecord | undefined = verdict.rubric
+    ?? (promptId === 'v4' && !ageRestricted ? { scores: null, decision: null } : undefined);
+  recordGuardEval(verdict, ctx, rubric);
+  return verdict;
+}
+
+// Everything the candidate guard judges, passed in rather than read: the item,
+// the kid's age band and their history with the channel. The guard harness
+// supplies history as it stood when the parent decided.
+export interface JudgeCandidateInput {
+  title: string;
+  channel?: string | null;
+  description?: string | null;
+  tags?: string[] | null;
+  categoryId?: string | null;
+  madeForKids?: boolean | null;
+  ageRestricted?: boolean;
+  ageBand: string;
+  // Null when the channel is unknown.
+  channelHistory: ChannelHistory | null;
+  prompt: CandidatePromptId;
+  // Log context for a failed model call only.
+  url?: string;
+}
+
+// Judge a discovery candidate with no side effects: one model call (none for
+// an age-restricted video, a clear_no by rule) and nothing written to
+// guard_eval or any other table. evaluateCandidate records what this returns.
+export async function judgeCandidate(input: JudgeCandidateInput): Promise<CandidateVerdict> {
+  const promptVersion = candidatePromptVersion(input.prompt);
+
+  if (input.ageRestricted === true) {
+    return { verdict: 'clear_no', reason: AGE_RESTRICTED_REASON, confidence: 1, promptVersion, rubric: null };
   }
 
-  const channel = params.channel?.trim() ?? '';
-  const ageBand = params.ageBand ?? getAgeBand(params.userId);
-  const channelHistory = channel ? getChannelHistory(params.userId, channel) : null;
+  const channel = input.channel?.trim() ?? '';
+  const log: JudgeLogCtx = { requestId: null, url: input.url };
 
-  if (promptId === 'v4') {
-    const verdict = await runRubricEvaluation({
-      title: params.title,
+  if (input.prompt === 'v4') {
+    const verdict = await judgeRubric({
+      title: input.title,
       channel,
-      description: params.description ?? '',
-      tags: params.tags ?? [],
-      category: categoryName(params.categoryId),
-      madeForKids: params.madeForKids ?? null,
-      channelHistory,
+      description: input.description ?? '',
+      tags: input.tags ?? [],
+      category: categoryName(input.categoryId),
+      madeForKids: input.madeForKids ?? null,
+      channelHistory: input.channelHistory,
       transcript: null,
-    }, ageBand, 'discovery', ctx);
+    }, input.ageBand, 'discovery', log);
     return { ...verdict, promptVersion };
   }
 
+  // buildPrompt reads only the item fields, age band and history; the ids it
+  // also takes are unused for the candidate prompt.
   const prompt = buildPrompt({
-    requestId: params.candidateId,
-    userId: params.userId,
-    url: params.url,
-    title: params.title,
+    requestId: '',
+    userId: '',
+    url: input.url ?? '',
+    title: input.title,
     channel,
-    description: params.description ?? '',
+    description: input.description ?? '',
     transcript: null,
-    ageBand,
-    channelHistory,
-    tags: params.tags ?? [],
-    category: categoryName(params.categoryId),
-    madeForKids: params.madeForKids ?? null,
+    ageBand: input.ageBand,
+    channelHistory: input.channelHistory,
+    tags: input.tags ?? [],
+    category: categoryName(input.categoryId),
+    madeForKids: input.madeForKids ?? null,
   });
-  const verdict = await runGuardEvaluation(prompt, ctx);
+  const verdict = await judgeVerdict(prompt, log);
   return { ...verdict, promptVersion, rubric: null };
 }
 
