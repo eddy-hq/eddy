@@ -2,7 +2,8 @@
 //
 // Reads guard_decisions (the label is the latest revision from
 // guard_decision_revisions, else the first-pass human_verdict, which is kept
-// beside it) with the item inputs the
+// beside it; a Block's kind comes from the same row as the label) with the
+// item inputs the
 // candidate guard reads — title and channel from the candidate or request,
 // description, tags, category, audience and age restriction from
 // video_metadata — and the kid's history with the channel as it stood when the
@@ -14,7 +15,7 @@
 // lives here rather than as a read helper in each owner.
 import type { Database } from 'better-sqlite3';
 import type { ChannelHistory } from '../guard/index';
-import { isHoldout, type HarnessItem, type HumanLabel } from './util';
+import { isHoldout, type BlockKind, type HarnessItem, type HumanLabel } from './util';
 
 export type DropReason = 'subject_missing' | 'no_title' | 'no_metadata';
 
@@ -35,8 +36,10 @@ interface DecisionRow {
   source: string;
   guard_verdict: string | null;
   human_verdict: HumanLabel;
+  block_kind: BlockKind | null;
   decided_at: string;
   revised_verdict: HumanLabel | null;
+  revised_block_kind: BlockKind | null;
   revised_at: string | null;
   subject_found: number;
   title: string | null;
@@ -106,9 +109,17 @@ function hasRevisions(source: Database): boolean {
   ).get() !== undefined;
 }
 
+// A source DB from before migration 049 records no Block kinds.
+function hasColumn(source: Database, table: string, column: string): boolean {
+  const cols = source.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+  return cols.some((c) => c.name === column);
+}
+
 function selectDecisions(source: Database): DecisionRow[] {
   // The latest revision (#223), when the parent has changed the decision.
   const revisions = hasRevisions(source);
+  const kinds = hasColumn(source, 'guard_decisions', 'block_kind');
+  const revisionKinds = revisions && hasColumn(source, 'guard_decision_revisions', 'block_kind');
   const latest = (col: string) => revisions
     ? `(SELECT rv.${col} FROM guard_decision_revisions rv
          WHERE rv.decision_id = d.decision_id AND rv.human_verdict IN ('clear_yes', 'clear_no')
@@ -117,7 +128,9 @@ function selectDecisions(source: Database): DecisionRow[] {
   return source.prepare(`
     SELECT d.decision_id, d.subject_type, d.subject_id, d.user_id, d.youtube_id, d.age_band,
            d.rubric_version, d.source, d.guard_verdict, d.human_verdict, d.decided_at,
+           ${kinds ? 'd.block_kind' : 'NULL'}                       AS block_kind,
            ${latest('human_verdict')}                               AS revised_verdict,
+           ${revisionKinds ? latest('block_kind') : 'NULL'}         AS revised_block_kind,
            ${latest('revised_at')}                                  AS revised_at,
            (cp.candidate_id IS NOT NULL OR r.request_id IS NOT NULL) AS subject_found,
            COALESCE(cp.title, r.title)                              AS title,
@@ -135,6 +148,13 @@ function selectDecisions(source: Database): DecisionRow[] {
     WHERE d.human_verdict IN ('clear_yes', 'clear_no')
     ORDER BY d.decided_at ASC, d.decision_id ASC
   `).all() as DecisionRow[];
+}
+
+function currentBlockKind(row: DecisionRow): BlockKind | null {
+  const revised = row.revised_verdict !== null;
+  const label = revised ? row.revised_verdict : row.human_verdict;
+  if (label !== 'clear_no') return null;
+  return (revised ? row.revised_block_kind : row.block_kind) ?? null;
 }
 
 // Build the dataset from a read-only source. Items without what the candidate
@@ -171,6 +191,8 @@ export function buildSnapshot(source: Database): SnapshotResult {
       label: row.revised_verdict ?? row.human_verdict,
       firstPassLabel: row.human_verdict,
       revisedAt: row.revised_at,
+      // From the same row as the label; only a Block carries one.
+      blockKind: currentBlockKind(row),
       decisionSource: row.source,
       rubricVersion: row.rubric_version,
       guardVerdict: row.guard_verdict,
@@ -200,17 +222,24 @@ export function summariseDataset(items: readonly HarnessItem[]): {
   // Items whose label is a revision rather than the first pass.
   revised: number;
   byLabel: Record<string, number>;
+  // Blocks by kind: unsafe, not_for_us, unrecorded.
+  byBlockKind: Record<string, number>;
   bySubjectType: Record<string, number>;
 } {
   const byLabel: Record<string, number> = {};
+  const byBlockKind: Record<string, number> = {};
   const bySubjectType: Record<string, number> = {};
   let holdout = 0;
   let revised = 0;
   for (const item of items) {
     byLabel[item.label] = (byLabel[item.label] ?? 0) + 1;
+    if (item.label === 'clear_no') {
+      const kind = item.blockKind ?? 'unrecorded';
+      byBlockKind[kind] = (byBlockKind[kind] ?? 0) + 1;
+    }
     bySubjectType[item.subjectType] = (bySubjectType[item.subjectType] ?? 0) + 1;
     if (item.holdout) holdout += 1;
     if (item.revisedAt) revised += 1;
   }
-  return { total: items.length, holdout, revised, byLabel, bySubjectType };
+  return { total: items.length, holdout, revised, byLabel, byBlockKind, bySubjectType };
 }

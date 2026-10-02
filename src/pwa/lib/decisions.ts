@@ -7,6 +7,41 @@ export type DecisionSource = 'escalation' | 'spot_check' | 'catch_up';
 export type HumanVerdict = 'clear_yes' | 'clear_no';
 export type DecisionEffect = 'eligible' | 'blocked' | 'shown' | 'removed' | 'label_only';
 
+// What a Block meant (#227): unsafe for this kid, or not for us (quality,
+// taste, relevance). Both are verdict clear_no with exactly the Block effect.
+export type BlockKind = 'unsafe' | 'not_for_us';
+
+// A parent's answer on a card: Allow, or a Block of one kind. Each is one tap.
+export type Answer = 'allow' | BlockKind;
+
+export const ANSWER_LABEL: Record<Answer, string> = {
+  allow: 'Allow',
+  unsafe: 'Unsafe',
+  not_for_us: 'Not for us',
+};
+
+// A decision button's label; a two-kid card answers for both.
+export function answerButtonLabel(answer: Answer, both: boolean): string {
+  return both ? `${ANSWER_LABEL[answer]} · both` : ANSWER_LABEL[answer];
+}
+
+// The verdict and kind an answer is sent as. Allow carries no kind.
+export function answerFields(answer: Answer): { verdict: HumanVerdict; blockKind?: BlockKind } {
+  return answer === 'allow' ? { verdict: 'clear_yes' } : { verdict: 'clear_no', blockKind: answer };
+}
+
+export function answerVerdict(answer: Answer): HumanVerdict {
+  return answer === 'allow' ? 'clear_yes' : 'clear_no';
+}
+
+// A stored answer in words: a Block with no recorded kind stays "block".
+export function answerLabel(verdict: HumanVerdict, blockKind: BlockKind | null): string {
+  if (verdict === 'clear_yes') return 'allow';
+  if (blockKind === 'unsafe') return 'unsafe';
+  if (blockKind === 'not_for_us') return 'not for us';
+  return 'block';
+}
+
 export interface ShownEval {
   evalId: string | null;
   verdict: string | null;
@@ -122,20 +157,21 @@ export interface DecisionPayloadItem extends ReasonFields {
   subjectType: SubjectType;
   subjectId: string;
   verdict: HumanVerdict;
+  blockKind?: BlockKind;
 }
 
 // One card's decisions: every kid on the card ("same for both"), or only the
-// named kid. The card's reason, if any, goes on each.
+// named kid. The answer's kind and the card's reason, if any, go on each.
 export function decisionsForCard(
   card: DecisionCard,
-  verdict: HumanVerdict,
+  answer: Answer,
   onlyUserId?: string,
   reason: ReasonDraft = EMPTY_REASON,
 ): DecisionPayloadItem[] {
   const fields = reasonFields(reason);
   return card.subjects
     .filter((s) => !onlyUserId || s.userId === onlyUserId)
-    .map((s) => ({ subjectType: s.subjectType, subjectId: s.subjectId, verdict, ...fields }));
+    .map((s) => ({ subjectType: s.subjectType, subjectId: s.subjectId, ...answerFields(answer), ...fields }));
 }
 
 // Drop decided subjects from the local queue; a card goes once every kid on
@@ -208,16 +244,21 @@ export function blockChannelFlash(result: BlockChannelResult): string {
   return `${result.alreadyBlocked ? 'Already blocked' : 'Blocked'} ${name} · ${removed}`;
 }
 
-export type KeyAction = 'allow' | 'block' | 'skip' | 'next';
+export type KeyAction = Answer | 'skip' | 'next';
 
-// Desktop shortcuts: a allow, b block, s skip; Enter or space continues past
-// a revealed Spot check. While a reveal is showing only "next" applies, so a
-// stray key can't decide the following card unseen.
+// Desktop shortcuts: a allow, u unsafe, f not for us, s skip; Enter or space
+// continues past a revealed Spot check. While a reveal is showing only "next"
+// applies, so a stray key can't decide the following card unseen. There is no
+// plain Block key: every Block says which kind it is, and "n" (next) is never
+// a decision, so a double tap past a reveal decides nothing.
+export const ANSWER_KEY: Record<Answer, string> = { allow: 'A', unsafe: 'U', not_for_us: 'F' };
+
 export function keyAction(key: string, revealing: boolean): KeyAction | null {
   const k = key.toLowerCase();
   if (revealing) return k === 'enter' || k === ' ' || k === 'n' ? 'next' : null;
   if (k === 'a') return 'allow';
-  if (k === 'b') return 'block';
+  if (k === 'u') return 'unsafe';
+  if (k === 'f') return 'not_for_us';
   if (k === 's') return 'skip';
   return null;
 }
@@ -270,8 +311,11 @@ export interface ReviewDecision {
   decidedAt: string;
   guardVerdict: string | null;
   firstVerdict: HumanVerdict;
+  // Absent from an older server: treated as not recorded.
+  firstBlockKind?: BlockKind | null;
   firstReason: StoredReason | null;
   verdict: HumanVerdict;
+  blockKind?: BlockKind | null;
   reason: StoredReason | null;
   revision: { revisedAt: string; effect: RevisionEffect; count: number } | null;
 }
@@ -292,6 +336,7 @@ export interface RevisionOutcome {
   decisionId: string;
   revisionId: string;
   verdict: HumanVerdict;
+  blockKind?: BlockKind | null;
   effect: RevisionEffect;
   card: ReviewCard;
 }
@@ -309,27 +354,40 @@ export function isDisagreement(guardVerdict: string | null, verdict: HumanVerdic
 
 // Mirrors the server: a card disagreeing on its first answer or its current
 // one stays under Disagreements, so a change into agreement can be seen.
+// Either Block kind is a Block here: the comparison is on the verdict.
 export function matchesReviewFilter(card: ReviewCard, filter: ReviewFilter): boolean {
   if (filter === 'all') return true;
   const d = card.decision;
   return isDisagreement(d.guardVerdict, d.firstVerdict) || isDisagreement(d.guardVerdict, d.verdict);
 }
 
-// A change always flips the current answer.
-export function changeTarget(card: ReviewCard): HumanVerdict {
-  return card.decision.verdict === 'clear_yes' ? 'clear_no' : 'clear_yes';
+// The answers a card can change to: every answer but the current one. An
+// Allow can become either kind of Block; a Block can become Allow or the
+// other kind, and a Block with no recorded kind can be given either.
+export function changeOptions(card: ReviewCard): Answer[] {
+  const d = card.decision;
+  if (d.verdict === 'clear_yes') return ['unsafe', 'not_for_us'];
+  const kind = d.blockKind ?? null;
+  return (['allow', 'unsafe', 'not_for_us'] as const).filter((a) => a !== kind);
 }
 
-export function changeLabel(card: ReviewCard): string {
-  return changeTarget(card) === 'clear_yes' ? 'Change to Allow' : 'Change to Block';
+// Setting or changing a Block's kind keeps it a Block: recorded as a
+// revision, nothing live changes.
+export function isKindOnlyChange(card: ReviewCard, answer: Answer): boolean {
+  return card.decision.verdict === 'clear_no' && answer !== 'allow';
+}
+
+export function changeLabel(answer: Answer): string {
+  return `Change to ${ANSWER_LABEL[answer]}`;
 }
 
 export function revisionBody(
   userId: string,
   card: ReviewCard,
+  answer: Answer,
   reason: ReasonDraft = EMPTY_REASON,
-): { userId: string; decisionId: string; verdict: HumanVerdict } & ReasonFields {
-  return { userId, decisionId: card.decision.decisionId, verdict: changeTarget(card), ...reasonFields(reason) };
+): { userId: string; decisionId: string; verdict: HumanVerdict; blockKind?: BlockKind } & ReasonFields {
+  return { userId, decisionId: card.decision.decisionId, ...answerFields(answer), ...reasonFields(reason) };
 }
 
 export function revisionEffectLabel(effect: RevisionEffect): string {
@@ -341,10 +399,11 @@ export function revisionEffectLabel(effect: RevisionEffect): string {
   }
 }
 
-// "You said Block", or "You said Allow, now Block" once revised.
+// "You said unsafe", or "You said allow, now not for us" once revised. A
+// Block with no recorded kind reads "block".
 export function answerLine(decision: ReviewDecision): string {
-  const first = `You said ${verdictLabel(decision.firstVerdict)}`;
-  return decision.revision ? `${first}, now ${verdictLabel(decision.verdict)}` : first;
+  const first = `You said ${answerLabel(decision.firstVerdict, decision.firstBlockKind ?? null)}`;
+  return decision.revision ? `${first}, now ${answerLabel(decision.verdict, decision.blockKind ?? null)}` : first;
 }
 
 // A recorded reason as chip labels plus the note, or null when none was given.

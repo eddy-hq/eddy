@@ -12,7 +12,7 @@ import { readDecisionQueue } from './queue';
 import { blockChannelFromCard } from './block-channel';
 import { readReview, reviseDecision } from './review';
 import { readGuardInputs, type GuardInputsRef } from './guard-inputs';
-import { REASON_TEXT_MAX, REVIEW_PAGE, type DecisionReason } from './util';
+import { BLOCK_KINDS, REASON_TEXT_MAX, REVIEW_PAGE, type DecisionReason } from './util';
 
 export {
   readDecisionQueue,
@@ -46,7 +46,14 @@ export {
   type RevisionOutcome,
 } from './review';
 export { readGuardInputs, type GuardInputs, type GuardInputsRef } from './guard-inputs';
-export { PARENT_BLOCKED_REASON, REASON_TEXT_MAX, type DecisionReason, type ReviewFilter } from './util';
+export {
+  BLOCK_KINDS,
+  PARENT_BLOCKED_REASON,
+  REASON_TEXT_MAX,
+  type BlockKind,
+  type DecisionReason,
+  type ReviewFilter,
+} from './util';
 
 export const decisionsRouter = Router();
 
@@ -63,6 +70,13 @@ const reasonFields = {
   reasonText: z.string().trim().max(REASON_TEXT_MAX).optional(),
 };
 
+// A Block's kind (#227). The PWA always sends one with a Block; an older
+// client that doesn't is recorded as "kind not recorded". Refused on an Allow.
+const blockKindField = { blockKind: z.enum(BLOCK_KINDS).optional() };
+const kindOnBlockOnly = (d: { verdict: string; blockKind?: string | undefined }) =>
+  d.blockKind === undefined || d.verdict === 'clear_no';
+const kindOnBlockOnlyMessage = { message: 'blockKind applies to clear_no only', path: ['blockKind'] };
+
 function toReason(r: { reasonDimensions?: string[] | undefined; reasonText?: string | undefined }): DecisionReason | null {
   const dimensions = r.reasonDimensions ?? [];
   const text = r.reasonText || null;
@@ -75,8 +89,9 @@ const decideBody = z.object({
     subjectType: z.enum(['candidate', 'request']),
     subjectId: z.string().min(1),
     verdict: z.enum(['clear_yes', 'clear_no']),
+    ...blockKindField,
     ...reasonFields,
-  })).min(1).max(4),
+  }).refine(kindOnBlockOnly, kindOnBlockOnlyMessage)).min(1).max(4),
 });
 
 const blockChannelBody = z.object({
@@ -113,8 +128,9 @@ const reviseBody = z.object({
   userId: z.string().min(1),
   decisionId: z.string().min(1),
   verdict: z.enum(['clear_yes', 'clear_no']),
+  ...blockKindField,
   ...reasonFields,
-});
+}).refine(kindOnBlockOnly, kindOnBlockOnlyMessage);
 
 function parse<S extends z.ZodTypeAny>(schema: S, value: unknown): z.output<S> {
   const out = schema.safeParse(value);
@@ -139,8 +155,9 @@ decisionsRouter.get('/queue', (req: Request, res: Response) => {
 });
 
 // POST /parent/decisions
-//   { userId, decisions: [{ subjectType, subjectId, verdict, reasonDimensions?, reasonText? }] }
+//   { userId, decisions: [{ subjectType, subjectId, verdict, blockKind?, reasonDimensions?, reasonText? }] }
 // One card's decisions: one subject, or one per kid for "same for both".
+// Unsafe and Not for us are both verdict clear_no, told apart by blockKind.
 decisionsRouter.post('/', async (req: Request, res: Response) => {
   const body = parse(decideBody, req.body);
   const parentId = requireParent(body.userId);
@@ -150,6 +167,7 @@ decisionsRouter.post('/', async (req: Request, res: Response) => {
       subjectType: d.subjectType,
       subjectId: d.subjectId,
       verdict: d.verdict,
+      blockKind: d.blockKind ?? null,
       reason: toReason(d),
     }));
   }
@@ -191,14 +209,17 @@ decisionsRouter.get('/guard-inputs', (req: Request, res: Response) => {
 });
 
 // POST /parent/decisions/revisions
-//   { userId, decisionId, verdict, reasonDimensions?, reasonText? }
+//   { userId, decisionId, verdict, blockKind?, reasonDimensions?, reasonText? }
 // Change a past decision. Writes a revision; the first-pass decision is kept.
+// Setting a kind on a current Block (verdict unchanged) is a revision too,
+// and changes nothing live.
 decisionsRouter.post('/revisions', async (req: Request, res: Response) => {
   const body = parse(reviseBody, req.body);
   const parentId = requireParent(body.userId);
   res.json(await reviseDecision(parentId, {
     decisionId: body.decisionId,
     verdict: body.verdict,
+    blockKind: body.blockKind ?? null,
     reason: toReason(body),
   }));
 });

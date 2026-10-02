@@ -4,6 +4,11 @@
 // first-pass label as recorded, and each change adds a guard_decision_revisions
 // row. The latest revision is the current answer.
 //
+// A Block carries a kind (#227): unsafe, not for us, or not recorded. Both
+// kinds are a Block (human_verdict 'clear_no') with the same effect, so a
+// revision that only sets or changes the kind on a current Block is a label
+// only: it is recorded, and nothing live changes.
+//
 // Kid safety is asymmetric. A change to Block always applies through the same
 // path as a Block today (a pooled candidate is rejected; any copy of the video
 // in the kid's feed leaves it via mark_parent_blocked). A change to Allow only
@@ -28,8 +33,10 @@ import { blockRequest, readSubject, type DecisionEffect, type Subject } from './
 import { cardDescription, cardThumbnail, reasonOptions, type DecisionCard, type ReasonOptions } from './queue';
 import {
   REVIEW_PAGE,
+  blockKindFor,
   reasonColumns,
   reasonFromColumns,
+  type BlockKind,
   type DecisionReason,
   type DecisionSource,
   type HumanVerdict,
@@ -51,9 +58,12 @@ export interface ReviewDecision {
   guardVerdict: string | null;
   // The first-pass answer, as recorded in guard_decisions.
   firstVerdict: HumanVerdict;
+  // The first pass's Block kind; null on an Allow or when not recorded.
+  firstBlockKind: BlockKind | null;
   firstReason: DecisionReason | null;
   // The current answer: the latest revision's, else the first pass.
   verdict: HumanVerdict;
+  blockKind: BlockKind | null;
   reason: DecisionReason | null;
   // The latest revision, and how many there have been; null if never revised.
   revision: { revisedAt: string; effect: RevisionEffect; count: number } | null;
@@ -77,6 +87,8 @@ export interface ReviewPage {
 export interface RevisionInput {
   decisionId: string;
   verdict: HumanVerdict;
+  // What a Block meant; absent is "kind not recorded". Ignored on an Allow.
+  blockKind?: BlockKind | null;
   reason?: DecisionReason | null;
 }
 
@@ -84,19 +96,26 @@ export interface RevisionOutcome {
   decisionId: string;
   revisionId: string;
   verdict: HumanVerdict;
+  blockKind: BlockKind | null;
   effect: RevisionEffect;
   // The decision's card after the change.
   card: ReviewCard;
 }
 
-// The current answer for each decision: the latest revision, else the first pass.
+// The current answer for each decision: the latest revision, else the first
+// pass. The kind comes from the same row as the verdict, so a revision to
+// Allow (or a Block from an older client) leaves no stale kind behind.
+const LATEST_REVISION = (col: string) => `
+  (SELECT rv.${col} FROM guard_decision_revisions rv
+    WHERE rv.decision_id = d.decision_id
+    ORDER BY rv.revised_at DESC, rv.rowid DESC LIMIT 1)`;
 const REVIEWED = `
   reviewed AS (
     SELECT d.*,
-           COALESCE((SELECT rv.human_verdict FROM guard_decision_revisions rv
-                      WHERE rv.decision_id = d.decision_id
-                      ORDER BY rv.revised_at DESC, rv.rowid DESC LIMIT 1),
-                    d.human_verdict) AS current_verdict
+           COALESCE(${LATEST_REVISION('human_verdict')}, d.human_verdict) AS current_verdict,
+           CASE WHEN EXISTS (SELECT 1 FROM guard_decision_revisions rv WHERE rv.decision_id = d.decision_id)
+                THEN ${LATEST_REVISION('block_kind')}
+                ELSE d.block_kind END AS current_block_kind
       FROM guard_decisions d
   )`;
 
@@ -119,6 +138,7 @@ interface ReviewRow {
   guard_verdict: string | null;
   eval_id: string | null;
   human_verdict: HumanVerdict;
+  block_kind: BlockKind | null;
   reason_dimensions_json: string | null;
   reason_text: string | null;
   decided_at: string;
@@ -131,6 +151,7 @@ interface ReviewRow {
 interface RevisionRow {
   decision_id: string;
   human_verdict: HumanVerdict;
+  block_kind: BlockKind | null;
   reason_dimensions_json: string | null;
   reason_text: string | null;
   effect: RevisionEffect;
@@ -142,7 +163,7 @@ function selectRows(where: string, params: Record<string, unknown>, page?: { lim
     WITH ${REVIEWED}
     SELECT x.decision_id, x.subject_type, x.subject_id, x.user_id, u.display_name AS kid_name, x.url,
            COALESCE(x.youtube_id, cp.external_id, r.youtube_id) AS youtube_id,
-           x.age_band, x.source, x.guard_verdict, x.eval_id, x.human_verdict,
+           x.age_band, x.source, x.guard_verdict, x.eval_id, x.human_verdict, x.block_kind,
            x.reason_dimensions_json, x.reason_text, x.decided_at,
            COALESCE(cp.title, r.title) AS title,
            COALESCE(cp.channel, r.channel) AS channel,
@@ -164,7 +185,7 @@ function revisionsFor(decisionIds: readonly string[]): Map<string, RevisionRow[]
   if (decisionIds.length === 0) return out;
   const placeholders = decisionIds.map(() => '?').join(', ');
   const rows = db.prepare(`
-    SELECT decision_id, human_verdict, reason_dimensions_json, reason_text, effect, revised_at
+    SELECT decision_id, human_verdict, block_kind, reason_dimensions_json, reason_text, effect, revised_at
       FROM guard_decision_revisions
      WHERE decision_id IN (${placeholders})
      ORDER BY revised_at ASC, rowid ASC
@@ -217,8 +238,10 @@ function toCard(row: ReviewRow, revisions: readonly RevisionRow[]): ReviewCard {
       decidedAt: row.decided_at,
       guardVerdict: row.guard_verdict,
       firstVerdict: row.human_verdict,
+      firstBlockKind: row.block_kind,
       firstReason,
       verdict: latest?.human_verdict ?? row.human_verdict,
+      blockKind: latest ? latest.block_kind : row.block_kind,
       reason: latest ? reasonFromColumns(latest.reason_dimensions_json, latest.reason_text) : firstReason,
       revision: latest ? { revisedAt: latest.revised_at, effect: latest.effect, count: revisions.length } : null,
     },
@@ -320,7 +343,8 @@ async function revisionEffect(
 // latest answer across every decision on the video for that kid, first passes
 // and revisions alike, with when it was given. The download callback and the
 // second pass read this so a request still in flight when the parent blocked
-// it never becomes visible.
+// it never becomes visible. A kind-only revision is not an answer and is left
+// out, so tagging an old Block never outranks a later Allow.
 export function currentParentBlock(userId: string, youtubeId: string): { parentId: string; at: string } | null {
   const row = db.prepare(`
     SELECT verdict, parent_id, at FROM (
@@ -331,7 +355,7 @@ export function currentParentBlock(userId: string, youtubeId: string): { parentI
       SELECT rv.human_verdict, rv.revised_by, rv.revised_at, rv.rowid
         FROM guard_decision_revisions rv
         JOIN guard_decisions d ON d.decision_id = rv.decision_id
-       WHERE d.user_id = @userId AND d.youtube_id = @youtubeId
+       WHERE d.user_id = @userId AND d.youtube_id = @youtubeId AND rv.kind_only = 0
     )
     ORDER BY at DESC, seq DESC
     LIMIT 1
@@ -346,12 +370,14 @@ interface DecisionRef {
   user_id: string;
   youtube_id: string | null;
   current_verdict: HumanVerdict;
+  current_block_kind: BlockKind | null;
 }
 
 function readDecisionRef(decisionId: string): DecisionRef {
   const row = db.prepare(`
     WITH ${REVIEWED}
-    SELECT decision_id, subject_type, subject_id, user_id, youtube_id, current_verdict FROM reviewed WHERE decision_id = ?
+    SELECT decision_id, subject_type, subject_id, user_id, youtube_id, current_verdict, current_block_kind
+      FROM reviewed WHERE decision_id = ?
   `).get(decisionId) as DecisionRef | undefined;
   if (!row) throw new NotFoundError(`decision ${decisionId}`);
   return row;
@@ -363,7 +389,11 @@ export async function reviseDecision(
   now: Date = new Date(),
 ): Promise<RevisionOutcome> {
   const before = readDecisionRef(input.decisionId);
-  if (before.current_verdict === input.verdict) {
+  const blockKind = blockKindFor(input.verdict, input.blockKind);
+  // Same verdict: only a Block given a new kind is a change. A missing kind
+  // (an older client) never clears a recorded one.
+  const kindOnly = before.current_verdict === input.verdict;
+  if (kindOnly && (input.verdict !== 'clear_no' || blockKind === null || blockKind === before.current_block_kind)) {
     throw new ValidationError(`decision ${input.decisionId} already has that answer`);
   }
   // Persist the answer before any effect is awaited. A download completing
@@ -375,23 +405,24 @@ export async function reviseDecision(
   const reason = reasonColumns(input.reason);
   db.prepare(`
     INSERT INTO guard_decision_revisions
-      (revision_id, decision_id, human_verdict, rubric_version, reason_dimensions_json, reason_text,
-       effect, revised_by, revised_at)
-    VALUES (?, ?, ?, ?, ?, ?, 'label_only', ?, ?)
+      (revision_id, decision_id, human_verdict, block_kind, rubric_version, reason_dimensions_json, reason_text,
+       effect, kind_only, revised_by, revised_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, 'label_only', ?, ?, ?)
   `).run(
-    revisionId, input.decisionId, input.verdict, RUBRIC_VERSION, reason.dimensionsJson, reason.text,
-    parentId, now.toISOString(),
+    revisionId, input.decisionId, input.verdict, blockKind, RUBRIC_VERSION, reason.dimensionsJson, reason.text,
+    kindOnly ? 1 : 0, parentId, now.toISOString(),
   );
 
-  const effect = await revisionEffect(
-    before, currentSubject(before.subject_type, before.subject_id), input.verdict, parentId,
-  );
+  // A kind-only change keeps the Block it was: nothing live to change.
+  const effect = kindOnly
+    ? 'label_only'
+    : await revisionEffect(before, currentSubject(before.subject_type, before.subject_id), input.verdict, parentId);
   db.prepare('UPDATE guard_decision_revisions SET effect = ? WHERE revision_id = ?').run(effect, revisionId);
 
   logger.info(
     {
       decisionId: input.decisionId, subjectType: before.subject_type, subjectId: before.subject_id,
-      verdict: input.verdict, effect,
+      verdict: input.verdict, blockKind, kindOnly, effect,
       // Whether a reason came with it, never the note itself.
       withReason: reason.dimensionsJson !== null || reason.text !== null,
     },
@@ -400,5 +431,5 @@ export async function reviseDecision(
 
   const card = readReviewCard(input.decisionId);
   if (!card) throw new NotFoundError(`decision ${input.decisionId}`);
-  return { decisionId: input.decisionId, revisionId, verdict: input.verdict, effect, card };
+  return { decisionId: input.decisionId, revisionId, verdict: input.verdict, blockKind, effect, card };
 }

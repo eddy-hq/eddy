@@ -18,7 +18,9 @@
  *             Resumable. Refuses to start inside a discovery window unless
  *             --force. Writes nothing to the DB.
  *   report    confusion matrix and the three metrics against the brief's
- *             thresholds.
+ *             thresholds, on safety only: a Block counts as clear-no when
+ *             the parent said Unsafe; Not for us and Blocks with no recorded
+ *             kind are left out and counted separately (#227).
  *
  * Output is counts and metrics only — no titles, channels or reasons
  * (ADR-0004).
@@ -103,6 +105,7 @@ function snapshot(): void {
   console.log(`Holdout (~${HOLDOUT_PERCENT}%):        ${s.holdout}`);
   console.log(`Revised labels:       ${s.revised}`);
   printCounts('By label', s.byLabel);
+  printCounts('Blocks by kind', s.byBlockKind);
   printCounts('By subject type', s.bySubjectType);
 }
 
@@ -151,7 +154,11 @@ async function report(args: Args): Promise<void> {
   console.log(`Dataset: ${path.basename(file)}`);
   console.log(`Adapter: ${r.adapterId}`);
   console.log(`Scored:  ${r.scored} of ${r.datasetItems} items`);
-  console.log('\nConfusion matrix (rows: guard verdict, columns: parent label)');
+  const safety = r.scored - r.excluded.notForUs - r.excluded.unrecorded;
+  console.log(`  safety labels (allow, unsafe)       ${String(safety).padStart(5)}`);
+  console.log(`  not for us (excluded)               ${String(r.excluded.notForUs).padStart(5)}`);
+  console.log(`  block, kind not recorded (excluded) ${String(r.excluded.unrecorded).padStart(5)}`);
+  console.log('\nConfusion matrix (rows: guard verdict, columns: parent label; clear_no = unsafe)');
   console.log(`  ${''.padEnd(12)}${HUMAN_LABELS.map((l) => l.padStart(11)).join('')}${'total'.padStart(8)}`);
   for (const v of GUARD_VERDICTS) {
     const row = r.matrix[v];
@@ -161,8 +168,8 @@ async function report(args: Args): Promise<void> {
   const m = r.metrics;
   const t = THRESHOLDS;
   console.log('\nMetric                 value    target');
-  console.log(`  clear-yes precision  ${pct(m.clearYesPrecision)}   >= ${t.clearYesPrecision * 100}%`);
-  console.log(`  clear-no precision   ${pct(m.clearNoPrecision)}   >= ${t.clearNoPrecision * 100}%`);
+  console.log(`  clear-yes precision  ${pct(m.clearYesPrecision)}   >= ${t.clearYesPrecision * 100}%   miss: guard approved, parent said unsafe`);
+  console.log(`  clear-no precision   ${pct(m.clearNoPrecision)}   >= ${t.clearNoPrecision * 100}%   miss: guard rejected, parent allowed`);
   console.log(`  uncertain rate       ${pct(m.uncertainRate)}   ${t.uncertainRate.min * 100}-${t.uncertainRate.max * 100}%`);
   console.log('\nNo confidence intervals yet: point estimates on small counts can mislead.');
 }

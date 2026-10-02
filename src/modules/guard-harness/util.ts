@@ -19,6 +19,9 @@ export class GuardHarnessError extends EddyError {
 
 export type GuardVerdictLabel = 'clear_yes' | 'clear_no' | 'uncertain';
 export type HumanLabel = 'clear_yes' | 'clear_no';
+// What a parent's Block meant (#227). Only 'unsafe' counts as clear-no in the
+// safety metrics; 'not_for_us' and an unrecorded kind are left out of them.
+export type BlockKind = 'unsafe' | 'not_for_us';
 
 // One parent decision, frozen with the inputs the guard would have seen when
 // the parent decided. `itemId` is the decision id.
@@ -33,6 +36,9 @@ export interface HarnessItem {
   label: HumanLabel;
   firstPassLabel: HumanLabel;
   revisedAt: string | null;
+  // The current answer's Block kind (from the same revision as `label`); null
+  // on an Allow, or on a Block whose kind wasn't recorded.
+  blockKind: BlockKind | null;
   decisionSource: string;
   // RUBRIC_VERSION and the guard verdict the subject carried when decided.
   rubricVersion: string;
@@ -211,10 +217,16 @@ export function parseHarnessItem(raw: unknown, line: number): HarnessItem {
   if (firstPass !== undefined && firstPass !== 'clear_yes' && firstPass !== 'clear_no') bad('firstPassLabel');
   const revisedAt = raw['revisedAt'];
   if (revisedAt !== undefined && revisedAt !== null && typeof revisedAt !== 'string') bad('revisedAt');
+  // Datasets frozen before block kinds (#227) carry none: every Block in them
+  // is "kind not recorded".
+  const blockKind = raw['blockKind'];
+  if (blockKind !== undefined && blockKind !== null && blockKind !== 'unsafe' && blockKind !== 'not_for_us') bad('blockKind');
+  if (raw['label'] === 'clear_yes' && blockKind) bad('blockKind');
   return {
     ...raw,
     firstPassLabel: firstPass ?? raw['label'],
     revisedAt: revisedAt ?? null,
+    blockKind: blockKind ?? null,
   } as unknown as HarnessItem;
 }
 

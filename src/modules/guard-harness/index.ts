@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import { openReadOnlyDatabase } from '../../db/read-only';
 import { buildSnapshot, type SnapshotResult } from './snapshot';
-import { scorePairs, type ConfusionMatrix, type Metrics, type ScoredPair } from './scorer';
+import { scoreSafety, type ConfusionMatrix, type LabelledVerdict, type Metrics, type SafetyExcluded } from './scorer';
 import {
   datasetFileName,
   GuardHarnessError,
@@ -25,9 +25,14 @@ export {
   HUMAN_LABELS,
   confusionMatrix,
   metricsFromMatrix,
+  safetyLabel,
   scorePairs,
+  scoreSafety,
   type ConfusionMatrix,
+  type LabelledVerdict,
   type Metrics,
+  type SafetyExcluded,
+  type SafetyLabel,
   type ScoredPair,
 } from './scorer';
 export {
@@ -41,6 +46,7 @@ export {
   isHoldout,
   resultsPathFor,
   type AdapterJudgement,
+  type BlockKind,
   type HarnessAdapter,
   type HarnessItem,
   type HarnessResult,
@@ -88,13 +94,18 @@ export function latestDatasetPath(databasePath: string): string {
 export interface AdapterReport {
   adapterId: string;
   datasetItems: number;
+  // Items with a result for this adapter, excluded ones included.
   scored: number;
+  // The safety matrix and metrics: Allow and Unsafe labels only.
   matrix: ConfusionMatrix;
   metrics: Metrics;
+  // Scored items left out of the safety metrics: Not for us, and Blocks
+  // whose kind wasn't recorded.
+  excluded: SafetyExcluded;
 }
 
-// Score one adapter's cached results against the dataset's labels. Results
-// for items not in the dataset are ignored.
+// Score one adapter's cached results against the dataset's labels, on safety
+// only (#227). Results for items not in the dataset are ignored.
 export function reportForAdapter(
   items: readonly HarnessItem[],
   results: readonly HarnessResult[],
@@ -102,11 +113,11 @@ export function reportForAdapter(
 ): AdapterReport {
   const verdicts = new Map<string, HarnessResult['verdict']>();
   for (const r of results) if (r.adapterId === adapterId) verdicts.set(r.itemId, r.verdict);
-  const pairs: ScoredPair[] = [];
+  const labelled: LabelledVerdict[] = [];
   for (const item of items) {
     const verdict = verdicts.get(item.itemId);
-    if (verdict) pairs.push({ verdict, label: item.label });
+    if (verdict) labelled.push({ verdict, label: item.label, blockKind: item.blockKind });
   }
-  const { matrix, metrics } = scorePairs(pairs);
-  return { adapterId, datasetItems: items.length, scored: pairs.length, matrix, metrics };
+  const { matrix, metrics, excluded } = scoreSafety(labelled);
+  return { adapterId, datasetItems: items.length, scored: labelled.length, matrix, metrics, excluded };
 }

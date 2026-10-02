@@ -1195,3 +1195,199 @@ describe('What the guard saw (#225)', () => {
     expect((await supertest(app).get(`/parent/decisions/guard-inputs?userId=${PARENT}&decisionId=nope`)).status).toBe(404);
   });
 });
+
+describe('Block kinds (#227)', () => {
+  const kindOf = (subjectId: string) => (db.prepare(
+    'SELECT human_verdict, block_kind FROM guard_decisions WHERE subject_id = ?',
+  ).get(subjectId) as { human_verdict: string; block_kind: string | null });
+
+  function seedBlock(id: string, subjectType: 'candidate' | 'request', subjectId: string, blockKind: string | null): void {
+    db.prepare(`
+      INSERT INTO guard_decisions
+        (decision_id, subject_type, subject_id, user_id, url, youtube_id, age_band, rubric_version, source,
+         guard_verdict, eval_id, human_verdict, decided_by, decided_at, block_kind)
+      VALUES (?, ?, ?, ?, ?, ?, '10-12', ?, 'spot_check', 'clear_yes', NULL, 'clear_no', ?, ?, ?)
+    `).run(
+      id, subjectType, subjectId, KID_1, `https://www.youtube.com/watch?v=${subjectId}`, subjectId,
+      RUBRIC_VERSION, PARENT, daysAgo(1), blockKind,
+    );
+  }
+
+  const revisions = (id: string) => db.prepare(
+    'SELECT human_verdict, block_kind, effect FROM guard_decision_revisions WHERE decision_id = ? ORDER BY rowid',
+  ).all(id) as Array<{ human_verdict: string; block_kind: string | null; effect: string }>;
+  const revise = (decisionId: string, verdict: 'clear_yes' | 'clear_no', blockKind?: string) =>
+    supertest(app).post('/parent/decisions/revisions')
+      .send({ userId: PARENT, decisionId, verdict, ...(blockKind ? { blockKind } : {}) });
+  const decide = (subjectType: string, subjectId: string, verdict: string, blockKind?: string) =>
+    supertest(app).post('/parent/decisions').send({
+      userId: PARENT, decisions: [{ subjectType, subjectId, verdict, ...(blockKind ? { blockKind } : {}) }],
+    });
+
+  it.each(['unsafe', 'not_for_us'] as const)('%s on a parked candidate rejects it, as Block does', async (kind) => {
+    seedCandidate('c1');
+    const out = await recordDecision(PARENT, { subjectType: 'candidate', subjectId: 'c1', verdict: 'clear_no', blockKind: kind }, NOW);
+    expect(out.effect).toBe('blocked');
+    expect(status('candidate_pool', 'c1')).toEqual({ status: 'guard_rejected', guard_verdict: 'clear_no' });
+    expect(kindOf('c1')).toEqual({ human_verdict: 'clear_no', block_kind: kind });
+  });
+
+  it.each(['unsafe', 'not_for_us'] as const)('%s on a parked slate pick removes it and its file', async (kind) => {
+    seedRequest('r1');
+    const res = await decide('request', 'r1', 'clear_no', kind);
+    expect(res.status).toBe(200);
+    expect(res.body.outcomes[0].effect).toBe('removed');
+    expect(status('requests', 'r1')).toMatchObject({ status: 'deleted', decided_by: PARENT });
+    expect(deleteQueueAdd).toHaveBeenCalledTimes(1);
+    expect(kindOf('r1')).toEqual({ human_verdict: 'clear_no', block_kind: kind });
+  });
+
+  it.each(['unsafe', 'not_for_us'] as const)('%s on a visible slate pick Spot check removes it from the feed', async (kind) => {
+    seedRequest('pick', { status: 'ready', verdict: 'clear_yes', source: 'recommended' });
+    queue();
+    const res = await decide('request', 'pick', 'clear_no', kind);
+    expect(res.body.outcomes[0].effect).toBe('removed');
+    expect(status('requests', 'pick').status).toBe('deleted');
+    // The in-flight checks key off the verdict, so both kinds are a Block there.
+    expect(currentParentBlock(KID_1, 'pick')).toMatchObject({ parentId: PARENT });
+  });
+
+  it('records a Block with no kind (an older client) as not recorded, and an Allow with none', async () => {
+    seedCandidate('c-old');
+    seedCandidate('c-allow');
+    expect((await decide('candidate', 'c-old', 'clear_no')).status).toBe(200);
+    expect((await decide('candidate', 'c-allow', 'clear_yes')).status).toBe(200);
+    expect(kindOf('c-old')).toEqual({ human_verdict: 'clear_no', block_kind: null });
+    expect(kindOf('c-allow')).toEqual({ human_verdict: 'clear_yes', block_kind: null });
+  });
+
+  it('refuses a kind on an Allow, or an unknown kind, and records nothing', async () => {
+    seedCandidate('c1');
+    expect((await decide('candidate', 'c1', 'clear_yes', 'unsafe')).status).toBe(400);
+    expect((await decide('candidate', 'c1', 'clear_no', 'icky')).status).toBe(400);
+    expect(decisions()).toHaveLength(0);
+    expect(status('candidate_pool', 'c1').status).toBe('guard_pending');
+  });
+
+  it('Block channel records its Blocks with no kind', async () => {
+    seedCandidate('c1');
+    db.prepare('UPDATE candidate_pool SET channel_id = ? WHERE candidate_id = ?').run('UCkindkindkindkindkind00', 'c1');
+    try {
+      const res = await supertest(app).post('/parent/decisions/block-channel')
+        .send({ userId: PARENT, subjects: [{ subjectType: 'candidate', subjectId: 'c1' }] });
+      expect(res.status).toBe(200);
+      expect(kindOf('c1')).toEqual({ human_verdict: 'clear_no', block_kind: null });
+    } finally {
+      db.exec('DELETE FROM blocked_channels');
+    }
+  });
+
+  describe('in Review', () => {
+    it('sets a kind on an old Block as a revision, and changes nothing live', async () => {
+      // A Block that didn't act (a kid's own request on a Spot check) leaves a
+      // visible copy: a kind-only change must not remove it.
+      seedRequest('own', { status: 'ready', verdict: 'clear_yes', source: 'share_sheet' });
+      seedCandidate('c-pooled', { status: 'scored', verdict: 'clear_yes' });
+      seedBlock('d-own', 'request', 'own', null);
+      seedBlock('d-pooled', 'candidate', 'c-pooled', null);
+
+      const res = await revise('d-own', 'clear_no', 'unsafe');
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({ verdict: 'clear_no', blockKind: 'unsafe', effect: 'label_only' });
+      expect(res.body.card.decision).toMatchObject({
+        firstVerdict: 'clear_no', firstBlockKind: null, verdict: 'clear_no', blockKind: 'unsafe',
+        revision: { effect: 'label_only', count: 1 },
+      });
+      expect((await revise('d-pooled', 'clear_no', 'not_for_us')).body.effect).toBe('label_only');
+
+      expect(status('requests', 'own').status).toBe('ready');
+      expect(status('candidate_pool', 'c-pooled')).toEqual({ status: 'scored', guard_verdict: 'clear_yes' });
+      expect(deleteQueueAdd).not.toHaveBeenCalled();
+      expect(notify).not.toHaveBeenCalled();
+      expect(revisions('d-own')).toEqual([{ human_verdict: 'clear_no', block_kind: 'unsafe', effect: 'label_only' }]);
+      // The first pass stays as recorded.
+      expect(kindOf('own')).toEqual({ human_verdict: 'clear_no', block_kind: null });
+    });
+
+    it('changes one kind to the other, and refuses the same kind or a bare Block', async () => {
+      seedCandidate('c1', { status: 'guard_rejected', verdict: 'clear_no' });
+      seedBlock('d1', 'candidate', 'c1', 'unsafe');
+      expect((await revise('d1', 'clear_no', 'unsafe')).status).toBe(400);
+      // An older client's bare Block never clears a recorded kind.
+      expect((await revise('d1', 'clear_no')).status).toBe(400);
+      const res = await revise('d1', 'clear_no', 'not_for_us');
+      expect(res.status).toBe(200);
+      expect(res.body.card.decision).toMatchObject({ firstBlockKind: 'unsafe', blockKind: 'not_for_us' });
+      expect((await revise('d1', 'clear_no', 'not_for_us')).status).toBe(400);
+      expect(revisions('d1')).toHaveLength(1);
+    });
+
+    it('refuses a kind on a change to Allow', async () => {
+      seedCandidate('c1', { status: 'guard_rejected', verdict: 'clear_no' });
+      seedBlock('d1', 'candidate', 'c1', 'unsafe');
+      expect((await revise('d1', 'clear_yes', 'unsafe')).status).toBe(400);
+      expect(revisions('d1')).toHaveLength(0);
+    });
+
+    it('a change from Allow to either kind has the Block effect and records the kind', async () => {
+      seedRequest('pick', { status: 'ready', verdict: 'clear_yes', source: 'recommended' });
+      seedRequest('pick2', { status: 'ready', verdict: 'clear_yes', source: 'recommended' });
+      for (const [id, subject] of [['d-pick', 'pick'], ['d-pick2', 'pick2']] as const) {
+        db.prepare(`
+          INSERT INTO guard_decisions
+            (decision_id, subject_type, subject_id, user_id, url, youtube_id, age_band, rubric_version, source,
+             guard_verdict, human_verdict, decided_by, decided_at)
+          VALUES (?, 'request', ?, ?, 'https://example.invalid/x', ?, '10-12', ?, 'spot_check', 'clear_yes', 'clear_yes', ?, ?)
+        `).run(id, subject, KID_1, subject, RUBRIC_VERSION, PARENT, daysAgo(1));
+      }
+      expect((await revise('d-pick', 'clear_no', 'unsafe')).body).toMatchObject({ effect: 'removed', blockKind: 'unsafe' });
+      expect((await revise('d-pick2', 'clear_no', 'not_for_us')).body).toMatchObject({ effect: 'removed', blockKind: 'not_for_us' });
+      expect(status('requests', 'pick').status).toBe('deleted');
+      expect(status('requests', 'pick2').status).toBe('deleted');
+      expect(revisions('d-pick2')).toEqual([{ human_verdict: 'clear_no', block_kind: 'not_for_us', effect: 'removed' }]);
+    });
+
+    it('a kind-only change keeps the Block current for in-flight checks', async () => {
+      seedCandidate('c1', { status: 'guard_rejected', verdict: 'clear_no' });
+      seedBlock('d1', 'candidate', 'c1', null);
+      await revise('d1', 'clear_no', 'not_for_us');
+      expect(currentParentBlock(KID_1, 'c1')).toMatchObject({ parentId: PARENT });
+    });
+
+    it('a kind-only change to an older Block never outranks a later Allow', async () => {
+      seedCandidate('c1', { status: 'guard_rejected', verdict: 'clear_no' });
+      seedBlock('d-old', 'candidate', 'c1', null);
+      db.prepare(`
+        INSERT INTO guard_decisions
+          (decision_id, subject_type, subject_id, user_id, url, youtube_id, age_band, rubric_version, source,
+           guard_verdict, human_verdict, decided_by, decided_at)
+        VALUES ('d-later', 'request', 'r-later', ?, 'https://example.invalid/x', 'c1', '10-12', ?, 'spot_check',
+                'clear_yes', 'clear_yes', ?, ?)
+      `).run(KID_1, RUBRIC_VERSION, PARENT, new Date(Date.now() - 60_000).toISOString());
+      expect(currentParentBlock(KID_1, 'c1')).toBeNull();
+      expect((await revise('d-old', 'clear_no', 'not_for_us')).body.effect).toBe('label_only');
+      expect(currentParentBlock(KID_1, 'c1')).toBeNull();
+    });
+
+    it('a change to Allow leaves no kind behind', async () => {
+      seedCandidate('c1', { status: 'guard_rejected', verdict: 'clear_no' });
+      seedBlock('d1', 'candidate', 'c1', 'unsafe');
+      const res = await revise('d1', 'clear_yes');
+      expect(res.body.card.decision).toMatchObject({ verdict: 'clear_yes', blockKind: null, firstBlockKind: 'unsafe' });
+      // Back to a Block from Allow is a real change, with or without a kind.
+      expect((await revise('d1', 'clear_no')).status).toBe(200);
+    });
+
+    it('lists either kind as a Block under Disagreements', async () => {
+      seedCandidate('c-u', { status: 'guard_rejected', verdict: 'clear_no' });
+      seedCandidate('c-n', { status: 'guard_rejected', verdict: 'clear_no' });
+      seedCandidate('c-x', { status: 'guard_rejected', verdict: 'clear_no' });
+      seedBlock('d-u', 'candidate', 'c-u', 'unsafe');
+      seedBlock('d-n', 'candidate', 'c-n', 'not_for_us');
+      seedBlock('d-x', 'candidate', 'c-x', null);
+      const res = await supertest(app).get(`/parent/decisions/review?userId=${PARENT}`);
+      expect((res.body.cards as Array<{ key: string }>).map((c) => c.key).sort()).toEqual(['d-n', 'd-u', 'd-x']);
+      expect(res.body.counts).toEqual({ disagreements: 3, all: 3 });
+    });
+  });
+});

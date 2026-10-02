@@ -17,7 +17,9 @@ import { PARENT_PICK_SOURCE, SLATE_PICK_SOURCES, findSlatePickRequest, getReques
 import { getAgeBand, resolveUserById } from '../users';
 import {
   PARENT_BLOCKED_REASON,
+  blockKindFor,
   reasonColumns,
+  type BlockKind,
   type DecisionReason,
   type DecisionSource,
   type HumanVerdict,
@@ -28,6 +30,9 @@ export interface DecisionInput {
   subjectType: SubjectType;
   subjectId: string;
   verdict: HumanVerdict;
+  // What a Block meant (#227); absent is "kind not recorded". Ignored on an
+  // Allow. Either kind has exactly the Block effect.
+  blockKind?: BlockKind | null;
   // Optional reason chips and note; absent is a bare Allow / Block.
   reason?: DecisionReason | null;
 }
@@ -189,24 +194,25 @@ export async function recordDecision(
 
   const at = now.toISOString();
   const reason = reasonColumns(input.reason);
+  const blockKind = blockKindFor(input.verdict, input.blockKind);
   db.transaction(() => {
     db.prepare(`
       INSERT INTO guard_decisions
         (decision_id, subject_type, subject_id, user_id, url, youtube_id, age_band,
          rubric_version, source, guard_verdict, eval_id, human_verdict, decided_by, decided_at,
-         reason_dimensions_json, reason_text)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         reason_dimensions_json, reason_text, block_kind)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       uuidv7(), s.subjectType, s.subjectId, s.userId, s.url, s.youtubeId, ageBand,
       RUBRIC_VERSION, source, guardVerdict, guard.evalId, input.verdict, parentId, at,
-      reason.dimensionsJson, reason.text,
+      reason.dimensionsJson, reason.text, blockKind,
     );
     if (guard.evalId) labelGuardEval(guard.evalId, input.verdict, at);
   })();
 
   logger.info(
     {
-      subjectType: s.subjectType, subjectId: s.subjectId, source, verdict: input.verdict, effect,
+      subjectType: s.subjectType, subjectId: s.subjectId, source, verdict: input.verdict, blockKind, effect,
       // Whether a reason came with it, never the note itself.
       withReason: reason.dimensionsJson !== null || reason.text !== null,
     },

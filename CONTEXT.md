@@ -98,12 +98,16 @@ _Avoid_: audit, sample review, labelling
 The parent surface (`/decisions`) that holds **Escalations** and **Spot checks**. Each answer is a ground-truth label for a video and a kid, stored in `guard_decisions`, separate from any one guard verdict so every model is scored against the same labels.
 _Avoid_: review queue, inbox, moderation
 
+**Unsafe** / **Not for us**:
+The two kinds of Block a parent gives on a **Decisions** card. **Unsafe** means the video isn't safe for this kid; **Not for us** means it's safe but unwanted (quality, taste, relevance, a sales channel). Both are a Block — `human_verdict = 'clear_no'`, `block_kind` `'unsafe'` or `'not_for_us'` — with exactly the same live effect. The guard harness measures safety only: an Unsafe Block counts as clear-no, while Not for us and older Blocks with no recorded kind are left out of the metrics and counted separately.
+_Avoid_: reject, deny, dislike (for Not for us — it is not a recommendation signal)
+
 **Review**:
 The mode of **Decisions** for re-checking past answers, disagreements with the guard by default. Not a name for **Escalations** or the daily queue. Changing an answer there writes a **Revision**.
 _Avoid_: history, audit
 
 **Revision**:
-A changed answer to a past decision, stored beside the first pass in `guard_decision_revisions`; `guard_decisions` is never overwritten and the latest revision is the label. A change to Block always acts (a visible slate pick leaves the feed, a pooled candidate is rejected); a change to Allow only frees a candidate still waiting in the pool, and never puts a video into a kid's feed.
+A changed answer to a past decision, stored beside the first pass in `guard_decision_revisions`; `guard_decisions` is never overwritten and the latest revision is the label. A change to Block always acts (a visible slate pick leaves the feed, a pooled candidate is rejected); a change to Allow only frees a candidate still waiting in the pool, and never puts a video into a kid's feed. Giving a current Block its kind (**Unsafe** / **Not for us**) is a revision too, and changes nothing live.
 _Avoid_: edit, correction, overwrite
 
 **Rubric**:
