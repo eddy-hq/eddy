@@ -10,3 +10,9 @@ ALTER TABLE guard_decisions
   ADD COLUMN block_kind TEXT CHECK (block_kind IN ('unsafe', 'not_for_us'));
 ALTER TABLE guard_decision_revisions
   ADD COLUMN block_kind TEXT CHECK (block_kind IN ('unsafe', 'not_for_us'));
+
+-- A revision that only sets the kind on a Block that was already a Block. It is
+-- a label for Review and the harness, never a new answer: currentParentBlock
+-- leaves it out so a fresh timestamp can't outrank a later Allow.
+ALTER TABLE guard_decision_revisions
+  ADD COLUMN kind_only INTEGER NOT NULL DEFAULT 0 CHECK (kind_only IN (0, 1));

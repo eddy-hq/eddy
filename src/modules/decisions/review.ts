@@ -343,7 +343,8 @@ async function revisionEffect(
 // latest answer across every decision on the video for that kid, first passes
 // and revisions alike, with when it was given. The download callback and the
 // second pass read this so a request still in flight when the parent blocked
-// it never becomes visible.
+// it never becomes visible. A kind-only revision is not an answer and is left
+// out, so tagging an old Block never outranks a later Allow.
 export function currentParentBlock(userId: string, youtubeId: string): { parentId: string; at: string } | null {
   const row = db.prepare(`
     SELECT verdict, parent_id, at FROM (
@@ -354,7 +355,7 @@ export function currentParentBlock(userId: string, youtubeId: string): { parentI
       SELECT rv.human_verdict, rv.revised_by, rv.revised_at, rv.rowid
         FROM guard_decision_revisions rv
         JOIN guard_decisions d ON d.decision_id = rv.decision_id
-       WHERE d.user_id = @userId AND d.youtube_id = @youtubeId
+       WHERE d.user_id = @userId AND d.youtube_id = @youtubeId AND rv.kind_only = 0
     )
     ORDER BY at DESC, seq DESC
     LIMIT 1
@@ -405,11 +406,11 @@ export async function reviseDecision(
   db.prepare(`
     INSERT INTO guard_decision_revisions
       (revision_id, decision_id, human_verdict, block_kind, rubric_version, reason_dimensions_json, reason_text,
-       effect, revised_by, revised_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, 'label_only', ?, ?)
+       effect, kind_only, revised_by, revised_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, 'label_only', ?, ?, ?)
   `).run(
     revisionId, input.decisionId, input.verdict, blockKind, RUBRIC_VERSION, reason.dimensionsJson, reason.text,
-    parentId, now.toISOString(),
+    kindOnly ? 1 : 0, parentId, now.toISOString(),
   );
 
   // A kind-only change keeps the Block it was: nothing live to change.

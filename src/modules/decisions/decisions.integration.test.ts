@@ -1354,6 +1354,21 @@ describe('Block kinds (#227)', () => {
       expect(currentParentBlock(KID_1, 'c1')).toMatchObject({ parentId: PARENT });
     });
 
+    it('a kind-only change to an older Block never outranks a later Allow', async () => {
+      seedCandidate('c1', { status: 'guard_rejected', verdict: 'clear_no' });
+      seedBlock('d-old', 'candidate', 'c1', null);
+      db.prepare(`
+        INSERT INTO guard_decisions
+          (decision_id, subject_type, subject_id, user_id, url, youtube_id, age_band, rubric_version, source,
+           guard_verdict, human_verdict, decided_by, decided_at)
+        VALUES ('d-later', 'request', 'r-later', ?, 'https://example.invalid/x', 'c1', '10-12', ?, 'spot_check',
+                'clear_yes', 'clear_yes', ?, ?)
+      `).run(KID_1, RUBRIC_VERSION, PARENT, new Date(Date.now() - 60_000).toISOString());
+      expect(currentParentBlock(KID_1, 'c1')).toBeNull();
+      expect((await revise('d-old', 'clear_no', 'not_for_us')).body.effect).toBe('label_only');
+      expect(currentParentBlock(KID_1, 'c1')).toBeNull();
+    });
+
     it('a change to Allow leaves no kind behind', async () => {
       seedCandidate('c1', { status: 'guard_rejected', verdict: 'clear_no' });
       seedBlock('d1', 'candidate', 'c1', 'unsafe');
