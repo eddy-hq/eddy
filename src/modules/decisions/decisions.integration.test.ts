@@ -199,6 +199,18 @@ describe('parent-only access', () => {
   });
 });
 
+describe('Decisions access', () => {
+  it('tells the header whether a user is a parent, without refusing a kid', async () => {
+    const parent = await supertest(app).get(`/parent/decisions/access?userId=${PARENT}`);
+    expect(parent.status).toBe(200);
+    expect(parent.body).toEqual({ parent: true });
+    const kid = await supertest(app).get(`/parent/decisions/access?userId=${KID_1}`);
+    expect(kid.status).toBe(200);
+    expect(kid.body).toEqual({ parent: false });
+    expect((await supertest(app).get('/parent/decisions/access?userId=nobody')).status).toBe(404);
+  });
+});
+
 describe('Escalations', () => {
   it('lists parked candidates and parked slate picks with the guard reason and scores', () => {
     seedCandidate('c1');

@@ -6,6 +6,7 @@ import { Router, type Request, type Response } from 'express';
 import { z } from 'zod';
 import { ValidationError } from '../../errors';
 import { DIMENSION_KEYS } from '../guard';
+import { resolveUserById } from '../users';
 import { recordDecision, requireParent, type DecisionOutcome } from './decide';
 import { readDecisionQueue } from './queue';
 import { blockChannelFromCard } from './block-channel';
@@ -87,6 +88,8 @@ const blockChannelBody = z.object({
   ...reasonFields,
 });
 
+const accessQuery = z.object({ userId: z.string().min(1) });
+
 const reviewQuery = z.object({
   userId: z.string().min(1),
   filter: z.enum(['disagreements', 'all']).default('disagreements'),
@@ -106,6 +109,15 @@ function parse<S extends z.ZodTypeAny>(schema: S, value: unknown): z.output<S> {
   if (!out.success) throw new ValidationError(out.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; '));
   return out.data;
 }
+
+// GET /parent/decisions/access?userId=<user>
+// Whether the PWA shows its way into Decisions. Any known user gets an answer
+// (a kid gets false) so the header can ask without a 403; every other route
+// still refuses a kid.
+decisionsRouter.get('/access', (req: Request, res: Response) => {
+  const q = parse(accessQuery, req.query);
+  res.json({ parent: resolveUserById(q.userId).role === 'parent' });
+});
 
 // GET /parent/decisions/queue?userId=<parent>&mode=today|catch_up&focus=escalations|spot_checks
 decisionsRouter.get('/queue', (req: Request, res: Response) => {

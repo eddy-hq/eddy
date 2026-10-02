@@ -1,8 +1,17 @@
 import React from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
+import { Inbox } from 'lucide-react';
 import { PixelAvatar } from './PixelAvatar';
 import { AvatarConfig, DEFAULT_AVATAR } from '../../modules/avatars/types';
+
+// Parents get a way into Decisions from every page; kids see nothing.
+async function fetchIsParent(userId: string): Promise<boolean> {
+  const res = await fetch(`/parent/decisions/access?userId=${encodeURIComponent(userId)}`);
+  if (!res.ok) return false;
+  const json = (await res.json()) as { parent: boolean };
+  return json.parent;
+}
 
 async function fetchAvatar(userId: string): Promise<AvatarConfig> {
   const res = await fetch(`/avatars?userId=${encodeURIComponent(userId)}`);
@@ -30,6 +39,17 @@ export function AppHeader({ borderBottom = true }: { borderBottom?: boolean }) {
     staleTime: 60_000,
   });
 
+  const { data: isParent } = useQuery({
+    queryKey: ['decisions-access', userId],
+    queryFn: () => fetchIsParent(userId),
+    enabled: !!userId,
+    staleTime: Infinity,
+  });
+
+  function goDecisions() {
+    navigate(userParam ? `/decisions?${userParam}` : '/decisions');
+  }
+
   function goProfile() {
     navigate(userParam ? `/profile?${userParam}` : '/profile');
   }
@@ -54,6 +74,20 @@ export function AppHeader({ borderBottom = true }: { borderBottom?: boolean }) {
             eddy
           </span>
         </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+        {isParent && (
+          <button
+            onClick={goDecisions}
+            aria-label="Decisions"
+            style={{
+              padding: 0, background: 'none', border: 'none', cursor: 'pointer',
+              color: 'var(--text-secondary)', display: 'flex',
+              WebkitTapHighlightColor: 'transparent',
+            }}
+          >
+            <Inbox size={22} strokeWidth={1.7} />
+          </button>
+        )}
         <button
           onClick={goProfile}
           aria-label="Profile"
@@ -64,6 +98,7 @@ export function AppHeader({ borderBottom = true }: { borderBottom?: boolean }) {
         >
           <PixelAvatar config={data ?? DEFAULT_AVATAR} size={34} rounded />
         </button>
+        </div>
       </div>
     </div>
   );
