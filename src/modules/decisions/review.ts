@@ -282,23 +282,31 @@ function currentSubject(type: SubjectType, id: string): Subject | null {
 // a slate pick, the kid's own request or a parent pick. Unlike a Spot check
 // on a kid's own request (shadow mode, label only), a Review change is the
 // parent overruling the earlier answer for this kid and video.
-async function blockEffect(s: Subject, parentId: string): Promise<RevisionEffect> {
+// The kid and video come from the decision row, so live copies are found even
+// when the decided subject has gone (an older pruned candidate).
+async function blockEffect(ref: DecisionRef, s: Subject | null, parentId: string): Promise<RevisionEffect> {
   let effect: RevisionEffect = 'label_only';
-  if (s.subjectType === 'candidate' && s.status !== 'requested'
+  if (s?.subjectType === 'candidate' && s.status !== 'requested'
     && applyCandidateParentVerdict(s.subjectId, 'clear_no').applied) {
     effect = 'blocked';
   }
-  const live = new Set(s.youtubeId ? findParentBlockableRequests(s.userId, s.youtubeId) : []);
-  if (s.subjectType === 'request') live.add(s.subjectId);
+  const youtubeId = s?.youtubeId ?? ref.youtube_id;
+  const live = new Set(youtubeId ? findParentBlockableRequests(ref.user_id, youtubeId) : []);
+  if (s?.subjectType === 'request') live.add(s.subjectId);
   for (const requestId of live) {
     if (await blockRequest(requestId, parentId)) effect = 'removed';
   }
   return effect;
 }
 
-async function revisionEffect(s: Subject | null, verdict: HumanVerdict, parentId: string): Promise<RevisionEffect> {
+async function revisionEffect(
+  ref: DecisionRef,
+  s: Subject | null,
+  verdict: HumanVerdict,
+  parentId: string,
+): Promise<RevisionEffect> {
+  if (verdict === 'clear_no') return blockEffect(ref, s, parentId);
   if (!s) return 'label_only';
-  if (verdict === 'clear_no') return blockEffect(s, parentId);
   // Allow: only a candidate still waiting in the pool, never a request and
   // never a picked candidate (its copy is a request).
   if (s.subjectType !== 'candidate' || s.status === 'requested') return 'label_only';
@@ -332,13 +340,15 @@ interface DecisionRef {
   decision_id: string;
   subject_type: SubjectType;
   subject_id: string;
+  user_id: string;
+  youtube_id: string | null;
   current_verdict: HumanVerdict;
 }
 
 function readDecisionRef(decisionId: string): DecisionRef {
   const row = db.prepare(`
     WITH ${REVIEWED}
-    SELECT decision_id, subject_type, subject_id, current_verdict FROM reviewed WHERE decision_id = ?
+    SELECT decision_id, subject_type, subject_id, user_id, youtube_id, current_verdict FROM reviewed WHERE decision_id = ?
   `).get(decisionId) as DecisionRef | undefined;
   if (!row) throw new NotFoundError(`decision ${decisionId}`);
   return row;
@@ -353,7 +363,9 @@ export async function reviseDecision(
   if (before.current_verdict === input.verdict) {
     throw new ValidationError(`decision ${input.decisionId} already has that answer`);
   }
-  const effect = await revisionEffect(currentSubject(before.subject_type, before.subject_id), input.verdict, parentId);
+  const effect = await revisionEffect(
+    before, currentSubject(before.subject_type, before.subject_id), input.verdict, parentId,
+  );
 
   const revisionId = uuidv7();
   const reason = reasonColumns(input.reason);

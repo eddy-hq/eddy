@@ -894,6 +894,14 @@ describe('Review (#223)', () => {
     expect(status('requests', 'other-kid').status).toBe('ready');
   });
 
+  it('a change to Block on a pruned candidate still removes a visible copy of the video', async () => {
+    // The decision's candidate has gone; the same video is in the kid's feed.
+    seedDecision('d-gone', 'candidate', 'vid-gone', { guard: 'clear_no', human: 'clear_yes' });
+    seedRequest('copy', { status: 'ready', verdict: 'clear_yes', source: 'recommended', yt: 'vid-gone' });
+    expect((await revise('d-gone', 'clear_no')).body.effect).toBe('removed');
+    expect(status('requests', 'copy').status).toBe('deleted');
+  });
+
   it('a change to Block with nothing live is a label only', async () => {
     seedCandidate('c-dismissed', { status: 'dismissed', verdict: 'clear_yes' });
     seedDecision('d-dismissed', 'candidate', 'c-dismissed', { guard: 'clear_yes', human: 'clear_yes' });
