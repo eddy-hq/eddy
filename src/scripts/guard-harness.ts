@@ -14,7 +14,7 @@
  *             harness/dataset-YYYY-MM-DD.jsonl beside the DB. Opens the DB
  *             read-only; never runs migrations.
  *   run       replays the newest dataset (or --dataset) through an adapter,
- *             caching each verdict in harness/results-YYYY-MM-DD.jsonl.
+ *             caching each verdict in harness/results-dataset-YYYY-MM-DD.jsonl.
  *             Resumable. Refuses to start inside a discovery window unless
  *             --force. Writes nothing to the DB.
  *   report    confusion matrix and the three metrics against the brief's

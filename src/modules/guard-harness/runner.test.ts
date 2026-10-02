@@ -123,12 +123,16 @@ describe('runHarness', () => {
 
 describe('resultsPathFor', () => {
   it('sits beside its dataset', () => {
-    expect(resultsPathFor('/data/harness/dataset-2026-10-02.jsonl')).toBe('/data/harness/results-2026-10-02.jsonl');
+    expect(resultsPathFor('/data/harness/dataset-2026-10-02.jsonl')).toBe('/data/harness/results-dataset-2026-10-02.jsonl');
   });
 
-  it('never resolves to the dataset itself for a custom name', () => {
-    expect(resultsPathFor('/data/harness/baseline.jsonl')).toBe('/data/harness/results-baseline.jsonl');
-    expect(resultsPathFor('/data/harness/results-x.jsonl')).toBe('/data/harness/results-results-x.jsonl');
+  it('gives every dataset name its own cache, never the dataset itself', () => {
+    const names = ['baseline.jsonl', 'dataset-baseline.jsonl', 'dataset-2026-10-02.jsonl'];
+    const caches = names.map((n) => resultsPathFor(`/data/harness/${n}`));
+    expect(new Set(caches).size).toBe(names.length);
+    for (const n of names) expect(caches).not.toContain(`/data/harness/${n}`);
+    // A results-* name could be another dataset's cache.
+    expect(() => resultsPathFor('/data/harness/results-baseline.jsonl')).toThrow(GuardHarnessError);
   });
 
   it('a custom-named dataset runs without touching the dataset file', async () => {
