@@ -69,8 +69,34 @@ beforeAll(() => {
 });
 
 beforeEach(() => {
+  db.exec('DELETE FROM guard_decisions');
+  db.exec('DELETE FROM guard_spot_checks');
   db.exec('DELETE FROM candidate_pool');
 });
+
+function insertDecision(candidateId: string): void {
+  db.prepare(`
+    INSERT INTO guard_decisions
+      (decision_id, subject_type, subject_id, user_id, url, age_band,
+       rubric_version, source, human_verdict, decided_by, decided_at)
+    VALUES (?, 'candidate', ?, ?, ?, '10-12', 'v4', 'escalation', 'clear_yes', ?, ?)
+  `).run(
+    `decision-${candidateId}`,
+    candidateId,
+    USER_ID,
+    `https://www.youtube.com/watch?v=${candidateId}`,
+    USER_ID,
+    new Date().toISOString(),
+  );
+}
+
+function insertSpotCheck(candidateId: string): void {
+  db.prepare(`
+    INSERT INTO guard_spot_checks
+      (day, subject_type, subject_id, user_id, source, guard_verdict, created_at)
+    VALUES (?, 'candidate', ?, ?, 'catch_up', 'clear_yes', ?)
+  `).run(new Date().toISOString().slice(0, 10), candidateId, USER_ID, new Date().toISOString());
+}
 
 describe('pruneStalePool', () => {
   it('drops pending and scored rows older than 30 days', () => {
@@ -120,5 +146,38 @@ describe('pruneStalePool', () => {
     expect(rows.map((r) => r.candidate_id)).toEqual([
       'old-dismissed', 'old-requested', 'old-surfaced',
     ]);
+  });
+
+  it('keeps an old scored candidate a parent has decided on', () => {
+    insertCandidate({ candidate_id: 'old-decided', status: 'scored', ageDays: 40 });
+    insertDecision('old-decided');
+
+    pruneStalePool();
+
+    const row = db.prepare('SELECT candidate_id FROM candidate_pool WHERE candidate_id = ?')
+      .get('old-decided');
+    expect(row).toEqual({ candidate_id: 'old-decided' });
+  });
+
+  it('keeps an old candidate drawn as a spot check and not yet decided', () => {
+    insertCandidate({ candidate_id: 'old-drawn', status: 'scored', ageDays: 40 });
+    insertSpotCheck('old-drawn');
+
+    pruneStalePool();
+
+    const row = db.prepare('SELECT candidate_id FROM candidate_pool WHERE candidate_id = ?')
+      .get('old-drawn');
+    expect(row).toEqual({ candidate_id: 'old-drawn' });
+  });
+
+  it('still drops an old scored candidate with no decision or spot check', () => {
+    insertCandidate({ candidate_id: 'old-decided', status: 'scored', ageDays: 40 });
+    insertDecision('old-decided');
+    insertCandidate({ candidate_id: 'old-undecided', status: 'scored', ageDays: 40 });
+
+    pruneStalePool();
+
+    const rows = db.prepare('SELECT candidate_id FROM candidate_pool ORDER BY candidate_id').all() as Array<{ candidate_id: string }>;
+    expect(rows.map((r) => r.candidate_id)).toEqual(['old-decided']);
   });
 });

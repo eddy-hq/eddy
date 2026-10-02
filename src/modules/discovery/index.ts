@@ -292,11 +292,27 @@ export async function runDiscoveryForUser(user: UserRow, options: { force?: bool
 // daily ranker race, and there's no other path that touches them. Without
 // this they accumulate monotonically — see issue #70 for the AI-channel
 // backlog that motivated extending the original 'pending'-only prune.
+//
+// Candidates a parent has decided on, or that are drawn as a spot check and
+// awaiting a decision, are kept: a label needs its inputs (title, channel,
+// description) to be replayable through the guard (ADR-0014, #220). This
+// reads the decisions tables from discovery deliberately. A drawn spot check
+// that has since been decided is covered by the guard_decisions clause.
 export function pruneStalePool(): void {
   const result = db.prepare(`
     DELETE FROM candidate_pool
     WHERE status IN ('pending', 'scored')
       AND created_at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-30 days')
+      AND NOT EXISTS (
+        SELECT 1 FROM guard_decisions d
+        WHERE d.subject_type = 'candidate'
+          AND d.subject_id = candidate_pool.candidate_id
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM guard_spot_checks s
+        WHERE s.subject_type = 'candidate'
+          AND s.subject_id = candidate_pool.candidate_id
+      )
   `).run();
   if (result.changes > 0) {
     logger.info({ deleted: result.changes }, 'Discovery: pruned stale candidates');
