@@ -34,6 +34,7 @@ import {
   answerLine,
   applyRevision,
   freshReviewList,
+  isFilterSwitch,
   mergeReviewPage,
   changeLabel,
   changeTarget,
@@ -636,13 +637,15 @@ function Review({ userId }: { userId: string }) {
   }, [data, dataUpdatedAt, filter]);
 
   const switchFilter = useCallback((f: ReviewFilter) => {
+    // Tapping the selected filter again changes nothing.
+    if (!isFilterSwitch(filter, f)) return;
     setReasonKey(null);
     setReason(EMPTY_REASON);
     setLoadingMore(false);
     // Retire the current list at once, so a late page for it is dropped.
     setList((prev) => (prev ? { ...prev, loadId: prev.loadId + 1, filter: f, cards: [], nextOffset: null } : prev));
     setFilter(f);
-  }, []);
+  }, [filter]);
 
   const cards = list && list.filter === filter ? list.cards : [];
   const nextOffset = list && list.filter === filter ? list.nextOffset : null;

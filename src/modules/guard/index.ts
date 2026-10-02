@@ -699,6 +699,34 @@ async function parkPick(requestId: string, verdict: 'uncertain' | 'clear_no', re
   }
 }
 
+// Decisions is loaded lazily for the same reason, and because it imports the
+// guard statically.
+function loadDecisions(): Promise<typeof import('../decisions')> {
+  return import('../decisions');
+}
+
+// A pick the parent has blocked for this kid (a Block, or a Review change to
+// Block, made while the pick was still downloading or awaiting the guard)
+// leaves through the Block path instead of becoming visible: parked out of
+// sight, then removed as a parent Block, file included. True when removed.
+async function removeIfParentBlocked(requestId: string, userId: string, youtubeId: string | null): Promise<boolean> {
+  if (!youtubeId) return false;
+  const { currentParentBlock, PARENT_BLOCKED_REASON } = await loadDecisions();
+  const block = currentParentBlock(userId, youtubeId);
+  if (!block) return false;
+  const { getRequestsState } = await loadRequests();
+  const parked = getRequestsState().apply({
+    kind: 'mark_second_pass_parked', requestId, verdict: 'clear_no', reason: PARENT_BLOCKED_REASON,
+  });
+  if (!parked.result.transitioned) return false;
+  const { settled } = getRequestsState().apply({
+    kind: 'mark_parent_blocked', requestId, parentId: block.parentId, reason: PARENT_BLOCKED_REASON,
+  });
+  await settled;
+  logger.info({ requestId }, 'Second pass: pick removed — blocked by a parent');
+  return true;
+}
+
 // Queue the second pass for a request just moved to guard_review. Kid safety
 // first: if the job can't be queued the pick is parked, never shown.
 export async function enqueueDownloadSecondPass(requestId: string): Promise<void> {
@@ -729,6 +757,9 @@ export async function runDownloadSecondPass(requestId: string): Promise<void> {
     requestId, youtubeChannelId: input.youtubeChannelId, channel: input.channel,
   }).blocked;
   if (channelBlocked()) return;
+  // Nor does a pick the parent has already blocked for this kid.
+  const parentBlocked = (): Promise<boolean> => removeIfParentBlocked(requestId, input.userId, input.youtubeId);
+  if (await parentBlocked()) return;
 
   let outcome: DownloadedPickVerdict;
   try {
@@ -754,8 +785,9 @@ export async function runDownloadSecondPass(requestId: string): Promise<void> {
   );
 
   if (outcome.verdict === 'clear_yes') {
-    // The channel may have been blocked while the guard ran.
+    // The channel, or the video, may have been blocked while the guard ran.
     if (channelBlocked()) return;
+    if (await parentBlocked()) return;
     const { result } = getRequestsState().apply({ kind: 'mark_second_pass_cleared', requestId, reason: outcome.reason });
     if (!result.transitioned) {
       logger.info({ requestId, currentStatus: result.currentStatus }, 'Second pass: clear skipped — request no longer awaiting the guard');

@@ -305,6 +305,28 @@ async function revisionEffect(s: Subject | null, verdict: HumanVerdict, parentId
   return applyCandidateParentVerdict(s.subjectId, 'clear_yes').applied ? 'eligible' : 'label_only';
 }
 
+// The parent's current answer for a kid and a video, when it is Block: the
+// latest answer across every decision on the video for that kid, first passes
+// and revisions alike. The download-time second pass reads this so a pick
+// still in flight when the parent blocked it never becomes visible.
+export function currentParentBlock(userId: string, youtubeId: string): { parentId: string } | null {
+  const row = db.prepare(`
+    SELECT verdict, parent_id FROM (
+      SELECT d.human_verdict AS verdict, d.decided_by AS parent_id, d.decided_at AS at, 0 AS seq
+        FROM guard_decisions d
+       WHERE d.user_id = @userId AND d.youtube_id = @youtubeId
+      UNION ALL
+      SELECT rv.human_verdict, rv.revised_by, rv.revised_at, rv.rowid
+        FROM guard_decision_revisions rv
+        JOIN guard_decisions d ON d.decision_id = rv.decision_id
+       WHERE d.user_id = @userId AND d.youtube_id = @youtubeId
+    )
+    ORDER BY at DESC, seq DESC
+    LIMIT 1
+  `).get({ userId, youtubeId }) as { verdict: string; parent_id: string } | undefined;
+  return row?.verdict === 'clear_no' ? { parentId: row.parent_id } : null;
+}
+
 interface DecisionRef {
   decision_id: string;
   subject_type: SubjectType;

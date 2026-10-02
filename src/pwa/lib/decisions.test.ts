@@ -25,6 +25,7 @@ import {
   changeTarget,
   freshReviewList,
   isDisagreement,
+  isFilterSwitch,
   mergeReviewPage,
   matchesReviewFilter,
   revisionBody,
@@ -352,6 +353,12 @@ describe('Review', () => {
     const agreeing = reviewCard('b', { guardVerdict: 'clear_no', firstVerdict: 'clear_no', verdict: 'clear_no' });
     expect(applyRevision(cards, agreeing, 'disagreements').map((c) => c.key)).toEqual(['a', 'c']);
     expect(applyRevision(cards, agreeing, 'all').map((c) => c.key)).toEqual(['a', 'b', 'c']);
+  });
+
+  it('treats re-selecting the current filter as no switch', () => {
+    expect(isFilterSwitch('disagreements', 'disagreements')).toBe(false);
+    expect(isFilterSwitch('all', 'all')).toBe(false);
+    expect(isFilterSwitch('disagreements', 'all')).toBe(true);
   });
 
   it('drops a late page asked for by a list that has since been reloaded', () => {

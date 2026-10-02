@@ -379,6 +379,12 @@ export interface ReviewList {
   nextOffset: number | null;
 }
 
+// Only a different filter retires the list on screen: re-selecting the
+// current one would clear it with nothing to reload it.
+export function isFilterSwitch(current: ReviewFilter, next: ReviewFilter): boolean {
+  return current !== next;
+}
+
 export function freshReviewList(previous: ReviewList | null, page: ReviewPage): ReviewList {
   return { loadId: (previous?.loadId ?? 0) + 1, filter: page.filter, cards: page.cards, nextOffset: page.nextOffset };
 }

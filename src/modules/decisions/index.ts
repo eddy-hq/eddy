@@ -32,6 +32,7 @@ export {
   type NudgeResult,
 } from './nudge';
 export {
+  currentParentBlock,
   readReview,
   readReviewCard,
   reviseDecision,
@@ -42,7 +43,7 @@ export {
   type RevisionInput,
   type RevisionOutcome,
 } from './review';
-export { REASON_TEXT_MAX, type DecisionReason, type ReviewFilter } from './util';
+export { PARENT_BLOCKED_REASON, REASON_TEXT_MAX, type DecisionReason, type ReviewFilter } from './util';
 
 export const decisionsRouter = Router();
 
