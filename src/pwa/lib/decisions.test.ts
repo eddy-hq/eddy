@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
+  ANSWER_KEY,
   EMPTY_REASON,
   agreement,
+  answerButtonLabel,
+  answerFields,
+  answerLabel,
+  answerVerdict,
   blockChannelBody,
   blockChannelFlash,
   blockChannelPrompt,
@@ -25,8 +30,9 @@ import {
   appendReviewPage,
   applyRevision,
   changeLabel,
-  changeTarget,
+  changeOptions,
   freshReviewList,
+  isKindOnlyChange,
   isDisagreement,
   isFilterSwitch,
   mergeReviewPage,
@@ -63,16 +69,45 @@ describe('decisionsForCard', () => {
   const both = card('v1', [subject('s1', 'kid1'), subject('s2', 'kid2')]);
 
   it('decides every kid on the card by default', () => {
-    expect(decisionsForCard(both, 'clear_no')).toEqual([
-      { subjectType: 'candidate', subjectId: 's1', verdict: 'clear_no' },
-      { subjectType: 'candidate', subjectId: 's2', verdict: 'clear_no' },
+    expect(decisionsForCard(both, 'unsafe')).toEqual([
+      { subjectType: 'candidate', subjectId: 's1', verdict: 'clear_no', blockKind: 'unsafe' },
+      { subjectType: 'candidate', subjectId: 's2', verdict: 'clear_no', blockKind: 'unsafe' },
     ]);
   });
 
   it('decides one kid when named', () => {
-    expect(decisionsForCard(both, 'clear_yes', 'kid2')).toEqual([
+    expect(decisionsForCard(both, 'allow', 'kid2')).toEqual([
       { subjectType: 'candidate', subjectId: 's2', verdict: 'clear_yes' },
     ]);
+  });
+
+  it('sends Not for us as a Block with its kind', () => {
+    expect(decisionsForCard(both, 'not_for_us', 'kid1')).toEqual([
+      { subjectType: 'candidate', subjectId: 's1', verdict: 'clear_no', blockKind: 'not_for_us' },
+    ]);
+  });
+});
+
+describe('answers (#227)', () => {
+  it('sends Unsafe and Not for us as clear_no with a kind, and Allow with none', () => {
+    expect(answerFields('allow')).toEqual({ verdict: 'clear_yes' });
+    expect(answerFields('unsafe')).toEqual({ verdict: 'clear_no', blockKind: 'unsafe' });
+    expect(answerFields('not_for_us')).toEqual({ verdict: 'clear_no', blockKind: 'not_for_us' });
+    expect(answerVerdict('unsafe')).toBe('clear_no');
+    expect(answerVerdict('not_for_us')).toBe('clear_no');
+    expect(answerVerdict('allow')).toBe('clear_yes');
+  });
+
+  it('words a stored answer, keeping an unrecorded Block as "block"', () => {
+    expect(answerLabel('clear_yes', null)).toBe('allow');
+    expect(answerLabel('clear_no', 'unsafe')).toBe('unsafe');
+    expect(answerLabel('clear_no', 'not_for_us')).toBe('not for us');
+    expect(answerLabel('clear_no', null)).toBe('block');
+  });
+
+  it('labels the buttons, for one kid or both', () => {
+    expect(answerButtonLabel('unsafe', false)).toBe('Unsafe');
+    expect(answerButtonLabel('not_for_us', true)).toBe('Not for us · both');
   });
 });
 
@@ -94,16 +129,22 @@ describe('skipCard', () => {
 });
 
 describe('keyAction', () => {
-  it('maps a, b and s when deciding', () => {
+  it('maps a, u, f and s when deciding', () => {
     expect(keyAction('a', false)).toBe('allow');
-    expect(keyAction('B', false)).toBe('block');
+    expect(keyAction('U', false)).toBe('unsafe');
+    expect(keyAction('f', false)).toBe('not_for_us');
     expect(keyAction('s', false)).toBe('skip');
     expect(keyAction('Enter', false)).toBeNull();
+    // No plain Block, and "n" (next) never decides a card.
+    expect(keyAction('b', false)).toBeNull();
+    expect(keyAction('n', false)).toBeNull();
+    expect(Object.values(ANSWER_KEY)).toEqual(['A', 'U', 'F']);
   });
 
   it('only continues while a reveal is showing', () => {
     expect(keyAction('a', true)).toBeNull();
-    expect(keyAction('b', true)).toBeNull();
+    expect(keyAction('u', true)).toBeNull();
+    expect(keyAction('f', true)).toBeNull();
     expect(keyAction('Enter', true)).toBe('next');
     expect(keyAction(' ', true)).toBe('next');
   });
@@ -245,20 +286,20 @@ describe('decision payloads with a reason', () => {
   const reason = { dimensions: ['frightening'], text: 'Too scary' };
 
   it('puts the reason on every kid for "same for both"', () => {
-    expect(decisionsForCard(both, 'clear_no', undefined, reason)).toEqual([
-      { subjectType: 'candidate', subjectId: 's1', verdict: 'clear_no', reasonDimensions: ['frightening'], reasonText: 'Too scary' },
-      { subjectType: 'candidate', subjectId: 's2', verdict: 'clear_no', reasonDimensions: ['frightening'], reasonText: 'Too scary' },
+    expect(decisionsForCard(both, 'unsafe', undefined, reason)).toEqual([
+      { subjectType: 'candidate', subjectId: 's1', verdict: 'clear_no', blockKind: 'unsafe', reasonDimensions: ['frightening'], reasonText: 'Too scary' },
+      { subjectType: 'candidate', subjectId: 's2', verdict: 'clear_no', blockKind: 'unsafe', reasonDimensions: ['frightening'], reasonText: 'Too scary' },
     ]);
   });
 
   it('puts the reason on the one kid decided', () => {
-    expect(decisionsForCard(both, 'clear_yes', 'kid1', { dimensions: [], text: 'ok' })).toEqual([
+    expect(decisionsForCard(both, 'allow', 'kid1', { dimensions: [], text: 'ok' })).toEqual([
       { subjectType: 'candidate', subjectId: 's1', verdict: 'clear_yes', reasonText: 'ok' },
     ]);
   });
 
   it('a bare decision posts no reason fields', () => {
-    expect(decisionsForCard(both, 'clear_yes', 'kid2', EMPTY_REASON)).toEqual([
+    expect(decisionsForCard(both, 'allow', 'kid2', EMPTY_REASON)).toEqual([
       { subjectType: 'candidate', subjectId: 's2', verdict: 'clear_yes' },
     ]);
   });
@@ -313,18 +354,39 @@ describe('Review', () => {
     expect([agreed, escalation].every((c) => matchesReviewFilter(c, 'all'))).toBe(true);
   });
 
-  it('offers the opposite of the current answer', () => {
-    expect(changeTarget(reviewCard('b', { verdict: 'clear_no' }))).toBe('clear_yes');
-    expect(changeLabel(reviewCard('b', { verdict: 'clear_no' }))).toBe('Change to Allow');
-    expect(changeLabel(reviewCard('a', { verdict: 'clear_yes' }))).toBe('Change to Block');
+  it('treats either Block kind as a Block under Disagreements', () => {
+    const unsafe = reviewCard('u', { guardVerdict: 'clear_yes', firstVerdict: 'clear_no', firstBlockKind: 'unsafe', verdict: 'clear_no', blockKind: 'unsafe' });
+    const notForUs = reviewCard('n', { guardVerdict: 'clear_yes', firstVerdict: 'clear_no', firstBlockKind: 'not_for_us', verdict: 'clear_no', blockKind: 'not_for_us' });
+    const agreedNotForUs = reviewCard('g', { guardVerdict: 'clear_no', firstVerdict: 'clear_no', verdict: 'clear_no', blockKind: 'not_for_us' });
+    expect([unsafe, notForUs, agreedNotForUs]
+      .filter((c) => matchesReviewFilter(c, 'disagreements')).map((c) => c.key)).toEqual(['u', 'n']);
   });
 
-  it('builds the revision request with the optional reason', () => {
+  it('offers every answer but the current one', () => {
+    expect(changeOptions(reviewCard('a', { verdict: 'clear_yes' }))).toEqual(['unsafe', 'not_for_us']);
+    // A Block with no recorded kind can be given either kind.
+    expect(changeOptions(reviewCard('b', { verdict: 'clear_no', blockKind: null }))).toEqual(['allow', 'unsafe', 'not_for_us']);
+    expect(changeOptions(reviewCard('b'))).toEqual(['allow', 'unsafe', 'not_for_us']);
+    expect(changeOptions(reviewCard('u', { verdict: 'clear_no', blockKind: 'unsafe' }))).toEqual(['allow', 'not_for_us']);
+    expect(changeOptions(reviewCard('n', { verdict: 'clear_no', blockKind: 'not_for_us' }))).toEqual(['allow', 'unsafe']);
+    expect(changeLabel('allow')).toBe('Change to Allow');
+    expect(changeLabel('unsafe')).toBe('Change to Unsafe');
+    expect(changeLabel('not_for_us')).toBe('Change to Not for us');
+  });
+
+  it('knows a kind on a current Block is a kind-only change', () => {
+    expect(isKindOnlyChange(reviewCard('b'), 'unsafe')).toBe(true);
+    expect(isKindOnlyChange(reviewCard('b'), 'allow')).toBe(false);
+    expect(isKindOnlyChange(reviewCard('a', { verdict: 'clear_yes' }), 'not_for_us')).toBe(false);
+  });
+
+  it('builds the revision request with the answer and the optional reason', () => {
     const c = reviewCard('d1', { verdict: 'clear_yes' });
-    expect(revisionBody('parent', c)).toEqual({ userId: 'parent', decisionId: 'd1', verdict: 'clear_no' });
-    expect(revisionBody('parent', c, { dimensions: ['violence'], text: ' Note ' })).toEqual({
-      userId: 'parent', decisionId: 'd1', verdict: 'clear_no', reasonDimensions: ['violence'], reasonText: 'Note',
+    expect(revisionBody('parent', c, 'unsafe')).toEqual({ userId: 'parent', decisionId: 'd1', verdict: 'clear_no', blockKind: 'unsafe' });
+    expect(revisionBody('parent', c, 'not_for_us', { dimensions: ['violence'], text: ' Note ' })).toEqual({
+      userId: 'parent', decisionId: 'd1', verdict: 'clear_no', blockKind: 'not_for_us', reasonDimensions: ['violence'], reasonText: 'Note',
     });
+    expect(revisionBody('parent', reviewCard('d2'), 'allow')).toEqual({ userId: 'parent', decisionId: 'd2', verdict: 'clear_yes' });
   });
 
   it('labels every effect, and says plainly when nothing live changed', () => {
@@ -339,6 +401,11 @@ describe('Review', () => {
     expect(answerLine(reviewCard('a', {
       verdict: 'clear_yes', revision: { revisedAt: '2026-09-26T00:00:00.000Z', effect: 'label_only', count: 1 },
     }).decision)).toBe('You said block, now allow');
+    expect(answerLine(reviewCard('a', {
+      firstBlockKind: null, blockKind: 'not_for_us',
+      revision: { revisedAt: '2026-09-26T00:00:00.000Z', effect: 'label_only', count: 1 },
+    }).decision)).toBe('You said block, now not for us');
+    expect(answerLine(reviewCard('a', { firstBlockKind: 'unsafe', blockKind: 'unsafe' }).decision)).toBe('You said unsafe');
   });
 
   it('summarises a recorded reason', () => {

@@ -2,11 +2,17 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { AnimatePresence, motion } from 'framer-motion';
-import { Ban, Check, ChevronDown, ChevronUp, ExternalLink, SkipForward, X } from 'lucide-react';
+import { Ban, Check, ChevronDown, ChevronUp, ExternalLink, ShieldAlert, SkipForward, ThumbsDown } from 'lucide-react';
 import {
+  ANSWER_KEY,
+  ANSWER_LABEL,
   EMPTY_REASON,
   SOURCE_LABEL,
   agreement,
+  answerButtonLabel,
+  answerFields,
+  answerLabel,
+  answerVerdict,
   blockChannelBody,
   blockChannelFlash,
   blockChannelPrompt,
@@ -24,12 +30,12 @@ import {
   skipCard,
   toggleReasonDimension,
   verdictLabel,
+  type Answer,
   type BlockChannelResult,
   type DecisionCard,
   type DecisionOutcome,
   type DecisionQueue,
   type GuardInputs,
-  type HumanVerdict,
   type ReasonDraft,
   type ReasonOptions,
   type ShownEval,
@@ -41,7 +47,7 @@ import {
   mergeReviewPage,
   reviseInList,
   changeLabel,
-  changeTarget,
+  changeOptions,
   revisionBody,
   revisionEffectLabel,
   storedReasonSummary,
@@ -67,11 +73,11 @@ async function fetchReview(userId: string, filter: ReviewFilter, offset: number)
   return res.json() as Promise<ReviewPage>;
 }
 
-async function postRevision(userId: string, card: ReviewCard, reason: ReasonDraft): Promise<RevisionOutcome> {
+async function postRevision(userId: string, card: ReviewCard, answer: Answer, reason: ReasonDraft): Promise<RevisionOutcome> {
   const res = await fetch('/parent/decisions/revisions', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(revisionBody(userId, card, reason)),
+    body: JSON.stringify(revisionBody(userId, card, answer, reason)),
   });
   if (!res.ok) throw new Error(`Could not change the decision (${res.status})`);
   return (await res.json()) as RevisionOutcome;
@@ -117,7 +123,7 @@ async function fetchGuardInputs(params: URLSearchParams): Promise<GuardInputs> {
 
 interface Reveal {
   card: DecisionCard;
-  verdict: HumanVerdict;
+  answer: Answer;
   outcomes: DecisionOutcome[];
 }
 
@@ -338,6 +344,21 @@ const actionButton = (colour: string, filled: boolean): React.CSSProperties => (
   color: filled ? '#fff' : 'var(--text-primary)',
 });
 
+// Allow, and the two kinds of Block (#227): each one tap, each its own colour.
+const ANSWER_COLOUR: Record<Answer, string> = {
+  allow: 'var(--save)',
+  unsafe: 'var(--dismiss)',
+  not_for_us: 'var(--text-secondary)',
+};
+
+function AnswerIcon({ answer, size }: { answer: Answer; size: number }) {
+  if (answer === 'allow') return <Check size={size} />;
+  if (answer === 'unsafe') return <ShieldAlert size={size} />;
+  return <ThumbsDown size={size} />;
+}
+
+const ANSWERS: readonly Answer[] = ['allow', 'unsafe', 'not_for_us'];
+
 // ── Page ─────────────────────────────────────────────────────────────────────
 
 export function Decisions() {
@@ -392,12 +413,12 @@ export function Decisions() {
     if (next.length === 0) void queryClient.invalidateQueries({ queryKey: ['decisions', userId] });
   }, [queryClient, userId]);
 
-  const decide = useCallback(async (verdict: HumanVerdict, onlyUserId?: string) => {
+  const decide = useCallback(async (answer: Answer, onlyUserId?: string) => {
     if (!current || busy) return;
     setBusy(true);
     setError(null);
     try {
-      const outcomes = await postDecisions(userId, decisionsForCard(current, verdict, onlyUserId, reason));
+      const outcomes = await postDecisions(userId, decisionsForCard(current, answer, onlyUserId, reason));
       const decided = new Set(outcomes.map((o) => o.subjectId));
       const next = removeDecided(cards, decided);
       setCards(next);
@@ -409,7 +430,7 @@ export function Decisions() {
         refetchIfEmpty(next);
       } else {
         // Spot check: show what the guard said before moving on.
-        setReveal({ card: current, verdict, outcomes });
+        setReveal({ card: current, answer, outcomes });
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Something went wrong');
@@ -456,10 +477,9 @@ export function Decisions() {
       const action = keyAction(e.key, reveal !== null);
       if (!action) return;
       e.preventDefault();
-      if (action === 'allow') void decide('clear_yes');
-      else if (action === 'block') void decide('clear_no');
-      else if (action === 'skip') skip();
-      else next();
+      if (action === 'skip') skip();
+      else if (action === 'next') next();
+      else void decide(action);
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -515,11 +535,12 @@ export function Decisions() {
             <h2 style={{ fontFamily: 'var(--font-serif)', fontSize: 'var(--text-md)', color: 'var(--text-primary)' }}>{reveal.card.title}</h2>
             {reveal.outcomes.map((o) => {
               const subject = reveal.card.subjects.find((s) => s.subjectId === o.subjectId);
-              const agree = agreement(reveal.verdict, o.guard.verdict);
+              const agree = agreement(answerVerdict(reveal.answer), o.guard.verdict);
+              const said = answerFields(reveal.answer);
               return (
                 <div key={o.subjectId} style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                   <p style={{ fontSize: 'var(--text-sm)', color: 'var(--text-primary)' }}>
-                    {subject?.kidName}: you said <strong>{verdictLabel(reveal.verdict)}</strong>
+                    {subject?.kidName}: you said <strong>{answerLabel(said.verdict, said.blockKind ?? null)}</strong>
                     {agree === 'agree' && ' — the guard agreed.'}
                     {agree === 'disagree' && <span style={{ color: 'var(--dismiss)', fontWeight: 600 }}> — the guard said {verdictLabel(o.guard.verdict)}.</span>}
                     {' '}<span style={{ color: 'var(--text-tertiary)' }}>{effectLabel(o.effect)}.</span>
@@ -566,13 +587,12 @@ export function Decisions() {
               />
             )}
 
-            <div style={{ display: 'flex', gap: 8 }}>
-              <button disabled={busy} onClick={() => void decide('clear_yes')} style={actionButton('var(--save)', true)}>
-                <Check size={18} /> {multi ? 'Allow both' : 'Allow'} <span style={{ opacity: 0.6, fontSize: 'var(--text-xs)' }}>A</span>
-              </button>
-              <button disabled={busy} onClick={() => void decide('clear_no')} style={actionButton('var(--dismiss)', true)}>
-                <X size={18} /> {multi ? 'Block both' : 'Block'} <span style={{ opacity: 0.6, fontSize: 'var(--text-xs)' }}>B</span>
-              </button>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              {ANSWERS.map((a) => (
+                <button key={a} disabled={busy} onClick={() => void decide(a)} style={{ ...actionButton(ANSWER_COLOUR[a], true), whiteSpace: 'nowrap' }}>
+                  <AnswerIcon answer={a} size={18} /> {answerButtonLabel(a, multi)} <span style={{ opacity: 0.6, fontSize: 'var(--text-xs)' }}>{ANSWER_KEY[a]}</span>
+                </button>
+              ))}
               <button disabled={busy} onClick={skip} style={{ ...actionButton('', false), flex: '0 0 auto' }} aria-label="Skip">
                 <SkipForward size={18} /> <span style={{ opacity: 0.6, fontSize: 'var(--text-xs)' }}>S</span>
               </button>
@@ -605,10 +625,13 @@ export function Decisions() {
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                 <p style={{ fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)' }}>Or decide for one:</p>
                 {current.subjects.map((s) => (
-                  <div key={s.subjectId} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <div key={s.subjectId} style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                     <span style={{ flex: 1, fontSize: 'var(--text-sm)', color: 'var(--text-primary)' }}>{s.kidName} ({s.ageBand})</span>
-                    <button disabled={busy} onClick={() => void decide('clear_yes', s.userId)} style={{ ...actionButton('', false), flex: '0 0 auto', padding: '6px 12px', fontSize: 'var(--text-sm)' }}>Allow</button>
-                    <button disabled={busy} onClick={() => void decide('clear_no', s.userId)} style={{ ...actionButton('', false), flex: '0 0 auto', padding: '6px 12px', fontSize: 'var(--text-sm)' }}>Block</button>
+                    {ANSWERS.map((a) => (
+                      <button key={a} disabled={busy} onClick={() => void decide(a, s.userId)} style={{ ...actionButton('', false), flex: '0 0 auto', padding: '6px 12px', fontSize: 'var(--text-sm)' }}>
+                        {ANSWER_LABEL[a]}
+                      </button>
+                    ))}
                   </div>
                 ))}
               </div>
@@ -641,11 +664,10 @@ function ReviewItem({ userId, card, reasons, busy, reasonOpen, reason, onToggleR
   reason: ReasonDraft;
   onToggleReason: () => void;
   onReasonChange: (next: ReasonDraft) => void;
-  onChange: () => void;
+  onChange: (answer: Answer) => void;
 }) {
   const d = card.decision;
   const subject = card.subjects[0];
-  const toAllow = changeTarget(card) === 'clear_yes';
   const currentReason = storedReasonSummary(d.reason, reasons);
   const firstReason = d.revision ? storedReasonSummary(d.firstReason, reasons) : null;
   return (
@@ -685,9 +707,13 @@ function ReviewItem({ userId, card, reasons, busy, reasonOpen, reason, onToggleR
         />
       )}
 
-      <button disabled={busy} onClick={onChange} style={actionButton(toAllow ? 'var(--save)' : 'var(--dismiss)', true)}>
-        {toAllow ? <Check size={18} /> : <X size={18} />} {changeLabel(card)}
-      </button>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        {changeOptions(card).map((a) => (
+          <button key={a} disabled={busy} onClick={() => onChange(a)} style={{ ...actionButton(ANSWER_COLOUR[a], true), whiteSpace: 'nowrap' }}>
+            <AnswerIcon answer={a} size={18} /> {changeLabel(a)}
+          </button>
+        ))}
+      </div>
     </div>
   );
 }
@@ -752,12 +778,12 @@ function Review({ userId }: { userId: string }) {
     }
   }, [userId, list, loadingMore]);
 
-  const change = useCallback(async (card: ReviewCard) => {
+  const change = useCallback(async (card: ReviewCard, answer: Answer) => {
     if (busyKey) return;
     setBusyKey(card.key);
     setError(null);
     try {
-      const outcome = await postRevision(userId, card, reasonKey === card.key ? reason : EMPTY_REASON);
+      const outcome = await postRevision(userId, card, answer, reasonKey === card.key ? reason : EMPTY_REASON);
       setList((l) => (l ? reviseInList(l, outcome.card) : l));
       setReasonKey(null);
       setReason(EMPTY_REASON);
@@ -780,7 +806,7 @@ function Review({ userId }: { userId: string }) {
         />
         {counts && (
           <p style={{ fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)' }}>
-            {counts.disagreements} disagreements · {counts.all} decisions. A change to Block takes effect now; a change to Allow only frees a video still waiting in the pool.
+            {counts.disagreements} disagreements · {counts.all} decisions. A change to Unsafe or Not for us takes effect now, and giving a Block its kind changes nothing live; a change to Allow only frees a video still waiting in the pool.
           </p>
         )}
       </div>
@@ -804,7 +830,7 @@ function Review({ userId }: { userId: string }) {
             setReasonKey((k) => (k === card.key ? null : card.key));
           }}
           onReasonChange={setReason}
-          onChange={() => void change(card)}
+          onChange={(a) => void change(card, a)}
         />
       ))}
 
