@@ -39,6 +39,7 @@ Quick reference; durable form in `docs/adr/`.
 - Gemma 4 E4B for guard triage. No frontier API calls until Phase 11 (optional).
 - No Tailwind, no CSS-in-JS, no Storybook in the PWA.
 - Signed-token pattern for every notification action endpoint.
+- **The guard judges safety; the family judges taste** (ADR-0015). A parent's Block is Unsafe or Not for us; the guard is measured on Unsafe only. Don't add taste dimensions to the guard rubric, and Not for us never changes a profile or channel without a parent's tap.
 - **Kid-interest guard eval runs after search-term generation, via the BullMQ chain** (`normalize.ts` → `searchTermsWorker` → `guardQueue`). Don't move inline — guard needs populated `search_terms` (issue #52 acceptance criterion).
 
 ## Stack
