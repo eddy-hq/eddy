@@ -68,7 +68,7 @@ import {
   sendDecisionsNudge,
 } from './index';
 import { currentParentBlock } from './review';
-import { DAILY_CARD_CAP } from './util';
+import { CATCH_UP_BATCH_MIX, DAILY_CARD_CAP } from './util';
 
 const KID_1 = '11111111-1111-7111-8111-111111111111';
 const KID_2 = '22222222-2222-7222-8222-222222222222';
@@ -451,12 +451,14 @@ describe('Spot checks', () => {
   });
 
   it('catch-up draws further batches from older history', async () => {
-    for (let i = 0; i < 12; i++) seedCandidate(`old-yes${i}`, { status: 'scored', verdict: 'clear_yes', createdAt: daysAgo(60) });
-    for (let i = 0; i < 3; i++) seedCandidate(`old-no${i}`, { status: 'guard_rejected', verdict: 'clear_no', createdAt: daysAgo(60) });
+    // One full batch, then a short one of 3 clear-yes and 2 clear-no.
+    const { clear_yes: yes, clear_no: no } = CATCH_UP_BATCH_MIX;
+    for (let i = 0; i < yes + 3; i++) seedCandidate(`old-yes${i}`, { status: 'scored', verdict: 'clear_yes', createdAt: daysAgo(60) });
+    for (let i = 0; i < no + 2; i++) seedCandidate(`old-no${i}`, { status: 'guard_rejected', verdict: 'clear_no', createdAt: daysAgo(60) });
     expect(queue().cards).toHaveLength(0);
 
     const first = queue('catch_up', 'spot_checks').cards;
-    expect(first).toHaveLength(10);
+    expect(first).toHaveLength(yes + no);
     expect(first.every((c) => c.source === 'catch_up')).toBe(true);
     for (const c of first) {
       const s = c.subjects[0]!;

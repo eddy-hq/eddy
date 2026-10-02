@@ -10,7 +10,9 @@ export type HumanVerdict = 'clear_yes' | 'clear_no';
 export const DAILY_CARD_CAP = 15;
 export const CATCH_UP_PAGE = 20;
 export const SPOT_CHECK_MIX = { clear_yes: 4, clear_no: 1 } as const;
-export const CATCH_UP_BATCH_MIX = { clear_yes: 8, clear_no: 2 } as const;
+// Catch-up leans to clear-no for now: the audit set needs clear-no labels to
+// measure clear-no precision (#220). Was 8 / 2; restore once that's done.
+export const CATCH_UP_BATCH_MIX = { clear_yes: 5, clear_no: 5 } as const;
 export const SPOT_CHECK_WINDOW_DAYS = 7;
 export const ESCALATION_RECENT_DAYS = 14;
 
