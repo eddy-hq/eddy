@@ -19,7 +19,7 @@ vi.mock('../../logger', () => ({
 }));
 
 vi.mock('../../config', () => ({
-  config: { OLLAMA_URL: 'http://localhost:11434', OLLAMA_GUARD_MODEL: 'gemma4:e4b' },
+  config: { OLLAMA_URL: 'http://localhost:11434', OLLAMA_GUARD_MODEL: 'gemma4:e4b', GUARD_CANDIDATE_PROMPT: 'v3' },
 }));
 
 vi.mock('../../ollama', async (importOriginal) => ({
@@ -54,11 +54,13 @@ vi.mock('../people/registry', () => ({
 
 vi.mock('../watchdog', () => ({ checkStuckDownloads: vi.fn() }));
 
+import { config } from '../../config';
 import { db } from '../../db/client';
 import { runMigrations } from '../../db/migrate';
+import { ollamaGenerate } from '../../ollama';
 import { EddyError } from '../../errors';
 import { logger } from '../../logger';
-import { DIMENSIONS, RUBRIC_VERSION } from '../guard';
+import { DIMENSIONS, RUBRIC_VERSION, evaluateDownloadedPick, scoreForRequest } from '../guard';
 import {
   countDecisionsWaiting,
   decisionsRouter,
@@ -1000,5 +1002,196 @@ describe('Review (#223)', () => {
     expect(logged).toContain('Parent decision revised');
     expect(logged).not.toContain('Placeholder private note');
     expect(logged).not.toContain('Placeholder title');
+  });
+});
+
+describe('What the guard saw (#225)', () => {
+  // Placeholder words, long enough that every excerpt rule cuts it.
+  const TRANSCRIPT = Array.from({ length: 1200 }, (_, i) => `word${i}`).join(' ');
+  const setPrompt = (v: 'v3' | 'v4') => { (config as { GUARD_CANDIDATE_PROMPT: string }).GUARD_CANDIDATE_PROMPT = v; };
+
+  const prompts: string[] = [];
+  beforeEach(() => {
+    db.exec('DELETE FROM video_metadata');
+    prompts.length = 0;
+    // Record the prompt; the unparseable reply is an uncertain verdict, still
+    // written to guard_eval under the prompt's version.
+    vi.mocked(ollamaGenerate).mockReset().mockImplementation(async (prompt: string) => {
+      prompts.push(prompt);
+      return 'not json';
+    });
+  });
+  afterEach(() => setPrompt('v3'));
+
+  // The transcript excerpt as the prompt contained it (placeholder
+  // transcripts have no line breaks, so the excerpt is one line).
+  function promptExcerpt(prompt: string | undefined): string {
+    const after = prompt?.split('Transcript excerpt:\n')[1];
+    expect(after).toBeDefined();
+    return after!.split('\n')[0]!;
+  }
+
+  function setTranscript(requestId: string, transcript: string | null): void {
+    db.prepare('UPDATE requests SET transcript = ? WHERE request_id = ?').run(transcript, requestId);
+  }
+
+  function seedMetadata(yt: string): void {
+    db.prepare(`
+      INSERT INTO video_metadata (youtube_id, description, tags_json, category_id, age_restricted, made_for_kids, fetched_at)
+      VALUES (?, 'Placeholder description', '["tag one","tag two"]', '20', 0, 1, ?)
+    `).run(yt, NOW.toISOString());
+  }
+
+  interface InputsBody {
+    promptVersion: string | null;
+    transcript: { kind: string; text?: string } | null;
+    tags: string | null;
+    category: string | null;
+    madeForKids: boolean | null;
+    metadataSent: boolean | null;
+    channelHistory: { approved: number; rejected: number } | null;
+  }
+
+  async function inputs(query: string): Promise<InputsBody> {
+    const res = await supertest(app).get(`/parent/decisions/guard-inputs?userId=${PARENT}&${query}`);
+    expect(res.status).toBe(200);
+    return res.body as InputsBody;
+  }
+
+  const forSubject = (type: 'candidate' | 'request', id: string) => inputs(`subjectType=${type}&subjectId=${id}`);
+
+  // The kid-request prompt (v2), as /internal/guard/score runs it.
+  const scoreRequest = (requestId: string, transcript: string | null) => scoreForRequest({
+    requestId, userId: KID_1, url: `https://www.youtube.com/watch?v=${requestId}`,
+    title: 'Placeholder title', channel: 'Placeholder channel', description: '', transcript,
+  });
+
+  // The download-time second pass on a slate pick, under the live prompt.
+  async function secondPass(requestId: string): Promise<void> {
+    const row = db.prepare('SELECT user_id, url, title, channel, transcript FROM requests WHERE request_id = ?')
+      .get(requestId) as { user_id: string; url: string; title: string; channel: string; transcript: string | null };
+    await evaluateDownloadedPick({
+      requestId, userId: row.user_id, url: row.url, title: row.title, channel: row.channel,
+      description: null, transcript: row.transcript, metadata: null,
+    });
+  }
+
+  it('is parent-only', async () => {
+    seedRequest('r1');
+    expect((await supertest(app).get(`/parent/decisions/guard-inputs?userId=${KID_1}&subjectType=request&subjectId=r1`)).status).toBe(403);
+    expect((await supertest(app).get(`/parent/decisions/guard-inputs?userId=${PARENT}&subjectType=request&subjectId=nope`)).status).toBe(404);
+    expect((await supertest(app).get(`/parent/decisions/guard-inputs?userId=${PARENT}`)).status).toBe(400);
+  });
+
+  it("shows a kid request's transcript exactly as the request prompt carried it", async () => {
+    seedRequest('r1', { status: 'ready', verdict: 'clear_yes' });
+    setTranscript('r1', TRANSCRIPT);
+    await scoreRequest('r1', TRANSCRIPT);
+
+    const body = await forSubject('request', 'r1');
+    expect(body.promptVersion).toBe('v2');
+    expect(body.transcript).toEqual({ kind: 'excerpt', text: promptExcerpt(prompts[0]) });
+    expect(body.transcript!.text!.length).toBeLessThan(TRANSCRIPT.length);
+  });
+
+  it('shows the second-pass excerpt for each prompt family', async () => {
+    seedRequest('v3pick', { status: 'guard_pending' });
+    setTranscript('v3pick', TRANSCRIPT);
+    await secondPass('v3pick');
+    const v3 = await forSubject('request', 'v3pick');
+    expect(v3.promptVersion).toBe('candidate-transcript-v1');
+    expect(v3.transcript).toEqual({ kind: 'excerpt', text: promptExcerpt(prompts[0]) });
+
+    setPrompt('v4');
+    seedRequest('v4pick', { status: 'guard_pending' });
+    setTranscript('v4pick', TRANSCRIPT);
+    await secondPass('v4pick');
+    const v4 = await forSubject('request', 'v4pick');
+    expect(v4.promptVersion).toBe('candidate-transcript-v4.1');
+    expect(v4.transcript).toEqual({ kind: 'excerpt', text: promptExcerpt(prompts[1]) });
+    // v4.1 spreads its excerpt across the video; the v1 one is the opening.
+    expect(v4.transcript!.text).not.toBe(v3.transcript!.text);
+  });
+
+  it('says the guard had no transcript when the second pass had none', async () => {
+    seedRequest('r1', { status: 'guard_pending' });
+    await secondPass('r1');
+    const body = await forSubject('request', 'r1');
+    expect(body.promptVersion).toBe('candidate-transcript-v1-no-transcript');
+    expect(body.transcript).toEqual({ kind: 'none' });
+  });
+
+  it('says a candidate had no transcript', async () => {
+    seedCandidate('c1');
+    seedEval({ url: 'https://www.youtube.com/watch?v=c1', verdict: 'uncertain', candidateId: 'c1', userId: KID_1 });
+    const body = await forSubject('candidate', 'c1');
+    expect(body.promptVersion).toBe('candidate-v3');
+    expect(body.transcript).toEqual({ kind: 'none' });
+  });
+
+  it('shows no transcript for a prompt version it does not know', async () => {
+    seedRequest('r1', { status: 'guard_pending' });
+    setTranscript('r1', TRANSCRIPT);
+    seedEval({ url: 'https://www.youtube.com/watch?v=r1', verdict: 'uncertain', requestId: 'r1', userId: KID_1 });
+    db.prepare(`UPDATE guard_eval SET prompt_version = 'some-future-version' WHERE request_id = 'r1'`).run();
+    const body = await forSubject('request', 'r1');
+    expect(body.promptVersion).toBe('some-future-version');
+    expect(body.transcript).toBeNull();
+  });
+
+  it('shows stored metadata and current channel history, and leaves them out when not stored', async () => {
+    seedCandidate('c1');
+    seedEval({ url: 'https://www.youtube.com/watch?v=c1', verdict: 'uncertain', candidateId: 'c1', userId: KID_1 });
+    seedMetadata('c1');
+    seedRequest('past', { status: 'ready', verdict: 'clear_yes' });
+    seedRequest('past2', { status: 'rejected', verdict: 'clear_no' });
+    seedRequest('other-kid', { status: 'ready', verdict: 'clear_yes', userId: KID_2 });
+
+    expect(await forSubject('candidate', 'c1')).toMatchObject({
+      tags: 'tag one, tag two',
+      category: 'Gaming',
+      madeForKids: true,
+      metadataSent: null,
+      channelHistory: { approved: 1, rejected: 1 },
+    });
+
+    seedCandidate('c2');
+    db.prepare(`UPDATE candidate_pool SET channel = NULL WHERE candidate_id = 'c2'`).run();
+    expect(await forSubject('candidate', 'c2')).toMatchObject({
+      promptVersion: null,
+      transcript: { kind: 'none' },
+      tags: null,
+      category: null,
+      madeForKids: null,
+      channelHistory: null,
+    });
+  });
+
+  it('marks stored metadata the request prompt was never sent', async () => {
+    seedRequest('r1', { status: 'ready', verdict: 'clear_yes' });
+    seedMetadata('r1');
+    await scoreRequest('r1', null);
+    expect(prompts[0]).not.toContain('Tags:');
+    expect(await forSubject('request', 'r1')).toMatchObject({
+      transcript: { kind: 'none' }, tags: 'tag one, tag two', metadataSent: false,
+    });
+  });
+
+  it("reads a Review card's inputs through its decision", async () => {
+    seedRequest('r1', { status: 'ready', verdict: 'clear_yes' });
+    setTranscript('r1', TRANSCRIPT);
+    await scoreRequest('r1', TRANSCRIPT);
+    db.prepare(`
+      INSERT INTO guard_decisions
+        (decision_id, subject_type, subject_id, user_id, url, youtube_id, age_band, rubric_version, source,
+         guard_verdict, eval_id, human_verdict, decided_by, decided_at)
+      VALUES ('d1', 'request', 'r1', ?, 'https://www.youtube.com/watch?v=r1', 'r1', '10-12', ?, 'spot_check',
+              'uncertain', (SELECT eval_id FROM guard_eval WHERE request_id = 'r1'), 'clear_yes', ?, ?)
+    `).run(KID_1, RUBRIC_VERSION, PARENT, NOW.toISOString());
+
+    const body = await inputs('decisionId=d1');
+    expect(body.promptVersion).toBe('v2');
+    expect(body.transcript).toEqual({ kind: 'excerpt', text: promptExcerpt(prompts[0]) });
+    expect((await supertest(app).get(`/parent/decisions/guard-inputs?userId=${PARENT}&decisionId=nope`)).status).toBe(404);
   });
 });

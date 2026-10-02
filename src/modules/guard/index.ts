@@ -16,6 +16,7 @@ import {
   buildRubricPrompt,
   formatTags,
   parseRubricOutput,
+  rubricTranscriptExcerpt,
   type RubricPromptInput,
 } from './rubric-prompt';
 import {
@@ -46,8 +47,10 @@ export {
   RUBRIC_PROMPT_PREFIX,
   buildRubricPrompt,
   cleanDescription,
+  formatTags,
 } from './rubric-prompt';
-export { shownEvalById, shownEvalForCandidate,shownEvalForRequest, labelGuardEval, type ShownEval } from './labels';
+export { categoryName } from './metadata';
+export { shownEvalById, shownEvalForCandidate, shownEvalForRequest, labelGuardEval, type ShownEval } from './labels';
 
 const PROMPT_VERSION = 'v2';
 export const CANDIDATE_PROMPT_VERSION = 'candidate-v3';
@@ -136,7 +139,9 @@ export interface ChannelHistory {
   rejected: number;
 }
 
-function getChannelHistory(userId: string, channel: string): ChannelHistory {
+// The kid's history with a channel as it stands now. Also read by the parent's
+// decision card (#225), labelled as current rather than as at the verdict.
+export function getChannelHistory(userId: string, channel: string): ChannelHistory {
   const row = db.prepare(`
     SELECT
       COUNT(CASE WHEN status IN ('ready', 'watched') THEN 1 END) AS approved,
@@ -176,9 +181,7 @@ function buildPrompt(params: PromptParams): string {
     : params.madeForKids === false
       ? 'YouTube audience setting: not made for kids'
       : null;
-  const txScript = transcript
-    ? `\nTranscript excerpt:\n${transcript.slice(0, 2000)}${transcript.length > 2000 ? '...' : ''}`
-    : '';
+  const txScript = transcript ? `\nTranscript excerpt:\n${headTranscriptExcerpt(transcript)}` : '';
   const history = !channelHistory
     ? ''
     : channelHistory.approved > 0 || channelHistory.rejected > 0
@@ -219,6 +222,77 @@ Guidelines:
 - uncertain: ambiguous — escalate to parent; when in doubt, use this
 - confidence reflects certainty in the verdict (not how appropriate the content is)
 - Never auto-approve when uncertain`;
+}
+
+// The transcript excerpt the verdict prompts (request v1/v2, second pass v1)
+// carry: the opening 2,000 characters.
+const HEAD_TRANSCRIPT_CHARS = 2000;
+
+function headTranscriptExcerpt(transcript: string): string {
+  return `${transcript.slice(0, HEAD_TRANSCRIPT_CHARS)}${transcript.length > HEAD_TRANSCRIPT_CHARS ? '...' : ''}`;
+}
+
+// What a guard prompt carried of a subject's transcript, by the prompt
+// version on its guard_eval row (#225). The parent's decision card shows this,
+// so it is built by the same functions the prompts use and can't drift.
+//   excerpt  the excerpt exactly as the prompt contained it
+//   none     the prompt had no transcript
+//   unknown  the version's rule isn't known here, or the stored transcript no
+//            longer matches what the version says was sent: show nothing
+export type PromptTranscript =
+  | { kind: 'excerpt'; text: string }
+  | { kind: 'none' }
+  | { kind: 'unknown' };
+
+// Earlier versions no longer written, with the rule they used. 'v1' is the
+// request prompt before #201, same transcript slice as v2.
+// 'candidate-transcript-v4' clipped the transcript to its opening 2,000
+// characters with a trailing '...' (#211), the same output as the head
+// excerpt; v4.1 spread it across the video (#212).
+const HEAD_EXCERPT_REQUEST_VERSIONS: ReadonlySet<string> = new Set(['v1', PROMPT_VERSION]);
+const HEAD_EXCERPT_SECOND_PASS_VERSIONS: ReadonlySet<string> = new Set([
+  SECOND_PASS_PROMPT_VERSION,
+  'candidate-transcript-v4',
+]);
+const SPREAD_EXCERPT_VERSIONS: ReadonlySet<string> = new Set([SECOND_PASS_V4_PROMPT_VERSION]);
+const NO_TRANSCRIPT_VERSIONS: ReadonlySet<string> = new Set([
+  'candidate-v2',
+  CANDIDATE_PROMPT_VERSION,
+  'candidate-v4',
+  CANDIDATE_V4_PROMPT_VERSION,
+  SECOND_PASS_NO_TRANSCRIPT_PROMPT_VERSION,
+  'candidate-transcript-v4-no-transcript',
+  SECOND_PASS_V4_NO_TRANSCRIPT_PROMPT_VERSION,
+]);
+
+export function promptTranscript(promptVersion: string | null, transcript: string | null): PromptTranscript {
+  if (promptVersion === null) return { kind: 'unknown' };
+  if (NO_TRANSCRIPT_VERSIONS.has(promptVersion)) return { kind: 'none' };
+  // The request prompt includes whatever transcript the worker sent, which
+  // is the one stored on the request; no transcript means none was sent.
+  if (HEAD_EXCERPT_REQUEST_VERSIONS.has(promptVersion)) {
+    return transcript ? { kind: 'excerpt', text: headTranscriptExcerpt(transcript) } : { kind: 'none' };
+  }
+  // The second pass recorded a with-transcript version, so a blank stored
+  // transcript means the row has changed since: don't guess.
+  if (HEAD_EXCERPT_SECOND_PASS_VERSIONS.has(promptVersion)) {
+    return transcript?.trim() ? { kind: 'excerpt', text: headTranscriptExcerpt(transcript) } : { kind: 'unknown' };
+  }
+  if (SPREAD_EXCERPT_VERSIONS.has(promptVersion)) {
+    const text = rubricTranscriptExcerpt(transcript);
+    return text !== null ? { kind: 'excerpt', text } : { kind: 'unknown' };
+  }
+  return { kind: 'unknown' };
+}
+
+// Whether a prompt version was sent the stored Data API fields (tags,
+// category, audience setting): false for the request prompt (scoreForRequest
+// never passes them) and the candidate prompt before #205, which added them;
+// null when not known here.
+export function promptSentMetadata(promptVersion: string | null): boolean | null {
+  if (promptVersion === null) return null;
+  if (HEAD_EXCERPT_REQUEST_VERSIONS.has(promptVersion) || promptVersion === 'candidate-v2') return false;
+  return null;
 }
 
 function parseVerdict(response: string): GuardVerdict {

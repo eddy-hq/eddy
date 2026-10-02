@@ -9,6 +9,9 @@ import {
   canBlockChannel,
   decisionsForCard,
   formatScores,
+  guardInputRows,
+  guardInputsParams,
+  type GuardInputs,
   hasReason,
   keyAction,
   reasonFields,
@@ -405,5 +408,60 @@ describe('Review', () => {
   it('appends a page without repeating cards already shown', () => {
     expect(appendReviewPage([reviewCard('a'), reviewCard('b')], [reviewCard('b'), reviewCard('c')]).map((c) => c.key))
       .toEqual(['a', 'b', 'c']);
+  });
+});
+
+describe('What the guard saw (#225)', () => {
+  const bare: GuardInputs = {
+    promptVersion: null, transcript: null, tags: null, category: null,
+    madeForKids: null, metadataSent: null, channelHistory: null,
+  };
+
+  it('asks about a Review card by decision and a queue card by subject', () => {
+    const s = subject('s1', 'kid1');
+    expect(guardInputsParams('p1', s, 'd1').toString()).toBe('userId=p1&decisionId=d1');
+    expect(guardInputsParams('p1', s).toString()).toBe('userId=p1&subjectType=candidate&subjectId=s1');
+  });
+
+  it('lists every stored input, the transcript excerpt as a block', () => {
+    const rows = guardInputRows({
+      promptVersion: 'candidate-transcript-v4.1',
+      transcript: { kind: 'excerpt', text: 'Placeholder excerpt' },
+      tags: 'tag one, tag two',
+      category: 'Gaming',
+      madeForKids: false,
+      metadataSent: null,
+      channelHistory: { approved: 2, rejected: 1 },
+    });
+    expect(rows).toEqual([
+      { label: 'Category', value: 'Gaming' },
+      { label: 'Tags', value: 'tag one, tag two' },
+      { label: 'YouTube audience', value: 'Not made for kids' },
+      { label: 'Channel history (now)', value: '2 approved, 1 rejected' },
+      { label: 'Transcript excerpt', value: 'Placeholder excerpt', block: true },
+      { label: 'Prompt', value: 'candidate-transcript-v4.1' },
+    ]);
+  });
+
+  it('says plainly when the guard had no transcript', () => {
+    expect(guardInputRows({ ...bare, transcript: { kind: 'none' } }))
+      .toEqual([{ label: 'Transcript', value: 'The guard had no transcript' }]);
+  });
+
+  it('leaves out what is not stored, and an excerpt it cannot vouch for', () => {
+    expect(guardInputRows(bare)).toEqual([]);
+  });
+
+  it('labels an empty channel history', () => {
+    expect(guardInputRows({ ...bare, channelHistory: { approved: 0, rejected: 0 } }))
+      .toEqual([{ label: 'Channel history (now)', value: 'No requests from this channel' }]);
+  });
+
+  it('marks metadata the judging prompt was not sent', () => {
+    const rows = guardInputRows({ ...bare, tags: 'tag one', madeForKids: true, metadataSent: false });
+    expect(rows).toEqual([
+      { label: 'Tags', value: 'tag one', notSent: true },
+      { label: 'YouTube audience', value: 'Made for kids', notSent: true },
+    ]);
   });
 });

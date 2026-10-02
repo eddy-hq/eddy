@@ -12,6 +12,7 @@ export interface ShownEval {
   verdict: string | null;
   reason: string | null;
   scores: Record<string, number> | null;
+  promptVersion?: string | null;
 }
 
 export interface CardSubject {
@@ -434,4 +435,69 @@ export function formatScores(scores: Record<string, number> | null): Array<{ lab
   return DIMENSION_LABELS
     .filter(([key]) => typeof scores[key] === 'number')
     .map(([key, label]) => ({ label, value: scores[key]!, high: scores[key]! >= 2 }));
+}
+
+// ── What the guard saw (#225) ────────────────────────────────────────────────
+//
+// The guard prompt's inputs beyond the title, channel and description the card
+// already shows. Fetched when the parent opens the section.
+
+export interface GuardInputs {
+  promptVersion: string | null;
+  // null: not known for this prompt version, so nothing is shown.
+  transcript: { kind: 'excerpt'; text: string } | { kind: 'none' } | null;
+  tags: string | null;
+  category: string | null;
+  madeForKids: boolean | null;
+  // False when the judging prompt wasn't sent tags, category or audience.
+  metadataSent: boolean | null;
+  channelHistory: { approved: number; rejected: number } | null;
+}
+
+// Which subject to ask about: a Review card's decision, else the subject.
+export function guardInputsParams(
+  userId: string,
+  subject: Pick<CardSubject, 'subjectType' | 'subjectId'>,
+  decisionId?: string,
+): URLSearchParams {
+  return decisionId
+    ? new URLSearchParams({ userId, decisionId })
+    : new URLSearchParams({ userId, subjectType: subject.subjectType, subjectId: subject.subjectId });
+}
+
+export interface GuardInputRow {
+  label: string;
+  value: string;
+  // The transcript excerpt: shown as a block, not a line.
+  block?: boolean;
+  // Stored, but the judging prompt wasn't sent it.
+  notSent?: boolean;
+}
+
+// The section's rows, in prompt order. A field with nothing stored is left
+// out; so is the transcript when its excerpt isn't known for the version.
+export function guardInputRows(inputs: GuardInputs): GuardInputRow[] {
+  const rows: GuardInputRow[] = [];
+  const notSent = inputs.metadataSent === false ? { notSent: true } : {};
+  if (inputs.category) rows.push({ label: 'Category', value: inputs.category, ...notSent });
+  if (inputs.tags) rows.push({ label: 'Tags', value: inputs.tags, ...notSent });
+  if (inputs.madeForKids !== null) {
+    rows.push({ label: 'YouTube audience', value: inputs.madeForKids ? 'Made for kids' : 'Not made for kids', ...notSent });
+  }
+  const h = inputs.channelHistory;
+  if (h) {
+    rows.push({
+      label: 'Channel history (now)',
+      value: h.approved > 0 || h.rejected > 0
+        ? `${h.approved} approved, ${h.rejected} rejected`
+        : 'No requests from this channel',
+    });
+  }
+  if (inputs.transcript?.kind === 'excerpt') {
+    rows.push({ label: 'Transcript excerpt', value: inputs.transcript.text, block: true });
+  } else if (inputs.transcript?.kind === 'none') {
+    rows.push({ label: 'Transcript', value: 'The guard had no transcript' });
+  }
+  if (inputs.promptVersion) rows.push({ label: 'Prompt', value: inputs.promptVersion });
+  return rows;
 }
