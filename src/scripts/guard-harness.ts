@@ -101,6 +101,7 @@ function snapshot(): void {
   printCounts('Dropped by reason', r.dropped);
   console.log(`Items written:        ${s.total}`);
   console.log(`Holdout (~${HOLDOUT_PERCENT}%):        ${s.holdout}`);
+  console.log(`Revised labels:       ${s.revised}`);
   printCounts('By label', s.byLabel);
   printCounts('By subject type', s.bySubjectType);
 }

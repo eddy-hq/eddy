@@ -57,6 +57,7 @@ vi.mock('../watchdog', () => ({ checkStuckDownloads: vi.fn() }));
 import { db } from '../../db/client';
 import { runMigrations } from '../../db/migrate';
 import { EddyError } from '../../errors';
+import { logger } from '../../logger';
 import { DIMENSIONS, RUBRIC_VERSION } from '../guard';
 import {
   countDecisionsWaiting,
@@ -99,6 +100,7 @@ beforeAll(() => {
 
 beforeEach(() => {
   db.exec('DELETE FROM decision_nudges');
+  db.exec('DELETE FROM guard_decision_revisions');
   db.exec('DELETE FROM guard_decisions');
   db.exec('DELETE FROM guard_spot_checks');
   db.exec('DELETE FROM guard_eval');
@@ -743,5 +745,206 @@ describe('Daily nudge', () => {
     // 23:30 UTC on the 25th is 00:30 on the 26th in London.
     expect(nudgeDay(new Date('2026-09-25T23:30:00.000Z'), TZ)).toBe('2026-09-26');
     expect(nudgeDay(new Date('2026-09-25T23:30:00.000Z'), 'UTC')).toBe('2026-09-25');
+  });
+});
+
+describe('Review (#223)', () => {
+  function seedDecision(id: string, subjectType: 'candidate' | 'request', subjectId: string, opts: {
+    guard?: string | null; human?: 'clear_yes' | 'clear_no'; decidedAt?: string; source?: string;
+  } = {}): void {
+    db.prepare(`
+      INSERT INTO guard_decisions
+        (decision_id, subject_type, subject_id, user_id, url, youtube_id, age_band, rubric_version, source,
+         guard_verdict, eval_id, human_verdict, decided_by, decided_at, reason_dimensions_json, reason_text)
+      VALUES (?, ?, ?, ?, ?, ?, '10-12', ?, ?, ?, NULL, ?, ?, ?, '["violence"]', 'Placeholder note')
+    `).run(
+      id, subjectType, subjectId, KID_1, `https://www.youtube.com/watch?v=${subjectId}`, subjectId,
+      RUBRIC_VERSION, opts.source ?? 'spot_check', opts.guard === undefined ? 'clear_yes' : opts.guard,
+      opts.human ?? 'clear_no', PARENT, opts.decidedAt ?? daysAgo(1),
+    );
+  }
+
+  const decisionRow = (id: string) => db.prepare('SELECT * FROM guard_decisions WHERE decision_id = ?').get(id);
+  const revisions = (id: string) => db.prepare(
+    'SELECT * FROM guard_decision_revisions WHERE decision_id = ? ORDER BY rowid',
+  ).all(id) as Array<Record<string, unknown>>;
+  const revise = (decisionId: string, verdict: 'clear_yes' | 'clear_no', extra: Record<string, unknown> = {}) =>
+    supertest(app).post('/parent/decisions/revisions').send({ userId: PARENT, decisionId, verdict, ...extra });
+  const review = (filter?: 'disagreements' | 'all', extra = '') =>
+    supertest(app).get(`/parent/decisions/review?userId=${PARENT}${filter ? `&filter=${filter}` : ''}${extra}`);
+
+  interface ReviewBody {
+    filter: string;
+    cards: Array<{ key: string; decision: { verdict: string } } & Record<string, unknown>>;
+    counts: unknown;
+    reasons: { dimensions: unknown[] };
+    nextOffset: number | null;
+  }
+
+  it('is parent-only, and refuses an unknown decision', async () => {
+    seedCandidate('c1', { status: 'scored', verdict: 'clear_yes' });
+    seedDecision('d1', 'candidate', 'c1', { human: 'clear_yes' });
+    expect((await supertest(app).get(`/parent/decisions/review?userId=${KID_1}`)).status).toBe(403);
+    const kid = await supertest(app).post('/parent/decisions/revisions')
+      .send({ userId: KID_1, decisionId: 'd1', verdict: 'clear_no' });
+    expect(kid.status).toBe(403);
+    expect((await revise('missing', 'clear_no')).status).toBe(404);
+    expect(revisions('d1')).toHaveLength(0);
+    expect(status('candidate_pool', 'c1').status).toBe('scored');
+  });
+
+  it('lists disagreements by default and every decision under all, newest first', async () => {
+    seedCandidate('agree', { status: 'guard_rejected', verdict: 'clear_no' });
+    seedCandidate('yes-blocked', { status: 'guard_rejected', verdict: 'clear_no' });
+    seedCandidate('no-allowed', { status: 'scored', verdict: 'clear_yes' });
+    seedCandidate('escalated', { status: 'scored', verdict: 'clear_yes' });
+    seedDecision('d-agree', 'candidate', 'agree', { guard: 'clear_no', human: 'clear_no', decidedAt: daysAgo(1) });
+    seedDecision('d-yes-blocked', 'candidate', 'yes-blocked', { guard: 'clear_yes', human: 'clear_no', decidedAt: daysAgo(2) });
+    seedDecision('d-no-allowed', 'candidate', 'no-allowed', { guard: 'clear_no', human: 'clear_yes', decidedAt: daysAgo(3) });
+    seedDecision('d-escalated', 'candidate', 'escalated', {
+      guard: 'uncertain', human: 'clear_yes', source: 'escalation', decidedAt: daysAgo(4),
+    });
+
+    const def = (await review()).body as ReviewBody;
+    expect(def.filter).toBe('disagreements');
+    expect(def.cards.map((c) => c.key)).toEqual(['d-yes-blocked', 'd-no-allowed']);
+    expect(def.counts).toEqual({ disagreements: 2, all: 4 });
+    expect(def.reasons.dimensions).toHaveLength(DIMENSIONS.length);
+    expect(def.cards[0]).toMatchObject({
+      title: 'Placeholder title', channel: 'Placeholder channel', youtubeId: 'yes-blocked',
+      thumbnailUrl: 'https://i.ytimg.com/vi/yes-blocked/mqdefault.jpg',
+      subjects: [{ subjectType: 'candidate', subjectId: 'yes-blocked', kidName: 'Boy1', ageBand: '10-12' }],
+      decision: {
+        decisionId: 'd-yes-blocked', guardVerdict: 'clear_yes', firstVerdict: 'clear_no', verdict: 'clear_no',
+        firstReason: { dimensions: ['violence'], text: 'Placeholder note' }, revision: null,
+      },
+    });
+
+    const all = (await review('all')).body as ReviewBody;
+    expect(all.cards.map((c) => c.key)).toEqual(['d-agree', 'd-yes-blocked', 'd-no-allowed', 'd-escalated']);
+  });
+
+  it('pages through decisions', async () => {
+    for (let i = 0; i < 3; i++) {
+      seedCandidate(`p${i}`, { status: 'scored', verdict: 'clear_yes' });
+      seedDecision(`d-p${i}`, 'candidate', `p${i}`, { decidedAt: daysAgo(i + 1) });
+    }
+    const first = (await review('all', '&limit=2')).body as ReviewBody;
+    expect(first.cards.map((c) => c.key)).toEqual(['d-p0', 'd-p1']);
+    expect(first.nextOffset).toBe(2);
+    const second = (await review('all', '&limit=2&offset=2')).body as ReviewBody;
+    expect(second.cards.map((c) => c.key)).toEqual(['d-p2']);
+    expect(second.nextOffset).toBeNull();
+  });
+
+  it('writes a revision and leaves the first-pass decision as recorded', async () => {
+    seedCandidate('c1', { status: 'scored', verdict: 'clear_yes' });
+    seedDecision('d1', 'candidate', 'c1', { guard: 'clear_yes', human: 'clear_yes' });
+    const before = decisionRow('d1');
+
+    const res = await revise('d1', 'clear_no', { reasonDimensions: ['violence', 'language'], reasonText: '  Placeholder change  ' });
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ decisionId: 'd1', verdict: 'clear_no', effect: 'blocked' });
+    expect(decisionRow('d1')).toEqual(before);
+    expect(revisions('d1')).toEqual([expect.objectContaining({
+      decision_id: 'd1', human_verdict: 'clear_no', rubric_version: RUBRIC_VERSION, effect: 'blocked',
+      reason_dimensions_json: JSON.stringify(['violence', 'language']), reason_text: 'Placeholder change',
+      revised_by: PARENT,
+    })]);
+    expect(status('candidate_pool', 'c1')).toEqual({ status: 'guard_rejected', guard_verdict: 'clear_no' });
+    // The card shows the current answer and that it was revised.
+    expect(res.body.card.decision).toMatchObject({
+      firstVerdict: 'clear_yes', verdict: 'clear_no',
+      reason: { dimensions: ['violence', 'language'], text: 'Placeholder change' },
+      revision: { effect: 'blocked', count: 1 },
+    });
+  });
+
+  it('a change to Block on a visible slate pick removes it from the feed', async () => {
+    seedRequest('pick', { status: 'ready', verdict: 'clear_yes', source: 'recommended' });
+    seedDecision('d-pick', 'request', 'pick', { guard: 'clear_yes', human: 'clear_yes' });
+    const res = await revise('d-pick', 'clear_no');
+    expect(res.body.effect).toBe('removed');
+    expect(status('requests', 'pick')).toMatchObject({ status: 'deleted', decided_by: PARENT });
+    expect(deleteQueueAdd).toHaveBeenCalledTimes(1);
+  });
+
+  it('a change to Block on a picked candidate removes its slate pick from the feed', async () => {
+    seedCandidate('c-picked', { status: 'requested', verdict: 'clear_yes', yt: 'vid-picked' });
+    seedRequest('r-picked', { status: 'ready', verdict: 'clear_yes', source: 'recommended', yt: 'vid-picked' });
+    seedDecision('d-picked', 'candidate', 'c-picked', { guard: 'clear_yes', human: 'clear_yes' });
+    expect((await revise('d-picked', 'clear_no')).body.effect).toBe('removed');
+    expect(status('requests', 'r-picked').status).toBe('deleted');
+  });
+
+  it('a change to Block with nothing live is a label only', async () => {
+    seedCandidate('c-dismissed', { status: 'dismissed', verdict: 'clear_yes' });
+    seedDecision('d-dismissed', 'candidate', 'c-dismissed', { guard: 'clear_yes', human: 'clear_yes' });
+    expect((await revise('d-dismissed', 'clear_no')).body.effect).toBe('label_only');
+    expect(status('candidate_pool', 'c-dismissed').status).toBe('dismissed');
+    expect(revisions('d-dismissed')).toHaveLength(1);
+  });
+
+  it('a change to Allow on a candidate still in the pool makes it eligible', async () => {
+    seedCandidate('c-pooled', { status: 'guard_rejected', verdict: 'clear_no' });
+    seedDecision('d-pooled', 'candidate', 'c-pooled', { guard: 'clear_no', human: 'clear_no' });
+    expect((await revise('d-pooled', 'clear_yes')).body.effect).toBe('eligible');
+    expect(status('candidate_pool', 'c-pooled')).toEqual({ status: 'scored', guard_verdict: 'clear_yes' });
+  });
+
+  it('a change to Allow on a pruned candidate is a label only and surfaces nothing', async () => {
+    seedDecision('d-pruned', 'candidate', 'pruned', { guard: 'clear_yes', human: 'clear_no' });
+    expect((await revise('d-pruned', 'clear_yes')).body.effect).toBe('label_only');
+    expect(db.prepare('SELECT COUNT(*) AS n FROM candidate_pool').get()).toEqual({ n: 0 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM requests').get()).toEqual({ n: 0 });
+    expect(revisions('d-pruned')).toEqual([expect.objectContaining({ human_verdict: 'clear_yes', effect: 'label_only' })]);
+  });
+
+  it('a change to Allow on a picked candidate is a label only and surfaces nothing', async () => {
+    seedCandidate('c-picked', { status: 'requested', verdict: 'clear_yes', yt: 'vid-picked' });
+    seedRequest('r-picked', { status: 'deleted', verdict: 'clear_yes', source: 'recommended', yt: 'vid-picked' });
+    seedDecision('d-picked', 'candidate', 'c-picked', { guard: 'clear_yes', human: 'clear_no' });
+    expect((await revise('d-picked', 'clear_yes')).body.effect).toBe('label_only');
+    expect(status('candidate_pool', 'c-picked').status).toBe('requested');
+    expect(status('requests', 'r-picked').status).toBe('deleted');
+  });
+
+  it('a change to Allow on a blocked request is a label only and never puts it back', async () => {
+    seedRequest('r-blocked', { status: 'deleted', verdict: 'clear_yes', source: 'recommended' });
+    seedDecision('d-blocked', 'request', 'r-blocked', { guard: 'clear_yes', human: 'clear_no' });
+    expect((await revise('d-blocked', 'clear_yes')).body.effect).toBe('label_only');
+    expect(status('requests', 'r-blocked').status).toBe('deleted');
+  });
+
+  it('the latest revision wins, and a change to the current answer is refused', async () => {
+    seedCandidate('c1', { status: 'scored', verdict: 'clear_yes' });
+    seedDecision('d1', 'candidate', 'c1', { guard: 'clear_yes', human: 'clear_no' });
+    expect((await revise('d1', 'clear_no')).status).toBe(400);
+    expect((await revise('d1', 'clear_yes')).status).toBe(200);
+    const last = await revise('d1', 'clear_no');
+    expect(last.body.card.decision).toMatchObject({
+      firstVerdict: 'clear_no', verdict: 'clear_no', revision: { count: 2 },
+    });
+    expect(revisions('d1').map((r) => r['human_verdict'])).toEqual(['clear_yes', 'clear_no']);
+    expect(decisionRow('d1')).toMatchObject({ human_verdict: 'clear_no' });
+  });
+
+  it('keeps a decision revised into agreement under disagreements', async () => {
+    seedCandidate('c1', { status: 'guard_rejected', verdict: 'clear_no' });
+    seedDecision('d1', 'candidate', 'c1', { guard: 'clear_yes', human: 'clear_no' });
+    await revise('d1', 'clear_yes');
+    const def = (await review()).body as ReviewBody;
+    expect(def.cards.map((c) => [c.key, c.decision.verdict])).toEqual([['d1', 'clear_yes']]);
+  });
+
+  it('logs ids and the effect only, never the note', async () => {
+    seedCandidate('c1', { status: 'scored', verdict: 'clear_yes' });
+    seedDecision('d1', 'candidate', 'c1', { guard: 'clear_yes', human: 'clear_yes' });
+    vi.mocked(logger.info).mockClear();
+    await revise('d1', 'clear_no', { reasonText: 'Placeholder private note' });
+    const logged = JSON.stringify(vi.mocked(logger.info).mock.calls);
+    expect(logged).toContain('Parent decision revised');
+    expect(logged).not.toContain('Placeholder private note');
+    expect(logged).not.toContain('Placeholder title');
   });
 });

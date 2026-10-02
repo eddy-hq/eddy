@@ -251,6 +251,124 @@ export function agreement(human: HumanVerdict, guardVerdict: string | null): 'ag
   return guardVerdict === human ? 'agree' : 'disagree';
 }
 
+// ── Review (#223) ────────────────────────────────────────────────────────────
+//
+// Past decisions, re-checked and changed. A change is a revision: the first
+// answer stays recorded, the latest revision is the current answer.
+
+export type ReviewFilter = 'disagreements' | 'all';
+export type RevisionEffect = 'removed' | 'blocked' | 'eligible' | 'label_only';
+
+export interface StoredReason {
+  dimensions: string[];
+  text: string | null;
+}
+
+export interface ReviewDecision {
+  decisionId: string;
+  decidedAt: string;
+  guardVerdict: string | null;
+  firstVerdict: HumanVerdict;
+  firstReason: StoredReason | null;
+  verdict: HumanVerdict;
+  reason: StoredReason | null;
+  revision: { revisedAt: string; effect: RevisionEffect; count: number } | null;
+}
+
+export interface ReviewCard extends DecisionCard {
+  decision: ReviewDecision;
+}
+
+export interface ReviewPage {
+  filter: ReviewFilter;
+  cards: ReviewCard[];
+  reasons: ReasonOptions;
+  counts: { disagreements: number; all: number };
+  nextOffset: number | null;
+}
+
+export interface RevisionOutcome {
+  decisionId: string;
+  revisionId: string;
+  verdict: HumanVerdict;
+  effect: RevisionEffect;
+  card: ReviewCard;
+}
+
+export const REVIEW_FILTER_LABEL: Record<ReviewFilter, string> = {
+  disagreements: 'Disagreements',
+  all: 'All decisions',
+};
+
+// The guard gave a clear verdict and the parent the other one. An uncertain
+// or missing guard verdict (an Escalation) is never a disagreement.
+export function isDisagreement(guardVerdict: string | null, verdict: HumanVerdict): boolean {
+  return (guardVerdict === 'clear_yes' || guardVerdict === 'clear_no') && guardVerdict !== verdict;
+}
+
+// Mirrors the server: a card disagreeing on its first answer or its current
+// one stays under Disagreements, so a change into agreement can be seen.
+export function matchesReviewFilter(card: ReviewCard, filter: ReviewFilter): boolean {
+  if (filter === 'all') return true;
+  const d = card.decision;
+  return isDisagreement(d.guardVerdict, d.firstVerdict) || isDisagreement(d.guardVerdict, d.verdict);
+}
+
+// A change always flips the current answer.
+export function changeTarget(card: ReviewCard): HumanVerdict {
+  return card.decision.verdict === 'clear_yes' ? 'clear_no' : 'clear_yes';
+}
+
+export function changeLabel(card: ReviewCard): string {
+  return changeTarget(card) === 'clear_yes' ? 'Change to Allow' : 'Change to Block';
+}
+
+export function revisionBody(
+  userId: string,
+  card: ReviewCard,
+  reason: ReasonDraft = EMPTY_REASON,
+): { userId: string; decisionId: string; verdict: HumanVerdict } & ReasonFields {
+  return { userId, decisionId: card.decision.decisionId, verdict: changeTarget(card), ...reasonFields(reason) };
+}
+
+export function revisionEffectLabel(effect: RevisionEffect): string {
+  switch (effect) {
+    case 'removed': return 'Removed from the feed';
+    case 'blocked': return 'Taken out of the pool';
+    case 'eligible': return 'Can be picked for a future slate';
+    case 'label_only': return 'Label only, nothing live changed';
+  }
+}
+
+// "You said Block", or "You said Allow, now Block" once revised.
+export function answerLine(decision: ReviewDecision): string {
+  const first = `You said ${verdictLabel(decision.firstVerdict)}`;
+  return decision.revision ? `${first}, now ${verdictLabel(decision.verdict)}` : first;
+}
+
+// A recorded reason as chip labels plus the note, or null when none was given.
+export function storedReasonSummary(reason: StoredReason | null, options: ReasonOptions | undefined): string | null {
+  if (!reason) return null;
+  const labels = reason.dimensions.map((k) => options?.dimensions.find((d) => d.key === k)?.label ?? k);
+  if (reason.text) labels.push(`"${reason.text}"`);
+  return labels.length > 0 ? labels.join(', ') : null;
+}
+
+// Put a changed card back in its place; it leaves the list only if it no
+// longer matches the filter.
+export function applyRevision(cards: readonly ReviewCard[], updated: ReviewCard, filter: ReviewFilter): ReviewCard[] {
+  return cards
+    .map((c) => (c.key === updated.key ? updated : c))
+    .filter((c) => c.key !== updated.key || matchesReviewFilter(c, filter));
+}
+
+// The next page appended, skipping any card already shown (a decision
+// recorded between pages shifts the offsets by one).
+export function appendReviewPage(cards: readonly ReviewCard[], page: readonly ReviewCard[]): ReviewCard[] {
+  const seen = new Set(cards.map((c) => c.key));
+  return [...cards, ...page.filter((c) => !seen.has(c.key))];
+}
+
 const DIMENSION_LABELS: Array<[string, string]> = [
   ['language', 'Language'],
   ['violence', 'Violence'],

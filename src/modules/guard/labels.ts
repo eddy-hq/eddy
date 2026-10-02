@@ -95,3 +95,18 @@ export function labelGuardEval(evalId: string, humanVerdict: 'clear_yes' | 'clea
     `UPDATE guard_eval SET human_verdict = ?, human_labelled_at = ? WHERE eval_id = ?`,
   ).run(humanVerdict, at, evalId);
 }
+
+// The guard_eval row a parent decision recorded as shown (Review, #223), or
+// null when it no longer exists.
+export function shownEvalById(evalId: string): ShownEval | null {
+  const row = db.prepare(
+    `SELECT eval_id, gemma_verdict, gemma_reason, rubric_scores_json FROM guard_eval WHERE eval_id = ?`,
+  ).get(evalId) as (EvalRow & { rubric_scores_json: string | null }) | undefined;
+  if (!row) return null;
+  return {
+    evalId: row.eval_id,
+    verdict: row.gemma_verdict,
+    reason: row.gemma_reason,
+    scores: parseDimensions(row.rubric_scores_json),
+  };
+}

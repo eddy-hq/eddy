@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Snapshot on an in-memory DB with real migrations. Fixtures are synthetic.
@@ -15,8 +17,8 @@ vi.mock('../../logger', () => ({
 
 import { db } from '../../db/client';
 import { runMigrations } from '../../db/migrate';
-import { buildSnapshot, channelHistoryAsOf } from './snapshot';
-import { HOLDOUT_PERCENT, isHoldout } from './util';
+import { buildSnapshot, channelHistoryAsOf, summariseDataset } from './snapshot';
+import { HOLDOUT_PERCENT, isHoldout, parseHarnessItem } from './util';
 
 const KID_1 = '11111111-1111-7111-8111-111111111111';
 const KID_2 = '22222222-2222-7222-8222-222222222222';
@@ -37,6 +39,7 @@ beforeAll(() => {
 });
 
 beforeEach(() => {
+  db.exec('DELETE FROM guard_decision_revisions');
   db.exec('DELETE FROM guard_decisions');
   db.exec('DELETE FROM candidate_pool');
   db.exec('DELETE FROM requests');
@@ -212,5 +215,65 @@ describe('holdout', () => {
       seedDecision(`d-extra-${i}`, 'candidate', `c-extra-${i}`);
     }
     expect(buildSnapshot(db).items.find((i) => i.itemId === 'd1')!.holdout).toBe(alone);
+  });
+});
+
+describe('revised labels (#223)', () => {
+  function seedRevision(id: string, decisionId: string, label: 'clear_yes' | 'clear_no', revisedAt: string): void {
+    db.prepare(`
+      INSERT INTO guard_decision_revisions (revision_id, decision_id, human_verdict, rubric_version, effect,
+                                            revised_by, revised_at)
+      VALUES (?, ?, ?, 'rubric-v1.3', 'label_only', ?, ?)
+    `).run(id, decisionId, label, PARENT, revisedAt);
+  }
+
+  it('labels an unrevised decision with its first pass', () => {
+    seedCandidate('c1');
+    seedMetadata('yt-c1');
+    seedDecision('d1', 'candidate', 'c1', { label: 'clear_no' });
+    expect(buildSnapshot(db).items[0]).toMatchObject({ label: 'clear_no', firstPassLabel: 'clear_no', revisedAt: null });
+  });
+
+  it('labels with the latest revision and keeps the first pass beside it', () => {
+    seedCandidate('c1');
+    seedMetadata('yt-c1');
+    seedDecision('d1', 'candidate', 'c1', { label: 'clear_yes' });
+    seedRevision('rv1', 'd1', 'clear_no', AFTER);
+    seedRevision('rv2', 'd1', 'clear_yes', '2026-09-22T12:00:00.000Z');
+    seedRevision('rv3', 'd1', 'clear_no', '2026-09-23T12:00:00.000Z');
+    const r = buildSnapshot(db);
+    expect(r.items[0]).toMatchObject({
+      label: 'clear_no', firstPassLabel: 'clear_yes', revisedAt: '2026-09-23T12:00:00.000Z',
+      // The inputs stay as they stood at the first pass.
+      decidedAt: DECIDED_AT,
+    });
+    expect(summariseDataset(r.items)).toMatchObject({ revised: 1, byLabel: { clear_no: 1 } });
+  });
+
+  it('breaks a tie on revised_at by insertion order', () => {
+    seedCandidate('c1');
+    seedMetadata('yt-c1');
+    seedDecision('d1', 'candidate', 'c1', { label: 'clear_yes' });
+    seedRevision('rv-b', 'd1', 'clear_no', AFTER);
+    seedRevision('rv-a', 'd1', 'clear_yes', AFTER);
+    expect(buildSnapshot(db).items[0]).toMatchObject({ label: 'clear_yes', revisedAt: AFTER });
+  });
+
+  it('reads a dataset line frozen before revisions as its first pass, and refuses a bad first-pass label', () => {
+    const line = { itemId: 'd1', label: 'clear_no', title: 't', ageBand: '10-12', holdout: false, tags: [], channelHistory: null };
+    expect(parseHarnessItem(line, 1)).toMatchObject({ label: 'clear_no', firstPassLabel: 'clear_no', revisedAt: null });
+    expect(() => parseHarnessItem({ ...line, firstPassLabel: 'uncertain' }, 1)).toThrow(/firstPassLabel/);
+  });
+
+  it('reads a source DB from before the revisions table existed', () => {
+    seedCandidate('c1');
+    seedMetadata('yt-c1');
+    seedDecision('d1', 'candidate', 'c1', { label: 'clear_no' });
+    db.exec('DROP TABLE guard_decision_revisions');
+    try {
+      expect(buildSnapshot(db).items[0]).toMatchObject({ label: 'clear_no', firstPassLabel: 'clear_no', revisedAt: null });
+    } finally {
+      db.exec(readFileSync(path.join(__dirname, '../../db/migrations/048_guard_decision_revisions.sql'), 'utf8'));
+    }
   });
 });

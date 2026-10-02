@@ -51,7 +51,7 @@ export interface DecisionOutcome {
   guard: ShownEval;
 }
 
-interface Subject {
+export interface Subject {
   subjectType: SubjectType;
   subjectId: string;
   userId: string;
@@ -68,7 +68,7 @@ export function requireParent(userId: unknown): string {
   return user.user_id;
 }
 
-function readSubject(type: SubjectType, id: string): Subject {
+export function readSubject(type: SubjectType, id: string): Subject {
   const row = type === 'candidate'
     ? db.prepare(`
         SELECT cp.user_id, cp.url, cp.external_id AS youtube_id, cp.status, cp.guard_verdict,
@@ -118,7 +118,7 @@ async function blockRequest(requestId: string, parentId: string): Promise<boolea
   return result.transitioned;
 }
 
-async function applyEffect(s: Subject, verdict: HumanVerdict, parentId: string): Promise<DecisionEffect> {
+export async function applyEffect(s: Subject, verdict: HumanVerdict, parentId: string): Promise<DecisionEffect> {
   if (s.subjectType === 'candidate') {
     if (s.status === 'requested') {
       // Picked already: the kid's copy is a request. Block acts on it; allow

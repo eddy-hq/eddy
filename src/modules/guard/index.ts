@@ -47,7 +47,7 @@ export {
   buildRubricPrompt,
   cleanDescription,
 } from './rubric-prompt';
-export { shownEvalForCandidate, shownEvalForRequest, labelGuardEval, type ShownEval } from './labels';
+export { shownEvalById, shownEvalForCandidate,shownEvalForRequest, labelGuardEval, type ShownEval } from './labels';
 
 const PROMPT_VERSION = 'v2';
 export const CANDIDATE_PROMPT_VERSION = 'candidate-v3';

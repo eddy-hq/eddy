@@ -30,15 +30,47 @@ import {
   type ReasonDraft,
   type ReasonOptions,
   type ShownEval,
+  REVIEW_FILTER_LABEL,
+  answerLine,
+  appendReviewPage,
+  applyRevision,
+  changeLabel,
+  changeTarget,
+  revisionBody,
+  revisionEffectLabel,
+  storedReasonSummary,
+  type ReviewCard,
+  type ReviewFilter,
+  type ReviewPage,
+  type RevisionOutcome,
 } from '../lib/decisions';
 
 // Decisions (Phase 6a): Escalations and Spot checks for a parent. Opened as
 // /decisions?userId=<parent id>; the server refuses any non-parent id.
+// Review (#223) lists past decisions so the parent can change them.
 
-type Mode = 'today' | 'catch_up';
+type Mode = 'today' | 'catch_up' | 'review';
 type Focus = 'escalations' | 'spot_checks';
 
-async function fetchQueue(userId: string, mode: Mode, focus: Focus): Promise<DecisionQueue> {
+async function fetchReview(userId: string, filter: ReviewFilter, offset: number): Promise<ReviewPage> {
+  const params = new URLSearchParams({ userId, filter, offset: String(offset) });
+  const res = await fetch(`/parent/decisions/review?${params.toString()}`);
+  if (res.status === 403) throw new Error('Decisions are for parents only.');
+  if (!res.ok) throw new Error(`Could not load past decisions (${res.status})`);
+  return res.json() as Promise<ReviewPage>;
+}
+
+async function postRevision(userId: string, card: ReviewCard, reason: ReasonDraft): Promise<RevisionOutcome> {
+  const res = await fetch('/parent/decisions/revisions', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(revisionBody(userId, card, reason)),
+  });
+  if (!res.ok) throw new Error(`Could not change the decision (${res.status})`);
+  return (await res.json()) as RevisionOutcome;
+}
+
+async function fetchQueue(userId: string, mode: Exclude<Mode, 'review'>, focus: Focus): Promise<DecisionQueue> {
   const params = new URLSearchParams({ userId, mode });
   if (mode === 'catch_up') params.set('focus', focus);
   const res = await fetch(`/parent/decisions/queue?${params.toString()}`);
@@ -256,8 +288,9 @@ export function Decisions() {
   const queryKey = ['decisions', userId, mode, focus];
   const { data, isLoading, error: loadError, dataUpdatedAt } = useQuery({
     queryKey,
-    queryFn: () => fetchQueue(userId, mode, focus),
-    enabled: !!userId,
+    queryFn: () => fetchQueue(userId, mode === 'review' ? 'today' : mode, focus),
+    // Review fetches its own list.
+    enabled: !!userId && mode !== 'review',
     staleTime: 0,
     // Coming back from the Watch link must not reset the local queue.
     refetchOnWindowFocus: false,
@@ -343,6 +376,8 @@ export function Decisions() {
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
+      // Review has no shortcuts: every change is a deliberate tap.
+      if (mode === 'review') return;
       const target = e.target as HTMLElement | null;
       if (target && ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)) return;
       if (e.metaKey || e.ctrlKey || e.altKey) return;
@@ -356,10 +391,27 @@ export function Decisions() {
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [decide, skip, next, reveal]);
+  }, [decide, skip, next, reveal, mode]);
 
   if (!userId) {
     return <Shell><p style={{ color: 'var(--text-secondary)' }}>Open this page with <code>?userId=</code> set to a parent's id.</p></Shell>;
+  }
+
+  const modeSwitch = (
+    <Segmented<Mode>
+      options={[['today', 'Today'], ['catch_up', 'Catch-up'], ['review', 'Review']]}
+      value={mode}
+      onChange={(m) => { setReveal(null); setMode(m); }}
+    />
+  );
+
+  if (mode === 'review') {
+    return (
+      <Shell>
+        {modeSwitch}
+        <Review userId={userId} />
+      </Shell>
+    );
   }
 
   const counts = data?.counts;
@@ -369,7 +421,7 @@ export function Decisions() {
   return (
     <Shell>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-        <Segmented<Mode> options={[['today', 'Today'], ['catch_up', 'Catch-up']]} value={mode} onChange={(m) => { setReveal(null); setMode(m); }} />
+        {modeSwitch}
         {mode === 'catch_up' && (
           <Segmented<Focus> options={[['escalations', 'Escalations'], ['spot_checks', 'Spot checks']]} value={focus} onChange={(f) => { setReveal(null); setFocus(f); }} />
         )}
@@ -491,6 +543,185 @@ export function Decisions() {
 
       {flash && <p style={{ textAlign: 'center', fontSize: 'var(--text-sm)', color: 'var(--text-secondary)' }}>{flash}</p>}
     </Shell>
+  );
+}
+
+// ── Review ───────────────────────────────────────────────────────────────────
+
+const formatDay = (iso: string): string =>
+  new Date(iso).toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
+
+function ReviewItem({ card, reasons, busy, reasonOpen, reason, onToggleReason, onReasonChange, onChange }: {
+  card: ReviewCard;
+  reasons: ReasonOptions | undefined;
+  busy: boolean;
+  reasonOpen: boolean;
+  reason: ReasonDraft;
+  onToggleReason: () => void;
+  onReasonChange: (next: ReasonDraft) => void;
+  onChange: () => void;
+}) {
+  const d = card.decision;
+  const subject = card.subjects[0];
+  const toAllow = changeTarget(card) === 'clear_yes';
+  const currentReason = storedReasonSummary(d.reason, reasons);
+  const firstReason = d.revision ? storedReasonSummary(d.firstReason, reasons) : null;
+  return (
+    <div style={cardStyle}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+        <span style={pill(card.source === 'escalation' ? '#E07C3A' : 'var(--accent)')}>{SOURCE_LABEL[card.source]}</span>
+        {subject && <span style={pill('#6B6860')}>{subject.kidName} · {subject.ageBand}</span>}
+        {d.revision && <span style={pill('var(--dismiss)')}>Revised</span>}
+        <span style={{ marginLeft: 'auto', fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)' }}>{formatDay(d.decidedAt)}</span>
+      </div>
+
+      <VideoSummary card={card} />
+
+      {subject?.guard && <GuardPanel guard={subject.guard} title="Guard" />}
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+        <p style={{ fontSize: 'var(--text-sm)', color: 'var(--text-primary)', fontWeight: 600 }}>{answerLine(d)}</p>
+        {firstReason && <p style={{ fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)' }}>First reason: {firstReason}</p>}
+        {currentReason && <p style={{ fontSize: 'var(--text-xs)', color: 'var(--text-secondary)' }}>Reason: {currentReason}</p>}
+        {d.revision && (
+          <p style={{ fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)' }}>
+            Changed {formatDay(d.revision.revisedAt)}{d.revision.count > 1 ? ` (${d.revision.count} changes)` : ''} · {revisionEffectLabel(d.revision.effect)}
+          </p>
+        )}
+      </div>
+
+      {reasons && (
+        <ReasonPicker
+          options={reasons}
+          draft={reasonOpen ? reason : EMPTY_REASON}
+          open={reasonOpen}
+          disabled={busy}
+          onToggleOpen={onToggleReason}
+          onChange={onReasonChange}
+        />
+      )}
+
+      <button disabled={busy} onClick={onChange} style={actionButton(toAllow ? 'var(--save)' : 'var(--dismiss)', true)}>
+        {toAllow ? <Check size={18} /> : <X size={18} />} {changeLabel(card)}
+      </button>
+    </div>
+  );
+}
+
+function Review({ userId }: { userId: string }) {
+  const [filter, setFilter] = useState<ReviewFilter>('disagreements');
+  const [cards, setCards] = useState<ReviewCard[]>([]);
+  const [nextOffset, setNextOffset] = useState<number | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [busyKey, setBusyKey] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [flash, setFlash] = useState<string | null>(null);
+  // One card's reason picker open at a time, with its draft.
+  const [reasonKey, setReasonKey] = useState<string | null>(null);
+  const [reason, setReason] = useState<ReasonDraft>(EMPTY_REASON);
+
+  const { data, isLoading, error: loadError, dataUpdatedAt } = useQuery({
+    queryKey: ['decisions-review', userId, filter],
+    queryFn: () => fetchReview(userId, filter, 0),
+    staleTime: 0,
+    // Coming back from the Watch link must not reset the list.
+    refetchOnWindowFocus: false,
+  });
+
+  useEffect(() => {
+    if (!data) return;
+    setCards(data.cards);
+    setNextOffset(data.nextOffset);
+  }, [data, dataUpdatedAt]);
+
+  useEffect(() => {
+    if (!flash) return;
+    const t = setTimeout(() => setFlash(null), 2500);
+    return () => clearTimeout(t);
+  }, [flash]);
+
+  const loadMore = useCallback(async () => {
+    if (nextOffset === null || loadingMore) return;
+    setLoadingMore(true);
+    setError(null);
+    try {
+      const page = await fetchReview(userId, filter, nextOffset);
+      setCards((cs) => appendReviewPage(cs, page.cards));
+      setNextOffset(page.nextOffset);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Something went wrong');
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [userId, filter, nextOffset, loadingMore]);
+
+  const change = useCallback(async (card: ReviewCard) => {
+    if (busyKey) return;
+    setBusyKey(card.key);
+    setError(null);
+    try {
+      const outcome = await postRevision(userId, card, reasonKey === card.key ? reason : EMPTY_REASON);
+      setCards((cs) => applyRevision(cs, outcome.card, filter));
+      setReasonKey(null);
+      setReason(EMPTY_REASON);
+      setFlash(revisionEffectLabel(outcome.effect));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Something went wrong');
+    } finally {
+      setBusyKey(null);
+    }
+  }, [busyKey, userId, reasonKey, reason, filter]);
+
+  const counts = data?.counts;
+  return (
+    <>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        <Segmented<ReviewFilter>
+          options={[['disagreements', REVIEW_FILTER_LABEL.disagreements], ['all', REVIEW_FILTER_LABEL.all]]}
+          value={filter}
+          onChange={(f) => { setReasonKey(null); setReason(EMPTY_REASON); setFilter(f); }}
+        />
+        {counts && (
+          <p style={{ fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)' }}>
+            {counts.disagreements} disagreements · {counts.all} decisions. A change to Block takes effect now; a change to Allow only frees a video still waiting in the pool.
+          </p>
+        )}
+      </div>
+
+      {error && <p style={{ color: 'var(--dismiss)', fontSize: 'var(--text-sm)' }}>{error}</p>}
+      {loadError && <p style={{ color: 'var(--dismiss)', fontSize: 'var(--text-sm)' }}>{(loadError as Error).message}</p>}
+      {isLoading && <p style={{ color: 'var(--text-secondary)' }}>Loading…</p>}
+      {flash && <p style={{ textAlign: 'center', fontSize: 'var(--text-sm)', color: 'var(--text-secondary)' }}>{flash}</p>}
+
+      {cards.map((card) => (
+        <ReviewItem
+          key={card.key}
+          card={card}
+          reasons={data?.reasons}
+          busy={busyKey !== null}
+          reasonOpen={reasonKey === card.key}
+          reason={reason}
+          onToggleReason={() => {
+            setReason(EMPTY_REASON);
+            setReasonKey((k) => (k === card.key ? null : card.key));
+          }}
+          onReasonChange={setReason}
+          onChange={() => void change(card)}
+        />
+      ))}
+
+      {!isLoading && data && cards.length === 0 && (
+        <p style={{ color: 'var(--text-secondary)', textAlign: 'center', padding: '40px 0' }}>
+          {filter === 'disagreements' ? 'No disagreements with the guard.' : 'No decisions yet.'}
+        </p>
+      )}
+
+      {nextOffset !== null && (
+        <button disabled={loadingMore} onClick={() => void loadMore()} style={actionButton('', false)}>
+          {loadingMore ? 'Loading…' : 'Show more'}
+        </button>
+      )}
+    </>
   );
 }
 

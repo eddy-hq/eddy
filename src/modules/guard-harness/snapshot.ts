@@ -1,6 +1,8 @@
 // Snapshot: freeze the parent's guard decisions into a dataset.
 //
-// Reads guard_decisions (human_verdict is the label) with the item inputs the
+// Reads guard_decisions (the label is the latest revision from
+// guard_decision_revisions, else the first-pass human_verdict, which is kept
+// beside it) with the item inputs the
 // candidate guard reads — title and channel from the candidate or request,
 // description, tags, category, audience and age restriction from
 // video_metadata — and the kid's history with the channel as it stood when the
@@ -34,6 +36,8 @@ interface DecisionRow {
   guard_verdict: string | null;
   human_verdict: HumanLabel;
   decided_at: string;
+  revised_verdict: HumanLabel | null;
+  revised_at: string | null;
   subject_found: number;
   title: string | null;
   channel: string | null;
@@ -94,10 +98,27 @@ export function channelHistoryAsOf(
   return { approved: row?.approved ?? 0, rejected: row?.rejected ?? 0 };
 }
 
+// A source DB from before migration 048 has no revisions table: every label
+// is then its first pass.
+function hasRevisions(source: Database): boolean {
+  return source.prepare(
+    `SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'guard_decision_revisions'`,
+  ).get() !== undefined;
+}
+
 function selectDecisions(source: Database): DecisionRow[] {
+  // The latest revision (#223), when the parent has changed the decision.
+  const revisions = hasRevisions(source);
+  const latest = (col: string) => revisions
+    ? `(SELECT rv.${col} FROM guard_decision_revisions rv
+         WHERE rv.decision_id = d.decision_id AND rv.human_verdict IN ('clear_yes', 'clear_no')
+         ORDER BY rv.revised_at DESC, rv.rowid DESC LIMIT 1)`
+    : 'NULL';
   return source.prepare(`
     SELECT d.decision_id, d.subject_type, d.subject_id, d.user_id, d.youtube_id, d.age_band,
            d.rubric_version, d.source, d.guard_verdict, d.human_verdict, d.decided_at,
+           ${latest('human_verdict')}                               AS revised_verdict,
+           ${latest('revised_at')}                                  AS revised_at,
            (cp.candidate_id IS NOT NULL OR r.request_id IS NOT NULL) AS subject_found,
            COALESCE(cp.title, r.title)                              AS title,
            COALESCE(cp.channel, r.channel)                          AS channel,
@@ -146,7 +167,10 @@ export function buildSnapshot(source: Database): SnapshotResult {
       subjectType: row.subject_type,
       subjectId: row.subject_id,
       userId: row.user_id,
-      label: row.human_verdict,
+      // The latest revision wins; the first pass is kept beside it.
+      label: row.revised_verdict ?? row.human_verdict,
+      firstPassLabel: row.human_verdict,
+      revisedAt: row.revised_at,
       decisionSource: row.source,
       rubricVersion: row.rubric_version,
       guardVerdict: row.guard_verdict,
@@ -173,16 +197,20 @@ export function buildSnapshot(source: Database): SnapshotResult {
 export function summariseDataset(items: readonly HarnessItem[]): {
   total: number;
   holdout: number;
+  // Items whose label is a revision rather than the first pass.
+  revised: number;
   byLabel: Record<string, number>;
   bySubjectType: Record<string, number>;
 } {
   const byLabel: Record<string, number> = {};
   const bySubjectType: Record<string, number> = {};
   let holdout = 0;
+  let revised = 0;
   for (const item of items) {
     byLabel[item.label] = (byLabel[item.label] ?? 0) + 1;
     bySubjectType[item.subjectType] = (bySubjectType[item.subjectType] ?? 0) + 1;
     if (item.holdout) holdout += 1;
+    if (item.revisedAt) revised += 1;
   }
-  return { total: items.length, holdout, byLabel, bySubjectType };
+  return { total: items.length, holdout, revised, byLabel, bySubjectType };
 }

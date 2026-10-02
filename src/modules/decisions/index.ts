@@ -9,7 +9,8 @@ import { DIMENSION_KEYS } from '../guard';
 import { recordDecision, requireParent, type DecisionOutcome } from './decide';
 import { readDecisionQueue } from './queue';
 import { blockChannelFromCard } from './block-channel';
-import { REASON_TEXT_MAX, type DecisionReason } from './util';
+import { readReview, reviseDecision } from './review';
+import { REASON_TEXT_MAX, REVIEW_PAGE, type DecisionReason } from './util';
 
 export {
   readDecisionQueue,
@@ -30,7 +31,18 @@ export {
   DECISIONS_NUDGE_JOB_ID,
   type NudgeResult,
 } from './nudge';
-export { REASON_TEXT_MAX, type DecisionReason } from './util';
+export {
+  readReview,
+  readReviewCard,
+  reviseDecision,
+  type ReviewCard,
+  type ReviewDecision,
+  type ReviewPage,
+  type RevisionEffect,
+  type RevisionInput,
+  type RevisionOutcome,
+} from './review';
+export { REASON_TEXT_MAX, type DecisionReason, type ReviewFilter } from './util';
 
 export const decisionsRouter = Router();
 
@@ -71,6 +83,20 @@ const blockChannelBody = z.object({
   })).min(1).max(4),
   reason: z.string().trim().max(500).optional(),
   // The card's reason chips and note, recorded on each kid's Block.
+  ...reasonFields,
+});
+
+const reviewQuery = z.object({
+  userId: z.string().min(1),
+  filter: z.enum(['disagreements', 'all']).default('disagreements'),
+  offset: z.coerce.number().int().min(0).default(0),
+  limit: z.coerce.number().int().min(1).max(REVIEW_PAGE).default(REVIEW_PAGE),
+});
+
+const reviseBody = z.object({
+  userId: z.string().min(1),
+  decisionId: z.string().min(1),
+  verdict: z.enum(['clear_yes', 'clear_no']),
   ...reasonFields,
 });
 
@@ -116,4 +142,25 @@ decisionsRouter.post('/block-channel', async (req: Request, res: Response) => {
   const body = parse(blockChannelBody, req.body);
   const parentId = requireParent(body.userId);
   res.json(await blockChannelFromCard(parentId, body.subjects, body.reason || null, new Date(), toReason(body)));
+});
+
+// GET /parent/decisions/review?userId=<parent>&filter=disagreements|all&offset=<n>&limit=<n>
+// Past decisions for Review (#223), newest first.
+decisionsRouter.get('/review', (req: Request, res: Response) => {
+  const q = parse(reviewQuery, req.query);
+  requireParent(q.userId);
+  res.json(readReview({ filter: q.filter, offset: q.offset, limit: q.limit }));
+});
+
+// POST /parent/decisions/revisions
+//   { userId, decisionId, verdict, reasonDimensions?, reasonText? }
+// Change a past decision. Writes a revision; the first-pass decision is kept.
+decisionsRouter.post('/revisions', async (req: Request, res: Response) => {
+  const body = parse(reviseBody, req.body);
+  const parentId = requireParent(body.userId);
+  res.json(await reviseDecision(parentId, {
+    decisionId: body.decisionId,
+    verdict: body.verdict,
+    reason: toReason(body),
+  }));
 });

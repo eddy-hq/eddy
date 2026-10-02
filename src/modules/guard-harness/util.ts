@@ -27,7 +27,12 @@ export interface HarnessItem {
   subjectType: 'candidate' | 'request';
   subjectId: string;
   userId: string;
+  // The parent's current answer: the latest revision (#223), else the first
+  // pass. `firstPassLabel` is the decision as first recorded, and `revisedAt`
+  // when the latest revision was made (null if never revised).
   label: HumanLabel;
+  firstPassLabel: HumanLabel;
+  revisedAt: string | null;
   decisionSource: string;
   // RUBRIC_VERSION and the guard verdict the subject carried when decided.
   rubricVersion: string;
@@ -200,7 +205,17 @@ export function parseHarnessItem(raw: unknown, line: number): HarnessItem {
     && typeof history['approved'] === 'number' && typeof history['rejected'] === 'number')) {
     bad('channelHistory');
   }
-  return raw as unknown as HarnessItem;
+  // Datasets frozen before revisions (#223) carry neither field: their label
+  // is the first pass and was never revised.
+  const firstPass = raw['firstPassLabel'];
+  if (firstPass !== undefined && firstPass !== 'clear_yes' && firstPass !== 'clear_no') bad('firstPassLabel');
+  const revisedAt = raw['revisedAt'];
+  if (revisedAt !== undefined && revisedAt !== null && typeof revisedAt !== 'string') bad('revisedAt');
+  return {
+    ...raw,
+    firstPassLabel: firstPass ?? raw['label'],
+    revisedAt: revisedAt ?? null,
+  } as unknown as HarnessItem;
 }
 
 export function parseHarnessResult(raw: unknown, line: number): HarnessResult {

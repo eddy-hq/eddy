@@ -40,6 +40,24 @@ export function reasonColumns(reason: DecisionReason | null | undefined): {
   };
 }
 
+// Review (#223): past decisions, a page at a time, newest first.
+export const REVIEW_PAGE = 30;
+export type ReviewFilter = 'disagreements' | 'all';
+
+// Stored reason columns back to the API shape; null when none was given.
+export function reasonFromColumns(dimensionsJson: string | null, text: string | null): DecisionReason | null {
+  let dimensions: string[] = [];
+  if (dimensionsJson) {
+    try {
+      const parsed = JSON.parse(dimensionsJson) as unknown;
+      if (Array.isArray(parsed)) dimensions = parsed.filter((d): d is string => typeof d === 'string');
+    } catch {
+      dimensions = [];
+    }
+  }
+  return dimensions.length > 0 || text ? { dimensions, text: text || null } : null;
+}
+
 // UTC calendar day of an instant, as the guard_spot_checks key.
 export function utcDay(now: Date): string {
   return now.toISOString().slice(0, 10);
