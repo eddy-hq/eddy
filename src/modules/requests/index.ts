@@ -30,6 +30,7 @@ import {
   regenerateStaleWeekSummaries,
 } from './week-summary';
 
+export { readRequestOrigin, removeParentBlockedInReview, type RequestOrigin } from './parent-block';
 export {
   createRequestsState,
   CANCELLED_REASON,

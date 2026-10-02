@@ -307,11 +307,12 @@ async function revisionEffect(s: Subject | null, verdict: HumanVerdict, parentId
 
 // The parent's current answer for a kid and a video, when it is Block: the
 // latest answer across every decision on the video for that kid, first passes
-// and revisions alike. The download-time second pass reads this so a pick
-// still in flight when the parent blocked it never becomes visible.
-export function currentParentBlock(userId: string, youtubeId: string): { parentId: string } | null {
+// and revisions alike, with when it was given. The download callback and the
+// second pass read this so a request still in flight when the parent blocked
+// it never becomes visible.
+export function currentParentBlock(userId: string, youtubeId: string): { parentId: string; at: string } | null {
   const row = db.prepare(`
-    SELECT verdict, parent_id FROM (
+    SELECT verdict, parent_id, at FROM (
       SELECT d.human_verdict AS verdict, d.decided_by AS parent_id, d.decided_at AS at, 0 AS seq
         FROM guard_decisions d
        WHERE d.user_id = @userId AND d.youtube_id = @youtubeId
@@ -323,8 +324,8 @@ export function currentParentBlock(userId: string, youtubeId: string): { parentI
     )
     ORDER BY at DESC, seq DESC
     LIMIT 1
-  `).get({ userId, youtubeId }) as { verdict: string; parent_id: string } | undefined;
-  return row?.verdict === 'clear_no' ? { parentId: row.parent_id } : null;
+  `).get({ userId, youtubeId }) as { verdict: string; parent_id: string; at: string } | undefined;
+  return row?.verdict === 'clear_no' ? { parentId: row.parent_id, at: row.at } : null;
 }
 
 interface DecisionRef {

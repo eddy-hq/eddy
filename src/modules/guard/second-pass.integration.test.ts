@@ -482,6 +482,31 @@ describe('download-time second pass: a pick the parent blocked in flight (#223)'
     expect(notify).not.toHaveBeenCalled();
   });
 
+  // Downloads with no second pass of their own: caught at the callback.
+  for (const source of ['share_sheet', 'parent_pick']) {
+    it(`removes a ${source} request blocked while it downloaded, at the download callback`, async () => {
+      const id = `own-${source}`;
+      seedRequest(id, { source });
+      // The Block lands after the request was made.
+      seedDecision('d1', id, 'clear_no', new Date(Date.now() + 60_000).toISOString());
+      await workerDownloaded(id);
+
+      expect(row(id)).toMatchObject({ status: 'deleted', guard_verdict: 'clear_no' });
+      expect(db.prepare('SELECT decided_by FROM requests WHERE request_id = ?').get(id)).toEqual({ decided_by: ADULT_ID });
+      expect(deleteQueue.add).toHaveBeenCalledWith('delete', { requestId: id, filePath: `/videos/${id}.mp4` }, expect.anything());
+      expect(guardQueueAdd).not.toHaveBeenCalled();
+      expect(notify).not.toHaveBeenCalled();
+      expect(await feedIds(KID_ID)).not.toContain(id);
+    });
+  }
+
+  it("leaves a kid's own request made after the Block to its usual path", async () => {
+    seedDecision('d1', 'own-later', 'clear_no', EARLIER);
+    seedRequest('own-later', { source: 'share_sheet' });
+    await workerDownloaded('own-later');
+    expect(row('own-later').status).toBe('ready');
+  });
+
   it('clears as usual when the latest answer is Allow', async () => {
     seedRequest('pick-reallowed');
     seedDecision('d1', 'pick-reallowed', 'clear_no', EARLIER);

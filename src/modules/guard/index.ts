@@ -714,15 +714,8 @@ async function removeIfParentBlocked(requestId: string, userId: string, youtubeI
   const { currentParentBlock, PARENT_BLOCKED_REASON } = await loadDecisions();
   const block = currentParentBlock(userId, youtubeId);
   if (!block) return false;
-  const { getRequestsState } = await loadRequests();
-  const parked = getRequestsState().apply({
-    kind: 'mark_second_pass_parked', requestId, verdict: 'clear_no', reason: PARENT_BLOCKED_REASON,
-  });
-  if (!parked.result.transitioned) return false;
-  const { settled } = getRequestsState().apply({
-    kind: 'mark_parent_blocked', requestId, parentId: block.parentId, reason: PARENT_BLOCKED_REASON,
-  });
-  await settled;
+  const { removeParentBlockedInReview } = await loadRequests();
+  if (!(await removeParentBlockedInReview(requestId, block.parentId, PARENT_BLOCKED_REASON))) return false;
   logger.info({ requestId }, 'Second pass: pick removed — blocked by a parent');
   return true;
 }

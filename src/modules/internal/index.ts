@@ -3,7 +3,15 @@ import { db } from '../../db/client';
 import { logger } from '../../logger';
 import { downloadQueue } from '../../queue';
 import { verifySignedJson } from '../../signed-channel';
-import { getRequestsState, isParentPick, needsDownloadSecondPass, rejectIfChannelBlocked } from '../requests';
+import {
+  getRequestsState,
+  isParentPick,
+  needsDownloadSecondPass,
+  readRequestOrigin,
+  rejectIfChannelBlocked,
+  removeParentBlockedInReview,
+} from '../requests';
+import { PARENT_BLOCKED_REASON, currentParentBlock } from '../decisions';
 import { getNotifications, parseRelayPayload } from '../notifications';
 import { checkStuckDownloads } from '../watchdog';
 import { scoreForRequest, classifyThumbnail, classifyYtImage, enqueueDownloadSecondPass, scoreThumbnailSafety } from '../guard';
@@ -39,6 +47,18 @@ interface DownloadedPayload {
   fileSizeBytes?: number | null;
 }
 
+// A download the parent blocked for this kid after it was asked for: a Block,
+// or a Review change to Block (#223), that landed mid-flight, whatever brought
+// the video (slate pick, the kid's own request, a parent pick). It never
+// becomes visible. A request made after the Block is someone choosing the
+// video again, and goes on as usual.
+function parentBlockSinceRequested(requestId: string): { parentId: string } | null {
+  const origin = readRequestOrigin(requestId);
+  if (!origin?.youtubeId) return null;
+  const block = currentParentBlock(origin.userId, origin.youtubeId);
+  return block && block.at > origin.requestedAt ? block : null;
+}
+
 // POST /internal/videos/:youtube_id/downloaded — called by Ubuntu worker on success.
 // A kid's slate pick doesn't go straight to ready: it lands in guard_review
 // (hidden) and the download-time second pass (Phase 6a) decides whether it
@@ -57,9 +77,12 @@ internalRouter.post('/videos/:youtube_id/downloaded', verifySignedJson<Downloade
     return;
   }
 
+  const parentBlock = parentBlockSinceRequested(requestId);
   const secondPass = needsDownloadSecondPass(requestId);
   const { result } = getRequestsState().apply({
-    kind: secondPass ? 'mark_downloaded_for_second_pass' : 'mark_downloaded',
+    // A parent-blocked download lands hidden, as a slate pick does, and is
+    // removed below before anything can show it.
+    kind: secondPass || parentBlock ? 'mark_downloaded_for_second_pass' : 'mark_downloaded',
     requestId,
     fields: {
       title,
@@ -76,7 +99,10 @@ internalRouter.post('/videos/:youtube_id/downloaded', verifySignedJson<Downloade
     },
   });
 
-  if (result.transitioned && secondPass) {
+  if (result.transitioned && parentBlock) {
+    await removeParentBlockedInReview(requestId, parentBlock.parentId, PARENT_BLOCKED_REASON);
+    logger.info({ requestId }, 'Download removed — blocked by a parent while in flight');
+  } else if (result.transitioned && secondPass) {
     logger.info({ requestId, youtubeId: req.params['youtube_id'] }, 'Slate pick downloaded — queued for the second pass');
     await enqueueDownloadSecondPass(requestId);
   } else if (result.transitioned) {
