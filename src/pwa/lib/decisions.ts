@@ -369,6 +369,33 @@ export function appendReviewPage(cards: readonly ReviewCard[], page: readonly Re
   return [...cards, ...page.filter((c) => !seen.has(c.key))];
 }
 
+// The list on screen. `loadId` changes on every fresh first page (a filter
+// switch, a switch back, a refetch), so a later page knows which list it
+// was asked for.
+export interface ReviewList {
+  loadId: number;
+  filter: ReviewFilter;
+  cards: ReviewCard[];
+  nextOffset: number | null;
+}
+
+export function freshReviewList(previous: ReviewList | null, page: ReviewPage): ReviewList {
+  return { loadId: (previous?.loadId ?? 0) + 1, filter: page.filter, cards: page.cards, nextOffset: page.nextOffset };
+}
+
+// A "Show more" page lands only on the list it was asked for: a response
+// that arrives after the list was reloaded (the parent switched filter, or
+// switched away and back) is dropped, so it can't mix another list's cards
+// in or move this list's offset.
+export function mergeReviewPage(
+  list: ReviewList,
+  requestedLoadId: number,
+  page: { cards: readonly ReviewCard[]; nextOffset: number | null },
+): ReviewList {
+  if (list.loadId !== requestedLoadId) return list;
+  return { ...list, cards: appendReviewPage(list.cards, page.cards), nextOffset: page.nextOffset };
+}
+
 const DIMENSION_LABELS: Array<[string, string]> = [
   ['language', 'Language'],
   ['violence', 'Violence'],

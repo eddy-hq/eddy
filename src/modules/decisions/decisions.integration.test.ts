@@ -877,6 +877,23 @@ describe('Review (#223)', () => {
     expect(status('requests', 'r-picked').status).toBe('deleted');
   });
 
+  it("a change to Block removes the kid's own request and a parent pick of the video too", async () => {
+    seedRequest('own', { status: 'ready', verdict: 'clear_yes', source: 'share_sheet', yt: 'vid-own' });
+    seedDecision('d-own', 'request', 'own', { guard: 'clear_yes', human: 'clear_yes' });
+    expect((await revise('d-own', 'clear_no')).body.effect).toBe('removed');
+    expect(status('requests', 'own')).toMatchObject({ status: 'deleted', decided_by: PARENT });
+
+    seedCandidate('c-sent', { status: 'scored', verdict: 'clear_yes', yt: 'vid-sent' });
+    seedRequest('sent', { status: 'watched', verdict: 'clear_yes', source: 'parent_pick', yt: 'vid-sent' });
+    // Another kid's copy of the same video stays.
+    seedRequest('other-kid', { status: 'ready', verdict: 'clear_yes', source: 'recommended', yt: 'vid-sent', userId: KID_2 });
+    seedDecision('d-sent', 'candidate', 'c-sent', { guard: 'clear_yes', human: 'clear_yes' });
+    expect((await revise('d-sent', 'clear_no')).body.effect).toBe('removed');
+    expect(status('candidate_pool', 'c-sent')).toEqual({ status: 'guard_rejected', guard_verdict: 'clear_no' });
+    expect(status('requests', 'sent').status).toBe('deleted');
+    expect(status('requests', 'other-kid').status).toBe('ready');
+  });
+
   it('a change to Block with nothing live is a label only', async () => {
     seedCandidate('c-dismissed', { status: 'dismissed', verdict: 'clear_yes' });
     seedDecision('d-dismissed', 'candidate', 'c-dismissed', { guard: 'clear_yes', human: 'clear_yes' });

@@ -110,7 +110,7 @@ function sourceFor(s: Subject): DecisionSource {
   return drawn.source;
 }
 
-async function blockRequest(requestId: string, parentId: string): Promise<boolean> {
+export async function blockRequest(requestId: string, parentId: string): Promise<boolean> {
   const { result, settled } = getRequestsState().apply({
     kind: 'mark_parent_blocked', requestId, parentId, reason: PARENT_BLOCKED_REASON,
   });
@@ -118,7 +118,7 @@ async function blockRequest(requestId: string, parentId: string): Promise<boolea
   return result.transitioned;
 }
 
-export async function applyEffect(s: Subject, verdict: HumanVerdict, parentId: string): Promise<DecisionEffect> {
+async function applyEffect(s: Subject, verdict: HumanVerdict, parentId: string): Promise<DecisionEffect> {
   if (s.subjectType === 'candidate') {
     if (s.status === 'requested') {
       // Picked already: the kid's copy is a request. Block acts on it; allow

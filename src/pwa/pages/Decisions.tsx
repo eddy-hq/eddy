@@ -32,8 +32,9 @@ import {
   type ShownEval,
   REVIEW_FILTER_LABEL,
   answerLine,
-  appendReviewPage,
   applyRevision,
+  freshReviewList,
+  mergeReviewPage,
   changeLabel,
   changeTarget,
   revisionBody,
@@ -41,6 +42,7 @@ import {
   storedReasonSummary,
   type ReviewCard,
   type ReviewFilter,
+  type ReviewList,
   type ReviewPage,
   type RevisionOutcome,
 } from '../lib/decisions';
@@ -610,8 +612,7 @@ function ReviewItem({ card, reasons, busy, reasonOpen, reason, onToggleReason, o
 
 function Review({ userId }: { userId: string }) {
   const [filter, setFilter] = useState<ReviewFilter>('disagreements');
-  const [cards, setCards] = useState<ReviewCard[]>([]);
-  const [nextOffset, setNextOffset] = useState<number | null>(null);
+  const [list, setList] = useState<ReviewList | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -628,11 +629,23 @@ function Review({ userId }: { userId: string }) {
     refetchOnWindowFocus: false,
   });
 
+  // A fresh first page replaces the list, and any "Show more" still in
+  // flight for the old one is dropped when it lands.
   useEffect(() => {
-    if (!data) return;
-    setCards(data.cards);
-    setNextOffset(data.nextOffset);
-  }, [data, dataUpdatedAt]);
+    if (data && data.filter === filter) setList((prev) => freshReviewList(prev, data));
+  }, [data, dataUpdatedAt, filter]);
+
+  const switchFilter = useCallback((f: ReviewFilter) => {
+    setReasonKey(null);
+    setReason(EMPTY_REASON);
+    setLoadingMore(false);
+    // Retire the current list at once, so a late page for it is dropped.
+    setList((prev) => (prev ? { ...prev, loadId: prev.loadId + 1, filter: f, cards: [], nextOffset: null } : prev));
+    setFilter(f);
+  }, []);
+
+  const cards = list && list.filter === filter ? list.cards : [];
+  const nextOffset = list && list.filter === filter ? list.nextOffset : null;
 
   useEffect(() => {
     if (!flash) return;
@@ -641,19 +654,19 @@ function Review({ userId }: { userId: string }) {
   }, [flash]);
 
   const loadMore = useCallback(async () => {
-    if (nextOffset === null || loadingMore) return;
+    if (!list || list.nextOffset === null || loadingMore) return;
+    const requested = list.loadId;
     setLoadingMore(true);
     setError(null);
     try {
-      const page = await fetchReview(userId, filter, nextOffset);
-      setCards((cs) => appendReviewPage(cs, page.cards));
-      setNextOffset(page.nextOffset);
+      const page = await fetchReview(userId, list.filter, list.nextOffset);
+      setList((l) => (l ? mergeReviewPage(l, requested, page) : l));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Something went wrong');
     } finally {
       setLoadingMore(false);
     }
-  }, [userId, filter, nextOffset, loadingMore]);
+  }, [userId, list, loadingMore]);
 
   const change = useCallback(async (card: ReviewCard) => {
     if (busyKey) return;
@@ -661,7 +674,7 @@ function Review({ userId }: { userId: string }) {
     setError(null);
     try {
       const outcome = await postRevision(userId, card, reasonKey === card.key ? reason : EMPTY_REASON);
-      setCards((cs) => applyRevision(cs, outcome.card, filter));
+      setList((l) => (l ? { ...l, cards: applyRevision(l.cards, outcome.card, l.filter) } : l));
       setReasonKey(null);
       setReason(EMPTY_REASON);
       setFlash(revisionEffectLabel(outcome.effect));
@@ -670,7 +683,7 @@ function Review({ userId }: { userId: string }) {
     } finally {
       setBusyKey(null);
     }
-  }, [busyKey, userId, reasonKey, reason, filter]);
+  }, [busyKey, userId, reasonKey, reason]);
 
   const counts = data?.counts;
   return (
@@ -679,7 +692,7 @@ function Review({ userId }: { userId: string }) {
         <Segmented<ReviewFilter>
           options={[['disagreements', REVIEW_FILTER_LABEL.disagreements], ['all', REVIEW_FILTER_LABEL.all]]}
           value={filter}
-          onChange={(f) => { setReasonKey(null); setReason(EMPTY_REASON); setFilter(f); }}
+          onChange={switchFilter}
         />
         {counts && (
           <p style={{ fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)' }}>

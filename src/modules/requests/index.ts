@@ -36,6 +36,7 @@ export {
   displayRejectionReason,
   findActiveDuplicateRequest,
   findSlatePickRequest,
+  findParentBlockableRequests,
   needsDownloadSecondPass,
   isParentPick,
   readSecondPassInput,

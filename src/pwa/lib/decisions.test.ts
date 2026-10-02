@@ -23,7 +23,9 @@ import {
   applyRevision,
   changeLabel,
   changeTarget,
+  freshReviewList,
   isDisagreement,
+  mergeReviewPage,
   matchesReviewFilter,
   revisionBody,
   revisionEffectLabel,
@@ -350,6 +352,25 @@ describe('Review', () => {
     const agreeing = reviewCard('b', { guardVerdict: 'clear_no', firstVerdict: 'clear_no', verdict: 'clear_no' });
     expect(applyRevision(cards, agreeing, 'disagreements').map((c) => c.key)).toEqual(['a', 'c']);
     expect(applyRevision(cards, agreeing, 'all').map((c) => c.key)).toEqual(['a', 'b', 'c']);
+  });
+
+  it('drops a late page asked for by a list that has since been reloaded', () => {
+    const page = (filter: 'disagreements' | 'all', keys: string[], nextOffset: number | null) => ({
+      filter, cards: keys.map((k) => reviewCard(k)), reasons: opts, counts: { disagreements: 0, all: 0 }, nextOffset,
+    });
+    const all = freshReviewList(null, page('all', ['a', 'b'], 2));
+    const askedFor = all.loadId;
+    // The parent switches to Disagreements before "Show more" on All returns.
+    const disagreements = freshReviewList(all, page('disagreements', ['x'], 1));
+    const late = mergeReviewPage(disagreements, askedFor, page('all', ['c'], 4));
+    expect(late).toBe(disagreements);
+    // Switching back to All reloads it too: the old page still doesn't land.
+    const allAgain = freshReviewList(disagreements, page('all', ['a', 'b'], 2));
+    expect(mergeReviewPage(allAgain, askedFor, page('all', ['c'], 4))).toBe(allAgain);
+    // A page for the list on screen lands.
+    const merged = mergeReviewPage(allAgain, allAgain.loadId, page('all', ['b', 'c'], null));
+    expect(merged.cards.map((c) => c.key)).toEqual(['a', 'b', 'c']);
+    expect(merged.nextOffset).toBeNull();
   });
 
   it('appends a page without repeating cards already shown', () => {
