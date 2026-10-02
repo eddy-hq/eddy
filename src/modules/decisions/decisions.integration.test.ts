@@ -67,6 +67,7 @@ import {
   recordDecision,
   sendDecisionsNudge,
 } from './index';
+import { currentParentBlock } from './review';
 import { DAILY_CARD_CAP } from './util';
 
 const KID_1 = '11111111-1111-7111-8111-111111111111';
@@ -900,6 +901,20 @@ describe('Review (#223)', () => {
     seedRequest('copy', { status: 'ready', verdict: 'clear_yes', source: 'recommended', yt: 'vid-gone' });
     expect((await revise('d-gone', 'clear_no')).body.effect).toBe('removed');
     expect(status('requests', 'copy').status).toBe('deleted');
+  });
+
+  it('a change to Block is on record before removals are awaited', async () => {
+    // A download completing during removal reads the current answer; if the
+    // Block were saved only after the removals, an in-flight copy could show.
+    seedRequest('vid-race', { status: 'ready', verdict: 'clear_yes', source: 'recommended', yt: 'vid-race' });
+    seedDecision('d-race', 'request', 'vid-race', { guard: 'clear_yes', human: 'clear_yes' });
+    let seenDuringRemoval: ReturnType<typeof currentParentBlock> | undefined;
+    deleteQueueAdd.mockImplementation(async () => {
+      seenDuringRemoval = currentParentBlock(KID_1, 'vid-race');
+    });
+    expect((await revise('d-race', 'clear_no')).body.effect).toBe('removed');
+    expect(seenDuringRemoval).toMatchObject({ parentId: PARENT });
+    expect(revisions('d-race')).toEqual([expect.objectContaining({ human_verdict: 'clear_no', effect: 'removed' })]);
   });
 
   it('a change to Block with nothing live is a label only', async () => {

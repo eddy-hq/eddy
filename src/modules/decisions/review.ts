@@ -363,21 +363,27 @@ export async function reviseDecision(
   if (before.current_verdict === input.verdict) {
     throw new ValidationError(`decision ${input.decisionId} already has that answer`);
   }
-  const effect = await revisionEffect(
-    before, currentSubject(before.subject_type, before.subject_id), input.verdict, parentId,
-  );
-
+  // Persist the answer before any effect is awaited. A download completing
+  // while removals run reads the parent's current answer (currentParentBlock),
+  // so a Block must already be on record or an in-flight copy can still
+  // become visible. The effect column starts as label_only and is set once
+  // the effects have run.
   const revisionId = uuidv7();
   const reason = reasonColumns(input.reason);
   db.prepare(`
     INSERT INTO guard_decision_revisions
       (revision_id, decision_id, human_verdict, rubric_version, reason_dimensions_json, reason_text,
        effect, revised_by, revised_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, 'label_only', ?, ?)
   `).run(
     revisionId, input.decisionId, input.verdict, RUBRIC_VERSION, reason.dimensionsJson, reason.text,
-    effect, parentId, now.toISOString(),
+    parentId, now.toISOString(),
   );
+
+  const effect = await revisionEffect(
+    before, currentSubject(before.subject_type, before.subject_id), input.verdict, parentId,
+  );
+  db.prepare('UPDATE guard_decision_revisions SET effect = ? WHERE revision_id = ?').run(effect, revisionId);
 
   logger.info(
     {
