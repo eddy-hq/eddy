@@ -51,7 +51,7 @@ export interface DecisionOutcome {
   guard: ShownEval;
 }
 
-interface Subject {
+export interface Subject {
   subjectType: SubjectType;
   subjectId: string;
   userId: string;
@@ -68,7 +68,7 @@ export function requireParent(userId: unknown): string {
   return user.user_id;
 }
 
-function readSubject(type: SubjectType, id: string): Subject {
+export function readSubject(type: SubjectType, id: string): Subject {
   const row = type === 'candidate'
     ? db.prepare(`
         SELECT cp.user_id, cp.url, cp.external_id AS youtube_id, cp.status, cp.guard_verdict,
@@ -110,7 +110,7 @@ function sourceFor(s: Subject): DecisionSource {
   return drawn.source;
 }
 
-async function blockRequest(requestId: string, parentId: string): Promise<boolean> {
+export async function blockRequest(requestId: string, parentId: string): Promise<boolean> {
   const { result, settled } = getRequestsState().apply({
     kind: 'mark_parent_blocked', requestId, parentId, reason: PARENT_BLOCKED_REASON,
   });

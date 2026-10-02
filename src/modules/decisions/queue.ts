@@ -288,10 +288,21 @@ function ensureTodaysSpotChecks(now: Date): void {
   if (!drawn) drawBatch(now, 'spot_check', daysBefore(now, SPOT_CHECK_WINDOW_DAYS), SPOT_CHECK_MIX);
 }
 
-function descriptionFor(row: SubjectRow): string {
-  const stored = row.youtube_id ? readVideoMetadata(row.youtube_id)?.description : null;
-  const cleaned = cleanDescription(stored ?? row.description ?? '');
+// The card's description: the Data API's when stored, else the row's own,
+// cleaned and cut to card length. Shared with Review cards.
+export function cardDescription(youtubeId: string | null, fallback: string | null): string {
+  const stored = youtubeId ? readVideoMetadata(youtubeId)?.description : null;
+  const cleaned = cleanDescription(stored ?? fallback ?? '');
   return cleaned.length > DESCRIPTION_CARD_CHARS ? `${cleaned.slice(0, DESCRIPTION_CARD_CHARS)}...` : cleaned;
+}
+
+// Parent-facing: the creator thumbnail is fine here.
+export function cardThumbnail(youtubeId: string | null): string | null {
+  return youtubeId ? `https://i.ytimg.com/vi/${youtubeId}/mqdefault.jpg` : null;
+}
+
+function descriptionFor(row: SubjectRow): string {
+  return cardDescription(row.youtube_id, row.description);
 }
 
 function toCards(rows: SubjectRow[], source: DecisionSource, ageBands: Map<string, string>): DecisionCard[] {
@@ -314,8 +325,7 @@ function toCards(rows: SubjectRow[], source: DecisionSource, ageBands: Map<strin
       channel: first.channel,
       channelId: group.find((r) => r.channel_id)?.channel_id ?? null,
       description: descriptionFor(first),
-      // Parent-facing: the creator thumbnail is fine here.
-      thumbnailUrl: first.youtube_id ? `https://i.ytimg.com/vi/${first.youtube_id}/mqdefault.jpg` : null,
+      thumbnailUrl: cardThumbnail(first.youtube_id),
       addedAt: first.added_at,
       subjects: group.map((r) => ({
         subjectType: r.subject_type,

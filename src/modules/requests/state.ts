@@ -123,6 +123,17 @@ export function findSlatePickRequest(
   return row ? { requestId: row.request_id, status: row.status, source: row.source } : null;
 }
 
+// A kid's requests for a video that a parent Block can take off the feed
+// (the statuses mark_parent_blocked moves from), whatever their source.
+export function findParentBlockableRequests(userId: string, youtubeId: string): string[] {
+  const rows = db.prepare(
+    `SELECT request_id FROM requests
+      WHERE user_id = ? AND youtube_id = ? AND status IN ('guard_pending', 'ready', 'watched')
+      ORDER BY requested_at`,
+  ).all(userId, youtubeId) as Array<{ request_id: string }>;
+  return rows.map((r) => r.request_id);
+}
+
 // Whether a completed download must pass the download-time second pass before
 // it becomes visible: a slate pick (candidate-pool provenance) for a kid.
 // Adults' slate picks are never guarded (ADR-0009: the guard is the only

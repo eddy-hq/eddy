@@ -24,7 +24,7 @@ const OUTSIDE = () => at(8, 0);
 function item(id: string): HarnessItem {
   return {
     itemId: id, subjectType: 'candidate', subjectId: `c-${id}`, userId: 'kid_1', label: 'clear_yes',
-    decisionSource: 'escalation', rubricVersion: 'rubric-v1.3', guardVerdict: 'uncertain',
+    firstPassLabel: 'clear_yes', revisedAt: null, decisionSource: 'escalation', rubricVersion: 'rubric-v1.3', guardVerdict: 'uncertain',
     decidedAt: '2026-09-20T12:00:00.000Z', holdout: false, ageBand: '10-12', title: 'Placeholder title',
     channel: 'Placeholder channel', description: null, tags: [], categoryId: null, madeForKids: null,
     ageRestricted: false, channelHistory: null,

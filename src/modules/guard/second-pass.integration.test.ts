@@ -417,6 +417,109 @@ describe('download-time second pass: everything else is unchanged', () => {
   });
 });
 
+describe('download-time second pass: a pick the parent blocked in flight (#223)', () => {
+  // A decision on the candidate the pick came from, made while the pick was
+  // downloading (a Block today, or a Review change to Block).
+  function seedDecision(id: string, youtubeId: string, verdict: 'clear_yes' | 'clear_no', at: string): void {
+    db.prepare(`
+      INSERT INTO guard_decisions
+        (decision_id, subject_type, subject_id, user_id, url, youtube_id, age_band, rubric_version, source,
+         guard_verdict, human_verdict, decided_by, decided_at)
+      VALUES (?, 'candidate', ?, ?, ?, ?, '10-12', 'rubric-v1.3', 'spot_check', 'clear_yes', ?, ?, ?)
+    `).run(id, `cand-${youtubeId}`, KID_ID, `https://www.youtube.com/watch?v=${youtubeId}`, youtubeId, verdict, ADULT_ID, at);
+  }
+
+  function seedRevision(id: string, decisionId: string, verdict: 'clear_yes' | 'clear_no', at: string): void {
+    db.prepare(`
+      INSERT INTO guard_decision_revisions
+        (revision_id, decision_id, human_verdict, rubric_version, effect, revised_by, revised_at)
+      VALUES (?, ?, ?, 'rubric-v1.3', 'label_only', ?, ?)
+    `).run(id, decisionId, verdict, ADULT_ID, at);
+  }
+
+  const EARLIER = '2026-09-20T12:00:00.000Z';
+  const LATER = '2026-09-21T12:00:00.000Z';
+
+  beforeEach(() => {
+    vi.mocked(deleteQueue.add).mockClear();
+  });
+
+  afterEach(() => {
+    db.exec('DELETE FROM guard_decision_revisions');
+    db.exec('DELETE FROM guard_decisions');
+  });
+
+  it('removes a pick blocked while it downloaded, without a model call, file included', async () => {
+    seedRequest('pick-parent-blocked');
+    seedDecision('d1', 'pick-parent-blocked', 'clear_yes', EARLIER);
+    seedRevision('rv1', 'd1', 'clear_no', LATER);
+    await workerDownloaded('pick-parent-blocked');
+
+    await runDownloadSecondPass('pick-parent-blocked');
+
+    expect(row('pick-parent-blocked')).toMatchObject({ status: 'deleted', guard_verdict: 'clear_no' });
+    expect(db.prepare('SELECT decided_by FROM requests WHERE request_id = ?').get('pick-parent-blocked'))
+      .toEqual({ decided_by: ADULT_ID });
+    expect(ollamaGenerate).not.toHaveBeenCalled();
+    expect(deleteQueue.add).toHaveBeenCalledWith(
+      'delete', { requestId: 'pick-parent-blocked', filePath: '/videos/pick-parent-blocked.mp4' }, expect.anything(),
+    );
+    expect(notify).not.toHaveBeenCalled();
+    expect(await feedIds(KID_ID)).not.toContain('pick-parent-blocked');
+  });
+
+  it('does not clear a pick the parent blocked while the guard ran', async () => {
+    seedRequest('pick-parent-raced');
+    await workerDownloaded('pick-parent-raced');
+    vi.mocked(ollamaGenerate).mockImplementation(async () => {
+      seedDecision('d1', 'pick-parent-raced', 'clear_no', LATER);
+      return verdictJson('clear_yes');
+    });
+
+    await runDownloadSecondPass('pick-parent-raced');
+
+    expect(row('pick-parent-raced').status).toBe('deleted');
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  // Downloads with no second pass of their own: caught at the callback.
+  for (const source of ['share_sheet', 'parent_pick']) {
+    it(`removes a ${source} request blocked while it downloaded, at the download callback`, async () => {
+      const id = `own-${source}`;
+      seedRequest(id, { source });
+      // The Block lands after the request was made.
+      seedDecision('d1', id, 'clear_no', new Date(Date.now() + 60_000).toISOString());
+      await workerDownloaded(id);
+
+      expect(row(id)).toMatchObject({ status: 'deleted', guard_verdict: 'clear_no' });
+      expect(db.prepare('SELECT decided_by FROM requests WHERE request_id = ?').get(id)).toEqual({ decided_by: ADULT_ID });
+      expect(deleteQueue.add).toHaveBeenCalledWith('delete', { requestId: id, filePath: `/videos/${id}.mp4` }, expect.anything());
+      expect(guardQueueAdd).not.toHaveBeenCalled();
+      expect(notify).not.toHaveBeenCalled();
+      expect(await feedIds(KID_ID)).not.toContain(id);
+    });
+  }
+
+  it("leaves a kid's own request made after the Block to its usual path", async () => {
+    seedDecision('d1', 'own-later', 'clear_no', EARLIER);
+    seedRequest('own-later', { source: 'share_sheet' });
+    await workerDownloaded('own-later');
+    expect(row('own-later').status).toBe('ready');
+  });
+
+  it('clears as usual when the latest answer is Allow', async () => {
+    seedRequest('pick-reallowed');
+    seedDecision('d1', 'pick-reallowed', 'clear_no', EARLIER);
+    seedRevision('rv1', 'd1', 'clear_yes', LATER);
+    await workerDownloaded('pick-reallowed');
+    vi.mocked(ollamaGenerate).mockResolvedValue(verdictJson('clear_yes'));
+
+    await runDownloadSecondPass('pick-reallowed');
+
+    expect(row('pick-reallowed').status).toBe('ready');
+  });
+});
+
 describe('download-time second pass: Blocked channel', () => {
   const blockPlaceholderChannel = () => db.prepare(
     'INSERT OR IGNORE INTO blocked_channels (channel_id, display_name, blocked_by, blocked_at) VALUES (?, ?, ?, ?)',

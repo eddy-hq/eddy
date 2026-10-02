@@ -98,6 +98,14 @@ _Avoid_: audit, sample review, labelling
 The parent surface (`/decisions`) that holds **Escalations** and **Spot checks**. Each answer is a ground-truth label for a video and a kid, stored in `guard_decisions`, separate from any one guard verdict so every model is scored against the same labels.
 _Avoid_: review queue, inbox, moderation
 
+**Review**:
+The mode of **Decisions** for re-checking past answers, disagreements with the guard by default. Not a name for **Escalations** or the daily queue. Changing an answer there writes a **Revision**.
+_Avoid_: history, audit
+
+**Revision**:
+A changed answer to a past decision, stored beside the first pass in `guard_decision_revisions`; `guard_decisions` is never overwritten and the latest revision is the label. A change to Block always acts (a visible slate pick leaves the feed, a pooled candidate is rejected); a change to Allow only frees a candidate still waiting in the pool, and never puts a video into a kid's feed.
+_Avoid_: edit, correction, overwrite
+
 **Rubric**:
 The written statement of the parent's standards the guard judges against — dimensions (language, frightening, …), a severity scale with anchoring examples per dimension, and a per-age-band limits table mapping severities to **Clear-yes** / **Uncertain** / **Clear-no**. Models score dimensions; the limits table decides. One versioned source (`docs/guard-rubric.md`) read by the guard prompt, the teacher, parent reason chips, and any trained student.
 _Avoid_: policy, guidelines, criteria

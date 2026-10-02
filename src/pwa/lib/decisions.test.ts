@@ -18,10 +18,26 @@ import {
   setReasonText,
   skipCard,
   toggleReasonDimension,
+  answerLine,
+  appendReviewPage,
+  applyRevision,
+  changeLabel,
+  changeTarget,
+  freshReviewList,
+  isDisagreement,
+  isFilterSwitch,
+  mergeReviewPage,
+  reviseInList,
+  matchesReviewFilter,
+  revisionBody,
+  revisionEffectLabel,
+  storedReasonSummary,
   type BlockChannelResult,
   type ReasonOptions,
   type CardSubject,
   type DecisionCard,
+  type ReviewCard,
+  type ReviewDecision,
 } from './decisions';
 
 function subject(id: string, userId: string): CardSubject {
@@ -255,5 +271,139 @@ describe('decision payloads with a reason', () => {
       userId: 'parent',
       subjects: [{ subjectType: 'candidate', subjectId: 's1' }, { subjectType: 'candidate', subjectId: 's2' }],
     });
+  });
+});
+
+describe('Review', () => {
+  function reviewCard(key: string, decision: Partial<ReviewDecision> = {}): ReviewCard {
+    return {
+      ...card(key, [subject(`s-${key}`, 'kid1')]),
+      source: 'spot_check',
+      decision: {
+        decisionId: key, decidedAt: '2026-09-25T00:00:00.000Z', guardVerdict: 'clear_yes',
+        firstVerdict: 'clear_no', firstReason: null, verdict: 'clear_no', reason: null, revision: null,
+        ...decision,
+      },
+    };
+  }
+
+  const opts: ReasonOptions = {
+    dimensions: [{ key: 'violence', label: 'Violence' }, { key: 'frightening', label: 'Frightening' }],
+    textMax: 280,
+  };
+
+  it('a disagreement needs a clear guard verdict opposite the answer', () => {
+    expect(isDisagreement('clear_yes', 'clear_no')).toBe(true);
+    expect(isDisagreement('clear_no', 'clear_yes')).toBe(true);
+    expect(isDisagreement('clear_yes', 'clear_yes')).toBe(false);
+    expect(isDisagreement('uncertain', 'clear_no')).toBe(false);
+    expect(isDisagreement(null, 'clear_yes')).toBe(false);
+  });
+
+  it('filters on the first answer or the current one', () => {
+    const agreed = reviewCard('a', { guardVerdict: 'clear_no', firstVerdict: 'clear_no', verdict: 'clear_no' });
+    const escalation = reviewCard('e', { guardVerdict: 'uncertain', firstVerdict: 'clear_yes', verdict: 'clear_yes' });
+    const revisedIntoAgreement = reviewCard('r', { guardVerdict: 'clear_yes', firstVerdict: 'clear_no', verdict: 'clear_yes' });
+    const revisedOutOfAgreement = reviewCard('o', { guardVerdict: 'clear_yes', firstVerdict: 'clear_yes', verdict: 'clear_no' });
+    expect([agreed, escalation, revisedIntoAgreement, revisedOutOfAgreement]
+      .filter((c) => matchesReviewFilter(c, 'disagreements')).map((c) => c.key)).toEqual(['r', 'o']);
+    expect([agreed, escalation].every((c) => matchesReviewFilter(c, 'all'))).toBe(true);
+  });
+
+  it('offers the opposite of the current answer', () => {
+    expect(changeTarget(reviewCard('b', { verdict: 'clear_no' }))).toBe('clear_yes');
+    expect(changeLabel(reviewCard('b', { verdict: 'clear_no' }))).toBe('Change to Allow');
+    expect(changeLabel(reviewCard('a', { verdict: 'clear_yes' }))).toBe('Change to Block');
+  });
+
+  it('builds the revision request with the optional reason', () => {
+    const c = reviewCard('d1', { verdict: 'clear_yes' });
+    expect(revisionBody('parent', c)).toEqual({ userId: 'parent', decisionId: 'd1', verdict: 'clear_no' });
+    expect(revisionBody('parent', c, { dimensions: ['violence'], text: ' Note ' })).toEqual({
+      userId: 'parent', decisionId: 'd1', verdict: 'clear_no', reasonDimensions: ['violence'], reasonText: 'Note',
+    });
+  });
+
+  it('labels every effect, and says plainly when nothing live changed', () => {
+    expect(revisionEffectLabel('removed')).toBe('Removed from the feed');
+    expect(revisionEffectLabel('blocked')).toBe('Taken out of the pool');
+    expect(revisionEffectLabel('eligible')).toBe('Can be picked for a future slate');
+    expect(revisionEffectLabel('label_only')).toMatch(/nothing live changed/);
+  });
+
+  it('shows the first answer, and the current one once revised', () => {
+    expect(answerLine(reviewCard('a').decision)).toBe('You said block');
+    expect(answerLine(reviewCard('a', {
+      verdict: 'clear_yes', revision: { revisedAt: '2026-09-26T00:00:00.000Z', effect: 'label_only', count: 1 },
+    }).decision)).toBe('You said block, now allow');
+  });
+
+  it('summarises a recorded reason', () => {
+    expect(storedReasonSummary(null, opts)).toBeNull();
+    expect(storedReasonSummary({ dimensions: [], text: null }, opts)).toBeNull();
+    expect(storedReasonSummary({ dimensions: ['violence', 'unknown'], text: 'Note' }, opts)).toBe('Violence, unknown, "Note"');
+  });
+
+  it('replaces a changed card in place and drops it only when it leaves the filter', () => {
+    const cards = [reviewCard('a'), reviewCard('b'), reviewCard('c')];
+    const changed = reviewCard('b', {
+      verdict: 'clear_yes', revision: { revisedAt: '2026-09-26T00:00:00.000Z', effect: 'eligible', count: 1 },
+    });
+    expect(applyRevision(cards, changed, 'disagreements').map((c) => [c.key, c.decision.verdict]))
+      .toEqual([['a', 'clear_no'], ['b', 'clear_yes'], ['c', 'clear_no']]);
+    const agreeing = reviewCard('b', { guardVerdict: 'clear_no', firstVerdict: 'clear_no', verdict: 'clear_no' });
+    expect(applyRevision(cards, agreeing, 'disagreements').map((c) => c.key)).toEqual(['a', 'c']);
+    expect(applyRevision(cards, agreeing, 'all').map((c) => c.key)).toEqual(['a', 'b', 'c']);
+  });
+
+  it('treats re-selecting the current filter as no switch', () => {
+    expect(isFilterSwitch('disagreements', 'disagreements')).toBe(false);
+    expect(isFilterSwitch('all', 'all')).toBe(false);
+    expect(isFilterSwitch('disagreements', 'all')).toBe(true);
+  });
+
+  it('drops a late page asked for by a list that has since been reloaded', () => {
+    const page = (filter: 'disagreements' | 'all', keys: string[], nextOffset: number | null) => ({
+      filter, cards: keys.map((k) => reviewCard(k)), reasons: opts, counts: { disagreements: 0, all: 0 }, nextOffset,
+    });
+    const all = freshReviewList(null, page('all', ['a', 'b'], 2));
+    const askedFor = all.loadId;
+    // The parent switches to Disagreements before "Show more" on All returns.
+    const disagreements = freshReviewList(all, page('disagreements', ['x'], 1));
+    const late = mergeReviewPage(disagreements, askedFor, page('all', ['c'], 4));
+    expect(late).toBe(disagreements);
+    // Switching back to All reloads it too: the old page still doesn't land.
+    const allAgain = freshReviewList(disagreements, page('all', ['a', 'b'], 2));
+    expect(mergeReviewPage(allAgain, askedFor, page('all', ['c'], 4))).toBe(allAgain);
+    // A page for the list on screen lands.
+    const merged = mergeReviewPage(allAgain, allAgain.loadId, page('all', ['b', 'c'], null));
+    expect(merged.cards.map((c) => c.key)).toEqual(['a', 'b', 'c']);
+    expect(merged.nextOffset).toBeNull();
+  });
+
+  it('steps the offset back when a loaded card leaves the filter, so the next page skips nothing', () => {
+    const cards = ['a', 'b', 'c'].map((k) => reviewCard(k));
+    const list = freshReviewList(null, {
+      filter: 'disagreements', cards, reasons: opts, counts: { disagreements: 4, all: 4 }, nextOffset: 3,
+    });
+    const agreeing = reviewCard('b', { guardVerdict: 'clear_no', firstVerdict: 'clear_no', verdict: 'clear_no' });
+    const after = reviseInList(list, agreeing);
+    expect(after.cards.map((c) => c.key)).toEqual(['a', 'c']);
+    expect(after.nextOffset).toBe(2);
+    // A page asked for at the old offset no longer lands.
+    expect(mergeReviewPage(after, list.loadId, { cards: [reviewCard('e')], nextOffset: null })).toBe(after);
+
+    // A card that stays keeps the offset and the pages in flight.
+    const staying = reviewCard('b', {
+      verdict: 'clear_yes', revision: { revisedAt: '2026-09-26T00:00:00.000Z', effect: 'eligible', count: 1 },
+    });
+    const kept = reviseInList(list, staying);
+    expect(kept).toMatchObject({ loadId: list.loadId, nextOffset: 3 });
+    expect(kept.cards.map((c) => c.decision.verdict)).toEqual(['clear_no', 'clear_yes', 'clear_no']);
+  });
+
+  it('appends a page without repeating cards already shown', () => {
+    expect(appendReviewPage([reviewCard('a'), reviewCard('b')], [reviewCard('b'), reviewCard('c')]).map((c) => c.key))
+      .toEqual(['a', 'b', 'c']);
   });
 });
