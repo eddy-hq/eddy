@@ -27,6 +27,7 @@ import {
   isDisagreement,
   isFilterSwitch,
   mergeReviewPage,
+  reviseInList,
   matchesReviewFilter,
   revisionBody,
   revisionEffectLabel,
@@ -378,6 +379,27 @@ describe('Review', () => {
     const merged = mergeReviewPage(allAgain, allAgain.loadId, page('all', ['b', 'c'], null));
     expect(merged.cards.map((c) => c.key)).toEqual(['a', 'b', 'c']);
     expect(merged.nextOffset).toBeNull();
+  });
+
+  it('steps the offset back when a loaded card leaves the filter, so the next page skips nothing', () => {
+    const cards = ['a', 'b', 'c'].map((k) => reviewCard(k));
+    const list = freshReviewList(null, {
+      filter: 'disagreements', cards, reasons: opts, counts: { disagreements: 4, all: 4 }, nextOffset: 3,
+    });
+    const agreeing = reviewCard('b', { guardVerdict: 'clear_no', firstVerdict: 'clear_no', verdict: 'clear_no' });
+    const after = reviseInList(list, agreeing);
+    expect(after.cards.map((c) => c.key)).toEqual(['a', 'c']);
+    expect(after.nextOffset).toBe(2);
+    // A page asked for at the old offset no longer lands.
+    expect(mergeReviewPage(after, list.loadId, { cards: [reviewCard('e')], nextOffset: null })).toBe(after);
+
+    // A card that stays keeps the offset and the pages in flight.
+    const staying = reviewCard('b', {
+      verdict: 'clear_yes', revision: { revisedAt: '2026-09-26T00:00:00.000Z', effect: 'eligible', count: 1 },
+    });
+    const kept = reviseInList(list, staying);
+    expect(kept).toMatchObject({ loadId: list.loadId, nextOffset: 3 });
+    expect(kept.cards.map((c) => c.decision.verdict)).toEqual(['clear_no', 'clear_yes', 'clear_no']);
   });
 
   it('appends a page without repeating cards already shown', () => {

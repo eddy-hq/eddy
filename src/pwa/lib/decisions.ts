@@ -389,6 +389,21 @@ export function freshReviewList(previous: ReviewList | null, page: ReviewPage): 
   return { loadId: (previous?.loadId ?? 0) + 1, filter: page.filter, cards: page.cards, nextOffset: page.nextOffset };
 }
 
+// A changed card back into the list. When it leaves the filter, the server's
+// filtered list shrinks by one ahead of the next page, so the offset steps
+// back one (else the next unseen decision is skipped), and any page already
+// in flight, asked for at the old offset, is retired.
+export function reviseInList(list: ReviewList, updated: ReviewCard): ReviewList {
+  const cards = applyRevision(list.cards, updated, list.filter);
+  if (cards.length === list.cards.length) return { ...list, cards };
+  return {
+    ...list,
+    loadId: list.loadId + 1,
+    cards,
+    nextOffset: list.nextOffset === null ? null : Math.max(0, list.nextOffset - 1),
+  };
+}
+
 // A "Show more" page lands only on the list it was asked for: a response
 // that arrives after the list was reloaded (the parent switched filter, or
 // switched away and back) is dropped, so it can't mix another list's cards

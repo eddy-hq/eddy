@@ -32,10 +32,10 @@ import {
   type ShownEval,
   REVIEW_FILTER_LABEL,
   answerLine,
-  applyRevision,
   freshReviewList,
   isFilterSwitch,
   mergeReviewPage,
+  reviseInList,
   changeLabel,
   changeTarget,
   revisionBody,
@@ -677,7 +677,7 @@ function Review({ userId }: { userId: string }) {
     setError(null);
     try {
       const outcome = await postRevision(userId, card, reasonKey === card.key ? reason : EMPTY_REASON);
-      setList((l) => (l ? { ...l, cards: applyRevision(l.cards, outcome.card, l.filter) } : l));
+      setList((l) => (l ? reviseInList(l, outcome.card) : l));
       setReasonKey(null);
       setReason(EMPTY_REASON);
       setFlash(revisionEffectLabel(outcome.effect));
