@@ -4,6 +4,17 @@ export type SubjectType = 'candidate' | 'request';
 export type DecisionSource = 'escalation' | 'spot_check' | 'catch_up';
 export type HumanVerdict = 'clear_yes' | 'clear_no';
 
+// What a Block meant (#227): unsafe for this kid, or not for us (quality,
+// taste, relevance). Both are human_verdict 'clear_no' with the same live
+// effect; null on a Block is "kind not recorded" (older rows and clients).
+export const BLOCK_KINDS = ['unsafe', 'not_for_us'] as const;
+export type BlockKind = (typeof BLOCK_KINDS)[number];
+
+// The stored kind for a verdict: only a Block carries one.
+export function blockKindFor(verdict: HumanVerdict, kind: BlockKind | null | undefined): BlockKind | null {
+  return verdict === 'clear_no' ? kind ?? null : null;
+}
+
 // Daily queue (brief §17, Phase 6a): ~15 cards, escalations first; 5 spot
 // checks a day, 4 clear-yes and 1 clear-no, drawn from the last 7 days.
 // Escalations older than 14 days wait for catch-up mode.
