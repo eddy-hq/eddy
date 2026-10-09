@@ -1288,7 +1288,7 @@ Resolve before or during the relevant phase.
 - **Name:** Eddy — a current that moves differently to the main flow
 - **Weekly summary name:** Drift
 - **Repo:** `eddy-hq/eddy`
-- **Licence:** not yet chosen. There is no LICENSE file; decide before the repo goes public.
+- **Licence:** MIT for the code (`LICENSE`); CC BY 4.0 for the written documentation in `docs/` (`docs/LICENSE`).
 - **Open source:** when stable (post-Phase 8). Per-household native builds require per-household Apple Developer accounts — consistent with self-hosted ethos.
 
 ---

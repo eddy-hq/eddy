@@ -1,0 +1,15 @@
+Copyright (c) 2026 Steve Urmston
+
+The written documentation in this directory, including the product brief,
+architecture decision records, design notes, guard rubric and operations notes,
+is licensed under the Creative Commons Attribution 4.0 International licence
+(CC BY 4.0).
+
+You may share and adapt it for any purpose, including commercially, as long as
+you give appropriate credit, link to the licence, and indicate if changes were
+made.
+
+Full licence text: https://creativecommons.org/licenses/by/4.0/legalcode
+
+Code in this repository, including code snippets quoted in these documents, is
+licensed under the MIT License; see `../LICENSE`.
