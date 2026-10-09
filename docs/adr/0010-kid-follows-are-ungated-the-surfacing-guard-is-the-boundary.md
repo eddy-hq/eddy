@@ -25,4 +25,4 @@ The rule: **a kid following a creator is ungated. The per-item `clear_yes` surfa
 ## Deferred
 
 - **Revisit if the per-item guard proves insufficient in practice.** The whole basis for ungated follows is that `clear_yes`-at-surfacing reliably protects a kid. If real-world guard quality (post-Phase 6) shows that following materially worsens a kid's exposure despite per-item gating, model (A) is the fallback — and the **Signed-token** + **Escalation** pattern is where it would be built.
-- **Parental roster visibility (read-only).** Not the same as approval: a future parent view of "who Boy1 follows" with an unfollow affordance is compatible with this ADR and not built here.
+- **Parental roster visibility (read-only).** Not the same as approval: a future parent view of "who this kid follows" with an unfollow affordance is compatible with this ADR and not built here.

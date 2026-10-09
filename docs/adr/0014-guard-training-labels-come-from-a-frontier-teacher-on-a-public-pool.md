@@ -18,6 +18,6 @@ The guard's long-term shape is a small local classifier — one head per **Rubri
 ## Considered and rejected
 
 - **Train on household labels.** Too few, one labeller, and overfits the kids' current topics. Kept for evaluation, where a few hundred labels are enough to measure precision within a few points.
-- **Train on public research datasets directly.** Samba and Disturbed YouTube for Kids label for ages 1–5 and the Elsagate era; their "suitable" class excludes most of what a 10–13-year-old watches. Useful as hard positives in the pool and as a public floor benchmark, not as the label source.
-- **A large local teacher.** The M4 has 16 GiB and already holds Gemma 4 E4B; no strong 27B+ open model fits alongside it. A rented GPU running an open model would keep everything self-controlled, but the frontier teacher on public data carries no household data and is simpler to run.
+- **Train on public research datasets directly.** Samba and Disturbed YouTube for Kids label for ages 1–5 and the Elsagate era; their "suitable" class excludes most of what the household's kids watch. Useful as hard positives in the pool and as a public floor benchmark, not as the label source.
+- **A large local teacher.** The server's memory already holds the local guard model; no strong 27B+ open model fits alongside it. A rented GPU running an open model would keep everything self-controlled, but the frontier teacher on public data carries no household data and is simpler to run.
 - **Hosted classifier APIs at runtime (Jev, Luna).** Kid requests would leave the M4. The Luna/Jev *shape* is the target; their hosted products are not.

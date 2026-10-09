@@ -96,8 +96,8 @@ beforeAll(() => {
   const insertUser = db.prepare(
     'INSERT INTO users (user_id, display_name, role, age_gate, birth_year, created_at) VALUES (?, ?, ?, ?, ?, ?)',
   );
-  insertUser.run(KID_1, 'Boy1', 'kid', 1, 2013, NOW.toISOString());
-  insertUser.run(KID_2, 'Boy2', 'kid', 1, 2015, NOW.toISOString());
+  insertUser.run(KID_1, 'Boy1', 'kid', 1, 2012, NOW.toISOString());
+  insertUser.run(KID_2, 'Boy2', 'kid', 1, 2016, NOW.toISOString());
   insertUser.run(PARENT, 'Parent', 'parent', 0, null, NOW.toISOString());
 });
 

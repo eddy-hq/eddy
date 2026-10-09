@@ -6,8 +6,8 @@ The decision rests on a bet about what's becoming scarce. As AI-generated conten
 
 ## Consequences
 
-- Recommendation extraction from a followed person's text outputs is a first-class pipeline, not a future feature. The "no automated recommendation without a visible reason" rule routes through the person wherever possible — *"Tyler recommended this book twice in the last six months."*
+- Recommendation extraction from a followed person's text outputs is a first-class pipeline, not a future feature. The "no automated recommendation without a visible reason" rule routes through the person wherever possible — *"Sam recommended this book twice in the last six months."*
 - `persons` is the first-class entity; `outputs` are joined to it. A new content source for a person is a new row in `outputs`, not a new subscription.
 - Person-level transparency on kid surfaces is qualitative and observational, never quantitative or ranked — see Section 4a and the no-surveillance rule in Section 1. The **Person view** is a reflective surface, not a discovery one.
-- A `person_type` flag (individual, duo, group, studio) handles edge cases like Dude Perfect or family channels. Mechanics don't change with type; only the UI register may.
+- A `person_type` flag (individual, duo, group, studio) handles edge cases like trick-shot groups or family channels. Mechanics don't change with type; only the UI register may.
 - For kids in v1, most followed people have a single output (their YouTube channel). The data model is uniform across ages; the UI complexity for kids is deliberately thin. As a kid grows into other media, the infrastructure is already there.

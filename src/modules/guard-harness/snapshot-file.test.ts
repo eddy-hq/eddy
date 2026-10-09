@@ -42,7 +42,7 @@ function makeDb(file: string): void {
   }
   const at = '2026-09-19T12:00:00.000Z';
   db.prepare('INSERT INTO users (user_id, display_name, role, age_gate, birth_year, created_at) VALUES (?, ?, ?, ?, ?, ?)')
-    .run(KID, 'Boy1', 'kid', 1, 2013, at);
+    .run(KID, 'Boy1', 'kid', 1, 2012, at);
   db.prepare('INSERT INTO users (user_id, display_name, role, age_gate, birth_year, created_at) VALUES (?, ?, ?, ?, ?, ?)')
     .run(PARENT, 'Parent', 'parent', 0, null, at);
   db.prepare(`

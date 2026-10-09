@@ -28,7 +28,7 @@ struct SetupView: View {
                 TextField(
                     "",
                     text: $input,
-                    prompt: Text(verbatim: "https://eddyhq.app/feed?userId=…"),
+                    prompt: Text(verbatim: "https://eddy.example.com/feed?userId=…"),
                     axis: .vertical
                 )
                     .textInputAutocapitalization(.never)

@@ -32,7 +32,8 @@ const schema = z.object({
   USER_BIRTH_YEAR_BOY1: z.coerce.number().int().optional(),
   USER_BIRTH_YEAR_BOY2: z.coerce.number().int().optional(),
   // Video — written locally by the Ubuntu worker
-  VIDEO_OUTPUT_PATH: z.string().default('/home/steveu/eddy/videos'),
+  // Only the worker reads this, so the default resolves against the worker's home.
+  VIDEO_OUTPUT_PATH: z.string().default(path.join(os.homedir(), 'eddy', 'videos')),
   NGINX_VIDEO_BASE_URL: z.string().optional(),
   YTDLP_COOKIES_FILE: z.string().optional(), // path to cookies.txt; enables age-restricted downloads
   // Path (ON THE WORKER) to an aged, never-logged-in "guest visitor" cookie jar
@@ -122,8 +123,7 @@ const schema = z.object({
   // Per-user discovery hour (local time, 0–23). Each user's daily slate composes
   // at their own hour so the fleet's yt-dlp search + download volume spreads
   // across the day instead of one 06:00 spike from the shared residential IP
-  // (#185). Defaults put Steve on the early run and the boys mid-morning /
-  // early-afternoon (fresh slate ready before after-school). The channel-wide
+  // (#185). The defaults stagger the three users across the day. The channel-wide
   // RSS poll is scheduled at the earliest of these hours, ahead of any user.
   DISCOVERY_HOUR_STEVE: z.coerce.number().int().min(0).max(23).default(6),
   DISCOVERY_HOUR_BOY1: z.coerce.number().int().min(0).max(23).default(14),
@@ -152,8 +152,7 @@ const schema = z.object({
   // Per-user daily download cap (ADR-0012, 2026-07-23 amendment). A fairness
   // floor over the shared budget above: no single user's automated downloads may
   // exceed this in one UTC day, so a heavy-follow user whose slate job fires
-  // early can't drain the fleet pool before later-scheduled users (e.g. the kids,
-  // at hours 10 and 14) run. Each slate run is bounded by whichever of the two is
+  // early can't drain the fleet pool before later-scheduled users run. Each slate run is bounded by whichever of the two is
   // tighter. Default 10.
   PER_USER_DOWNLOAD_DAILY_BUDGET: z.coerce.number().int().nonnegative().default(10),
   // Consecutive terminal download failures before the worker sends one

@@ -14,7 +14,7 @@ private final class StubTransport: HTTPTransport, @unchecked Sendable {
 
     init(status: Int, body: String) {
         let response = HTTPURLResponse(
-            url: URL(string: "https://eddyhq.app/requests")!,
+            url: URL(string: "https://eddy.example.com/requests")!,
             statusCode: status,
             httpVersion: "HTTP/1.1",
             headerFields: ["Content-Type": "application/json"]
@@ -29,7 +29,7 @@ private final class StubTransport: HTTPTransport, @unchecked Sendable {
     /// A response that isn't HTTP at all.
     init(nonHTTP: Void) {
         let response = URLResponse(
-            url: URL(string: "https://eddyhq.app/requests")!,
+            url: URL(string: "https://eddy.example.com/requests")!,
             mimeType: "application/json",
             expectedContentLength: 0,
             textEncodingName: nil
@@ -44,7 +44,7 @@ private final class StubTransport: HTTPTransport, @unchecked Sendable {
 }
 
 final class RequestClientTests: XCTestCase {
-    private let base = URL(string: "https://eddyhq.app")!
+    private let base = URL(string: "https://eddy.example.com")!
     private let userId = "018f3a7c-1b2c-7d3e-8f40-51627384950a"
     private let shared = "https://www.youtube.com/watch?v=aaaaaaaaaaa"
 
@@ -57,7 +57,7 @@ final class RequestClientTests: XCTestCase {
     func testAcceptsA202() async {
         let transport = StubTransport(status: 202, body: """
         {"requestId":"018f3a7c-1b2c-7d3e-8f40-51627384950b","status":"downloading",
-         "message":"Got it, Boy1. Working on it.","pwaUrl":"https://eddyhq.app/feed?userId=x"}
+         "message":"Got it, Boy1. Working on it.","pwaUrl":"https://eddy.example.com/feed?userId=x"}
         """)
         let outcome = await client(transport).submit(sharedText: shared, userId: userId)
         XCTAssertEqual(outcome, .accepted(message: "Got it, Boy1. Working on it.", status: "downloading"))
@@ -69,7 +69,7 @@ final class RequestClientTests: XCTestCase {
     func testDedupResponseIsJustAnotherAcceptance() async {
         let transport = StubTransport(status: 202, body: """
         {"requestId":"018f3a7c-1b2c-7d3e-8f40-51627384950b","status":"ready",
-         "message":"Got it. Working on it.","pwaUrl":"https://eddyhq.app/feed?userId=x"}
+         "message":"Got it. Working on it.","pwaUrl":"https://eddy.example.com/feed?userId=x"}
         """)
         let outcome = await client(transport).submit(sharedText: shared, userId: userId)
         XCTAssertEqual(outcome, .accepted(message: "Got it. Working on it.", status: "ready"))
@@ -129,7 +129,7 @@ final class RequestClientTests: XCTestCase {
 
     func testBodyIsExactlyUrlAndUserId() async throws {
         let transport = StubTransport(status: 202, body: """
-        {"requestId":"r","status":"downloading","message":"Got it.","pwaUrl":"https://eddyhq.app/feed"}
+        {"requestId":"r","status":"downloading","message":"Got it.","pwaUrl":"https://eddy.example.com/feed"}
         """)
         _ = await client(transport).submit(sharedText: "Look at this https://youtu.be/abc", userId: userId)
 
@@ -142,11 +142,11 @@ final class RequestClientTests: XCTestCase {
 
     func testPostsToRequestsWithAGenerousTimeout() async {
         let transport = StubTransport(status: 202, body: """
-        {"requestId":"r","status":"downloading","message":"Got it.","pwaUrl":"https://eddyhq.app/feed"}
+        {"requestId":"r","status":"downloading","message":"Got it.","pwaUrl":"https://eddy.example.com/feed"}
         """)
         _ = await client(transport).submit(sharedText: shared, userId: userId)
 
-        XCTAssertEqual(transport.lastRequest?.url?.absoluteString, "https://eddyhq.app/requests")
+        XCTAssertEqual(transport.lastRequest?.url?.absoluteString, "https://eddy.example.com/requests")
         XCTAssertEqual(transport.lastRequest?.httpMethod, "POST")
         XCTAssertEqual(transport.lastRequest?.value(forHTTPHeaderField: "Content-Type"), "application/json")
         XCTAssertEqual(transport.lastRequest?.timeoutInterval, 20)

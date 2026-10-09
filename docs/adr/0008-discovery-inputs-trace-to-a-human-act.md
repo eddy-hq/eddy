@@ -14,7 +14,7 @@ The principle has two halves and they're inseparable. The rejected half: no auto
 - **Two-zone Interests editor.** Declared interests are a ranked, draggable list (priority is the input; weight = `1/sqrt(rank)`). Inferred interests sit in a separate "Eddy noticed" band, ordered by signal strength, with no rank — they cannot be interleaved into the ranked list because they have no rank.
 - **Search-seed is decoupled from scoring-vocabulary.** A broad interest ("AI", "Running") serves as scoring vocabulary (connection axis) but generates no `ytsearch` query; search-term generation returns empty for interests too broad to yield good queries. This stops broad inferred-then-kept interests from polluting the gap-filler.
 - **No mandatory onboarding gate.** The "≥1 interest and ≥1 follow to proceed" requirement is dropped. An empty "Picked for you" is a valid cold state, carried by the request flow until follows accumulate.
-- **No kid/adult asymmetry.** The model is uniform across ages. A Minecraft-following kid gets inferred interests from imported subs; a request-flow-only kid simply has no inferred interests yet — not by special-casing, but as a natural consequence of having no follows.
+- **No kid/adult asymmetry.** The model is uniform across ages. A kid who follows gaming creators gets inferred interests from imported subs; a request-flow-only kid simply has no inferred interests yet — not by special-casing, but as a natural consequence of having no follows.
 
 ## Considered and rejected
 
@@ -23,12 +23,12 @@ The principle has two halves and they're inseparable. The rejected half: no auto
 
 ## Built since (Tier 2 inference — issue #181, 2026-05-31)
 
-**Tier 2 inference is now built.** The deferral was tripped exactly as anticipated: a kid following ~28 Minecraft creators got the parent's adult seed topics (`economics`, `philosophy`, `news_analysis`) force-fit onto those channels, because `inferChannelInterests` could only *pick from the existing catalogue*. Specificity had drifted broad.
+**Tier 2 inference is now built.** The deferral was tripped exactly as anticipated: a kid following dozens of creators in one niche got the parent's adult seed topics (`economics`, `philosophy`, `news_analysis`) force-fit onto those channels, because `inferChannelInterests` could only *pick from the existing catalogue*. Specificity had drifted broad.
 
 Inference now grows the vocabulary **bottom-up from content**, mirroring how a declared `user_added` interest is created on demand:
 
 1. **Describe** — Gemma free-labels the channel's primary topic from its name + recent titles, unbiased by the catalogue (1–3 word label, or "unclear" ⇒ insert nothing).
-2. **Canonicalise** — that free label is matched against the existing vocabulary on *semantic sameness* (not nearest-fit from a closed list, and explicitly allowed to find no match). This is the crux: it collapses "minecraft survival" / "MC redstone" onto one `minecraft` id, so the inferred-interest follower-count and the `MAX_PER_INTEREST` diversity cap keep aggregating correctly.
+2. **Canonicalise** — that free label is matched against the existing vocabulary on *semantic sameness* (not nearest-fit from a closed list, and explicitly allowed to find no match). This is the crux: it collapses "sourdough bread" / "sourdough baking" onto one `sourdough` id, so the inferred-interest follower-count and the `MAX_PER_INTEREST` diversity cap keep aggregating correctly.
 3. **Create on demand** — a genuine miss inserts a new `interests` row (`source='inferred'`) and enqueues the existing search-terms job. The new interest is still subject to every prior consequence: it is **inert until Kept**, and a kid's Keep still routes through the guard. So bottom-up vocabulary growth adds no kid-safety surface at inference time — the human-act boundary is unchanged.
 
 The pre-seeded catalogue is therefore no longer a *forced* inference target. The seed rows that existed **only** as inference targets (declared by nobody) and were the leak fodder — `news_analysis`, `programming`, `camping` — were removed (migration 038); declared seeds stay. The add-interest browse grid (`GET /interests/`) was already unused and was removed; declared interests are added freeform (`/user-add`) or by Keeping an inference.
@@ -39,4 +39,4 @@ This supersedes the "Tier 2 inference" deferral below; the "specificity prompt a
 
 - **Tier 2 inference — generating new vocabulary from content.** *(Built — see above.)* ~~Today inference only proposes interests already in the shared vocabulary~~ Generating a *new* interest label + `search_terms` from a channel's actual content was the **specificity** lever: inference could only ever be as specific as the declared vocabulary.
 - **Specificity prompt at the Keep moment** ("Keep 'AI', or make it more specific?"). A cheaper partial alternative to Tier 2; deferred until drift is observed.
-- **Backfill of pre-existing `channel_interest_links`.** The new inference applies to *future* follows; the stale links from the old force-fit prompt are left in place (one affected kid's were cleaned manually). Re-inferring the whole table is its own job.
+- **Backfill of pre-existing `channel_interest_links`.** The new inference applies to *future* follows; the stale links from the old force-fit prompt are left in place. Re-inferring the whole table is its own job.

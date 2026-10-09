@@ -35,8 +35,8 @@ beforeAll(() => {
   const insertUser = db.prepare(
     'INSERT INTO users (user_id, display_name, role, age_gate, birth_year, created_at) VALUES (?, ?, ?, ?, ?, ?)',
   );
-  insertUser.run(KID_1, 'Boy1', 'kid', 1, 2013, BEFORE);
-  insertUser.run(KID_2, 'Boy2', 'kid', 1, 2015, BEFORE);
+  insertUser.run(KID_1, 'Boy1', 'kid', 1, 2012, BEFORE);
+  insertUser.run(KID_2, 'Boy2', 'kid', 1, 2016, BEFORE);
   insertUser.run(PARENT, 'Parent', 'parent', 0, null, BEFORE);
 });
 
@@ -348,7 +348,7 @@ describe('block kinds (#227)', () => {
         old.exec(readFileSync(path.join(MIGRATIONS, f), 'utf8'));
       }
       old.prepare('INSERT INTO users (user_id, display_name, role, age_gate, birth_year, created_at) VALUES (?, ?, ?, ?, ?, ?)')
-        .run(KID_1, 'Boy1', 'kid', 1, 2013, BEFORE);
+        .run(KID_1, 'Boy1', 'kid', 1, 2012, BEFORE);
       old.prepare('INSERT INTO users (user_id, display_name, role, age_gate, birth_year, created_at) VALUES (?, ?, ?, ?, ?, ?)')
         .run(PARENT, 'Parent', 'parent', 0, null, BEFORE);
       old.prepare(`

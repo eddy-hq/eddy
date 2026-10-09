@@ -191,14 +191,14 @@ function fixtureItems(): ScoringItems {
       index: 2,
       candidateId: 'eval-subscription-1',
       title: 'Why Gyroscopes Refuse to Fall Over',
-      channel: 'Steve Mould',
+      channel: 'Bench Physics',
       durationSecs: 1140,
       publishedAt: '2026-05-21T10:00:00.000Z',
       interestLabel: null,
       expertise: null,
       sourceType: 'subscription',
       personId: 'person-mould',
-      personName: 'Steve Mould',
+      personName: 'Bench Physics',
     },
   ];
 }

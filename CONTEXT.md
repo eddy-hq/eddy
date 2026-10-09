@@ -56,9 +56,9 @@ _Avoid_: home, today's feed, daily
 Where a card came from — *request*, *follow*, or *pick*. Rendered as a small pill on every card (amber/teal/terracotta dot + short label).
 _Avoid_: source (overloaded), origin, category
 
-**Hook**:
-A one-line personal hook beneath the card headline, Gemma-generated in batches. Max 15 words, specific not generic. The "no recommendation without a visible reason" rule lives here.
-_Avoid_: blurb, description, tagline
+**Hook** (retired):
+There is no generated hook line. The creator's own title leads every card. The "no recommendation without a visible reason" rule lives in the Eddy voice line — the one-sentence *why* scoring writes for each card, shown above it in the *Today* stream and in the detail sheet.
+_Avoid_: hook (for anything on today's cards), blurb, tagline
 
 **Saved**:
 A bookmarked **Item** — appears in its original feed position *and* in the dedicated Saved tab, and is immune to recycling.
@@ -127,7 +127,7 @@ The kid's one-tap "Ask a grown-up" affordance on a **Clear-no** rejection. Route
 _Avoid_: dispute, retry
 
 **Override**:
-A parent-granted temporary unblock of YouTube on a specific device for N minutes — for livestreams, football, time-sensitive moments. Lives at the **Pi-hole**, not in the pipeline.
+A parent-granted temporary unblock of YouTube on a specific device for N minutes — for livestreams, live sport, time-sensitive moments. Lives at the **Pi-hole**, not in the pipeline.
 _Avoid_: bypass, exception, allowlist
 
 ### Discovery and profile
@@ -281,8 +281,8 @@ _Avoid_: API (overloaded), control plane (descriptive but not the term)
 > **Steve:** "If Boy1 saves a video and then I run the recycler, what happens?"
 > **Claude:** "Nothing — **Saved** items are immune to recycling. The card stays **Live** until he unsaves it. The recycler only touches **Live** cards that aren't saved, oldest first, within his per-user budget."
 
-> **Steve:** "Boy2 followed DanTDM. So he's subscribed to a YouTube channel?"
-> **Claude:** "Under the hood, yes — DanTDM has one **Output** in v1, his YouTube channel. But the unit of subscription is the **Person**, not the channel. When he eventually has a Substack or a podcast, following him already covers it."
+> **Steve:** "Boy2 followed Pixel Pete. So he's subscribed to a YouTube channel?"
+> **Claude:** "Under the hood, yes — Pixel Pete has one **Output** in v1, his YouTube channel. But the unit of subscription is the **Person**, not the channel. When he eventually has a Substack or a podcast, following him already covers it."
 
 > **Steve:** "Why did this **Pick** show up on Boy1's **Today** if its **Relevance axis** was a 4?"
 > **Claude:** "Its **Quality axis** was 9 and the recommender is a high-trust **Person** for him — the ranker weights quality heavier on a kid's picks surface. Picks are a curated set, not a ranked list — see `docs/design-notes.md`."

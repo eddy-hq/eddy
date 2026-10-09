@@ -1,6 +1,6 @@
 # One notification channel
 
-Eddy has one channel for every notification — guard escalations, override requests, "video ready", weekly Drift, pipeline alerts to Steve. No email, no SMS, no Web Push, no Pushover, no per-event-class routing. Today the implementation is ntfy self-hosted on Ubuntu; the principle is one channel, regardless of which technology delivers it. *(Amended 2026-09-19: ntfy has been removed; the transport is log-only until APNs lands — see the amendment below.)*
+Eddy has one channel for every notification — guard escalations, override requests, "video ready", weekly Drift, pipeline alerts to the parent. No email, no SMS, no Web Push, no Pushover, no per-event-class routing. Today the implementation is ntfy self-hosted on Ubuntu; the principle is one channel, regardless of which technology delivers it. *(Amended 2026-09-19: ntfy has been removed; the transport is log-only until APNs lands — see the amendment below.)*
 
 The single-channel discipline is the actually-load-bearing decision. The obvious failure mode is *"this guard escalation is urgent, let's also send email"* six months in — at which point notifications fragment, signed-token action endpoints have to handle multiple delivery shapes, kids learn that some channels can be ignored and others can't, and the household has three places to check. Forcing every event through one channel keeps the priority signal honest: `max` priority means something because nothing else competes for it.
 

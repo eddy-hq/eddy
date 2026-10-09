@@ -65,7 +65,7 @@ Ordered by how badly each one blocks a stranger.
 
 ## Decisions the site forces
 
-- **Where the site lives.** `eddyhq.app` resolves to a tailnet address and serves our
+- **Where the site lives.** `eddy.example.com` resolves to a tailnet address and serves our
   PWA. A public site on the apex means moving the household PWA to a subdomain (or to a
   `ts.net` name, which item 7 may want anyway). The iOS shell's base URL is already
   config, so that move is cheap.

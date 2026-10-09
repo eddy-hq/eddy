@@ -22,3 +22,9 @@ ios/Config/apns.env
 ios/build/
 ios/DerivedData/
 **/xcuserdata/
+
+# Rendered from launchd/*.plist.template by scripts/render-launchd.sh
+launchd/*.plist
+
+# Operator-only script, kept out of the public repo
+deploy/refresh-yt-cookies.sh

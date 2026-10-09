@@ -1,8 +1,8 @@
 import { config } from '../../config';
 
 // Rewrite a persisted nginx URL (http://<mediaserver>/videos/foo.mp4) to its
-// public HTTPS equivalent (https://eddyhq.app/videos/foo.mp4). Required because
-// the PWA is served from https://eddyhq.app/ and browsers block mixed-content
+// public HTTPS equivalent (https://eddy.example.com/videos/foo.mp4). Required because
+// the PWA is served from https://eddy.example.com/ and browsers block mixed-content
 // http:// media on an https page. The DB still stores the LAN URL — rewriting
 // happens at the API boundary so a future scheme change is one-config-flip.
 //

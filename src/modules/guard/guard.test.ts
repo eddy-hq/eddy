@@ -126,12 +126,12 @@ describe('scoreForRequest prompt content', () => {
     vi.mocked(ollamaGenerate).mockResolvedValue('{"verdict":"clear_yes","reason":"ok","confidence":0.9}');
     await scoreForRequest({
       requestId: 'r1', userId: 'u1', url: 'https://x',
-      title: 'Intro to Python', channel: 'CS Dojo',
+      title: 'Intro to Python', channel: 'Code Corner',
       description: 'Learn Python basics.', transcript: null,
     });
     const prompt = vi.mocked(ollamaGenerate).mock.calls[0]?.[0] ?? '';
     expect(prompt).toContain('Intro to Python');
-    expect(prompt).toContain('CS Dojo');
+    expect(prompt).toContain('Code Corner');
     expect(prompt).toContain('3 previously approved');
     expect(prompt).toContain('1 previously rejected');
   });
@@ -196,7 +196,7 @@ describe('scoreForRequest', () => {
     );
     const result = await scoreForRequest({
       requestId: 'req-1', userId: 'user-1', url: 'https://youtube.com/watch?v=abc',
-      title: 'Learn Python', channel: 'CS Dojo', description: 'Python tutorial', transcript: null,
+      title: 'Learn Python', channel: 'Code Corner', description: 'Python tutorial', transcript: null,
     });
 
     expect(result.verdict).toBe('clear_yes');

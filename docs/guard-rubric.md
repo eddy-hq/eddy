@@ -98,11 +98,13 @@ Per age band, not per kid — a younger sibling reaching a band gets exactly wha
 
 - Any hard stop → **clear_no**.
 - Every dimension within its limit → **clear_yes**.
-- One or more dimensions over by exactly one level → **uncertain** (a request escalates; a discovery candidate doesn't surface, since discovery requires clear_yes).
+- One or more dimensions over by exactly one level → **uncertain** (a discovery candidate doesn't surface, since discovery requires clear_yes; for a request, see the note below).
 - Any dimension over by two or more → **clear_no**.
 - Then flags apply.
 
-Discovery is stricter than requests by construction: it surfaces only clear_yes, where a request's uncertain reaches a parent.
+Discovery is stricter than requests by construction: it surfaces only clear_yes, where a request's uncertain is meant to reach a parent.
+
+> **Requests are not enforced yet.** Today the rubric gates discovery candidates and the download-time second pass on kids' slate picks. A kid's own request (share sheet, on-demand) is judged in shadow mode only: the verdict is recorded, but nothing is held back or escalated on it. Turning enforcement on for requests is a separate change.
 
 ### Flags
 

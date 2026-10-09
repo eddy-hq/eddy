@@ -19,7 +19,7 @@ struct WebOrigin: Equatable, Sendable {
     }
 
     func matches(_ url: URL) -> Bool {
-        // `https://eddyhq.app@evil.example/` parses with host `evil.example`,
+        // `https://eddy.example.com@evil.example/` parses with host `evil.example`,
         // but parsers disagree often enough that embedded credentials are
         // refused outright rather than reasoned about.
         guard url.user() == nil, url.password() == nil else { return false }

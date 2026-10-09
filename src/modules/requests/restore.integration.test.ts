@@ -78,7 +78,7 @@ app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
 
 const USER_ID = '11111111-1111-7111-8111-111111111111';
 const FILE_PATH = '/mnt/ssd/eddy/videos/restored.mp4';
-const NGINX_URL = 'http://mediaserver/videos/restored.mp4';
+const NGINX_URL = 'http://worker-host/videos/restored.mp4';
 const THUMB_URL = 'https://existing/editorial.jpg';
 
 beforeAll(() => {

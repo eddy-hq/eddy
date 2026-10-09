@@ -1,8 +1,8 @@
 # Eddy — Operations
 
-Two machines: **M4 Mac Mini** (Tailscale: `mini-steve`) runs the Express server, Ollama, and Redis. **Ubuntu media server** (Tailscale: `mediaserver`) runs the download worker, nginx, and Plex.
+Two machines: **M4 Mac Mini** (Tailscale: `<eddy-host>`) runs the Express server, Ollama, and Redis. **Ubuntu media server** (Tailscale: `<worker-host>`) runs the download worker, nginx, and Plex.
 
-> **Notifications are log-only.** ntfy was removed from the codebase on 2026-09-19 (ADR-0003 amendment) and APNs hasn't landed yet (brief §21). Every alert below — watchdog, circuit breaker, failure streak — now goes to a log file and nowhere else. Nothing pages anyone. See *Decommissioning ntfy* at the foot of this file for the host-side cleanup still outstanding.
+> **Notifications go out over APNs to the iOS shell** (#203, #204, #210; brief §21). ntfy was removed on 2026-09-19 (ADR-0003 amendment). `notify()` sends through APNs on whichever box has the three `APNS_*` keys set in `.env`; without them it stays log-only. The watchdog script is the exception: it sits outside `notify()` and only writes `ALERT` lines to its own log. See *Decommissioning ntfy* at the foot of this file for the host-side cleanup still outstanding.
 
 ---
 
@@ -13,8 +13,8 @@ Two machines: **M4 Mac Mini** (Tailscale: `mini-steve`) runs the Express server,
 | Express server (`src/index.ts`) | M4 | launchd `com.eddy.server` |
 | Vite dev server | M4 | manual (`npm run dev:pwa`) |
 | Redis | M4 | Homebrew (`brew services`, launchd `homebrew.mxcl.redis`) |
-| Caddy (HTTPS for `eddyhq.app`) | M4 | launchd `com.steveu.edge.caddy` (LaunchDaemon, root) — config in `~/code/edge` |
-| cloudflared | M4 | launchd `com.steveu.edge.cloudflared` — config in `~/code/edge` |
+| Caddy (HTTPS for the PWA domain) | M4 | LaunchDaemon (root) — config in a separate edge repo |
+| cloudflared | M4 | LaunchAgent — config in the same edge repo |
 | Download worker (`dist/workers/download.js`) | Ubuntu | systemd `eddy-worker` |
 | nginx | Ubuntu | system service |
 | Plex | Ubuntu | system service |
@@ -23,7 +23,7 @@ Two machines: **M4 Mac Mini** (Tailscale: `mini-steve`) runs the Express server,
 
 ## Watchdog (`scripts/watchdog.sh`)
 
-Runs every 60 seconds via launchd (`launchd/com.eddy.watchdog.plist`). Self-healing — no manual intervention needed for transient failures.
+Runs every 60 seconds via launchd (`launchd/com.eddy.watchdog.plist`, rendered from its template — see *launchd plists are templates* below). Self-healing — no manual intervention needed for transient failures.
 
 **What it checks and fixes:**
 
@@ -33,7 +33,7 @@ Runs every 60 seconds via launchd (`launchd/com.eddy.watchdog.plist`). Self-heal
 4. **SSH to Ubuntu** — if unreachable despite Tailscale being up, alerts. All remote checks are skipped.
 5. **eddy-worker** — checks `systemctl --user is-active eddy-worker`. If not active, restarts it and rechecks.
 
-Records every corrective action and unrecoverable failure to the watchdog log. It used to push these to Steve's phone; since ntfy's removal the log is the only place they surface, so a failure it can't self-heal (Tailscale `NeedsLogin`, Ubuntu unreachable) will sit there unread until someone looks. Restoring the push is stage 4–5 of the native shell.
+Records every corrective action and unrecoverable failure to the watchdog log. It is a shell script outside `notify()`, so none of this reaches a phone: a failure it can't self-heal (Tailscale `NeedsLogin`, Ubuntu unreachable) sits in the log until someone looks.
 
 **Log:** `logs/watchdog.log`
 
@@ -47,10 +47,18 @@ Two quirks worth knowing about the launchd setup:
 - **`--include 'src/**/*.ts'`** is required. Without it, tsx's default import-graph watcher only fires on edits to the entry file (`src/index.ts`) when running under launchd — edits to imported modules are missed.
 - **`CHOKIDAR_USEPOLLING=1`** is set in the plist's `EnvironmentVariables`. FSEvents is unreliable for daemonised processes on macOS; polling adds tiny CPU overhead but makes reloads deterministic.
 
+### launchd plists are templates
+
+The repo commits `launchd/*.plist.template` with placeholders (`__EDDY_DIR__`, `__HOME__`, `__NODE_BIN__`) rather than this machine's paths. `scripts/render-launchd.sh` writes the real `launchd/*.plist` next to them (gitignored). Run it after cloning and after editing a template; set `NODE_BIN` to pin the node launchd should run, otherwise it takes the one on `PATH`.
+
+```bash
+NODE_BIN=/path/to/node scripts/render-launchd.sh
+```
+
 ### Loading / reloading the watchdog
 
 ```bash
-# First time
+# First time (after rendering)
 cp launchd/com.eddy.watchdog.plist ~/Library/LaunchAgents/
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.eddy.watchdog.plist
 
@@ -98,12 +106,12 @@ launchctl kickstart -k gui/$(id -u)/com.eddy.server
 brew services restart redis
 
 # Ubuntu — worker
-ssh -i ~/.ssh/id_ed25519_eddy steveu@mediaserver "systemctl --user restart eddy-worker"
+ssh <worker-host> "systemctl --user restart eddy-worker"
 ```
 
 ### Reloading the server plist
 
-The installed plist at `~/Library/LaunchAgents/com.eddy.server.plist` is a symlink to the repo copy, so edits to `launchd/com.eddy.server.plist` are live on disk. But launchd itself caches the loaded definition — a `kickstart` restarts the process with the old args. To pick up plist changes:
+The installed plist at `~/Library/LaunchAgents/com.eddy.server.plist` is a symlink to the rendered repo copy, so re-rendering after a template edit is live on disk. But launchd itself caches the loaded definition — a `kickstart` restarts the process with the old args. To pick up plist changes:
 
 ```bash
 launchctl bootout   gui/$(id -u) ~/Library/LaunchAgents/com.eddy.server.plist
@@ -124,7 +132,7 @@ launchctl list | grep eddy
 
 ## Ubuntu worker — systemd details
 
-Service file: `systemd/eddy-worker.service`, installed at `~/.config/systemd/user/` on Ubuntu. Linger is enabled — starts at boot and persists after SSH logout.
+Service file: `systemd/eddy-worker.service`, installed at `~/.config/systemd/user/` on Ubuntu. It is a user unit and uses systemd's `%h` specifier for the home directory, so the committed file carries no machine path. Linger is enabled — starts at boot and persists after SSH logout.
 
 After deploying code changes to Ubuntu manually (outside of `deploy.sh`):
 
@@ -173,7 +181,7 @@ Eddy now rate-shapes its own yt-dlp throughput so it stops *causing* the volume 
 - **`YTDLP_BOTDETECT_COOLDOWN_SECS`** (default 2700 = 45 min) — on a bot-detection signature, the detector (`src/botdetect.ts`) arms a cooldown via a Redis key (`eddy:ytdlp:botdetect-cooldown`). It's **cross-process**: the Ubuntu download worker and the M4 discovery search both check and arm it, because the block is IP-wide. While armed, the worker **parks** queued downloads in BullMQ's `delayed` state (`moveToDelayed`, which doesn't spend a retry) instead of hammering, and discovery **skips** its interest-search + back-catalogue fan-out. Set `0` to disable.
 - **`DISCOVERY_SEARCH_LIMIT`** (default 10, was a hardcoded 20) — `ytsearchN` depth for the interest search. Halving it halves the per-search extraction volume.
 - **`DISCOVERY_SEARCH_DELAY_MS` / `DISCOVERY_SEARCH_JITTER_MS`** (default 2000 / 2000) — base + random gap between consecutive searches so a user's fan-out drips.
-- **`DISCOVERY_HOUR_STEVE` / `_BOY2` / `_BOY1`** (default 6 / 10 / 14) and **`DISCOVERY_HOUR_DEFAULT`** (default 6) — per-user discovery hour (local, 0–23). This replaced the old `DISCOVERY_USER_STAGGER_MS` intra-run gap: instead of one 06:00 job that loops the fleet, each user now has its **own repeatable cron** at its hour (`discovery-user-<uuid>`), so search + download volume spreads across the day rather than spiking at once. Spreading is the real lever against a *volume*-triggered, IP-wide block; seconds of intra-run stagger were cosmetic. The schedule is **reconciled on every startup** (`reconcileDiscoverySchedule` drops all existing repeatables and re-adds the current set), so changing an hour just needs a server restart. Users fire at `hour:10`.
+- **`DISCOVERY_HOUR_STEVE` / `_BOY2` / `_BOY1`** and **`DISCOVERY_HOUR_DEFAULT`** (defaults in `src/config.ts`) — per-user discovery hour (local, 0–23), staggered across the day. This replaced the old `DISCOVERY_USER_STAGGER_MS` intra-run gap: instead of one 06:00 job that loops the fleet, each user now has its **own repeatable cron** at its hour (`discovery-user-<uuid>`), so search + download volume spreads across the day rather than spiking at once. Spreading is the real lever against a *volume*-triggered, IP-wide block; seconds of intra-run stagger were cosmetic. The schedule is **reconciled on every startup** (`reconcileDiscoverySchedule` drops all existing repeatables and re-adds the current set), so changing an hour just needs a server restart. Users fire at `hour:10`.
 - **RSS poll** (`discovery-rss-poll`, jobId fixed) — the channel-wide poll is now its **own** daily job at the earliest user hour (`pollHour:00`), ahead of any per-user compose (ADR-0009). Stale-pool prune rides on it. The discovery worker is concurrency 1, so even if the poll runs long the earliest user (`hour:10`) just queues behind it.
 
 Fail-open by design: a Redis outage reports "no cooldown" rather than wedging downloads/discovery shut.
@@ -182,9 +190,10 @@ Fail-open by design: a Redis outage reports "no cooldown" rather than wedging do
 
 The July 2026 block outlived the cooldown machinery (three days, one re-probe per ~12 h, each re-tripping), so the system now surrenders early and downloads far less:
 
-- **`DOWNLOAD_DAILY_BUDGET`** (default 10) — global cap on *automated* downloads per UTC day, enforced in the slate-composition loop (`src/modules/discovery/index.ts`): slate-bound (delighter) picks are funded before follow-sourced ones; over-budget picks revert to `scored` in the candidate pool and get re-picked on a later slate. Explicit share-sheet / on-demand requests count toward the tally but are **never refused**. Priority ordering is per-run, not global across users — accepted approximation at 10/day.
+- **`DOWNLOAD_DAILY_BUDGET`** (default 30) — global cap on *automated* downloads per UTC day, enforced in the slate-composition loop (`src/modules/discovery/index.ts`): slate-bound (delighter) picks are funded before follow-sourced ones; over-budget picks revert to `scored` in the candidate pool and get re-picked on a later slate. Explicit share-sheet / on-demand requests count toward the tally but are **never refused**. Priority ordering is per-run, not global across users — an accepted approximation now that the per-user cap below bounds each run.
+- **`PER_USER_DOWNLOAD_DAILY_BUDGET`** (default 10; ADR-0012, 2026-07-23 amendment) — per-user fairness cap under the global one. No single user's automated downloads may exceed it in one UTC day, so a heavy-follow user whose slate job fires early can't drain the shared pool before later-scheduled users run. Each slate run is bounded by whichever of the two caps is tighter. The global default of 30 is three users × 10.
 - **`BACK_CATALOGUE_ENABLED`** (default `true`, set `false` in `.env` since 2026-07-20) — kill-switch for the back-catalogue seeder (full moratorium per ADR-0012; the pool-to-consumption ratio says depth is already banked).
-- **Circuit breaker** (`src/circuit-breaker.ts`, threshold constant 3) — on the 3rd consecutive bot-detection trip, both queues auto-pause (same lever as `pipeline-pause.ts`) and exactly one `circuit_open` alert is raised (`eddy:ytdlp:circuit-open` SET NX dedupes across M4 + worker; a failed send releases the claim so a later trip re-alerts). **No auto-resume** — dark until manual. Note the alert is log-only until APNs lands, so in practice a tripped breaker is discovered by noticing the feed has gone quiet — check `logs/` first.
+- **Circuit breaker** (`src/circuit-breaker.ts`, threshold constant 3) — on the 3rd consecutive bot-detection trip, both queues auto-pause (same lever as `pipeline-pause.ts`) and exactly one `circuit_open` alert is raised (`eddy:ytdlp:circuit-open` SET NX dedupes across M4 + worker; a failed send releases the claim so a later trip re-alerts). **No auto-resume** — dark until manual. The alert goes to the parent through `notify()` — a push when APNs is configured, otherwise a log line, in which case a tripped breaker shows up as a feed that has gone quiet; check `logs/` first.
 - **Resume is manual and dual-path**: `pipeline-pause.ts resume-if-clear` probes the M4 anonymous path *and* the worker's mweb+POT path over SSH (`eddy-mediaserver`); both must clear. Any resume path also clears the cooldown, strike counter, and breaker flag ("resume means go now").
 - **`pipeline-pause.ts clear-parked`** — drains parked download jobs without a resume-burst: removes delayed/waiting jobs, marks their `downloading` rows `failed` (non-destructive), and resets their candidate-pool rows to `scored` so the slate re-selects them under budget. Side effect of the supporting dedup change: `failed` request rows no longer permanently block a video's re-selection.
 
@@ -242,28 +251,13 @@ YouTube appears to score **fresh anonymous sessions per IP**, not bytes transfer
 
 The download path can reuse **one persisted anonymous "guest visitor" identity** instead of minting a fresh session every run — an aged never-logged-in cookie jar passes gates that fresh sessions fail (yt-dlp #15583; per-IP session scoring #14899 / #15865). This is **not an account login** — nothing to ban; ADR-0012's 2026-07-20 amendment narrows rule 5 to permit exactly this.
 
-**What / where.** A Netscape cookie jar **on the worker**, outside the repo — e.g. `/home/<user>/.local/state/eddy/guest-cookies.txt`. Point `YTDLP_GUEST_COOKIES` (`.env`) at it as an **absolute path with no spaces**: the download path checks it with Node `fs` (no `~` expansion — a tilde value silently disables the jar for downloads while the SSH probe's remote shell *does* expand it, so probe and downloads would diverge). Empty/unset (default) = fresh anonymous session per run, prior behaviour. A configured-but-missing file logs a warn and reverts to fresh-per-run — it never fails a download. Applies to worker downloads and the `resume-if-clear` worker probe (so the probe tests the identity downloads use); the M4 anonymous probe stays cookieless by design.
+**What / where.** A Netscape cookie jar **on the worker**, outside the repo — e.g. `/path/to/eddy-state/guest-cookies.txt`. Point `YTDLP_GUEST_COOKIES` (`.env`) at it as an **absolute path with no spaces**: the download path checks it with Node `fs` (no `~` expansion — a tilde value silently disables the jar for downloads while the SSH probe's remote shell *does* expand it, so probe and downloads would diverge). Empty/unset (default) = fresh anonymous session per run, prior behaviour. A configured-but-missing file logs a warn and reverts to fresh-per-run — it never fails a download. Applies to worker downloads and the `resume-if-clear` worker probe (so the probe tests the identity downloads use); the M4 anonymous probe stays cookieless by design.
 
-**Mint one** (on the worker). Run the same invocation the resume probe uses, adding `--cookies <path>` against a known-good video — one YouTube touch creates and populates the jar:
+**Minting, ageing and rotating the jar** are operator steps and live in private ops notes, not in this repo. The shape: the jar is disposable, so if blocks recur while it is in use, delete the file (behaviour reverts to fresh-session-per-run) and replace it once the block has cleared.
 
-```bash
-# on the worker
-mkdir -p ~/.local/state/eddy
-~/.local/bin/yt-dlp --force-ipv4 \
-  --cookies ~/.local/state/eddy/guest-cookies.txt \
-  --js-runtimes node:node --remote-components ejs:github \
-  --sleep-requests 1.5 \
-  --dump-json --no-playlist --skip-download --no-write-playlist-metafiles \
-  'https://www.youtube.com/watch?v=jNQXAC9IVRw' >/dev/null
-```
+**How a flagged jar announces itself** (2026-07-31 incident): every download dies **mid-transfer** with `HTTP Error 403: Forbidden` at a consistent byte offset — extraction, PO token and JS-challenge solving all succeed first. This does NOT match the bot-detect regex, so no cooldown or circuit breaker fires; the signature-blind failure-streak alert (`DOWNLOAD_FAILURE_STREAK_THRESHOLD`, fires through `notify()` after N consecutive terminal failures) is what catches it. Confirm with an A/B: run the worker's exact yt-dlp invocation manually with and without `--cookies` — jar-only failure = flagged jar, replace it.
 
-**Age it.** Leave the jar unused ideally **3+ days** before it drives real downloads — a brand-new jar reads much like a fresh session. Do NOT log in to anything with it; a single anonymous touch is the whole point.
-
-**Rotate.** If blocks recur while the jar is in use, **delete the file** (behaviour reverts to fresh-session-per-run) and, once the block has cleared, mint a fresh one and age it again. The jar is disposable — that is why this is safe. Keep one aged spare staged (e.g. `guest-cookies.next.txt`, minted at rotation time) so the swap is a single `mv`.
-
-**How a flagged jar announces itself** (2026-07-31 incident): every download dies **mid-transfer** with `HTTP Error 403: Forbidden` at a consistent byte offset — extraction, PO token and JS-challenge solving all succeed first. This does NOT match the bot-detect regex, so no cooldown or circuit breaker fires; the signature-blind failure-streak alert (`DOWNLOAD_FAILURE_STREAK_THRESHOLD`, fires after N consecutive terminal failures — log-only until APNs lands) is what catches it. Confirm with an A/B: run the worker's exact yt-dlp invocation manually with and without `--cookies` — jar-only failure = flagged jar, rotate it.
-
-**Hard rule.** Never use a **logged-in account's** cookies here. Guest-visitor (never-logged-in) only. An account under bot suspicion gets banned, not rate-limited, and crosses the brief's anonymity line (§256).
+**Hard rule.** Never use a **logged-in account's** cookies here. (The old `deploy/refresh-yt-cookies.sh` copied a logged-in browser's cookies to the worker; it predates this rule and has moved out of the repo into private ops notes.) Guest-visitor (never-logged-in) only. An account under bot suspicion gets banned, not rate-limited, and crosses the brief's anonymity line (§256).
 
 ---
 
@@ -291,9 +285,9 @@ One-shot per Plex install — the pref persists across Plex restarts. Only re-ru
 
 ---
 
-## HTTPS for the PWA — `eddyhq.app`
+## HTTPS for the PWA — `eddy.example.com`
 
-The PWA is served from `https://eddyhq.app/` with a real Let's Encrypt cert so iOS Safari treats it as a secure context (Web Share API, service workers, etc. require this). All traffic stays on the tailnet — the domain resolves publicly to the M4's Tailscale IP (`100.101.51.114`) via a DNS-only (grey-cloud) A record, so off-tailnet clients can't reach the service.
+The PWA is served from `https://eddy.example.com/` with a real Let's Encrypt cert so iOS Safari treats it as a secure context (Web Share API, service workers, etc. require this). All traffic stays on the tailnet — the domain resolves publicly to the M4's Tailscale IP (`<eddy-tailnet-ip>`) via a DNS-only (grey-cloud) A record, so off-tailnet clients can't reach the service.
 
 **Why direct TLS, not Cloudflare Tunnel:** the PWA's API calls return kid consumption data (titles, creators, watch times, guard verdicts). [ADR-0004](adr/0004-kids-consumption-never-leaves-m4.md) says that data must not transit a third party. CF Tunnel would terminate TLS at Cloudflare's edge, putting that data in plaintext on their infra. Direct TLS on the M4 keeps it on the tailnet end-to-end.
 
@@ -309,56 +303,56 @@ Caddy :443  (LaunchDaemon, root, M4)
 Express :3737  (eddy server, M4, LaunchAgent)
 ```
 
-Caddy lives in `~/code/edge` (separate repo). It also fronts the `urmston.org` CF Tunnel apps (pitchside, brain) — a single Caddy with two patterns. See `~/code/edge/README.md`.
+Caddy lives in a separate edge repo on the M4, which also fronts other self-hosted apps through a Cloudflare Tunnel — a single Caddy with two patterns.
 
 ### Media paths — same-origin proxy
 
-`/videos/*` and `/thumbs/*` on `eddyhq.app` reverse-proxy to the Ubuntu mediaserver's nginx (canonical LAN URL: `http://<mediaserver-tailnet-ip>/videos|thumbs`). The page is HTTPS, so http:// media URLs would be blocked as mixed content; the proxy keeps everything same-origin. Bytes transit the M4 — acceptable for tailnet-only family use.
+`/videos/*` and `/thumbs/*` on `eddy.example.com` reverse-proxy to the Ubuntu mediaserver's nginx (canonical LAN URL: `http://<worker-tailnet-ip>/videos|thumbs`). The page is HTTPS, so http:// media URLs would be blocked as mixed content; the proxy keeps everything same-origin. Bytes transit the M4 — acceptable for tailnet-only family use.
 
-The DB still stores the LAN nginx URL on each row (canonical "where the file lives"). The API rewrites it to `https://eddyhq.app/...` at response-serialise time via `toPublicMediaUrl` in `src/modules/media`. Two env vars drive the rewrite:
+The DB still stores the LAN nginx URL on each row (canonical "where the file lives"). The API rewrites it to `https://eddy.example.com/...` at response-serialise time via `toPublicMediaUrl` in `src/modules/media`. Two env vars drive the rewrite:
 
 ```
-PUBLIC_VIDEO_BASE_URL=https://eddyhq.app/videos
-PUBLIC_THUMB_BASE_URL=https://eddyhq.app/thumbs
+PUBLIC_VIDEO_BASE_URL=https://eddy.example.com/videos
+PUBLIC_THUMB_BASE_URL=https://eddy.example.com/thumbs
 ```
 
 Unset them in dev to keep raw nginx URLs. To change the public scheme/host later, edit these two values — no DB migration.
 
 ### Cert renewal
 
-Caddy renews Let's Encrypt certs automatically (90-day issuance, renewal attempted in the last 30 days). DNS-01 challenge against the `eddyhq.app` Cloudflare zone using `CF_DNS_TOKEN_EDDYHQ_APP` from `~/code/edge/.env`.
+Caddy renews Let's Encrypt certs automatically (90-day issuance, renewal attempted in the last 30 days). DNS-01 challenge against the `eddy.example.com` Cloudflare zone using a Cloudflare DNS token held in the edge repo's `.env`.
 
-Renewal failures land in `~/data/edge/logs/caddy.err.log`. The watchdog doesn't currently check Caddy or surface renewal errors — TODO if a renewal silently fails in production.
+Renewal failures land in the edge repo's Caddy error log. The watchdog doesn't currently check Caddy or surface renewal errors — TODO if a renewal silently fails in production.
 
 ### Verifying after a rebuild
 
 From any tailnet client:
 
 ```
-curl -vI https://eddyhq.app          # expect HTTP/2 200 with a valid LE cert
-curl -vI https://www.eddyhq.app      # expect 301 → https://eddyhq.app
+curl -vI https://eddy.example.com          # expect HTTP/2 200 with a valid LE cert
+curl -vI https://www.eddy.example.com      # expect 301 → https://eddy.example.com
 ```
 
 Off-tailnet (e.g. from a phone on cell data with Tailscale off):
 
 ```
-nslookup eddyhq.app                   # resolves to 100.101.51.114
-curl --max-time 5 https://eddyhq.app  # connection timeout — no public route
+nslookup eddy.example.com             # resolves to <eddy-tailnet-ip>
+curl --max-time 5 https://eddy.example.com  # connection timeout — no public route
 ```
 
 ### Bouncing Caddy
 
 ```
-sudo launchctl kickstart -k system/com.steveu.edge.caddy
-tail -f ~/data/edge/logs/caddy.err.log
+sudo launchctl kickstart -k system/<caddy-daemon-label>
+tail -f /path/to/edge/logs/caddy.err.log
 ```
 
 ### Renewer trap
 
-`brew upgrade caddy` does **not** update the running daemon. The LaunchDaemon points at `~/code/edge/bin/caddy`, a custom build that includes the Cloudflare DNS module (Homebrew Caddy doesn't). To refresh the daemon binary:
+`brew upgrade caddy` does **not** update the running daemon. The LaunchDaemon points at the edge repo's `bin/caddy`, a custom build that includes the Cloudflare DNS module (Homebrew Caddy doesn't). To refresh the daemon binary:
 
 ```
-cd ~/code/edge && bin/build.sh && sudo launchctl kickstart -k system/com.steveu.edge.caddy
+cd /path/to/edge && bin/build.sh && sudo launchctl kickstart -k system/<caddy-daemon-label>
 ```
 
 ## API route prefixes
@@ -382,4 +376,4 @@ Two steps are left, both by hand:
 
 2. **Uninstall the ntfy app from the family devices**, including the saved topic subscriptions, so nobody is left holding an app that will never buzz again. Worth doing in person — it is the only step the household will notice.
 
-Until APNs ships (brief §21), no alert reaches a phone. Check `logs/watchdog.log` and the server log by habit.
+APNs has replaced it (brief §21). The watchdog still writes to `logs/watchdog.log` only, so check that by habit.

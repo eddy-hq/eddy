@@ -2,7 +2,7 @@ import XCTest
 @testable import Eddy
 
 final class WebURLBuilderTests: XCTestCase {
-    private let base = URL(string: "https://eddyhq.app")!
+    private let base = URL(string: "https://eddy.example.com")!
     private let userId = "018f3a7c-1b2c-7d3e-8f40-51627384950a"
 
     private func build(_ path: String, _ query: [URLQueryItem] = []) -> String? {
@@ -10,18 +10,18 @@ final class WebURLBuilderTests: XCTestCase {
     }
 
     func testAlwaysAppendsTheIdentity() {
-        XCTAssertEqual(build("/feed"), "https://eddyhq.app/feed?userId=\(userId)")
-        XCTAssertEqual(build("/watch/abc"), "https://eddyhq.app/watch/abc?userId=\(userId)")
+        XCTAssertEqual(build("/feed"), "https://eddy.example.com/feed?userId=\(userId)")
+        XCTAssertEqual(build("/watch/abc"), "https://eddy.example.com/watch/abc?userId=\(userId)")
     }
 
     func testAcceptsAPathWithoutALeadingSlash() {
-        XCTAssertEqual(build("feed"), "https://eddyhq.app/feed?userId=\(userId)")
+        XCTAssertEqual(build("feed"), "https://eddy.example.com/feed?userId=\(userId)")
     }
 
     func testKeepsExtraQueryItemsAndPutsIdentityLast() {
         XCTAssertEqual(
             build("/watch/abc", [URLQueryItem(name: "t", value: "30")]),
-            "https://eddyhq.app/watch/abc?t=30&userId=\(userId)"
+            "https://eddy.example.com/watch/abc?t=30&userId=\(userId)"
         )
     }
 
@@ -30,14 +30,14 @@ final class WebURLBuilderTests: XCTestCase {
             URLQueryItem(name: "userId", value: "someone-else"),
             URLQueryItem(name: "user", value: "someone-else"),
         ])
-        XCTAssertEqual(url, "https://eddyhq.app/feed?userId=\(userId)")
+        XCTAssertEqual(url, "https://eddy.example.com/feed?userId=\(userId)")
     }
 
     func testBaseWithATrailingSlashDoesNotDoubleUp() {
         let url = WebURLBuilder.url(
-            base: URL(string: "https://eddyhq.app/")!, path: "/feed", userId: userId
+            base: URL(string: "https://eddy.example.com/")!, path: "/feed", userId: userId
         )
-        XCTAssertEqual(url?.absoluteString, "https://eddyhq.app/feed?userId=\(userId)")
+        XCTAssertEqual(url?.absoluteString, "https://eddy.example.com/feed?userId=\(userId)")
     }
 
     func testSelfHostedBaseWithAPortAndSubPath() {
@@ -49,7 +49,7 @@ final class WebURLBuilderTests: XCTestCase {
 
     func testEncodesAwkwardQueryValues() {
         let url = build("/search", [URLQueryItem(name: "q", value: "lego & knex")])
-        XCTAssertEqual(url, "https://eddyhq.app/search?q=lego%20%26%20knex&userId=\(userId)")
+        XCTAssertEqual(url, "https://eddy.example.com/search?q=lego%20%26%20knex&userId=\(userId)")
     }
 
     /// Every URL the built product loads is produced here, so this is the

@@ -10,7 +10,7 @@ private struct NeverAskedVerifier: IdentityVerifier {
 @MainActor
 final class PushAppDelegateTests: XCTestCase {
     private let userId = "018f3a7c-1b2c-7d3e-8f40-51627384950a"
-    private let config = try! AppConfig(baseURLString: "https://eddyhq.app", version: "1.0 (1)")
+    private let config = try! AppConfig(baseURLString: "https://eddy.example.com", version: "1.0 (1)")
 
     private func model() -> ShellModel {
         ShellModel(
@@ -37,7 +37,7 @@ final class PushAppDelegateTests: XCTestCase {
         delegate.bind(model)
         XCTAssertEqual(
             model.pendingLoad?.url.absoluteString,
-            "https://eddyhq.app/watch/abc123?userId=\(userId)"
+            "https://eddy.example.com/watch/abc123?userId=\(userId)"
         )
     }
 
@@ -52,7 +52,7 @@ final class PushAppDelegateTests: XCTestCase {
 
         XCTAssertEqual(
             model.pendingLoad?.url.absoluteString,
-            "https://eddyhq.app/watch/abc123?userId=\(userId)"
+            "https://eddy.example.com/watch/abc123?userId=\(userId)"
         )
     }
 
@@ -77,7 +77,7 @@ final class PushAppDelegateTests: XCTestCase {
         XCTAssertNil(model.pendingLoad)
 
         model.start()
-        XCTAssertEqual(model.pendingLoad?.url.absoluteString, "https://eddyhq.app/feed?userId=\(userId)")
+        XCTAssertEqual(model.pendingLoad?.url.absoluteString, "https://eddy.example.com/feed?userId=\(userId)")
     }
 
     func testATapOnceTheModelIsBoundRoutesStraightAway() {
@@ -86,6 +86,6 @@ final class PushAppDelegateTests: XCTestCase {
 
         delegate.bind(model)
         delegate.follow(link("/admin"))
-        XCTAssertEqual(model.pendingLoad?.url.absoluteString, "https://eddyhq.app/admin?userId=\(userId)")
+        XCTAssertEqual(model.pendingLoad?.url.absoluteString, "https://eddy.example.com/admin?userId=\(userId)")
     }
 }

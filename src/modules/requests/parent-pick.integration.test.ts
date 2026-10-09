@@ -128,7 +128,7 @@ function insertRow(opts: {
     opts.requestId, opts.userId, opts.source ?? 'share_sheet',
     `https://www.youtube.com/watch?v=${YT_ID}`, YT_ID, opts.channelId ?? CHANNEL_ID,
     opts.status, opts.filePath === undefined ? FILE : opts.filePath, opts.fileState ?? 'live',
-    `http://mediaserver/videos/${YT_ID}.mp4`, now, now,
+    `http://worker-host/videos/${YT_ID}.mp4`, now, now,
   );
 }
 

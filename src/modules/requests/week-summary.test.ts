@@ -76,7 +76,7 @@ beforeEach(() => {
 
 const sampleItems: WeekSummaryItem[] = [
   { title: 'Minecraft survival ep 1', channel: 'BlockCraft', kind: 'req' },
-  { title: 'How magnets work', channel: 'Steve Mould', kind: 'pick' },
+  { title: 'How magnets work', channel: 'Bench Physics', kind: 'pick' },
 ];
 
 describe('buildWeekSummaryPrompt', () => {
@@ -86,7 +86,7 @@ describe('buildWeekSummaryPrompt', () => {
     expect(prompt).toContain('38 items · {your prose}');
     expect(prompt).toContain('Minecraft survival ep 1');
     expect(prompt).toContain('BlockCraft');
-    expect(prompt).toContain('Steve Mould');
+    expect(prompt).toContain('Bench Physics');
     expect(prompt).toContain('UK English');
   });
 
@@ -130,8 +130,8 @@ describe('redactNames', () => {
 
 describe('guardSummary', () => {
   it('accepts a well-formed line and strips a trailing full stop', () => {
-    const out = guardSummary('38 items · mostly Minecraft, a run of Steve Mould.', 38, []);
-    expect(out).toBe('38 items · mostly Minecraft, a run of Steve Mould');
+    const out = guardSummary('38 items · mostly chess, a run of Bench Physics.', 38, []);
+    expect(out).toBe('38 items · mostly chess, a run of Bench Physics');
   });
 
   it('strips surrounding quotes the model sometimes adds', () => {
@@ -187,9 +187,9 @@ describe('generateWeekSummary', () => {
   const week: StaleWeek = { weekStart: '2026-01-05', count: 38, items: sampleItems };
 
   it('happy path: returns the guarded line', async () => {
-    vi.mocked(ollamaGenerate).mockResolvedValue('38 items · mostly Minecraft, a run of Steve Mould');
+    vi.mocked(ollamaGenerate).mockResolvedValue('38 items · mostly chess, a run of Bench Physics');
     const out = await generateWeekSummary(week);
-    expect(out).toBe('38 items · mostly Minecraft, a run of Steve Mould');
+    expect(out).toBe('38 items · mostly chess, a run of Bench Physics');
   });
 
   it('output too long → fallback null', async () => {
