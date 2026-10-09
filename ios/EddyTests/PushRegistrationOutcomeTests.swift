@@ -2,33 +2,34 @@ import XCTest
 @testable import Eddy
 
 final class PushRegistrationOutcomeTests: XCTestCase {
-    private let user = "01890a5d-ac96-774b-bcce-b302099a8057"
-    private let other = "01890a5d-ac96-774b-bcce-b302099a8058"
+    private let credential = String(repeating: "a", count: 43)
+    private let other = String(repeating: "b", count: 43)
 
-    func testRecordsARegistrationForTheCurrentIdentity() {
+    func testRecordsARegistrationForTheCurrentCredential() {
         XCTAssertEqual(
-            PushRegistrationOutcome.resolve(currentUserId: user, registeredUserId: user, deviceId: "d1"),
+            PushRegistrationOutcome.resolve(currentCredential: credential, registeredCredential: credential, deviceId: "d1"),
             .record(deviceId: "d1")
         )
     }
 
     func testARegistrationThatLandsAfterDisconnectIsOrphaned() {
         XCTAssertEqual(
-            PushRegistrationOutcome.resolve(currentUserId: nil, registeredUserId: user, deviceId: "d1"),
+            PushRegistrationOutcome.resolve(currentCredential: nil, registeredCredential: credential, deviceId: "d1"),
             .orphaned(deviceId: "d1")
         )
     }
 
-    func testARegistrationForAPreviousIdentityIsOrphaned() {
+    /// Disconnect and set up again — even as the same person — is a new row.
+    func testARegistrationForAPreviousEnrolmentIsOrphaned() {
         XCTAssertEqual(
-            PushRegistrationOutcome.resolve(currentUserId: other, registeredUserId: user, deviceId: "d1"),
+            PushRegistrationOutcome.resolve(currentCredential: other, registeredCredential: credential, deviceId: "d1"),
             .orphaned(deviceId: "d1")
         )
     }
 
     func testAFailedRequestIsNeitherRecordedNorCleanedUp() {
         XCTAssertEqual(
-            PushRegistrationOutcome.resolve(currentUserId: user, registeredUserId: user, deviceId: nil),
+            PushRegistrationOutcome.resolve(currentCredential: credential, registeredCredential: credential, deviceId: nil),
             .failed
         )
     }

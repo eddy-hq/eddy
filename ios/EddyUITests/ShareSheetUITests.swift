@@ -67,11 +67,12 @@ final class ShareSheetUITests: XCTestCase {
 
     // MARK: - Steps
 
-    /// The DEBUG `-eddyUserId` seed writes through to the shared keychain, so
-    /// one launch of the app is all the pairing the extension needs.
+    /// The DEBUG `-eddyUserId`/`-eddyCredential` seed writes through to the
+    /// shared keychain, so one launch of the app is all the pairing the
+    /// extension needs. The credential is fabricated: the build is offline.
     private func pairTheApp(userId: String) {
         let app = XCUIApplication(bundleIdentifier: "app.eddyhq.Eddy")
-        app.launchArguments = ["-eddyUserId", userId]
+        app.launchArguments = ["-eddyUserId", userId, "-eddyCredential", String(repeating: "x", count: 43)]
         app.launch()
         XCTAssertTrue(app.wait(for: .runningForeground, timeout: 30), "Eddy didn't launch")
         attach(app, named: "app-paired")

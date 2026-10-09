@@ -29,7 +29,7 @@ enum ShareFailure: Error, Equatable, Sendable {
         switch self {
         case .refused(let message): message
         case .unreachable: "Check Tailscale is connected, then try again."
-        case .unpaired: "Open Eddy and paste your link, then share again."
+        case .unpaired: "Open Eddy and paste your setup link, then share again."
         case .nothingShareable: "There's no link in what you shared."
         case .serverError: "Nothing was sent. Try again in a minute."
         }

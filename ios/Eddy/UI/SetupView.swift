@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// First launch. The shell has no sign-in of its own — it asks for the link
-/// the household already uses and keeps the id out of it.
+/// First launch. The shell has no sign-in of its own — it asks for the setup
+/// link a parent made on the M4 and redeems it for this device (ADR-0016).
 struct SetupView: View {
     let model: ShellModel
 
@@ -17,7 +17,7 @@ struct SetupView: View {
                     .foregroundStyle(Color.eddyText)
                     .padding(.top, 56)
 
-                Text("Paste your Eddy link to connect this device — the one with your id on the end. You only do this once.")
+                Text("Paste the setup link a parent gave you to connect this device. You only do this once.")
                     .font(.callout)
                     .lineSpacing(3)
                     .foregroundStyle(Color.eddyTextSecondary)
@@ -28,7 +28,7 @@ struct SetupView: View {
                 TextField(
                     "",
                     text: $input,
-                    prompt: Text(verbatim: "https://eddy.example.com/feed?userId=…"),
+                    prompt: Text(verbatim: "https://…/setup?invite=…"),
                     axis: .vertical
                 )
                     .textInputAutocapitalization(.never)
@@ -88,9 +88,9 @@ struct SetupView: View {
         case .ok:
             input = ""
         case .invalidInput:
-            message = "That doesn't look like an Eddy link."
-        case .unknownUser:
-            message = "Eddy doesn't recognise that id."
+            message = "That doesn't look like an Eddy setup link."
+        case .rejected(let reason):
+            message = reason
         case .unreachable:
             message = "Couldn't reach Eddy. Check Tailscale is connected."
         case .failed(let detail):

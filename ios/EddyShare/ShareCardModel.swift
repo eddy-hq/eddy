@@ -43,7 +43,7 @@ final class ShareCardModel {
 
         let result = await ShareSubmission.send(
             sharedText: sharedText,
-            userId: identity.load(),
+            identity: identity.load(),
             config: config,
             transport: transport
         )

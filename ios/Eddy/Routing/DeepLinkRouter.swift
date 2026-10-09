@@ -1,8 +1,8 @@
 import Foundation
 
 enum DeepLink: Equatable {
-    /// `eddy://setup?userId=<uuid>` — an identity claim, not a navigation.
-    case setup(userId: String)
+    /// `eddy://setup?invite=<token>` — a setup invite (ADR-0016), not a navigation.
+    case setup(invite: String)
     /// Anything else, normalised to a web path plus the query items worth keeping.
     case route(path: String, query: [URLQueryItem])
 }
@@ -36,11 +36,9 @@ enum DeepLinkRouter {
         }
 
         if root == "setup" {
-            if let claimed = query
-                .first(where: { WebURLBuilder.identityKeys.contains($0.name.lowercased()) })?
-                .value
-                .flatMap(UUIDValidator.normalise) {
-                return .setup(userId: claimed)
+            if let invite = query.first(where: { $0.name == "invite" })?.value,
+               SetupInputParser.isInvite(invite) {
+                return .setup(invite: invite)
             }
             return .route(path: fallbackPath, query: carried)
         }

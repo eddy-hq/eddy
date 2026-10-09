@@ -9,7 +9,8 @@ enum RequestOutcome: Equatable, Sendable {
     /// body, no new download), so there is nothing for the client to tell
     /// apart — `status` just comes back `ready` instead of `downloading`.
     case accepted(message: String, status: String)
-    /// 400 or 404 — the server said no and said why, in words for a person.
+    /// 400, 401, 403 or 404 — the server said no and said why, in words for a
+    /// person. 401 is a credential the server no longer knows (ADR-0016).
     case refused(message: String)
     /// Couldn't ask at all: no route to the host, or no answer in time.
     case unreachable
@@ -53,10 +54,10 @@ struct RequestClient: Sendable {
     /// first http(s) URL from it and decides whether it's something Eddy can
     /// fetch. Trimming or rewriting it here would only make the two
     /// disagree.
-    func submit(sharedText: String, userId: String) async -> RequestOutcome {
+    func submit(sharedText: String, identity: DeviceIdentity) async -> RequestOutcome {
         let request: URLRequest
         do {
-            request = try makeRequest(sharedText: sharedText, userId: userId)
+            request = try makeRequest(sharedText: sharedText, identity: identity)
         } catch {
             Log.requests.error("Couldn't build the request URL")
             return .serverError
@@ -96,7 +97,7 @@ struct RequestClient: Sendable {
         let message: String
     }
 
-    func makeRequest(sharedText: String, userId: String) throws -> URLRequest {
+    func makeRequest(sharedText: String, identity: DeviceIdentity) throws -> URLRequest {
         // Built from components rather than `URL(string:relativeTo:)` so a base
         // URL with a path prefix keeps it instead of having it replaced.
         guard var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false) else {
@@ -114,7 +115,8 @@ struct RequestClient: Sendable {
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.timeoutInterval = timeout
         request.cachePolicy = .reloadIgnoringLocalCacheData
-        request.httpBody = try JSONEncoder().encode(Body(url: sharedText, userId: userId))
+        request.setValue("Bearer \(identity.credential)", forHTTPHeaderField: "Authorization")
+        request.httpBody = try JSONEncoder().encode(Body(url: sharedText, userId: identity.userId))
         return request
     }
 
@@ -126,7 +128,7 @@ struct RequestClient: Sendable {
                 return .serverError
             }
             return .accepted(message: accepted.message, status: accepted.status)
-        case 400, 404:
+        case 400, 401, 403, 404:
             guard let failure = try? JSONDecoder().decode(Failure.self, from: body),
                   !failure.message.isEmpty
             else { return .serverError }

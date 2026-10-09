@@ -2,7 +2,8 @@ import Foundation
 
 /// The single place the shell turns a path into a URL to load.
 ///
-/// The PWA identifies the user purely by `?userId=` and re-appends it by hand
+/// The server knows the user from the device credential (ADR-0016), but the
+/// PWA still reads `?userId=` for its own routing and re-appends it by hand
 /// on every internal navigation. The shell can't fix that from out here, but it
 /// can guarantee the parameter is present on every URL *it* supplies — initial
 /// load, deep link, retry — so the web app never starts from a bare path.

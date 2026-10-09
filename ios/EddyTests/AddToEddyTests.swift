@@ -38,6 +38,8 @@ private final class IntentTransport: HTTPTransport, @unchecked Sendable {
 
 final class AddToEddyTests: XCTestCase {
     private let userId = "018f3a7c-1b2c-7d3e-8f40-51627384950a"
+    private let credential = String(repeating: "c", count: 43)
+    private var identity: DeviceIdentity { DeviceIdentity(userId: userId, credential: credential) }
     private let accepted = """
     {"requestId":"018f3a7c-1b2c-7d3e-8f40-51627384950b","status":"downloading",
      "message":"Got it, Boy1. Working on it.","pwaUrl":"https://eddy.example.com/feed?userId=x"}
@@ -52,7 +54,7 @@ final class AddToEddyTests: XCTestCase {
     func testReturnsTheServersMessageAsTheDialog() async throws {
         let result = await AddToEddy.run(
             link: "https://youtu.be/abc",
-            userId: userId,
+            identity: identity,
             config: try config(),
             transport: IntentTransport(status: 202, body: accepted)
         )
@@ -64,7 +66,7 @@ final class AddToEddyTests: XCTestCase {
         let transport = IntentTransport.mustNotBeCalled()
         let result = await AddToEddy.run(
             link: "remind me about the thing",
-            userId: userId,
+            identity: identity,
             config: try config(),
             transport: transport
         )
@@ -75,7 +77,7 @@ final class AddToEddyTests: XCTestCase {
     func testAnEmptyLinkIsNothingShareable() async throws {
         let result = await AddToEddy.run(
             link: "",
-            userId: userId,
+            identity: identity,
             config: try config(),
             transport: IntentTransport.mustNotBeCalled()
         )
@@ -87,7 +89,7 @@ final class AddToEddyTests: XCTestCase {
     func testTextAroundALinkIsSentVerbatim() async throws {
         let transport = IntentTransport(status: 202, body: accepted)
         let shared = "Watch \"Some video\" on YouTube https://youtu.be/abc"
-        _ = await AddToEddy.run(link: shared, userId: userId, config: try config(), transport: transport)
+        _ = await AddToEddy.run(link: shared, identity: identity, config: try config(), transport: transport)
 
         let body = try XCTUnwrap(transport.lastRequest?.httpBody)
         let json = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
@@ -101,7 +103,7 @@ final class AddToEddyTests: XCTestCase {
         let transport = IntentTransport.mustNotBeCalled()
         let result = await AddToEddy.run(
             link: "https://youtu.be/abc",
-            userId: nil,
+            identity: nil,
             config: try config(),
             transport: transport
         )
@@ -113,7 +115,7 @@ final class AddToEddyTests: XCTestCase {
     func testNoConfigIsAServerProblemNotThePersonsFault() async {
         let result = await AddToEddy.run(
             link: "https://youtu.be/abc",
-            userId: userId,
+            identity: identity,
             config: nil,
             transport: IntentTransport.mustNotBeCalled()
         )
@@ -123,7 +125,7 @@ final class AddToEddyTests: XCTestCase {
     func testARefusalCarriesTheServersWording() async throws {
         let result = await AddToEddy.run(
             link: "https://vimeo.com/1",
-            userId: userId,
+            identity: identity,
             config: try config(),
             transport: IntentTransport(
                 status: 400,
@@ -136,7 +138,7 @@ final class AddToEddyTests: XCTestCase {
     func testAnUnknownUserCarriesTheServersWording() async throws {
         let result = await AddToEddy.run(
             link: "https://youtu.be/abc",
-            userId: userId,
+            identity: identity,
             config: try config(),
             transport: IntentTransport(status: 404, body: #"{"error":"NOT_FOUND","message":"user not found"}"#)
         )
@@ -146,7 +148,7 @@ final class AddToEddyTests: XCTestCase {
     func testTailscaleBeingDownIsUnreachable() async throws {
         let result = await AddToEddy.run(
             link: "https://youtu.be/abc",
-            userId: userId,
+            identity: identity,
             config: try config(),
             transport: IntentTransport(error: URLError(.cannotFindHost))
         )
@@ -156,7 +158,7 @@ final class AddToEddyTests: XCTestCase {
     func testATimeoutIsUnreachable() async throws {
         let result = await AddToEddy.run(
             link: "https://youtu.be/abc",
-            userId: userId,
+            identity: identity,
             config: try config(),
             transport: IntentTransport(error: URLError(.timedOut))
         )
@@ -174,7 +176,7 @@ final class AddToEddyTests: XCTestCase {
         )
         XCTAssertEqual(
             EddyIntentError(.unpaired).failure.line,
-            "This device isn't connected. Open Eddy and paste your link, then share again."
+            "This device isn't connected. Open Eddy and paste your setup link, then share again."
         )
     }
 }

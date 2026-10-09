@@ -23,7 +23,10 @@ struct EddyApp: App {
             initialValue: ShellModel(
                 config: config,
                 identity: store,
-                verifier: HTTPIdentityVerifier()
+                enroller: HTTPDeviceEnroller(),
+                // Told to the server so `npm run devices -- list` can tell the
+                // household's devices apart; nothing more.
+                deviceType: UIDevice.current.userInterfaceIdiom == .pad ? "tablet" : "phone"
             )
         )
     }
@@ -55,17 +58,20 @@ struct EddyApp: App {
     private static func makeIdentityStore() -> any IdentityStore {
         let store = KeychainIdentityStore()
         #if DEBUG
-        // `-eddyUserId <uuid>` drives the app in the simulator without the
-        // setup screen. It writes through to the shared keychain rather than
-        // an in-memory store: the share extension is a separate process and
-        // can only see what is really there.
-        if let seeded = UserDefaults.standard.string(forKey: "eddyUserId"),
-           let userId = UUIDValidator.normalise(seeded) {
+        // `-eddyUserId <uuid> -eddyCredential <credential>` drives the app in
+        // the simulator without the setup screen (mint one with
+        // `npm run devices -- invite` and redeem it with `deliver: "body"`).
+        // It writes through to the shared keychain rather than an in-memory
+        // store: the share extension is a separate process and can only see
+        // what is really there.
+        if let userId = UserDefaults.standard.string(forKey: "eddyUserId"),
+           let credential = UserDefaults.standard.string(forKey: "eddyCredential"),
+           let identity = DeviceIdentity.make(userId: userId, credential: credential) {
             do {
-                try store.save(userId)
+                try store.save(identity)
             } catch {
                 Log.identity.error("Couldn't seed the debug identity: \(String(describing: error), privacy: .public)")
-                return InMemoryIdentityStore(seed: userId)
+                return InMemoryIdentityStore(seed: identity)
             }
         }
         #endif

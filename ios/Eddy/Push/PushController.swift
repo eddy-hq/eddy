@@ -6,7 +6,7 @@ import UserNotifications
 /// foreground, and knows nothing about APNs.
 @MainActor
 protocol PushRegistering: AnyObject {
-    func identityAvailable(_ userId: String)
+    func identityAvailable(_ identity: DeviceIdentity)
     func identityWillClear()
     func enteredForeground()
 }
@@ -27,7 +27,8 @@ final class PushController: PushRegistering {
     private let deviceType: String
     private let defaults: UserDefaults
 
-    private var userId: String?
+    private var identity: DeviceIdentity?
+    private var userId: String? { identity?.userId }
     private var token: String?
     private var ledger: PushRegistrationLedger
     private var isRegistering = false
@@ -45,32 +46,31 @@ final class PushController: PushRegistering {
 
     // MARK: - Shell events
 
-    func identityAvailable(_ userId: String) {
-        guard self.userId != userId else {
-            // Same person, called again on a later launch: nothing to ask for,
+    func identityAvailable(_ identity: DeviceIdentity) {
+        guard self.identity != identity else {
+            // Same device, called again on a later launch: nothing to ask for,
             // but the token may have rotated since.
             refreshTokenIfAuthorised()
             return
         }
-        // A different identity owns a different device row; the old id would
-        // come back 404.
-        if self.userId != nil { ledger.forget() }
-        self.userId = userId
+        // A new enrolment is a new device row.
+        if self.identity != nil { ledger.forget() }
+        self.identity = identity
         askForAuthorisation()
     }
 
     func identityWillClear() {
-        let deviceId = ledger.deviceId
-        let owner = userId
-        userId = nil
+        let credential = identity?.credential
+        identity = nil
         ledger.forget()
         defaults.removeObject(forKey: Self.deviceIdKey)
 
-        guard let deviceId, let owner else { return }
-        // Best effort, and not awaited: the person has already tapped
-        // Disconnect and the shell is not going to wait on the network for it.
+        guard let credential else { return }
+        // Deleting the row revokes the credential (ADR-0016). Best effort, and
+        // not awaited: the person has already tapped Disconnect and the shell
+        // is not going to wait on the network for it.
         Task { [client] in
-            await client.deregister(deviceId: deviceId, userId: owner)
+            await client.deregister(credential: credential)
         }
     }
 
@@ -124,46 +124,44 @@ final class PushController: PushRegistering {
     }
 
     private func register() {
-        guard let userId, let token, !isRegistering,
-              ledger.needsRegistration(userId: userId, token: token)
+        guard let identity, let token, !isRegistering,
+              ledger.needsRegistration(userId: identity.userId, token: token)
         else { return }
 
         let registration = DeviceRegistration(
-            userId: userId,
-            deviceId: ledger.deviceId,
             apnsToken: token,
             apnsEnvironment: environment.rawValue,
             deviceType: deviceType
         )
         isRegistering = true
         Task { [client] in
-            let deviceId = await client.register(registration)
-            finish(registration, deviceId: deviceId)
+            let deviceId = await client.register(registration, credential: identity.credential)
+            finish(registration, for: identity, deviceId: deviceId)
         }
     }
 
-    private func finish(_ registration: DeviceRegistration, deviceId: String?) {
+    private func finish(_ registration: DeviceRegistration, for registered: DeviceIdentity, deviceId: String?) {
         isRegistering = false
         switch PushRegistrationOutcome.resolve(
-            currentUserId: userId,
-            registeredUserId: registration.userId,
+            currentCredential: identity?.credential,
+            registeredCredential: registered.credential,
             deviceId: deviceId
         ) {
         case .record(let deviceId):
             ledger.recordRegistration(
-                userId: registration.userId,
+                userId: registered.userId,
                 token: registration.apnsToken,
                 deviceId: deviceId
             )
             defaults.set(deviceId, forKey: Self.deviceIdKey)
             Log.push.info("Device registered for push (\(self.environment.rawValue, privacy: .public))")
-        case .orphaned(let deviceId):
-            // Disconnect (or a switch of identity) landed while the request was
-            // in flight, so identityWillClear() had no device id to delete. The
-            // row exists now and nobody owns it on this side: remove it, or the
-            // device keeps receiving pushes for someone who has left.
+        case .orphaned:
+            // Disconnect (or a new enrolment) landed while the request was in
+            // flight. The row belongs to a credential this side has let go of:
+            // delete it, or the device keeps receiving pushes for someone who
+            // has left. A no-op if Disconnect's own delete got there first.
             Task { [client] in
-                await client.deregister(deviceId: deviceId, userId: registration.userId)
+                await client.deregister(credential: registered.credential)
             }
         case .failed:
             // Logged by the client. Returning here is what stops a server
@@ -178,15 +176,19 @@ final class PushController: PushRegistering {
     }
 }
 
-/// What to do with a finished registration, given who is signed in now. Pure,
-/// so the in-flight races are testable without UIKit.
+/// What to do with a finished registration, given which credential the device
+/// holds now. Compared by credential, not user: Disconnect and a fresh setup
+/// for the same person is a new device row. Pure, so the in-flight races are
+/// testable without UIKit.
 enum PushRegistrationOutcome: Equatable {
     case record(deviceId: String)
     case orphaned(deviceId: String)
     case failed
 
-    static func resolve(currentUserId: String?, registeredUserId: String, deviceId: String?) -> Self {
+    static func resolve(currentCredential: String?, registeredCredential: String, deviceId: String?) -> Self {
         guard let deviceId else { return .failed }
-        return currentUserId == registeredUserId ? .record(deviceId: deviceId) : .orphaned(deviceId: deviceId)
+        return currentCredential == registeredCredential
+            ? .record(deviceId: deviceId)
+            : .orphaned(deviceId: deviceId)
     }
 }

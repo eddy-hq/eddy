@@ -3,63 +3,50 @@ import XCTest
 
 final class SetupInputParserTests: XCTestCase {
     private let userId = "018f3a7c-1b2c-7d3e-8f40-51627384950a"
+    private let invite = "ZW5yb2w6MDE4ZjNhN2MtMWIyYy03ZDNlLThmNDAtNTE2MjczODQ5NTBhOjE3NjcyMjkyMDAwMDA."
+        + String(repeating: "ab", count: 32)
 
-    func testBareUUID() {
-        XCTAssertEqual(SetupInputParser.parse(userId), userId)
+    func testBareInvite() {
+        XCTAssertEqual(SetupInputParser.parse(invite), invite)
     }
 
-    func testBareUUIDIsNormalisedAndTrimmed() {
-        XCTAssertEqual(SetupInputParser.parse("  \(userId.uppercased())\n"), userId)
+    func testBareInviteIsTrimmed() {
+        XCTAssertEqual(SetupInputParser.parse("  \(invite)\n"), invite)
     }
 
-    func testPastedEddyLink() {
-        XCTAssertEqual(SetupInputParser.parse("https://eddy.example.com/feed?userId=\(userId)"), userId)
-    }
-
-    func testPastedLinkWithOtherParameters() {
-        XCTAssertEqual(
-            SetupInputParser.parse("https://eddy.example.com/watch/abc?t=30&userId=\(userId)&x=1"),
-            userId
-        )
+    func testPastedSetupLink() {
+        XCTAssertEqual(SetupInputParser.parse("https://eddy.example/setup?invite=\(invite)"), invite)
     }
 
     func testSetupDeepLink() {
-        XCTAssertEqual(SetupInputParser.parse("eddy://setup?userId=\(userId)"), userId)
-    }
-
-    /// The PWA treats `user=` as an alias for `userId=` (BottomNav.tsx), so a
-    /// link pasted from an older screen still works.
-    func testUserAlias() {
-        XCTAssertEqual(SetupInputParser.parse("https://eddy.example.com/feed?user=\(userId)"), userId)
-    }
-
-    func testCaseInsensitiveKey() {
-        XCTAssertEqual(SetupInputParser.parse("https://eddy.example.com/feed?UserID=\(userId)"), userId)
+        XCTAssertEqual(SetupInputParser.parse("eddy://setup?invite=\(invite)"), invite)
     }
 
     func testLinkBuriedInSharedText() {
         XCTAssertEqual(
-            SetupInputParser.parse("Here you go — https://eddy.example.com/feed?userId=\(userId) — enjoy"),
-            userId
+            SetupInputParser.parse("Here you go — https://eddy.example/setup?invite=\(invite) — enjoy"),
+            invite
         )
+    }
+
+    /// The old setup link carried only a user id. It is a claim, not a
+    /// credential, and sets nothing up any more.
+    func testRefusesAUserIdLink() {
+        XCTAssertNil(SetupInputParser.parse(userId))
+        XCTAssertNil(SetupInputParser.parse("https://eddy.example/feed?userId=\(userId)"))
+        XCTAssertNil(SetupInputParser.parse("eddy://setup?userId=\(userId)"))
     }
 
     func testRejectsJunk() {
         XCTAssertNil(SetupInputParser.parse(""))
         XCTAssertNil(SetupInputParser.parse("   "))
         XCTAssertNil(SetupInputParser.parse("hello"))
-        XCTAssertNil(SetupInputParser.parse("https://eddy.example.com/feed"))
-        XCTAssertNil(SetupInputParser.parse("userId=not-a-uuid"))
-        XCTAssertNil(SetupInputParser.parse("018f3a7c1b2c7d3e8f4051627384950a"), "unhyphenated is not accepted")
+        XCTAssertNil(SetupInputParser.parse("https://eddy.example/setup"))
+        XCTAssertNil(SetupInputParser.parse("https://eddy.example/setup?invite=nope"))
     }
 
-    func testRejectsATruncatedId() {
-        XCTAssertNil(SetupInputParser.parse("018f3a7c-1b2c-7d3e-8f40-5162738495"))
-    }
-
-    /// A key that merely ends in "user" isn't the identity parameter.
-    func testDoesNotMatchAPartialKey() {
-        XCTAssertNil(SetupInputParser.parse("myuserid=\(userId)"))
-        XCTAssertNil(SetupInputParser.parse("superuser=\(userId)"))
+    func testRejectsATruncatedSignature() {
+        XCTAssertNil(SetupInputParser.parse(String(invite.dropLast(2))))
+        XCTAssertNil(SetupInputParser.parse("https://eddy.example/setup?invite=\(invite.dropLast(2))"))
     }
 }

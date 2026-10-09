@@ -27,18 +27,18 @@ struct NotificationContentClient: Sendable {
         self.timeout = timeout
     }
 
-    func content(messageId: String, userId: String) async -> NotificationContent? {
-        try? await result(messageId: messageId, userId: userId).get()
+    func content(messageId: String, credential: String) async -> NotificationContent? {
+        try? await result(messageId: messageId, credential: credential).get()
     }
 
     /// The same fetch, saying why it failed. The reason never reaches a person
     /// in a shipping build — the extension shows the placeholder whatever it
     /// is — but a development build surfaces it, because the extension's log
     /// can't be read off a device without root.
-    func result(messageId: String, userId: String) async -> Result<NotificationContent, NotificationFetchFailure> {
+    func result(messageId: String, credential: String) async -> Result<NotificationContent, NotificationFetchFailure> {
         let request: URLRequest
         do {
-            request = try makeRequest(messageId: messageId, userId: userId)
+            request = try makeRequest(messageId: messageId, credential: credential)
         } catch {
             Log.push.error("Couldn't build the notification URL")
             return .failure(.badURL)
@@ -70,21 +70,21 @@ struct NotificationContentClient: Sendable {
 
     /// Built from components rather than `URL(string:relativeTo:)` so a base
     /// URL with a path prefix keeps it instead of having it replaced.
-    func makeRequest(messageId: String, userId: String) throws -> URLRequest {
+    func makeRequest(messageId: String, credential: String) throws -> URLRequest {
         guard var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false) else {
             throw URLError(.badURL)
         }
         let basePath = components.path.hasSuffix("/") ? String(components.path.dropLast()) : components.path
         components.path = basePath + "/notifications/" + messageId
-        // Spelled out rather than borrowed from `WebURLBuilder`, which is the
-        // app's own: `Shared/` compiles into the extensions too.
-        components.queryItems = [URLQueryItem(name: "userId", value: userId)]
+        // No userId: the credential says whose device this is (ADR-0016).
+        components.query = nil
         components.fragment = nil
         guard let url = components.url else { throw URLError(.badURL) }
 
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
         request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("Bearer \(credential)", forHTTPHeaderField: "Authorization")
         request.timeoutInterval = timeout
         request.cachePolicy = .reloadIgnoringLocalCacheData
         return request

@@ -81,10 +81,13 @@ final class KeychainAccessGroupTests: XCTestCase {
             service: "app.eddyhq.Eddy.tests.\(UUID().uuidString)",
             accessGroup: group
         )
-        let userId = "018f3a7c-1b2c-7d3e-8f40-51627384950a"
+        let identity = DeviceIdentity(
+            userId: "018f3a7c-1b2c-7d3e-8f40-51627384950a",
+            credential: String(repeating: "c", count: 43)
+        )
         do {
-            try store.save(userId)
-            XCTAssertEqual(store.load(), userId)
+            try store.save(identity)
+            XCTAssertEqual(store.load(), identity)
             try store.clear()
         } catch IdentityStoreError.keychain(let status) {
             throw XCTSkip("Shared keychain group unusable here (OSStatus \(status))")

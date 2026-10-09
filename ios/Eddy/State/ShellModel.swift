@@ -15,10 +15,11 @@ struct LoadRequest: Equatable, Identifiable, Sendable {
 
 enum SetupResult: Equatable {
     case ok
-    /// Nothing that looked like a userId in what was pasted.
+    /// Nothing that looked like a setup invite in what was pasted.
     case invalidInput
-    /// The server answered, and has no such user.
-    case unknownUser
+    /// The server answered, and refused the invite. The message is the
+    /// server's, for a person.
+    case rejected(String)
     /// The server couldn't be asked — almost always Tailscale.
     case unreachable
     case failed(String)
@@ -31,7 +32,10 @@ enum SetupResult: Equatable {
 @Observable
 final class ShellModel {
     private(set) var state: ShellState
-    private(set) var userId: String?
+    /// Who this device is (ADR-0016). Nil until setup has redeemed an invite —
+    /// including on an install from before enrolment, which kept a userId but
+    /// never had a credential.
+    private(set) var identity: DeviceIdentity?
     private(set) var pendingLoad: LoadRequest?
     private(set) var isVerifying = false
     /// Raised by the hidden reset gesture; the root view turns it into an alert.
@@ -44,25 +48,33 @@ final class ShellModel {
     /// have no APNs at all.
     weak var push: (any PushRegistering)?
 
-    private let identity: any IdentityStore
-    private let verifier: any IdentityVerifier
+    private let identityStore: any IdentityStore
+    private let enroller: any DeviceEnroller
+    private let deviceType: String
     private let loadTimeout: Duration
     private var timeoutTask: Task<Void, Never>?
 
     init(
         config: AppConfig,
         identity: any IdentityStore,
-        verifier: any IdentityVerifier,
+        enroller: any DeviceEnroller,
+        deviceType: String = "phone",
         loadTimeout: Duration = .seconds(20)
     ) {
         self.config = config
-        self.identity = identity
-        self.verifier = verifier
+        self.identityStore = identity
+        self.enroller = enroller
+        self.deviceType = deviceType
         self.loadTimeout = loadTimeout
         let stored = identity.load()
-        userId = stored
+        self.identity = stored
         state = stored == nil ? .setup : .loading
     }
+
+    var userId: String? { identity?.userId }
+
+    /// What the web view presents as its `eddy_device` cookie.
+    var credential: String? { identity?.credential }
 
     /// The script injected at document start on every page.
     var bridgeScript: String? {
@@ -130,16 +142,17 @@ final class ShellModel {
     func handle(_ url: URL) {
         guard let link = DeepLinkRouter.parse(url) else { return }
         switch link {
-        case .setup(let claimed):
-            // A custom-scheme link is unauthenticated, so it may offer an
-            // identity to a device that has none but never swap one that is
-            // already there — otherwise any link in Messages re-points the
-            // phone at another family member, guard band and all.
-            guard userId == nil else {
+        case .setup(let invite):
+            // An invite is a parent's say-so, but a custom-scheme link can
+            // still arrive from anywhere. It may set up a device that has no
+            // identity, never swap one that is already there — otherwise any
+            // link in Messages re-points the phone at another family member,
+            // guard band and all. Moving a device is Disconnect, then setup.
+            guard identity == nil else {
                 Log.identity.notice("Ignoring a setup link on an identified device")
                 return
             }
-            Task { _ = await completeSetup(with: claimed) }
+            Task { _ = await completeSetup(with: invite) }
         case .route(let path, let query):
             guard userId != nil else { return }
             load(path: path, query: query)
@@ -149,29 +162,31 @@ final class ShellModel {
     // MARK: - Identity
 
     func completeSetup(with raw: String) async -> SetupResult {
-        guard let candidate = SetupInputParser.parse(raw) else { return .invalidInput }
+        guard let invite = SetupInputParser.parse(raw) else { return .invalidInput }
 
         isVerifying = true
         defer { isVerifying = false }
 
+        let enrolled: DeviceIdentity
         do {
-            guard try await verifier.verify(userId: candidate, base: config.baseURL) == .known else {
-                return .unknownUser
+            switch try await enroller.enrol(invite: invite, base: config.baseURL, deviceType: deviceType) {
+            case .enrolled(let identity): enrolled = identity
+            case .rejected(let message): return .rejected(message)
             }
         } catch {
-            Log.shell.notice("Identity check failed: \(error.localizedDescription, privacy: .public)")
+            Log.shell.notice("Enrolment failed: \(error.localizedDescription, privacy: .public)")
             return .unreachable
         }
 
         do {
-            try identity.save(candidate)
+            try identityStore.save(enrolled)
         } catch {
             return .failed(String(describing: error))
         }
 
-        Log.identity.info("Identity saved for \(candidate, privacy: .private)")
-        userId = candidate
-        push?.identityAvailable(candidate)
+        Log.identity.info("Device enrolled for \(enrolled.userId, privacy: .private)")
+        identity = enrolled
+        push?.identityAvailable(enrolled)
         apply(.identitySaved)
         load(path: DeepLinkRouter.fallbackPath)
         return .ok
@@ -185,11 +200,11 @@ final class ShellModel {
     func clearIdentity() {
         isConfirmingReset = false
         timeoutTask?.cancel()
-        // Before the identity goes: the device row can only be deleted by the
-        // user that owns it, and in a moment nobody here knows who that was.
+        // Before the identity goes: deleting the device row is what revokes
+        // the credential, and only the credential can ask for it.
         push?.identityWillClear()
-        try? identity.clear()
-        userId = nil
+        try? identityStore.clear()
+        identity = nil
         pendingLoad = nil
         apply(.identityCleared)
         Log.identity.info("Identity cleared")

@@ -46,6 +46,8 @@ private final class StubTransport: HTTPTransport, @unchecked Sendable {
 final class RequestClientTests: XCTestCase {
     private let base = URL(string: "https://eddy.example.com")!
     private let userId = "018f3a7c-1b2c-7d3e-8f40-51627384950a"
+    private let credential = String(repeating: "c", count: 43)
+    private var identity: DeviceIdentity { DeviceIdentity(userId: userId, credential: credential) }
     private let shared = "https://www.youtube.com/watch?v=aaaaaaaaaaa"
 
     private func client(_ transport: StubTransport) -> RequestClient {
@@ -59,7 +61,7 @@ final class RequestClientTests: XCTestCase {
         {"requestId":"018f3a7c-1b2c-7d3e-8f40-51627384950b","status":"downloading",
          "message":"Got it, Boy1. Working on it.","pwaUrl":"https://eddy.example.com/feed?userId=x"}
         """)
-        let outcome = await client(transport).submit(sharedText: shared, userId: userId)
+        let outcome = await client(transport).submit(sharedText: shared, identity: identity)
         XCTAssertEqual(outcome, .accepted(message: "Got it, Boy1. Working on it.", status: "downloading"))
     }
 
@@ -71,7 +73,7 @@ final class RequestClientTests: XCTestCase {
         {"requestId":"018f3a7c-1b2c-7d3e-8f40-51627384950b","status":"ready",
          "message":"Got it. Working on it.","pwaUrl":"https://eddy.example.com/feed?userId=x"}
         """)
-        let outcome = await client(transport).submit(sharedText: shared, userId: userId)
+        let outcome = await client(transport).submit(sharedText: shared, identity: identity)
         XCTAssertEqual(outcome, .accepted(message: "Got it. Working on it.", status: "ready"))
     }
 
@@ -80,48 +82,48 @@ final class RequestClientTests: XCTestCase {
             status: 400,
             body: #"{"error":"VALIDATION_ERROR","message":"url must be a YouTube URL"}"#
         )
-        let outcome = await client(transport).submit(sharedText: "https://vimeo.com/1", userId: userId)
+        let outcome = await client(transport).submit(sharedText: "https://vimeo.com/1", identity: identity)
         XCTAssertEqual(outcome, .refused(message: "url must be a YouTube URL"))
     }
 
     func testUnknownUserSurfacesTheServersWording() async {
         let transport = StubTransport(status: 404, body: #"{"error":"NOT_FOUND","message":"user not found"}"#)
-        let outcome = await client(transport).submit(sharedText: shared, userId: userId)
+        let outcome = await client(transport).submit(sharedText: shared, identity: identity)
         XCTAssertEqual(outcome, .refused(message: "user not found"))
     }
 
     func testServerErrorIsNotShownAsTheUsersFault() async {
         let transport = StubTransport(status: 500, body: #"{"error":"INTERNAL_ERROR","message":"Something went wrong"}"#)
-        let outcome = await client(transport).submit(sharedText: shared, userId: userId)
+        let outcome = await client(transport).submit(sharedText: shared, identity: identity)
         XCTAssertEqual(outcome, .serverError)
     }
 
     func testMalformedSuccessBodyIsAServerError() async {
         let transport = StubTransport(status: 202, body: "not json at all")
-        let outcome = await client(transport).submit(sharedText: shared, userId: userId)
+        let outcome = await client(transport).submit(sharedText: shared, identity: identity)
         XCTAssertEqual(outcome, .serverError)
     }
 
     func testMalformedFailureBodyIsAServerError() async {
         let transport = StubTransport(status: 400, body: "<html>nope</html>")
-        let outcome = await client(transport).submit(sharedText: shared, userId: userId)
+        let outcome = await client(transport).submit(sharedText: shared, identity: identity)
         XCTAssertEqual(outcome, .serverError)
     }
 
     func testNonHTTPResponseIsAServerError() async {
-        let outcome = await client(StubTransport(nonHTTP: ())).submit(sharedText: shared, userId: userId)
+        let outcome = await client(StubTransport(nonHTTP: ())).submit(sharedText: shared, identity: identity)
         XCTAssertEqual(outcome, .serverError)
     }
 
     func testNetworkFailureIsUnreachable() async {
         let transport = StubTransport(error: URLError(.notConnectedToInternet))
-        let outcome = await client(transport).submit(sharedText: shared, userId: userId)
+        let outcome = await client(transport).submit(sharedText: shared, identity: identity)
         XCTAssertEqual(outcome, .unreachable)
     }
 
     func testTimeoutIsUnreachable() async {
         let transport = StubTransport(error: URLError(.timedOut))
-        let outcome = await client(transport).submit(sharedText: shared, userId: userId)
+        let outcome = await client(transport).submit(sharedText: shared, identity: identity)
         XCTAssertEqual(outcome, .unreachable)
     }
 
@@ -131,7 +133,7 @@ final class RequestClientTests: XCTestCase {
         let transport = StubTransport(status: 202, body: """
         {"requestId":"r","status":"downloading","message":"Got it.","pwaUrl":"https://eddy.example.com/feed"}
         """)
-        _ = await client(transport).submit(sharedText: "Look at this https://youtu.be/abc", userId: userId)
+        _ = await client(transport).submit(sharedText: "Look at this https://youtu.be/abc", identity: identity)
 
         let body = try XCTUnwrap(transport.lastRequest?.httpBody)
         let json = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
@@ -140,11 +142,28 @@ final class RequestClientTests: XCTestCase {
         XCTAssertEqual(json["userId"] as? String, userId)
     }
 
+    /// The server believes the credential, not the userId in the body (ADR-0016).
+    func testSendsTheCredentialAsABearerToken() async {
+        let transport = StubTransport(status: 202, body: """
+        {"requestId":"r","status":"downloading","message":"Got it.","pwaUrl":"/feed"}
+        """)
+        _ = await client(transport).submit(sharedText: shared, identity: identity)
+        XCTAssertEqual(transport.lastRequest?.value(forHTTPHeaderField: "Authorization"), "Bearer \(credential)")
+    }
+
+    func testARevokedCredentialIsRefusedInTheServersWords() async {
+        let transport = StubTransport(status: 401, body: """
+        {"error":"UNAUTHENTICATED","message":"This device is not set up for Eddy"}
+        """)
+        let outcome = await client(transport).submit(sharedText: shared, identity: identity)
+        XCTAssertEqual(outcome, .refused(message: "This device is not set up for Eddy"))
+    }
+
     func testPostsToRequestsWithAGenerousTimeout() async {
         let transport = StubTransport(status: 202, body: """
         {"requestId":"r","status":"downloading","message":"Got it.","pwaUrl":"https://eddy.example.com/feed"}
         """)
-        _ = await client(transport).submit(sharedText: shared, userId: userId)
+        _ = await client(transport).submit(sharedText: shared, identity: identity)
 
         XCTAssertEqual(transport.lastRequest?.url?.absoluteString, "https://eddy.example.com/requests")
         XCTAssertEqual(transport.lastRequest?.httpMethod, "POST")
@@ -155,7 +174,7 @@ final class RequestClientTests: XCTestCase {
     /// A household serving Eddy under a path prefix keeps it.
     func testKeepsABasePathPrefix() throws {
         let client = RequestClient(baseURL: URL(string: "https://home.example.ts.net/eddy/")!)
-        let request = try client.makeRequest(sharedText: shared, userId: userId)
+        let request = try client.makeRequest(sharedText: shared, identity: identity)
         XCTAssertEqual(request.url?.absoluteString, "https://home.example.ts.net/eddy/requests")
     }
 }
