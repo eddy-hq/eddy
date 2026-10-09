@@ -87,17 +87,19 @@ final class DeepLinkRouterTests: XCTestCase {
 
     // MARK: - Setup links
 
-    func testSetupLinkCarriesAnIdentityClaim() {
-        XCTAssertEqual(parse("eddy://setup?userId=\(userId)"), .setup(userId: userId))
-        XCTAssertEqual(parse("eddy://setup?user=\(userId)"), .setup(userId: userId))
+    private let invite = "ZW5yb2w6eDox." + String(repeating: "cd", count: 32)
+
+    func testSetupLinkCarriesAnInvite() {
+        XCTAssertEqual(parse("eddy://setup?invite=\(invite)"), .setup(invite: invite))
     }
 
-    func testSetupLinkNormalisesCase() {
-        XCTAssertEqual(parse("eddy://setup?userId=\(userId.uppercased())"), .setup(userId: userId))
+    /// A user id on its own is a claim, and no longer sets a device up.
+    func testSetupLinkWithOnlyAUserIdIsJustTheFeed() {
+        XCTAssertEqual(path("eddy://setup?userId=\(userId)"), "/feed")
     }
 
-    func testSetupLinkWithoutAUsableIdIsJustTheFeed() {
+    func testSetupLinkWithoutAUsableInviteIsJustTheFeed() {
         XCTAssertEqual(path("eddy://setup"), "/feed")
-        XCTAssertEqual(path("eddy://setup?userId=not-a-uuid"), "/feed")
+        XCTAssertEqual(path("eddy://setup?invite=not-an-invite"), "/feed")
     }
 }

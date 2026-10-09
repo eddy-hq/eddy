@@ -42,7 +42,7 @@ struct AddToEddyIntent: AppIntent {
 
         let result = await AddToEddy.run(
             link: supplied,
-            userId: KeychainIdentityStore().load(),
+            identity: KeychainIdentityStore().load(),
             config: try? AppConfig.load(from: .main)
         )
         switch result {
@@ -59,7 +59,7 @@ struct AddToEddyIntent: AppIntent {
 enum AddToEddy {
     static func run(
         link: String,
-        userId: String?,
+        identity: DeviceIdentity?,
         config: AppConfig?,
         transport: any HTTPTransport = URLSession.shared
     ) async -> Result<String, ShareFailure> {
@@ -71,7 +71,7 @@ enum AddToEddy {
         }
         return await ShareSubmission.send(
             sharedText: link,
-            userId: userId,
+            identity: identity,
             config: config,
             transport: transport
         )

@@ -1,0 +1,33 @@
+# The acting user comes from a device credential; a parent vouches for each device
+
+Until now every API route took the acting user from a `userId` the client sent, in the query string or the body. The PWA carried it in the URL; the iOS shell kept it in the Keychain and appended it. Tailscale reachability was the only access control, so anyone on the tailnet could act as anyone, and a kid's own device could become a parent by editing one parameter: approve their own escalations from Decisions, send themselves videos, read a parent's notifications. The guard's Escalations are the kid-safety boundary ([[0010-kid-follows-are-ungated-the-surfacing-guard-is-the-boundary]]); a boundary a kid can step over by editing a URL isn't one.
+
+The rule: **the server decides who is acting from a per-device credential, never from the request. A device gets its credential only by redeeming an invite that a parent made.**
+
+**The credential.** 32 random bytes, base64url, minted by the server at enrolment and stored on the `devices` row as a SHA-256 hash only. The browser holds it as an HttpOnly, SameSite=Lax cookie (`eddy_device`, Secure over HTTPS) that the PWA's script never sees. The iOS shell keeps it in the shared Keychain beside the userId, sends it as `Authorization: Bearer` from the share extension, App Intent, push registration and notification service extension, and sets the same cookie on its web view so the PWA inside it behaves exactly as it does in Safari. One `requireDevice` gate in front of every household API resolves the credential to its row and its owner. No credential is 401. A request that still names a user, by `userId` or the older `user` display name, must name the credential's owner or it is 403: a claim is checked, never trusted. Parent-only routes check the role of that owner. `/internal` keeps its HMAC, and `/devices/enrol` is the one open route, because it is how a device gets a credential in the first place.
+
+**Enrolment: the M4's shell vouches for a device.** `npm run devices -- invite <user>` on the M4 prints a setup link carrying an [[0005-single-use-signed-tokens]] token: HMAC over the user and an expiry, recorded in `used_tokens`, valid for one hour, single use. Opening the link in a browser, or pasting it into the shell's setup screen, redeems it through `POST /devices/enrol`, which creates the device row and hands back the credential. Whoever can run a command on the M4 is already the household's root of trust: they hold the database, the token secret and the deploy. Making that the only place invites come from adds no new authority, and a kid holding a device has no way to mint one.
+
+**Revocation is deleting the row.** The shell's Disconnect deletes its own row (`DELETE /devices/me`), and `npm run devices -- revoke <id>` does it from the M4. A dead APNs token now clears only the push columns: an enrolled device stays signed in.
+
+## Consequences
+
+- **Every existing device has to be set up once.** Browsers and shell builds from before this change have no credential and get the setup screen. Each one needs an invite from the M4. Rows from before enrolment were push-only. They keep receiving pushes until the device re-enrols and claims its APNs token on its credentialed row, and they never authenticate.
+- **The old setup link stops working.** A `?userId=` link sets nothing up in the PWA or the shell. A Shortcut that posts straight to `/requests` with a display name has no credential either, and is refused. The share extension and App Intent replaced that path ([[0013-native-ios-is-a-thin-shell-with-apns-push]]).
+- **The URL still carries `userId`.** Every PWA page reads it, and rewriting the PWA's routing is out of proportion to the change. Instead the PWA asks `GET /devices/me` on load and corrects the URL to the device owner before anything renders. So the parameter is display state; it is not identity.
+- **One device is one person.** A shared browser can't switch household members by editing the URL any more; it needs a new invite, which replaces its cookie. That is the point.
+- **This narrows [[0013-native-ios-is-a-thin-shell-with-apns-push]].** The Keychain held "the user identity currently passed around as a `?userId=` query parameter". It now holds the credential that replaces it, and the notification fetch is authenticated by that credential, as 0013 asked: "authenticated as the device's own user".
+- **The signed-token single-use check had a replay hole, now fixed.** It compared the redemption time with issue time plus one second, so a token first used more than a second after issue could be replayed for the rest of its hour. Redemption is now one conditional update that only an unredeemed row satisfies. Invites rely on it, and so will notification action buttons.
+- **Media files are not covered.** Videos and thumbnails are served by nginx behind Caddy, not by Express, and stay tailnet-reachable by URL. That is a separate decision, and they carry no identity to spoof.
+
+## Considered and rejected
+
+- **Parent approves from the app.** The device shows a code, and a parent taps Approve on their own phone. It is friendlier, but it needs a pending-enrolment state, polling, a new parent screen and a bootstrap path for the first parent device anyway, which would be the M4 command. For a household that adds a device a few times a year, the command alone is enough. The approval screen can come later on top of the same invite and redeem flow.
+- **Trust the tailnet: map Tailscale node identity to a user.** No second credential, but the M4 would have to call the Tailscale API or trust identity headers from `tailscale serve`, which isn't what fronts the PWA. It also ties a household member to a tailnet login or node, which is a network decision rather than a family one, and it stops a self-hosting household from running Eddy behind any other network.
+- **A PIN for parent routes.** It guards only the parent surface, and a PIN typed on a shared iPad is a PIN the kids know. It leaves every other route impersonable as well.
+- **Signed, expiring session tokens instead of a stored credential.** They would need a refresh flow and wouldn't make revocation any easier. A random secret with a hashed row is simpler, and deleting the row revokes it at once.
+
+## Deferred
+
+- **Parent-minted invites in the PWA.** A parent-only "Add a device" button would call the same `createInvite`. Build it when running a command over SSH becomes the friction.
+- **Ownership checks on routes that take only a request id** (`/requests/:id/…`). They now need a credential, but any enrolled device in the household can still act on any request id. That's a smaller hole than before, with no impersonation, but it isn't closed.

@@ -12,7 +12,7 @@ private final class StubTransport: HTTPTransport, @unchecked Sendable {
 
     init(status: Int, body: String) {
         let response = HTTPURLResponse(
-            url: URL(string: "https://eddy.example.com/notifications/x")!,
+            url: URL(string: "https://eddy.example/notifications/x")!,
             statusCode: status,
             httpVersion: "HTTP/1.1",
             headerFields: ["Content-Type": "application/json"]
@@ -31,8 +31,8 @@ private final class StubTransport: HTTPTransport, @unchecked Sendable {
 }
 
 final class NotificationContentClientTests: XCTestCase {
-    private let base = URL(string: "https://eddy.example.com")!
-    private let userId = "018f3a7c-1b2c-7d3e-8f40-51627384950a"
+    private let base = URL(string: "https://eddy.example")!
+    private let credential = String(repeating: "c", count: 43)
     private let messageId = "018f3a7c-1b2c-7d3e-8f40-51627384950b"
 
     private func client(_ transport: StubTransport) -> NotificationContentClient {
@@ -43,18 +43,16 @@ final class NotificationContentClientTests: XCTestCase {
 
     func testAsksForTheMessageAsTheDevicesOwnUser() throws {
         let request = try NotificationContentClient(baseURL: base)
-            .makeRequest(messageId: messageId, userId: userId)
-        XCTAssertEqual(
-            request.url?.absoluteString,
-            "https://eddy.example.com/notifications/\(messageId)?userId=\(userId)"
-        )
+            .makeRequest(messageId: messageId, credential: credential)
+        XCTAssertEqual(request.url?.absoluteString, "https://eddy.example/notifications/\(messageId)")
         XCTAssertEqual(request.httpMethod, "GET")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer \(credential)")
     }
 
     /// A household serving Eddy under a path prefix keeps it.
     func testKeepsABasePathPrefix() throws {
         let request = try NotificationContentClient(baseURL: URL(string: "https://home.example/eddy/")!)
-            .makeRequest(messageId: messageId, userId: userId)
+            .makeRequest(messageId: messageId, credential: credential)
         XCTAssertEqual(request.url?.path, "/eddy/notifications/\(messageId)")
     }
 
@@ -62,7 +60,7 @@ final class NotificationContentClientTests: XCTestCase {
     /// at the placeholder for every one of them.
     func testFetchIsBoundedAtFourSeconds() throws {
         let request = try NotificationContentClient(baseURL: base)
-            .makeRequest(messageId: messageId, userId: userId)
+            .makeRequest(messageId: messageId, credential: credential)
         XCTAssertEqual(request.timeoutInterval, 4)
     }
 
@@ -72,7 +70,7 @@ final class NotificationContentClientTests: XCTestCase {
         let transport = StubTransport(status: 200, body: """
         {"title":"Eddy","body":"A request needs a look","actionUrl":"/admin"}
         """)
-        let content = await client(transport).content(messageId: messageId, userId: userId)
+        let content = await client(transport).content(messageId: messageId, credential: credential)
         XCTAssertEqual(content, NotificationContent(title: "Eddy", body: "A request needs a look", actionUrl: "/admin"))
     }
 
@@ -80,7 +78,7 @@ final class NotificationContentClientTests: XCTestCase {
         let transport = StubTransport(status: 200, body: """
         {"title":"Eddy","body":"Something happened"}
         """)
-        let content = await client(transport).content(messageId: messageId, userId: userId)
+        let content = await client(transport).content(messageId: messageId, credential: credential)
         XCTAssertEqual(content?.actionUrl, nil)
         XCTAssertEqual(content?.body, "Something happened")
     }
@@ -89,30 +87,30 @@ final class NotificationContentClientTests: XCTestCase {
 
     /// An expired message, or one belonging to another member of the household.
     func testNotFoundIsNoContent() async {
-        let content = await client(StubTransport(status: 404, body: "{}")).content(messageId: messageId, userId: userId)
+        let content = await client(StubTransport(status: 404, body: "{}")).content(messageId: messageId, credential: credential)
         XCTAssertNil(content)
     }
 
     func testServerErrorIsNoContent() async {
-        let content = await client(StubTransport(status: 500, body: "")).content(messageId: messageId, userId: userId)
+        let content = await client(StubTransport(status: 500, body: "")).content(messageId: messageId, credential: credential)
         XCTAssertNil(content)
     }
 
     func testJunkIsNoContent() async {
         let transport = StubTransport(status: 200, body: "<html>not json</html>")
-        let content = await client(transport).content(messageId: messageId, userId: userId)
+        let content = await client(transport).content(messageId: messageId, credential: credential)
         XCTAssertNil(content)
     }
 
     func testAPartialBodyIsNoContent() async {
         let transport = StubTransport(status: 200, body: #"{"title":"Eddy"}"#)
-        let content = await client(transport).content(messageId: messageId, userId: userId)
+        let content = await client(transport).content(messageId: messageId, credential: credential)
         XCTAssertNil(content)
     }
 
     func testAnUnreachableTailnetIsNoContent() async {
         let transport = StubTransport(error: URLError(.timedOut))
-        let content = await client(transport).content(messageId: messageId, userId: userId)
+        let content = await client(transport).content(messageId: messageId, credential: credential)
         XCTAssertNil(content)
     }
 }

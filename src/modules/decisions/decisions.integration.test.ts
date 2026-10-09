@@ -71,6 +71,9 @@ import {
 } from './index';
 import { currentParentBlock } from './review';
 import { CATCH_UP_BATCH_MIX, DAILY_CARD_CAP } from './util';
+import { actAsClaimedUser } from '../devices/test-support';
+import { requireDevice } from '../devices';
+import { createHash } from 'crypto';
 
 const KID_1 = '11111111-1111-7111-8111-111111111111';
 const KID_2 = '22222222-2222-7222-8222-222222222222';
@@ -81,7 +84,7 @@ const daysAgo = (d: number) => new Date(NOW.getTime() - d * 86_400_000).toISOStr
 
 const app = express();
 app.use(express.json());
-app.use('/parent/decisions', decisionsRouter);
+app.use('/parent/decisions', actAsClaimedUser, decisionsRouter);
 app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
   if (err instanceof EddyError) {
     const status = err.code === 'NOT_FOUND' ? 404 : err.code === 'VALIDATION_ERROR' ? 400 : err.code === 'FORBIDDEN' ? 403 : 500;
@@ -210,6 +213,65 @@ describe('Decisions access', () => {
     expect(kid.status).toBe(200);
     expect(kid.body).toEqual({ parent: false });
     expect((await supertest(app).get('/parent/decisions/access?userId=nobody')).status).toBe(404);
+  });
+});
+
+// The same routes behind the real credential gate (ADR-0016): the parent is
+// whoever owns the device, and a userId in the request can't change that.
+describe('parent-only access behind the device credential', () => {
+  const gated = express();
+  gated.use(express.json());
+  gated.use('/parent/decisions', requireDevice, decisionsRouter);
+  gated.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
+    const code = err instanceof EddyError ? err.code : 'INTERNAL_ERROR';
+    const status = code === 'UNAUTHENTICATED' ? 401 : code === 'FORBIDDEN' ? 403 : code === 'VALIDATION_ERROR' ? 400 : 500;
+    res.status(status).json({ error: code });
+  });
+
+  const KID_CREDENTIAL = 'k'.repeat(43);
+  const PARENT_CREDENTIAL = 'p'.repeat(43);
+  const auth = (credential: string) => ({ Authorization: `Bearer ${credential}` });
+
+  beforeEach(() => {
+    db.exec('DELETE FROM devices');
+    const enrol = db.prepare(
+      `INSERT INTO devices (device_id, display_name, owner_user_id, device_type, created_at, credential_hash)
+       VALUES (?, 'Eddy on phone', ?, 'phone', ?, ?)`,
+    );
+    const hash = (c: string) => createHash('sha256').update(c).digest('hex');
+    enrol.run('device-kid', KID_1, NOW.toISOString(), hash(KID_CREDENTIAL));
+    enrol.run('device-parent', PARENT, NOW.toISOString(), hash(PARENT_CREDENTIAL));
+  });
+
+  it('401s without a credential, even when the request names a parent', async () => {
+    expect((await supertest(gated).get(`/parent/decisions/queue?userId=${PARENT}`)).status).toBe(401);
+  });
+
+  it('refuses a kid’s device that claims to be the parent', async () => {
+    const res = await supertest(gated)
+      .post('/parent/decisions')
+      .set(auth(KID_CREDENTIAL))
+      .send({ userId: PARENT, decisions: [{ subjectType: 'candidate', subjectId: 'x', verdict: 'clear_yes' }] });
+    expect(res.status).toBe(403);
+    expect(decisions()).toEqual([]);
+  });
+
+  it('refuses a kid’s device that names nobody', async () => {
+    expect((await supertest(gated).get('/parent/decisions/queue').set(auth(KID_CREDENTIAL))).status).toBe(403);
+  });
+
+  it('serves the parent’s device with or without a userId', async () => {
+    expect((await supertest(gated).get('/parent/decisions/queue').set(auth(PARENT_CREDENTIAL))).status).toBe(200);
+    expect(
+      (await supertest(gated).get(`/parent/decisions/queue?userId=${PARENT}`).set(auth(PARENT_CREDENTIAL))).status,
+    ).toBe(200);
+  });
+
+  it('answers access from the credential, not the query', async () => {
+    const kid = await supertest(gated).get('/parent/decisions/access').set(auth(KID_CREDENTIAL));
+    expect(kid.body).toEqual({ parent: false });
+    const parent = await supertest(gated).get('/parent/decisions/access').set(auth(PARENT_CREDENTIAL));
+    expect(parent.body).toEqual({ parent: true });
   });
 });
 

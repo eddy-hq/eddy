@@ -11,6 +11,7 @@ import { Watch } from './pages/Watch';
 import { Search } from './pages/Search';
 import { Profile } from './pages/Profile';
 import { Person } from './pages/Person';
+import { DeviceGate } from './components/DeviceGate';
 import './index.css';
 
 const queryClient = new QueryClient({
@@ -29,18 +30,20 @@ createRoot(root).render(
   <React.StrictMode>
     <QueryClientProvider client={queryClient}>
       <BrowserRouter>
-        <Routes>
-          <Route path="/request"   element={<RequestLanding />} />
-          <Route path="/feed"      element={<Feed />} />
-          <Route path="/saved"     element={<Saved />} />
-          <Route path="/admin"     element={<Admin />} />
-          <Route path="/decisions" element={<Decisions />} />
-          <Route path="/watch/:requestId" element={<Watch />} />
-          <Route path="/search"    element={<Search />} />
-          <Route path="/profile"   element={<Profile />} />
-          <Route path="/person/:personId" element={<Person />} />
-          <Route path="*" element={<Navigate to="/feed" replace />} />
-        </Routes>
+        <DeviceGate>
+          <Routes>
+            <Route path="/request"   element={<RequestLanding />} />
+            <Route path="/feed"      element={<Feed />} />
+            <Route path="/saved"     element={<Saved />} />
+            <Route path="/admin"     element={<Admin />} />
+            <Route path="/decisions" element={<Decisions />} />
+            <Route path="/watch/:requestId" element={<Watch />} />
+            <Route path="/search"    element={<Search />} />
+            <Route path="/profile"   element={<Profile />} />
+            <Route path="/person/:personId" element={<Person />} />
+            <Route path="*" element={<Navigate to="/feed" replace />} />
+          </Routes>
+        </DeviceGate>
       </BrowserRouter>
     </QueryClientProvider>
   </React.StrictMode>

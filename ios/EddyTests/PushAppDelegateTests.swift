@@ -1,8 +1,10 @@
 import XCTest
 @testable import Eddy
 
-private struct NeverAskedVerifier: IdentityVerifier {
-    func verify(userId: String, base: URL) async throws -> IdentityVerification { .known }
+private struct NeverAskedEnroller: DeviceEnroller {
+    func enrol(invite: String, base: URL, deviceType: String) async throws -> EnrolmentOutcome {
+        .rejected(message: "not asked")
+    }
 }
 
 /// The launch window: a tap that woke the app is delivered before the SwiftUI
@@ -15,8 +17,8 @@ final class PushAppDelegateTests: XCTestCase {
     private func model() -> ShellModel {
         ShellModel(
             config: config,
-            identity: InMemoryIdentityStore(seed: userId),
-            verifier: NeverAskedVerifier()
+            identity: InMemoryIdentityStore(seed: DeviceIdentity(userId: userId, credential: String(repeating: "c", count: 43))),
+            enroller: NeverAskedEnroller()
         )
     }
 

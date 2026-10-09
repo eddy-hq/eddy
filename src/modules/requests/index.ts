@@ -8,6 +8,7 @@ import { config } from '../../config';
 import { downloadQueue, redis } from '../../queue';
 import { getNotifications } from '../notifications';
 import { resolveUserByIdOrName } from '../users';
+import { actorOf } from '../devices';
 import { toPublicMediaUrl } from '../media';
 // State machine lives in `./state` (pure dispatcher) with production wiring in
 // `./state-default` (default ports + `getRequestsState` accessor). The router
@@ -116,6 +117,8 @@ export type {
   GuardResult,
   GuardFailureReason,
 } from './week-summary';
+
+export { isAdminPath } from './admin-path';
 
 export const requestsRouter = Router();
 export const FEED_LIMIT = 1000;
@@ -409,7 +412,9 @@ requestsRouter.get('/feed', (req: Request, res: Response) => {
   res.json({ days, tier3Days, tier4Weeks: tier4WeeksWithSummary, saved: savedRows });
 });
 
-// GET /requests/admin/pipeline — active + recent rejected requests across all users
+// GET /requests/admin/pipeline — active + recent rejected requests across all users.
+// Every /requests/admin/* route is parent-only: server.ts mounts the parent
+// device gate in front of them (ADR-0016).
 requestsRouter.get('/admin/pipeline', async (_req: Request, res: Response) => {
   const active = db.prepare(`
     SELECT r.request_id, r.url, r.youtube_id, r.title, r.status,
@@ -514,16 +519,16 @@ requestsRouter.delete('/:id', async (req: Request, res: Response) => {
 // video to (#217). Empty for a kid, so the PWA hides Send to without a 403 on
 // every sheet it opens. The send route below enforces the roles itself.
 requestsRouter.get('/send-targets', (req: Request, res: Response) => {
-  const { userId } = req.query as { userId?: string };
-  res.json({ kids: listSendTargets(userId ?? '') });
+  res.json({ kids: listSendTargets(actorOf(req).user_id) });
 });
 
-// POST /requests/:id/send — { userId: <parent>, kidIds: [<kid>, ...] }
+// POST /requests/:id/send — { kidIds: [<kid>, ...] }
 // A parent sends a video from their own library to kids' feeds (#217). One
 // parent pick per kid; a kid who already has the video is reported, not
-// duplicated. Refused (409) when the channel is blocked for the kids.
+// duplicated. Refused (409) when the channel is blocked for the kids. The
+// sender is the device's owner (ADR-0016); a `userId` in the body is only
+// checked against it.
 const sendBody = z.object({
-  userId: z.string().min(1),
   kidIds: z.array(z.string().min(1)).min(1).max(10),
 });
 
@@ -532,7 +537,7 @@ requestsRouter.post('/:id/send', async (req: Request, res: Response) => {
   if (!parsed.success) {
     throw new ValidationError(parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; '));
   }
-  const results = await sendParentPick(parsed.data.userId, req.params['id']!, parsed.data.kidIds);
+  const results = await sendParentPick(actorOf(req).user_id, req.params['id']!, parsed.data.kidIds);
   res.json({ results });
 });
 

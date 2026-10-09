@@ -27,7 +27,7 @@ struct RootView: View {
             Button("Cancel", role: .cancel) {}
             Button("Disconnect", role: .destructive) { model.clearIdentity() }
         } message: {
-            Text("Eddy will ask for your link again next time.")
+            Text("Eddy will ask for a new setup link next time.")
         }
     }
 }

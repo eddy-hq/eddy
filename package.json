@@ -30,7 +30,8 @@
     "people:backfill-bio": "tsx src/scripts/backfill-people-bio.ts",
     "watched:backfill": "tsx src/scripts/backfill-watched.ts",
     "channel-id:backfill": "tsx src/scripts/backfill-channel-id.ts",
-    "block-channel": "tsx src/scripts/block-channel.ts"
+    "block-channel": "tsx src/scripts/block-channel.ts",
+    "devices": "tsx src/scripts/devices.ts"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.99.0",

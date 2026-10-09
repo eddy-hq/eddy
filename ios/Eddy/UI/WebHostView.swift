@@ -15,6 +15,7 @@ struct WebHostView: View {
             // new load is requested.
             WebView(
                 request: model.pendingLoad,
+                credential: model.credential,
                 bridgeScript: model.bridgeScript,
                 origin: model.config.origin,
                 version: model.config.version,
@@ -51,6 +52,7 @@ struct WebHostView: View {
 
 private struct WebView: UIViewRepresentable {
     let request: LoadRequest?
+    let credential: String?
     let bridgeScript: String?
     let origin: WebOrigin
     let version: String
@@ -102,13 +104,13 @@ private struct WebView: UIViewRepresentable {
 
         context.coordinator.attachResetGesture(to: webView)
         context.coordinator.apply(bridgeScript: bridgeScript, to: webView)
-        context.coordinator.load(request, in: webView)
+        context.coordinator.load(request, credential: credential, in: webView)
         return webView
     }
 
     func updateUIView(_ webView: WKWebView, context: Context) {
         context.coordinator.apply(bridgeScript: bridgeScript, to: webView)
-        context.coordinator.load(request, in: webView)
+        context.coordinator.load(request, credential: credential, in: webView)
     }
 
     @MainActor
@@ -122,6 +124,8 @@ private struct WebView: UIViewRepresentable {
 
         private var loadedRequestID: UUID?
         private var injectedScript: String?
+        private var installedCredential: String?
+        private var cookieReady: Task<Void, Never>?
 
         init(
             origin: WebOrigin,
@@ -141,10 +145,30 @@ private struct WebView: UIViewRepresentable {
 
         // MARK: - Driving the web view
 
-        func load(_ request: LoadRequest?, in webView: WKWebView) {
+        /// The credential cookie has to be in the store before the page that
+        /// needs it is requested (ADR-0016). Installing it is async, so every
+        /// load waits on the latest install — instant once it has finished —
+        /// and a load superseded while waiting is dropped.
+        func load(_ request: LoadRequest?, credential: String?, in webView: WKWebView) {
             guard let request, request.id != loadedRequestID else { return }
             loadedRequestID = request.id
-            webView.load(URLRequest(url: request.url))
+
+            if credential != installedCredential || cookieReady == nil {
+                installedCredential = credential
+                let previous = cookieReady
+                let store = webView.configuration.websiteDataStore.httpCookieStore
+                cookieReady = Task { @MainActor in
+                    await previous?.value
+                    await CredentialCookie.install(credential, for: request.url, in: store)
+                }
+            }
+
+            guard let cookieReady else { return }
+            Task { @MainActor [weak self, weak webView] in
+                await cookieReady.value
+                guard let self, let webView, self.loadedRequestID == request.id else { return }
+                webView.load(URLRequest(url: request.url))
+            }
         }
 
         /// WebKit zooms the page when an input with a font size under 16px

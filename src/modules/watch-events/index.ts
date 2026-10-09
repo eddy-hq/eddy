@@ -2,7 +2,9 @@ import { Router, Request, Response } from 'express';
 import { v7 as uuidv7 } from 'uuid';
 import { db } from '../../db/client';
 import { logger } from '../../logger';
-import { ValidationError } from '../../errors';
+import { ForbiddenError, ValidationError } from '../../errors';
+import { actorOf, claimMatchesActor } from '../devices';
+import type { UserRow } from '../users';
 import { getRequestsState, type TransitionResult } from '../requests';
 
 export const watchEventsRouter = Router();
@@ -39,7 +41,10 @@ export function meetsWatchedThreshold(e: WatchEventInput): boolean {
   return false;
 }
 
-function validate(e: unknown, idx: number): WatchEventInput {
+// Each event is recorded against the acting user from the device credential
+// (ADR-0016). An event's own `userId` is a claim: older clients still send it,
+// and it must agree with the credential or the whole batch is refused.
+function validate(e: unknown, idx: number, actor: UserRow): WatchEventInput {
   if (!e || typeof e !== 'object') throw new ValidationError(`events[${idx}] must be an object`);
   const r = e as Record<string, unknown>;
   const str = (k: string): string => {
@@ -55,13 +60,17 @@ function validate(e: unknown, idx: number): WatchEventInput {
     return Math.round(v);
   };
 
+  if (r.userId !== undefined && !claimMatchesActor(r.userId, actor)) {
+    throw new ForbiddenError('This device is set up for someone else');
+  }
+
   const source = str('source');
   if (!VALID_SOURCES.has(source)) throw new ValidationError(`events[${idx}].source invalid: ${source}`);
   const reason = str('reason');
   if (!VALID_REASONS.has(reason)) throw new ValidationError(`events[${idx}].reason invalid: ${reason}`);
 
   return {
-    userId: str('userId'),
+    userId: actor.user_id,
     requestId: str('requestId'),
     videoId: str('videoId'),
     source,
@@ -168,7 +177,8 @@ watchEventsRouter.post('/', (req: Request, res: Response) => {
   }
   if (body.events.length > 50) throw new ValidationError('events batch limit is 50');
 
-  const validated = body.events.map((e, i) => validate(e, i));
+  const actor = actorOf(req);
+  const validated = body.events.map((e, i) => validate(e, i, actor));
   recordEvents(validated);
 
   logger.info({ count: validated.length }, 'Watch events recorded');

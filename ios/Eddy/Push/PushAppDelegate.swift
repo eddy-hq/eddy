@@ -35,7 +35,7 @@ final class PushAppDelegate: NSObject, UIApplicationDelegate {
         // Registration waits for an identity: asking for notifications while
         // the setup screen is up would prompt someone who hasn't yet said what
         // Eddy is.
-        if let userId = model.userId { controller.identityAvailable(userId) }
+        if let identity = model.identity { controller.identityAvailable(identity) }
     }
 
     /// Model wiring on its own, so the launch-time tap path can be exercised

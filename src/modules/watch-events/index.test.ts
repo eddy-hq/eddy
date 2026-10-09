@@ -59,14 +59,21 @@ vi.mock('../requests', async () => {
 
 import { db } from '../../db/client';
 import { runMigrations } from '../../db/migrate';
+import express, { NextFunction, Request, Response } from 'express';
+import supertest from 'supertest';
+import { EddyError } from '../../errors';
+import { bindActor } from '../devices';
+import { resolveUserById } from '../users';
 import {
   meetsWatchedThreshold,
   recordEvents,
   backfillWatchedFromEvents,
+  watchEventsRouter,
   type WatchEventInput,
 } from './index';
 
 const USER_ID = '22222222-2222-7222-8222-222222222222';
+const OTHER_ID = '33333333-3333-7333-8333-333333333333';
 
 function insertReadyRequest(requestId: string): void {
   const now = new Date().toISOString();
@@ -141,6 +148,9 @@ beforeAll(() => {
   db.prepare(
     'INSERT INTO users (user_id, display_name, role, age_gate, created_at) VALUES (?, ?, ?, ?, ?)',
   ).run(USER_ID, 'Boy1', 'kid', 12, new Date().toISOString());
+  db.prepare(
+    'INSERT INTO users (user_id, display_name, role, age_gate, created_at) VALUES (?, ?, ?, ?, ?)',
+  ).run(OTHER_ID, 'Boy2', 'kid', 12, new Date().toISOString());
 });
 
 beforeEach(() => {
@@ -413,5 +423,46 @@ describe('backfillWatchedFromEvents', () => {
     expect(second.transitioned).toBe(0);
     expect(second.alreadyTerminal).toBe(1);
     expect(watchedAtAfterSecond).toBe(watchedAtAfterFirst);
+  });
+});
+
+describe('POST /watch-events', () => {
+  // The credential gate binds USER_ID as the actor, as requireDevice would.
+  const app = express();
+  app.use(express.json());
+  app.use(
+    '/watch-events',
+    (req: Request, _res: Response, next: NextFunction) => {
+      bindActor(req, resolveUserById(USER_ID), 'test-device');
+      next();
+    },
+    watchEventsRouter,
+  );
+  app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
+    const status = err instanceof EddyError && err.code === 'FORBIDDEN' ? 403
+      : err instanceof EddyError && err.code === 'VALIDATION_ERROR' ? 400
+      : 500;
+    res.status(status).end();
+  });
+  const request = supertest(app);
+
+  it('refuses a batch with an event attributed to another user', async () => {
+    const res = await request
+      .post('/watch-events')
+      .send({ events: [makeEvent(), makeEvent({ userId: OTHER_ID })] });
+    expect(res.status).toBe(403);
+    const n = db.prepare('SELECT COUNT(*) AS n FROM watch_events').get() as { n: number };
+    expect(n.n).toBe(0);
+  });
+
+  it('records events against the credential\'s user, with or without a userId', async () => {
+    const withoutUser: Partial<WatchEventInput> = makeEvent({ requestId: 'req-no-user' });
+    delete withoutUser.userId;
+    const res = await request
+      .post('/watch-events')
+      .send({ events: [makeEvent(), withoutUser] });
+    expect(res.status).toBe(204);
+    const rows = db.prepare('SELECT DISTINCT user_id FROM watch_events').all() as Array<{ user_id: string }>;
+    expect(rows).toEqual([{ user_id: USER_ID }]);
   });
 });

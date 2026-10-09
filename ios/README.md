@@ -130,13 +130,18 @@ xcrun simctl launch booted app.eddyhq.Eddy
 
 The simulator reaches `eddy.example.com` through the Mac's own tailnet connection.
 
-In DEBUG builds, a trailing `-eddyUserId <uuid>` on `simctl launch` pairs the
-device so the setup screen is skipped — `simctl launch` has no `--args` flag,
-everything after the bundle id is argv:
+In DEBUG builds, a trailing `-eddyUserId <uuid> -eddyCredential <credential>` on
+`simctl launch` pairs the device so the setup screen is skipped — `simctl
+launch` has no `--args` flag, everything after the bundle id is argv:
 
 ```
-xcrun simctl launch booted app.eddyhq.Eddy -eddyUserId <uuid>
+xcrun simctl launch booted app.eddyhq.Eddy -eddyUserId <uuid> -eddyCredential <credential>
 ```
+
+A real credential comes from redeeming an invite (`npm run devices -- invite
+<user>` on the M4, then `POST /devices/enrol` with `"deliver": "body"`); against
+an offline host any 43-character base64url string will do. Without both
+arguments the app shows the setup screen, which takes the invite link itself.
 
 It writes through to the real shared keychain, not an in-memory store: the
 share extension is a separate process and can only see what is actually there.
@@ -148,7 +153,7 @@ how the unreachable screen gets exercised without unplugging the tailnet:
 
 ```
 xcrun simctl launch booted app.eddyhq.Eddy \
-  -eddyUserId <uuid> -eddyBaseURL https://eddy-offline.invalid
+  -eddyUserId <uuid> -eddyCredential <credential> -eddyBaseURL https://eddy-offline.invalid
 ```
 
 That flag is the app only. To point the **share extension** somewhere
@@ -180,8 +185,9 @@ the ATS refusal as a network failure.
 
 ### Keychain access group
 
-The app and the share extension share one keychain item — the userId the app
-stored at setup. Both targets carry a `keychain-access-groups` entitlement of
+The app and the share extension share two keychain items — the userId and the
+device credential the app
+stored at setup (ADR-0016). Both targets carry a `keychain-access-groups` entitlement of
 `$(AppIdentifierPrefix)app.eddyhq.Eddy.shared` and surface the same string
 through their Info.plist as `EddyKeychainAccessGroup`;
 `KeychainAccessGroup.resolve` reads it back and `KeychainIdentityStore` passes
@@ -216,7 +222,9 @@ device, when you actually want it unpaired.
   activation rule is a dictionary, not `TRUEPREDICATE`: Eddy has nothing to do
   with a photo or a file and shouldn't clutter those share sheets.
 - **What it sends:** whatever was shared, verbatim, as
-  `POST /requests {url, userId}`. The server resolves short links, extracts
+  `POST /requests {url, userId}` with the credential as a bearer token; the
+  server acts as the credential's owner and only checks the userId against it.
+  The server resolves short links, extracts
   the first http(s) URL out of share text and decides whether it's something
   Eddy can fetch — the client never re-implements that, and never invents copy
   for a case the server already explained.
@@ -252,7 +260,7 @@ ios/scripts/uitest-share-offline.sh            # fabricates a uuid
 ios/scripts/uitest-share-offline.sh <uuid> <derived-data-path>
 ```
 
-The test pairs the app with `-eddyUserId`, opens a YouTube page in Safari,
+The test pairs the app with `-eddyUserId` and a fabricated `-eddyCredential`, opens a YouTube page in Safari,
 goes **More → Share**, taps **Eddy**, and expects the card to say *Can't reach
 Eddy*. That wording is the proof: the extension only gets as far as the network
 once it has read the app's keychain item — an unpaired device says *This device
@@ -266,7 +274,7 @@ real request as whatever id was passed in. The script sets both from one
 variable so they can't come apart.
 
 By hand, the same thing without the test: install the app, launch it once with
-`-eddyUserId`, then share a page from Safari.
+`-eddyUserId` and `-eddyCredential`, then share a page from Safari.
 
 ## Push
 
@@ -278,19 +286,20 @@ opaque id that means nothing off the M4.
 - **Registration** (`Eddy/Push/`). Once the device has an identity, and not
   before — asking on the setup screen would prompt someone who hasn't yet said
   what Eddy is — the app requests authorisation, registers with APNs and
-  `POST /devices` with the token. It re-registers when the identity changes and
+  `POST /devices` with the token and the credential. It re-registers when the identity changes and
   on each foreground if the token or the identity differs from what was last
   sent; `PushRegistrationLedger` is what makes the usual no-op free. The server's
-  `deviceId` is kept in `UserDefaults` so one device stays one row. Disconnecting
-  the device `DELETE`s it first, best effort. Every failure is logged and
+  `deviceId` is kept in `UserDefaults`. Disconnecting
+  the device sends `DELETE /devices/me` first, best effort, which revokes the
+  credential. Every failure is logged and
   swallowed: push is an addition to the shell, never a dependency of it.
 - **`apnsEnvironment`** is read from the embedded provisioning profile's
   `aps-environment`, not from `#if DEBUG`. `release-adhoc.sh` archives *Release*
   with a development identity and re-signs for distribution at export, so a
   compile flag would name the wrong environment on the build the household
   actually installs. No profile (the simulator) falls back to `production`.
-- **`EddyNotify`** wakes on each push, reads the userId from the shared
-  keychain exactly as `EddyShare` does, `GET /notifications/{m}?userId=…`, and
+- **`EddyNotify`** wakes on each push, reads the credential from the shared
+  keychain exactly as `EddyShare` does, `GET /notifications/{m}` with it, and
   replaces the title and body. `actionUrl` is stashed in the notification's
   `userInfo` for the tap handler. The fetch is bounded at **four** seconds, not
   twenty: with the tailnet down the person waits out the whole timeout staring
@@ -343,7 +352,12 @@ which one the app asked for.
   is dropped. `target="_blank"` on-origin loads in the same web view — the
   shell never has a second one. `WebNavigationPolicy` decides all of this and
   is unit-tested.
-- **Identity** is a `?userId=` the shell appends to every URL *it* loads. The
+- **Identity** is the device credential (ADR-0016): setup redeems a parent's
+  invite link (`npm run devices -- invite <user>` on the M4) through
+  `POST /devices/enrol`, keeps the credential in the Keychain for the
+  extensions, and installs it as the web view's `eddy_device` cookie before
+  each load. The `?userId=` the shell still appends to every URL *it* loads is
+  for the PWA's own routing; the server only checks it against the credential. The
   PWA re-appends it itself on internal navigation; the shell does not patch
   `history` or otherwise work around the web app.
 - **Disconnecting a device:** hold **two fingers anywhere on the screen for two

@@ -29,6 +29,15 @@ export class ValidationError extends EddyError {
   }
 }
 
+// No device credential, or one Eddy doesn't recognise (ADR-0016). Mapped to
+// 401: the device has to be set up before it can do anything.
+export class UnauthenticatedError extends EddyError {
+  constructor(message = 'This device is not set up for Eddy') {
+    super(message, 'UNAUTHENTICATED');
+    this.name = 'UnauthenticatedError';
+  }
+}
+
 // A known caller asking for something its role may not do (e.g. a kid's id
 // on a parent-only route). Mapped to 403.
 export class ForbiddenError extends EddyError {

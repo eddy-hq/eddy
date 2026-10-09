@@ -5,7 +5,7 @@ import UserNotifications
 ///
 /// What Apple carried is `{aps: {alert: "Something new in Eddy", …}, m: <uuid>}`
 /// and nothing else (ADR-0004). This wakes on delivery, reads the household's
-/// userId out of the shared keychain exactly as the share extension does, asks
+/// credential out of the shared keychain exactly as the share extension does, asks
 /// the M4 over the tailnet what the message says, and rewrites the notification
 /// in place.
 ///
@@ -40,7 +40,7 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
             deliver(nil, debugReason: "no base URL")
             return
         }
-        guard let userId = KeychainIdentityStore.readIdentity() else {
+        guard let identity = KeychainIdentityStore.readIdentity() else {
             Log.push.notice("No identity on this device; delivering the placeholder")
             deliver(nil, debugReason: "no identity in keychain")
             return
@@ -48,7 +48,7 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
 
         let client = NotificationContentClient(baseURL: config.baseURL)
         let task = Task { [weak self] in
-            let result = await client.result(messageId: messageId, userId: userId)
+            let result = await client.result(messageId: messageId, credential: identity.credential)
             guard let self else { return }
             switch result {
             case .success(let content): self.deliver(content)
