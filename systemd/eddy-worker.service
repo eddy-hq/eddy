@@ -1,3 +1,4 @@
+# User unit (systemctl --user); %h is that user's home directory.
 [Unit]
 Description=Eddy download worker
 After=network.target
@@ -5,15 +6,15 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=simple
-WorkingDirectory=/home/steveu/eddy
-Environment=PATH=/home/steveu/.local/bin:/home/steveu/.nvm/versions/node/v24.14.1/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-ExecStart=/home/steveu/.nvm/versions/node/v24.14.1/bin/node /home/steveu/eddy/dist/workers/download.js
+WorkingDirectory=%h/eddy
+Environment=PATH=%h/.local/bin:%h/.nvm/versions/node/v24.14.1/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=%h/.nvm/versions/node/v24.14.1/bin/node %h/eddy/dist/workers/download.js
 Restart=on-failure
 RestartSec=10
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=eddy-worker
-EnvironmentFile=/home/steveu/eddy/.env
+EnvironmentFile=%h/eddy/.env
 
 [Install]
 WantedBy=default.target

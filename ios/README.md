@@ -1,6 +1,6 @@
 # Eddy iOS shell
 
-A thin native wrapper around the PWA at `https://eddyhq.app`. Not a second
+A thin native wrapper around the PWA at `https://eddy.example.com`. Not a second
 client — see `docs/adr/0013-native-ios-is-a-thin-shell-with-apns-push.md`
 and brief §21. Stages 1 (shell foundation), 2 (share extension + App Intent)
 and 3 (signing + OTA) are built and installed on every household device;
@@ -41,13 +41,15 @@ brew install xcodegen          # once
 cd ios && xcodegen generate
 ```
 
-For a **device** build, copy the config and fill in your team id:
+For a **device** build, copy the config and fill in your team id and your
+Eddy host (`EDDY_BASE_URL`):
 
 ```sh
 cp Config/Local.xcconfig.example Config/Local.xcconfig
 ```
 
-`Local.xcconfig` is gitignored and is the only place `DEVELOPMENT_TEAM` lives.
+`Local.xcconfig` is gitignored and is the only place `DEVELOPMENT_TEAM` and the
+real host live.
 Simulator builds need no such file. That one setting is also all a device build
 needs for the shared keychain: `$(AppIdentifierPrefix)` then resolves to the
 team prefix in both targets' entitlements and Info.plists (see *Keychain access
@@ -64,7 +66,7 @@ ios/scripts/release-adhoc.sh
 
 It writes `Eddy.ipa`, `manifest.plist`, an install page and `profile-expiry`
 to `~/data/eddy/ios/` (`IOS_DIST_PATH`), which the M4 server serves at `/ios`.
-On each device, with Tailscale up, open `https://eddyhq.app/ios/` in Safari and
+On each device, with Tailscale up, open `https://eddy.example.com/ios/` in Safari and
 tap Install. No deploy is needed after a release — the server reads the
 directory as it is.
 
@@ -76,7 +78,7 @@ Before the first run:
    `ios/scripts/register-devices.mjs` does it through the App Store Connect
    API (it needs `Config/release.env`), for any device cabled to the Mac and
    trusted — Xcode pairing is not needed — and for any device that enrolled
-   itself: on the device, open `https://eddyhq.app/ios/enrol`, fetch the
+   itself: on the device, open `https://eddy.example.com/ios/enrol`, fetch the
    profile and install it from Settings. That reports the UDID to the M4 and
    nowhere else, and is the only route for a device that cannot be cabled.
    An ad hoc profile only covers devices that existed when it was generated,
@@ -126,7 +128,7 @@ xcrun simctl install booted "$DD/Build/Products/Debug-iphonesimulator/Eddy.app"
 xcrun simctl launch booted app.eddyhq.Eddy
 ```
 
-The simulator reaches `eddyhq.app` through the Mac's own tailnet connection.
+The simulator reaches `eddy.example.com` through the Mac's own tailnet connection.
 
 In DEBUG builds, a trailing `-eddyUserId <uuid>` on `simctl launch` pairs the
 device so the setup screen is skipped — `simctl launch` has no `--args` flag,
@@ -162,9 +164,10 @@ needs a tap on the device.
 
 ## Configuration
 
-`EDDY_BASE_URL` in `Config/Shared.xcconfig` surfaces through Info.plist as
-`EddyBaseURL`. Another household points it at their own host by overriding it
-in `Local.xcconfig`. xcconfig strips `//` as a comment even inside a value, so
+`EDDY_BASE_URL` surfaces through Info.plist as `EddyBaseURL`.
+`Config/Shared.xcconfig` carries only a placeholder (`eddy.example.com`); each
+household sets its own host in `Local.xcconfig`, and `release-adhoc.sh` refuses
+to build a release until it does. xcconfig strips `//` as a comment even inside a value, so
 the scheme separator is spliced in via `$(EDDY_URL_SLASH)` — copy the commented
 example rather than typing the URL directly.
 

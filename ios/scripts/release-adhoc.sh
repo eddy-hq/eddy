@@ -22,13 +22,23 @@ set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 OUT_DIR="${IOS_DIST_PATH:-$HOME/data/eddy/ios}"
-BASE_URL="${EDDY_IOS_BASE_URL:-https://eddyhq.app}"
 LOCAL_CONFIG="$PROJECT_DIR/Config/Local.xcconfig"
 
 if [[ ! -f "$LOCAL_CONFIG" ]]; then
   echo "Missing Config/Local.xcconfig — copy Local.xcconfig.example and set DEVELOPMENT_TEAM." >&2
   exit 1
 fi
+
+# The host the app is built against (Local.xcconfig's EDDY_BASE_URL) is also
+# where the install page and manifest are served from. Shared.xcconfig only
+# carries a placeholder, so a release without a real host would ship an app
+# that cannot reach anything. EDDY_IOS_BASE_URL still overrides the page URL.
+LOCAL_BASE_URL="$(sed -n 's/^[[:space:]]*EDDY_BASE_URL[[:space:]]*=[[:space:]]*//p' "$LOCAL_CONFIG" | tail -1 | sed -e 's/\$(EDDY_URL_SLASH)/\//g' -e 's/[[:space:]]*$//')"
+if [[ -z "$LOCAL_BASE_URL" || "$LOCAL_BASE_URL" == *example.com* ]]; then
+  echo "EDDY_BASE_URL is not set in Config/Local.xcconfig — set it to your Eddy host." >&2
+  exit 1
+fi
+BASE_URL="${EDDY_IOS_BASE_URL:-$LOCAL_BASE_URL}"
 
 TEAM_ID="$(sed -n 's/^[[:space:]]*DEVELOPMENT_TEAM[[:space:]]*=[[:space:]]*\([A-Z0-9]*\).*/\1/p' "$LOCAL_CONFIG" | head -1)"
 if [[ -z "$TEAM_ID" || "$TEAM_ID" == "XXXXXXXXXX" ]]; then

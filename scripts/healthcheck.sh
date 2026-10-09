@@ -104,15 +104,17 @@ if [[ "$SSH_OK" == true ]]; then
   fi
 
   # Video path
-  REMOTE_PATH="${VIDEO_OUTPUT_PATH:-/home/steveu/eddy/videos}"
-  if ssh $SSH_OPTS "${SSH_TARGET}" "test -w '${REMOTE_PATH}'" 2>/dev/null; then
+  # Unset falls back to the worker's own home, expanded by the remote shell.
+  REMOTE_PATH="${VIDEO_OUTPUT_PATH:-\$HOME/eddy/videos}"
+  if ssh $SSH_OPTS "${SSH_TARGET}" "test -w \"${REMOTE_PATH}\"" 2>/dev/null; then
     check "Video path (${REMOTE_PATH})" "ok"
   else
     check "Video path (${REMOTE_PATH})" "fail" "path missing or not writable"
   fi
 
   # nginx — a 200, 403 (no listing) or 404 from the host all confirm nginx is up
-  NGINX_URL="${NGINX_VIDEO_BASE_URL:-http://100.95.170.27/videos}"
+  # The probe runs on the worker, so unset falls back to its own loopback.
+  NGINX_URL="${NGINX_VIDEO_BASE_URL:-http://localhost/videos}"
   NGINX_HOST=$(echo "$NGINX_URL" | python3 -c "import sys; from urllib.parse import urlparse; u=urlparse(sys.stdin.read().strip()); print(f'{u.scheme}://{u.netloc}')")
   NGINX_STATUS=$(ssh $SSH_OPTS "${SSH_TARGET}" \
     "curl -s -o /dev/null -w '%{http_code}' --max-time 3 '${NGINX_HOST}/videos/' 2>/dev/null" 2>/dev/null || echo "")
@@ -132,9 +134,9 @@ if [[ "$SSH_OK" == true ]]; then
   fi
 
   # Plex
-  PLEX_URL_VAR="${PLEX_URL:-http://100.95.170.27:32400}"
+  PLEX_URL_VAR="${PLEX_URL:-}"
   PLEX_TOKEN_VAR="${PLEX_TOKEN:-}"
-  if [[ -n "$PLEX_TOKEN_VAR" ]] && curl -sf --max-time 5 "${PLEX_URL_VAR}/library/sections?X-Plex-Token=${PLEX_TOKEN_VAR}" > /dev/null 2>&1; then
+  if [[ -n "$PLEX_URL_VAR" && -n "$PLEX_TOKEN_VAR" ]] && curl -sf --max-time 5 "${PLEX_URL_VAR}/library/sections?X-Plex-Token=${PLEX_TOKEN_VAR}" > /dev/null 2>&1; then
     check "Plex API" "ok"
   else
     check "Plex API" "fail" "check PLEX_URL / PLEX_TOKEN in .env"

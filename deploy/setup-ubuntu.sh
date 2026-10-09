@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Eddy Ubuntu setup — run once on the media server as steveu.
+# Eddy Ubuntu setup — run once on the media server as the user that runs Eddy.
 # Idempotent: safe to re-run.
 set -euo pipefail
 
@@ -120,7 +120,9 @@ BGUTIL_SERVICE="${DEPLOY_DIR}/bgutil-pot-server.service"
 if [[ ! -f "${BGUTIL_SERVICE}" ]]; then
   warn "bgutil-pot-server.service not found at ${BGUTIL_SERVICE} — skipping"
 else
-  sudo cp "${BGUTIL_SERVICE}" /etc/systemd/system/bgutil-pot-server.service
+  # The committed unit carries placeholders, not this machine's paths.
+  sed -e "s|__USER__|${USER}|g" -e "s|__HOME__|${HOME}|g" -e "s|__NODE_BIN__|${NODE_BIN_DIR}/node|g" "${BGUTIL_SERVICE}" \
+    | sudo tee /etc/systemd/system/bgutil-pot-server.service > /dev/null
   sudo systemctl daemon-reload
   sudo systemctl enable bgutil-pot-server
   sudo systemctl restart bgutil-pot-server
