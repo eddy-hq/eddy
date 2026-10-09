@@ -137,7 +137,7 @@ A person also has *recommendations* — things they've pointed at but didn't mak
 
 **Why people, not channels or feeds:**
 
-Trusted human judgement is becoming the scarce resource (see Section 1). Organising around people makes the trust relationship the first-class concept, and the media types secondary. You follow Tyler Cowen; Eddy handles whether his latest output is a blog post, a podcast appearance, or a book — same subscription, different fetchers.
+Trusted human judgement is becoming the scarce resource (see Section 1). Organising around people makes the trust relationship the first-class concept, and the media types secondary. You follow Sam; Eddy handles whether their latest output is a blog post, a podcast appearance, or a book — same subscription, different fetchers.
 
 It also makes Eddy's reasoning honest. Gemma isn't deciding what's good; the people you've chosen to trust are. Gemma's job is routing between their output and you, filtered lightly for relevance.
 
