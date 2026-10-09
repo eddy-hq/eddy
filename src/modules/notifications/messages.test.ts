@@ -13,6 +13,10 @@ vi.mock('../../db/client', async () => {
   return { db: memoryDb };
 });
 
+// The router reads its user from the devices module, which signs invites
+// with the token secret; nothing here signs anything.
+vi.mock('../../config', () => ({ config: { TOKEN_SECRET: 'a'.repeat(32) } }));
+
 const { infoMock } = vi.hoisted(() => ({ infoMock: vi.fn() }));
 
 vi.mock('../../logger', () => ({
@@ -24,13 +28,14 @@ import { runMigrations } from '../../db/migrate';
 import { EddyError } from '../../errors';
 import { notificationsRouter } from './router';
 import { recordMessage, readMessage, MESSAGE_TTL_MS } from './messages';
+import { actAsClaimedUser } from '../devices/test-support';
 
 const RECIPIENT = '11111111-1111-7111-8111-111111111111';
 const SOMEONE_ELSE = '22222222-2222-7222-8222-222222222222';
 
 const app = express();
 app.use(express.json());
-app.use('/notifications', notificationsRouter);
+app.use('/notifications', actAsClaimedUser, notificationsRouter);
 app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
   if (err instanceof EddyError) {
     res.status(err.code === 'NOT_FOUND' ? 404 : 400).json({ error: err.code });
@@ -92,14 +97,6 @@ describe('the fetch log line', () => {
     ]);
     expect(JSON.stringify(fetchLogs())).not.toContain('User2');
   });
-
-  it('logs "user_rejected" when the caller is not a known user', async () => {
-    await request.get('/notifications/opaque-log-3');
-
-    expect(fetchLogs().map(([fields]) => fields)).toEqual([
-      { messageId: 'opaque-log-3', outcome: 'user_rejected' },
-    ]);
-  });
 });
 
 describe('GET /notifications/:messageId', () => {
@@ -151,9 +148,11 @@ describe('GET /notifications/:messageId', () => {
     expect(res.status).toBe(404);
   });
 
-  it('400s without a userId', async () => {
+  it('refuses a request that reaches it with no device identity', async () => {
     recordMessage('opaque-5', RECIPIENT, { title: 'Ready to watch', body: 'Something' });
-    expect((await request.get('/notifications/opaque-5')).status).toBe(400);
+    const res = await request.get('/notifications/opaque-5');
+    expect(res.status).not.toBe(200);
+    expect(res.body.error).toBe('UNAUTHENTICATED');
   });
 });
 

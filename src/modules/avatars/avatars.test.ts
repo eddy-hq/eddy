@@ -20,6 +20,10 @@ vi.mock('../../db/client', async () => {
   return { db: memoryDb };
 });
 
+// The router reads its user from the devices module, which signs invites
+// with the token secret; nothing here signs anything.
+vi.mock('../../config', () => ({ config: { TOKEN_SECRET: 'a'.repeat(32) } }));
+
 vi.mock('../../logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
@@ -29,13 +33,14 @@ import { EddyError } from '../../errors';
 import { avatarsRouter } from './router';
 import { DEFAULT_AVATAR } from './types';
 import { getAvatar } from './store';
+import { actAsClaimedUser } from '../devices/test-support';
 
 const USER_ID = '11111111-1111-7111-8111-111111111111';
 
 function makeApp() {
   const app = express();
   app.use(express.json());
-  app.use('/avatars', avatarsRouter);
+  app.use('/avatars', actAsClaimedUser, avatarsRouter);
   app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
     if (err instanceof EddyError) {
       const status = err.code === 'NOT_FOUND' ? 404 : err.code === 'VALIDATION_ERROR' ? 400 : 500;

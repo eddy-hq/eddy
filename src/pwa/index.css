@@ -97,3 +97,14 @@ img { display: block; max-width: 100%; }
 @keyframes spin {
   to { transform: rotate(360deg); }
 }
+
+/* The device setup screens (DeviceGate). */
+.gate-button {
+  padding: 12px 20px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--bg-primary);
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+.gate-button:disabled { opacity: 0.5; cursor: default; }

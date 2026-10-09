@@ -228,4 +228,20 @@ describe('validateActionToken — single-use guarantee', () => {
     expect(first).toEqual({ ok: true, handler: 'approve', userId: USER_ID });
     expect(second).toEqual({ ok: false, reason: 'already used' });
   });
+
+  // The old check compared the redemption time with the issue time plus a
+  // second, so a token first used more than a second after issue could be
+  // replayed for the rest of its hour.
+  it('still rejects a replay when the first use came minutes after issue', () => {
+    vi.useFakeTimers();
+    const start = new Date('2026-01-01T00:00:00.000Z');
+    vi.setSystemTime(start);
+    const token = generateActionToken('approve', USER_ID);
+
+    vi.setSystemTime(new Date(start.getTime() + 5 * 60_000));
+    expect(validateActionToken(token)).toEqual({ ok: true, handler: 'approve', userId: USER_ID });
+
+    vi.setSystemTime(new Date(start.getTime() + 10 * 60_000));
+    expect(validateActionToken(token)).toEqual({ ok: false, reason: 'already used' });
+  });
 });

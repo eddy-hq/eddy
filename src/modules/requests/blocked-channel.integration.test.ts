@@ -61,6 +61,7 @@ import { sign } from '../../signed-channel';
 import { internalRouter } from '../internal';
 import { BLOCKED_CHANNEL_REASON } from '../blocked-channels';
 import { requestsRouter } from './index';
+import { actAsClaimedUser } from '../devices/test-support';
 
 const app = express();
 app.use(express.json({
@@ -69,7 +70,7 @@ app.use(express.json({
   },
 }));
 app.use('/internal', internalRouter);
-app.use('/requests', requestsRouter);
+app.use('/requests', actAsClaimedUser, requestsRouter);
 
 const KID_ID = '11111111-1111-7111-8111-111111111111';
 const PARENT_ID = '22222222-2222-7222-8222-222222222222';

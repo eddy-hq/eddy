@@ -4,22 +4,22 @@ import { db } from '../../db/client';
 import { NotFoundError } from '../../errors';
 
 // The devices table's home. Everything that reads or writes a device row goes
-// through here; the router validates, this file owns the SQL.
+// through here; the routers validate, this file owns the SQL.
+//
+// A row is one enrolled device (ADR-0016): who it belongs to, the hash of the
+// credential it presents, and — once the iOS shell has registered for push —
+// its APNs token. Rows from before enrolment existed carry a token and no
+// credential; they still receive pushes and never authenticate.
 
 export type ApnsEnvironment = 'sandbox' | 'production';
 
 export const APNS_ENVIRONMENTS: readonly ApnsEnvironment[] = ['sandbox', 'production'];
 export const DEVICE_TYPES: readonly string[] = ['phone', 'tablet', 'tv', 'desktop'];
 
-export interface DeviceRegistration {
-  // Supplied by the app once it has one; the first registration leaves it out
-  // and keeps the id we return.
-  deviceId?: string;
-  ownerUserId: string;
-  displayName: string;
-  deviceType: string;
+export interface PushRegistration {
   apnsToken: string;
   apnsEnvironment: ApnsEnvironment;
+  deviceType: string;
 }
 
 // The push identity, and nothing else — the sender has no business with the
@@ -30,9 +30,20 @@ export interface PushDevice {
   apnsEnvironment: ApnsEnvironment;
 }
 
-interface DeviceRow {
-  device_id: string;
-  owner_user_id: string;
+export interface CredentialedDevice {
+  deviceId: string;
+  ownerUserId: string;
+}
+
+export interface DeviceSummary {
+  deviceId: string;
+  ownerUserId: string;
+  displayName: string;
+  deviceType: string;
+  enrolled: boolean;
+  push: boolean;
+  createdAt: string;
+  lastSeenAt: string | null;
 }
 
 // Short, non-reversible stand-in for a device token in a log line. A token is a
@@ -41,66 +52,68 @@ export function tokenFingerprint(apnsToken: string): string {
   return crypto.createHash('sha256').update(apnsToken).digest('hex').slice(0, 8);
 }
 
-const INSERT_SQL = `
-  INSERT INTO devices
-    (device_id, display_name, owner_user_id, device_type, created_at, apns_token, apns_environment, last_seen_at)
-  VALUES
-    (@device_id, @display_name, @owner_user_id, @device_type, @now, @apns_token, @apns_environment, @now)
-  ON CONFLICT(device_id) DO UPDATE SET
-    display_name     = excluded.display_name,
-    device_type      = excluded.device_type,
-    apns_token       = excluded.apns_token,
-    apns_environment = excluded.apns_environment,
-    last_seen_at     = excluded.last_seen_at
-`;
+// A new enrolled device. The caller has already checked the invite; this only
+// writes the row.
+export function enrolDevice(input: {
+  ownerUserId: string;
+  deviceType: string;
+  credentialHash: string;
+}): string {
+  const deviceId = uuidv7();
+  const now = new Date().toISOString();
+  db.prepare(
+    `INSERT INTO devices
+       (device_id, display_name, owner_user_id, device_type, created_at, last_seen_at, credential_hash)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`
+  ).run(deviceId, `Eddy on ${input.deviceType}`, input.ownerUserId, input.deviceType, now, now, input.credentialHash);
+  return deviceId;
+}
 
-// Registers (or re-registers) a device and returns its id. Idempotent in both
-// directions: the same device id re-registers in place, and a token already
-// held by another row moves to this one rather than duplicating — a restored
-// backup or a handed-down phone keeps APNs' "one token, one device" rule true.
-// Re-registering a device id owned by someone else is a 404, not a takeover.
-export function upsertDevice(registration: DeviceRegistration): string {
-  const tx = db.transaction((reg: DeviceRegistration): string => {
-    let deviceId = reg.deviceId;
+export function findDeviceByCredentialHash(credentialHash: string): CredentialedDevice | undefined {
+  const row = db
+    .prepare('SELECT device_id, owner_user_id FROM devices WHERE credential_hash = ?')
+    .get(credentialHash) as { device_id: string; owner_user_id: string } | undefined;
+  return row ? { deviceId: row.device_id, ownerUserId: row.owner_user_id } : undefined;
+}
 
-    if (deviceId !== undefined) {
-      const claimed = db
-        .prepare('SELECT device_id, owner_user_id FROM devices WHERE device_id = ?')
-        .get(deviceId) as DeviceRow | undefined;
-      if (claimed && claimed.owner_user_id !== reg.ownerUserId) throw new NotFoundError('device');
-    } else {
-      const byToken = db
-        .prepare('SELECT device_id, owner_user_id FROM devices WHERE apns_token = ?')
-        .get(reg.apnsToken) as DeviceRow | undefined;
-      // Only reuse the row when the owner matches; a token that has moved to
-      // another household member starts a fresh row below, and the delete that
-      // follows takes the stale one away.
-      deviceId = byToken && byToken.owner_user_id === reg.ownerUserId ? byToken.device_id : uuidv7();
-    }
+// Attaches (or refreshes) the APNs token on an enrolled device's own row. APNs
+// guarantees one token, one device, so a token already held elsewhere — a
+// restored backup, a handed-down phone, or the device's own pre-enrolment
+// push-only row — comes off that row first. A credentialed row keeps its
+// credential and just loses the token; a push-only row has nothing else worth
+// keeping and goes.
+export function registerPush(deviceId: string, registration: PushRegistration): void {
+  db.transaction(() => {
+    db.prepare(
+      'DELETE FROM devices WHERE apns_token = ? AND device_id <> ? AND credential_hash IS NULL'
+    ).run(registration.apnsToken, deviceId);
+    db.prepare(
+      `UPDATE devices SET apns_token = NULL, apns_environment = NULL
+        WHERE apns_token = ? AND device_id <> ?`
+    ).run(registration.apnsToken, deviceId);
 
-    db.prepare('DELETE FROM devices WHERE apns_token = ? AND device_id <> ?').run(
-      reg.apnsToken,
-      deviceId
-    );
-
-    db.prepare(INSERT_SQL).run({
-      device_id: deviceId,
-      display_name: reg.displayName,
-      owner_user_id: reg.ownerUserId,
-      device_type: reg.deviceType,
-      apns_token: reg.apnsToken,
-      apns_environment: reg.apnsEnvironment,
-      now: new Date().toISOString(),
-    });
-
-    return deviceId;
-  });
-
-  return tx(registration);
+    const result = db
+      .prepare(
+        `UPDATE devices
+            SET apns_token = ?, apns_environment = ?, device_type = ?,
+                display_name = ?, last_seen_at = ?
+          WHERE device_id = ?`
+      )
+      .run(
+        registration.apnsToken,
+        registration.apnsEnvironment,
+        registration.deviceType,
+        `Eddy on ${registration.deviceType}`,
+        new Date().toISOString(),
+        deviceId
+      );
+    if (result.changes === 0) throw new NotFoundError('device');
+  })();
 }
 
 // Sign-out. A device may only be deleted by its owner; anyone else gets the
-// same 404 as a device that does not exist.
+// same 404 as a device that does not exist. Deleting the row revokes its
+// credential.
 export function deleteDevice(deviceId: string, ownerUserId: string): void {
   const result = db
     .prepare('DELETE FROM devices WHERE device_id = ? AND owner_user_id = ?')
@@ -108,10 +121,52 @@ export function deleteDevice(deviceId: string, ownerUserId: string): void {
   if (result.changes === 0) throw new NotFoundError('device');
 }
 
-// Unconditional removal, for the one caller that has no user in hand: APNs
-// telling the sender a token is dead.
+// For the one caller that has no user in hand: APNs telling the sender a token
+// is dead. The push identity goes; an enrolled device stays signed in, and
+// re-registers a fresh token next time the app is opened.
 export function forgetDevice(deviceId: string): void {
-  db.prepare('DELETE FROM devices WHERE device_id = ?').run(deviceId);
+  db.transaction(() => {
+    db.prepare('DELETE FROM devices WHERE device_id = ? AND credential_hash IS NULL').run(deviceId);
+    db.prepare(
+      'UPDATE devices SET apns_token = NULL, apns_environment = NULL WHERE device_id = ?'
+    ).run(deviceId);
+  })();
+}
+
+// Operator revocation, from the M4's shell (src/scripts/devices.ts).
+export function revokeDevice(deviceId: string): void {
+  const result = db.prepare('DELETE FROM devices WHERE device_id = ?').run(deviceId);
+  if (result.changes === 0) throw new NotFoundError('device');
+}
+
+export function listDevices(): DeviceSummary[] {
+  const rows = db
+    .prepare(
+      `SELECT device_id, owner_user_id, display_name, device_type, created_at, last_seen_at,
+              credential_hash IS NOT NULL AS enrolled, apns_token IS NOT NULL AS push
+         FROM devices
+        ORDER BY owner_user_id, created_at`
+    )
+    .all() as Array<{
+    device_id: string;
+    owner_user_id: string;
+    display_name: string;
+    device_type: string;
+    created_at: string;
+    last_seen_at: string | null;
+    enrolled: number;
+    push: number;
+  }>;
+  return rows.map((r) => ({
+    deviceId: r.device_id,
+    ownerUserId: r.owner_user_id,
+    displayName: r.display_name,
+    deviceType: r.device_type,
+    enrolled: r.enrolled === 1,
+    push: r.push === 1,
+    createdAt: r.created_at,
+    lastSeenAt: r.last_seen_at,
+  }));
 }
 
 export function listPushDevices(userId: string): PushDevice[] {

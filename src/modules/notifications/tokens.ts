@@ -63,7 +63,10 @@ export function validateActionToken(token: string): TokenValidationResult {
     return { ok: false, reason: 'expired' };
   }
 
-  // Check single-use: mark used now, reject if already used
+  // Check single-use. An unredeemed row holds its own expiry in `used_at`;
+  // redeeming overwrites it with the redemption time. The conditional UPDATE
+  // makes the check and the mark one step, so a replay — however long after
+  // the first use, and even a concurrent one — finds nothing left to claim.
   const hash = crypto.createHash('sha256').update(token).digest('hex');
   const row = db.prepare('SELECT used_at FROM used_tokens WHERE token_hash = ?').get(hash) as
     | { used_at: string }
@@ -71,19 +74,11 @@ export function validateActionToken(token: string): TokenValidationResult {
 
   if (!row) return { ok: false, reason: 'unknown token' };
 
-  // If used_at is in the past (already redeemed), reject
-  const usedAt = new Date(row.used_at).getTime();
-  const expiry = parseInt(expiresStr, 10);
-  if (usedAt < expiry - TOKEN_TTL_MS + 1000) {
-    // already redeemed (used_at was updated to actual use time)
-    return { ok: false, reason: 'already used' };
-  }
-
-  // Mark as redeemed
-  db.prepare('UPDATE used_tokens SET used_at = ? WHERE token_hash = ?').run(
-    new Date().toISOString(),
-    hash
-  );
+  const unredeemed = new Date(parseInt(expiresStr, 10)).toISOString();
+  const claimed = db
+    .prepare('UPDATE used_tokens SET used_at = ? WHERE token_hash = ? AND used_at = ?')
+    .run(new Date().toISOString(), hash, unredeemed);
+  if (claimed.changes === 0) return { ok: false, reason: 'already used' };
 
   return { ok: true, handler, userId };
 }

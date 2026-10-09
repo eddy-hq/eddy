@@ -64,6 +64,7 @@ import { createRequestsState, type Ports } from './state';
 import { registerDefaultRequestsState } from './state-default';
 import { PARENT_PICK_BLOCKED_MESSAGE, PARENT_PICK_NOT_LIVE_MESSAGE } from './parent-pick';
 import { requestsRouter } from './index';
+import { actAsClaimedUser } from '../devices/test-support';
 
 const app = express();
 app.use(express.json({
@@ -72,7 +73,7 @@ app.use(express.json({
   },
 }));
 app.use('/internal', internalRouter);
-app.use('/requests', requestsRouter);
+app.use('/requests', actAsClaimedUser, requestsRouter);
 app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
   if (err instanceof EddyError) {
     const status = err.code === 'NOT_FOUND' ? 404

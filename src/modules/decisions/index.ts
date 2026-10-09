@@ -1,12 +1,13 @@
 // Decisions (Phase 6a): the parent surface for Escalations and Spot checks.
-// Every route is parent-only — the caller passes a parent's user id (UUID,
-// not display name), and a kid's id is refused. Same network posture as the
-// other PWA routes (LAN / Tailscale); there is no separate parent login.
+// Every route but /access is parent-only. The parent is the owner of the
+// device credential (ADR-0016), not a `userId` the client sends: a `userId`
+// still in the request is checked against the credential by `requireDevice`
+// and is otherwise ignored, so a kid's device can't ask as a parent.
 import { Router, type Request, type Response } from 'express';
 import { z } from 'zod';
 import { ValidationError } from '../../errors';
 import { DIMENSION_KEYS } from '../guard';
-import { resolveUserById } from '../users';
+import { actorOf } from '../devices';
 import { recordDecision, requireParent, type DecisionOutcome } from './decide';
 import { readDecisionQueue } from './queue';
 import { blockChannelFromCard } from './block-channel';
@@ -58,7 +59,7 @@ export {
 export const decisionsRouter = Router();
 
 const queueQuery = z.object({
-  userId: z.string().min(1),
+  userId: z.string().min(1).optional(),
   mode: z.enum(['today', 'catch_up']).default('today'),
   focus: z.enum(['escalations', 'spot_checks']).optional(),
 });
@@ -84,7 +85,7 @@ function toReason(r: { reasonDimensions?: string[] | undefined; reasonText?: str
 }
 
 const decideBody = z.object({
-  userId: z.string().min(1),
+  userId: z.string().min(1).optional(),
   decisions: z.array(z.object({
     subjectType: z.enum(['candidate', 'request']),
     subjectId: z.string().min(1),
@@ -95,7 +96,7 @@ const decideBody = z.object({
 });
 
 const blockChannelBody = z.object({
-  userId: z.string().min(1),
+  userId: z.string().min(1).optional(),
   subjects: z.array(z.object({
     subjectType: z.enum(['candidate', 'request']),
     subjectId: z.string().min(1),
@@ -105,10 +106,9 @@ const blockChannelBody = z.object({
   ...reasonFields,
 });
 
-const accessQuery = z.object({ userId: z.string().min(1) });
 
 const reviewQuery = z.object({
-  userId: z.string().min(1),
+  userId: z.string().min(1).optional(),
   filter: z.enum(['disagreements', 'all']).default('disagreements'),
   offset: z.coerce.number().int().min(0).default(0),
   limit: z.coerce.number().int().min(1).max(REVIEW_PAGE).default(REVIEW_PAGE),
@@ -116,16 +116,16 @@ const reviewQuery = z.object({
 
 // A queue card's subject, or a Review card's decision.
 const guardInputsQuery = z.union([
-  z.object({ userId: z.string().min(1), decisionId: z.string().min(1) }),
+  z.object({ userId: z.string().min(1).optional(), decisionId: z.string().min(1) }),
   z.object({
-    userId: z.string().min(1),
+    userId: z.string().min(1).optional(),
     subjectType: z.enum(['candidate', 'request']),
     subjectId: z.string().min(1),
   }),
 ]);
 
 const reviseBody = z.object({
-  userId: z.string().min(1),
+  userId: z.string().min(1).optional(),
   decisionId: z.string().min(1),
   verdict: z.enum(['clear_yes', 'clear_no']),
   ...blockKindField,
@@ -138,19 +138,18 @@ function parse<S extends z.ZodTypeAny>(schema: S, value: unknown): z.output<S> {
   return out.data;
 }
 
-// GET /parent/decisions/access?userId=<user>
+// GET /parent/decisions/access
 // Whether the PWA shows its way into Decisions. Any known user gets an answer
 // (a kid gets false) so the header can ask without a 403; every other route
 // still refuses a kid.
 decisionsRouter.get('/access', (req: Request, res: Response) => {
-  const q = parse(accessQuery, req.query);
-  res.json({ parent: resolveUserById(q.userId).role === 'parent' });
+  res.json({ parent: actorOf(req).role === 'parent' });
 });
 
 // GET /parent/decisions/queue?userId=<parent>&mode=today|catch_up&focus=escalations|spot_checks
 decisionsRouter.get('/queue', (req: Request, res: Response) => {
   const q = parse(queueQuery, req.query);
-  requireParent(q.userId);
+  requireParent(actorOf(req).user_id);
   res.json(readDecisionQueue({ mode: q.mode, focus: q.focus }));
 });
 
@@ -160,7 +159,7 @@ decisionsRouter.get('/queue', (req: Request, res: Response) => {
 // Unsafe and Not for us are both verdict clear_no, told apart by blockKind.
 decisionsRouter.post('/', async (req: Request, res: Response) => {
   const body = parse(decideBody, req.body);
-  const parentId = requireParent(body.userId);
+  const parentId = requireParent(actorOf(req).user_id);
   const outcomes: DecisionOutcome[] = [];
   for (const d of body.decisions) {
     outcomes.push(await recordDecision(parentId, {
@@ -183,7 +182,7 @@ decisionsRouter.post('/', async (req: Request, res: Response) => {
 // channel leave the pool; the channel's other cards leave the queue).
 decisionsRouter.post('/block-channel', async (req: Request, res: Response) => {
   const body = parse(blockChannelBody, req.body);
-  const parentId = requireParent(body.userId);
+  const parentId = requireParent(actorOf(req).user_id);
   res.json(await blockChannelFromCard(parentId, body.subjects, body.reason || null, new Date(), toReason(body)));
 });
 
@@ -191,7 +190,7 @@ decisionsRouter.post('/block-channel', async (req: Request, res: Response) => {
 // Past decisions for Review (#223), newest first.
 decisionsRouter.get('/review', (req: Request, res: Response) => {
   const q = parse(reviewQuery, req.query);
-  requireParent(q.userId);
+  requireParent(actorOf(req).user_id);
   res.json(readReview({ filter: q.filter, offset: q.offset, limit: q.limit }));
 });
 
@@ -201,7 +200,7 @@ decisionsRouter.get('/review', (req: Request, res: Response) => {
 // the card's "What the guard saw" section.
 decisionsRouter.get('/guard-inputs', (req: Request, res: Response) => {
   const q = parse(guardInputsQuery, req.query);
-  requireParent(q.userId);
+  requireParent(actorOf(req).user_id);
   const ref: GuardInputsRef = 'decisionId' in q
     ? { decisionId: q.decisionId }
     : { subjectType: q.subjectType, subjectId: q.subjectId };
@@ -215,7 +214,7 @@ decisionsRouter.get('/guard-inputs', (req: Request, res: Response) => {
 // and changes nothing live.
 decisionsRouter.post('/revisions', async (req: Request, res: Response) => {
   const body = parse(reviseBody, req.body);
-  const parentId = requireParent(body.userId);
+  const parentId = requireParent(actorOf(req).user_id);
   res.json(await reviseDecision(parentId, {
     decisionId: body.decisionId,
     verdict: body.verdict,

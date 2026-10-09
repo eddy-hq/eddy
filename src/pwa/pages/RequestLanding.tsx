@@ -23,7 +23,7 @@ const STATUS_LABEL: Record<Status, string> = {
 export function RequestLanding() {
   const [params] = useSearchParams();
   const url = params.get('url') ?? '';
-  const user = params.get('user') ?? '';
+  const user = params.get('userId') ?? params.get('user') ?? '';
 
   const [state, setState] = useState<RequestState | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);

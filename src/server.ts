@@ -30,7 +30,13 @@ import {
   notificationsRouter,
   recordMessage,
 } from './modules/notifications';
-import { devicesRouter, listPushDevices, forgetDevice } from './modules/devices';
+import {
+  devicesRouter,
+  listPushDevices,
+  forgetDevice,
+  requireDevice,
+  requireParentDevice,
+} from './modules/devices';
 import { ensurePersonForChannel, applyChannelInfoToPerson } from './modules/people/registry';
 import { API_PREFIXES } from './api-prefixes';
 
@@ -89,17 +95,31 @@ app.use(
   })
 );
 
-app.use('/requests', requestsRouter);
+// Every household-facing API acts as the user the device credential names
+// (ADR-0016). `requireDevice` answers 401 without one and 403 when a request's
+// own `userId` disagrees with it. `/internal` is HMAC-signed worker traffic;
+// `/devices` gates its own routes, because enrolment is how a device gets a
+// credential in the first place.
+// The admin routes are parent-only and name a household member as the subject
+// (week-summary regeneration), so they take the parent gate instead.
+app.use(
+  '/requests',
+  (req: Request, res: Response, next: NextFunction) =>
+    req.path.startsWith('/admin/')
+      ? requireParentDevice(req, res, next)
+      : requireDevice(req, res, next),
+  requestsRouter
+);
 app.use('/internal', internalRouter);
-app.use('/people', peopleRouter);
-app.use('/search', searchRouter);
-app.use('/interests', interestsRouter);
-app.use('/avatars', avatarsRouter);
-app.use('/discovery', discoveryRouter);
-app.use('/watch-events', watchEventsRouter);
+app.use('/people', requireDevice, peopleRouter);
+app.use('/search', requireDevice, searchRouter);
+app.use('/interests', requireDevice, interestsRouter);
+app.use('/avatars', requireDevice, avatarsRouter);
+app.use('/discovery', requireParentDevice, discoveryRouter);
+app.use('/watch-events', requireDevice, watchEventsRouter);
 app.use('/devices', devicesRouter);
-app.use('/notifications', notificationsRouter);
-app.use('/parent/decisions', decisionsRouter);
+app.use('/notifications', requireDevice, notificationsRouter);
+app.use('/parent/decisions', requireDevice, decisionsRouter);
 
 app.get('/health', async (_req: Request, res: Response) => {
   // DB — synchronous probe; throws if SQLite is broken
@@ -177,6 +197,7 @@ app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
     logger.warn({ code: err.code, message: err.message }, 'Request error');
     const status = err.code === 'NOT_FOUND' ? 404
       : err.code === 'VALIDATION_ERROR' ? 400
+      : err.code === 'UNAUTHENTICATED' ? 401
       : err.code === 'FORBIDDEN' ? 403
       : err.code === 'CONFLICT' ? 409
       : 500;
