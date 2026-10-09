@@ -8,7 +8,7 @@ The rule: **a guard configuration replaces the incumbent only if it beats it on 
 
 **The harness** (`src/modules/guard-harness/`) has three steps:
 
-- **Snapshot** freezes parent decisions into a dataset. It runs on a read-only database connection, never writes to production and never runs migrations. Each item carries the inputs the guard would have seen *when the parent decided*, including the kid's history with that channel as it stood then, so a replay can't benefit from what happened afterwards.
+- **Snapshot** freezes parent decisions into a dataset. It runs on a read-only database connection, never writes to production and never runs migrations. Each item carries a best-effort reconstruction of the inputs the guard saw *when the parent decided*, including the kid's history with that channel cut off at that time. It is not exact: the snapshot reads current candidate and metadata fields, and channel history is counted from today's request rows, so a later metadata refresh or a deleted request can shift an input. Exact historical replay is future work.
 - **Run** replays the dataset through a configuration. Adapters judge with no side effects: one model call per item and nothing written to any table. Results are cached by adapter id, which includes the prompt and rubric version, so an edit re-evaluates instead of resuming over stale results. An item the model never answered is retried, never cached as a verdict.
 - **Report** scores verdicts against labels: counts and metrics only, never content, and nothing written to the repo ([[0004-kids-consumption-stays-home]]).
 
