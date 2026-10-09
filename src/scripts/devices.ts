@@ -28,7 +28,7 @@ function invite(args: string[]): void {
   const baseAt = args.indexOf('--base');
   const base = baseAt === -1 ? null : args[baseAt + 1];
   if (baseAt !== -1 && !base) throw new Error('--base needs an address');
-  const user = args.filter((_, i) => i !== baseAt && i !== baseAt + 1)[0];
+  const user = (baseAt === -1 ? args : args.filter((_, i) => i !== baseAt && i !== baseAt + 1))[0];
   if (!user) throw new Error(USAGE);
 
   const { token, displayName } = createInvite(user);

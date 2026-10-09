@@ -9,6 +9,7 @@ import { db } from './db/client';
 import { EddyError, NotFoundError } from './errors';
 import {
   requestsRouter,
+  isAdminPath,
   createRequestsState,
   registerDefaultRequestsState,
   type Ports,
@@ -105,7 +106,7 @@ app.use(
 app.use(
   '/requests',
   (req: Request, res: Response, next: NextFunction) =>
-    req.path.startsWith('/admin/')
+    isAdminPath(req.path)
       ? requireParentDevice(req, res, next)
       : requireDevice(req, res, next),
   requestsRouter

@@ -118,6 +118,8 @@ export type {
   GuardFailureReason,
 } from './week-summary';
 
+export { isAdminPath } from './admin-path';
+
 export const requestsRouter = Router();
 export const FEED_LIMIT = 1000;
 

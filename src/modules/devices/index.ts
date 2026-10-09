@@ -14,6 +14,7 @@ export {
   deviceIdOf,
   requireParentActor,
   bindActor,
+  claimMatchesActor,
   CREDENTIAL_COOKIE,
 } from './credential';
 export { createInvite, redeemInvite, INVITE_HANDLER } from './enrolment';
