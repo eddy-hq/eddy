@@ -254,6 +254,14 @@ _Avoid_: pusher, notifier, channel (overloaded)
 The native iOS app — a `WKWebView` hosting the **PWA** plus the four things a web page can't do on iOS (share extension, APNs push, `eddy://` deep links, Keychain identity). Not a second client: it renders no screens of its own. See [[0013-native-ios-is-a-thin-shell-with-apns-push]].
 _Avoid_: native client, second app (both imply a parallel UI), wrapper
 
+**Device credential**:
+The secret a device presents on every API call, and the only thing the server believes about who is acting. A cookie in a browser, a Keychain item in **the shell**. A `userId` in a request is a claim checked against it, never an identity. See [[0016-the-acting-user-comes-from-a-device-credential]].
+_Avoid_: session (it doesn't expire on its own), login, token (taken by APNs tokens and signed action tokens)
+
+**Invite** / **Enrolment**:
+An **Invite** is a one-hour, single-use setup link for one household member, minted on **the M4** with `npm run devices -- invite`. **Enrolment** is a device redeeming it for a **Device credential**. A parent vouches for every device this way, and nothing else creates a credential.
+_Avoid_: pairing, registration (that's the APNs push identity on the same device row)
+
 **Opaque push**:
 A notification whose payload carries a random message id and placeholder copy, nothing more. The real title and body are fetched from **the M4** over Tailscale by the iOS service extension and written into the notification on the device, so nothing about a **Kid** transits Apple.
 _Avoid_: silent push (that's a different iOS mechanism), stub notification
