@@ -1,0 +1,42 @@
+# Guard changes must beat the incumbent on a replay of parent decisions
+
+**Status:** Accepted. The harness is built, with one adapter: the rubric guard ([[0017-the-model-describes-code-decides]]). The rule applies to guard changes from now on; the switch to the rubric prompt was made before the harness existed, on a re-run of parked candidates.
+
+A guard change (a new prompt, a rubric edit, a different model) is easy to judge by impression: run it on a handful of videos, like what comes back, ship it. On a kid-safety boundary that is how a regression gets in unnoticed. Once parent decisions existed ([[0018-the-guard-goes-live-in-stages]]), there was a better test: what would this configuration have said about the videos a parent has already judged?
+
+The rule: **a guard configuration replaces the incumbent only if it beats it on a replay of parent decisions, measured on clear-yes precision, clear-no precision and the uncertain rate. The labels that replay is scored against are kept clean: append-only, stored apart from any model run, and free of anything the guard never judged.**
+
+**The harness** (`src/modules/guard-harness/`) has three steps:
+
+- **Snapshot** freezes parent decisions into a dataset. It runs on a read-only database connection, never writes to production and never runs migrations. Each item carries a best-effort reconstruction of the inputs the guard saw *when the parent decided*, including the kid's history with that channel cut off at that time. It is not exact: the snapshot reads current candidate and metadata fields, and channel history is counted from today's request rows, so a later metadata refresh or a deleted request can shift an input. Exact historical replay is future work.
+- **Run** replays the dataset through a configuration. Adapters judge with no side effects: one model call per item and nothing written to any table. Results are cached by adapter id, which includes the prompt and rubric version, so an edit re-evaluates instead of resuming over stale results. An item the model never answered is retried, never cached as a verdict.
+- **Report** scores verdicts against labels: counts and metrics only, never content, and nothing written to the repo ([[0004-kids-consumption-stays-home]]).
+
+**Only safety labels count.** Allow is clear-yes. Unsafe is clear-no. Not for us, and an older Block with no kind recorded, are left out of the safety metrics and counted separately ([[0015-the-guard-judges-safety-the-family-judges-taste]]).
+
+**A fixed holdout.** A salted hash of the decision id puts a stable 20% of decisions in a holdout, the same decisions in every snapshot whatever else the snapshot contains, so the test set doesn't shift as labels accumulate.
+
+**Labels are kept clean at the source.** A parent decision is a label about a video for a kid, not about one model run: a video can carry several guard verdicts (the live one, re-runs, the second pass), so labels live in their own table (`guard_decisions`) and every configuration is scored against the same ones. When a parent changes their mind in Review, the change is a new revision (`guard_decision_revisions`); the first-pass answer stays as recorded, and the latest revision is the current label.
+
+**Parent picks never become labels.** A video a parent sends to a kid skips the guard, because the parent's choice is the approval. It is excluded from Spot checks, from the harness's channel history and from every signal that reads a request as the kid's own interest. It still obeys blocked channels: a parent pick from a blocked channel is refused.
+
+## Consequences
+
+- **"Better" has a number.** A change argues from the three metrics on the same labels, not from examples.
+- **The incumbent can fail the targets and still be the incumbent.** Beating it is the bar for replacement; meeting the targets in [[0018-the-guard-goes-live-in-stages]] is the bar for enforcing a new source. They are separate tests.
+- **Household results are evidence for this household.** They measure the guard on one family's videos, so they decide changes here but are not a general benchmark. A benchmark anyone can check is meant to come from the public pool in [[0014-guard-training-labels-come-from-a-frontier-teacher-on-a-public-pool]].
+- **Labels can be audited.** Because revisions never overwrite, the dataset carries both the first-pass answer and the current one, and how often a parent changed their mind is visible.
+- **The same harness judges the classifier track.** A trained student, when one exists, is adopted on the same terms.
+
+## Considered and rejected
+
+- **Tune by impression.** Rejected: it can't see regressions on videos nobody re-checked.
+- **Overwrite a label when the parent changes their mind.** Rejected: it loses the record of what the parent first said, and silently changes the test set under every earlier result.
+- **Tie a label to the model run the parent was shown.** Rejected: one video carries several runs, and older candidate verdicts didn't record the kid. A label tied to one run can't score the next configuration.
+- **Include parent picks as labels.** Rejected: the guard never judged them, so they measure nothing about it, and a parent's send isn't evidence of what the kid would have been shown.
+
+## Deferred
+
+- **More adapters.** Only the rubric guard is wired in; the older verdict prompt and off-the-shelf floor models are next.
+- **Scoring the holdout separately.** Items are marked; the report doesn't yet split them out.
+- **Retrieved precedents.** Past decisions shown to the guard as examples are designed, not built. The holdout is never to be used as precedent, so it stays an honest test.

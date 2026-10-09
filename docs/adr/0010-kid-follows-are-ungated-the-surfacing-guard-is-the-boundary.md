@@ -2,7 +2,7 @@
 
 Issue #151 surfaces **Follow suggestions** — creators a user has watched or saved but does not follow — on the People tab, with a Follow action. For a kid profile this raised the question: should a kid following a creator require parent approval? Kid safety is the #1 non-negotiable ("default to escalation in the guard; never auto-approve uncertain content"), and the obvious reflex is to gate the act of following behind a PIN or an **Escalation**.
 
-Three actor models were on the table: **(A)** kid initiates a follow → parent approves via an ntfy **Escalation** (a new `pending_follow` object on the **Signed-token** action pattern); **(B)** kid follows immediately, same as an adult; **(C)** the suggestions are parent-facing only — the kid never sees them and the parent follows on their behalf.
+Three actor models were on the table: **(A)** kid initiates a follow → parent approves via an **Escalation** (a new `pending_follow` object on the **Signed-token** action pattern); **(B)** kid follows immediately, same as an adult; **(C)** the suggestions are parent-facing only — the kid never sees them and the parent follows on their behalf.
 
 The decisive observation is that **a follow opens no unguarded pipe**. Every candidate a follow can generate — a new `subscription` upload, a back-catalog item, an inferred-interest search result — lands in `candidate_pool` and must pass `surfaceForToday`, which for a kid hard-requires `guard_verdict = 'clear_yes'` (`src/modules/discovery/surface.ts`; an un-rechecked candidate does not surface — default to escalation). This gate is live **now**, independent of the Phase 6 request-approval flip (which concerns share-sheet **Requests**, a separate path). Furthermore, every creator in the suggestion list is one the kid *already watched* — so each already cleared the guard at request time. Following changes only feed *weighting* and *composition* among candidates that have already earned `clear_yes`; it exposes the kid to nothing the guard won't independently vet.
 
@@ -18,11 +18,15 @@ The rule: **a kid following a creator is ungated. The per-item `clear_yes` surfa
 
 ## Considered and rejected
 
-- **(A) Kid initiates, parent approves via Escalation.** Rejected: it invents a `pending_follow` object and a signed-token approve/deny endpoint to guard an act that the surfacing gate already makes safe — machinery with no safety payoff. The established **Escalation** primitive is request-coupled; generalising it here is unjustified cost.
+- **(A) Kid initiates, parent approves via Escalation.** Rejected: it invents a `pending_follow` object and a signed-token approval endpoint to guard an act that the surfacing gate already makes safe — machinery with no safety payoff. The established **Escalation** primitive is request-coupled; generalising it here is unjustified cost.
 - **(C) Parent-facing suggestions only.** Rejected: zero kid agency — the kid cannot express "I want more of this person" — and it breaks the "below the people you follow on the People tab" surface for kid profiles. More paternalistic than the per-item guard warrants.
-- **A PIN gate (the issue's literal wording).** Rejected: no PIN primitive exists anywhere in Eddy, and Eddy's parent-adjudication mechanism is the ntfy **Escalation**, not an on-device PIN. The issue's "PIN-gated" was loose language for "parent-approved", which (A) covers and this ADR declines.
+- **A PIN gate (the issue's literal wording).** Rejected: no PIN primitive exists anywhere in Eddy, and Eddy's parent-adjudication mechanism is the **Escalation**, not an on-device PIN. The issue's "PIN-gated" was loose language for "parent-approved", which (A) covers and this ADR declines.
 
 ## Deferred
 
 - **Revisit if the per-item guard proves insufficient in practice.** The whole basis for ungated follows is that `clear_yes`-at-surfacing reliably protects a kid. If real-world guard quality (post-Phase 6) shows that following materially worsens a kid's exposure despite per-item gating, model (A) is the fallback — and the **Signed-token** + **Escalation** pattern is where it would be built.
 - **Parental roster visibility (read-only).** Not the same as approval: a future parent view of "who this kid follows" with an unfollow affordance is compatible with this ADR and not built here.
+
+## Amended — 2026-10-09
+
+Two things now sit beside the clear-yes requirement at the boundary this record names. The surfacing gate also excludes any channel a parent has blocked, whatever its verdict, so a block holds even for a creator the kid follows. And the candidate guard's prompt leaves the follow out. An early version stated it as the child's own choice; in a small test on parked and rejected follow candidates that line acted as persuasion, with one wording flipping a clear-no to a clear-yes. That is an observation from a small sample, not a measurement, but it fits this record: the follow reweights, and the guard judges the video without knowing about it.

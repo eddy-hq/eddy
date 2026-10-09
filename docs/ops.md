@@ -289,7 +289,7 @@ One-shot per Plex install — the pref persists across Plex restarts. Only re-ru
 
 The PWA is served from `https://eddy.example.com/` with a real Let's Encrypt cert so iOS Safari treats it as a secure context (Web Share API, service workers, etc. require this). All traffic stays on the tailnet — the domain resolves publicly to the M4's Tailscale IP (`<eddy-tailnet-ip>`) via a DNS-only (grey-cloud) A record, so off-tailnet clients can't reach the service.
 
-**Why direct TLS, not Cloudflare Tunnel:** the PWA's API calls return kid consumption data (titles, creators, watch times, guard verdicts). [ADR-0004](adr/0004-kids-consumption-never-leaves-m4.md) says that data must not transit a third party. CF Tunnel would terminate TLS at Cloudflare's edge, putting that data in plaintext on their infra. Direct TLS on the M4 keeps it on the tailnet end-to-end.
+**Why direct TLS, not Cloudflare Tunnel:** the PWA's API calls return kid consumption data (titles, creators, watch times, guard verdicts). [ADR-0004](adr/0004-kids-consumption-stays-home.md) says that data must not transit a third party. CF Tunnel would terminate TLS at Cloudflare's edge, putting that data in plaintext on their infra. Direct TLS on the M4 keeps it on the tailnet end-to-end.
 
 **Topology:**
 

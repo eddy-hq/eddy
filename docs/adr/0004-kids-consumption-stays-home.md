@@ -1,0 +1,17 @@
+# Kids' consumption stays home
+
+In 2026, the default for kid-safety classification is to call a frontier model — Claude or GPT are meaningfully better at the task than anything that runs on consumer hardware. Eddy doesn't. Every piece of kid-facing inference — guard triage, discovery scoring, Drift observations, "why this?" generation — runs against a small local model on the home server. The model will be replaced as better ones ship that fit the hardware; the rule survives the replacement.
+
+The principle is the load-bearing decision, not the model choice. Trust with the kids is the product (Section 1) — they will accept being looked-after, they will not accept being watched. Routing watch history, transcripts, or borderline judgements through a third-party API breaks that on the inside even if nothing visible changes. There's a second-order argument too: as AI-generated content volume goes vertical, trusted human judgement becomes the scarce resource. A household-scale system whose intelligence improves on consumer hardware is the right shape for a privacy-first product; one whose intelligence depends on a frontier API has a different posture and a different ceiling on what it can promise.
+
+## Consequences
+
+- Guard quality is bounded by what local models can do on the home server. The guard is measured against parent decisions, and enforcement goes live one source of kid content at a time (see the amendment below and [[0018-the-guard-goes-live-in-stages]]).
+- The adults' control plane, when built, must pass its responses through a privacy filter that strips kid real names (substituted with `kid_1` / `kid_2`) and any consumption detail (titles, creators, watch times), failing closed rather than sending. Neither the control plane nor the filter exists yet. The one check that is built today is narrower: the cached weekly summary never puts a user identifier or real name into its prompt, and its output is checked for household names before it is stored.
+- No cloud analytics, no external observability service touches kid behaviour. Logs containing kid events stay on the home server.
+- Frontier escalation for the guard is deferred, not approved. Where a frontier model may touch the guard at all is now settled by [[0014-guard-training-labels-come-from-a-frontier-teacher-on-a-public-pool]] (offline, public data only, never household data) and [[0015-the-guard-judges-safety-the-family-judges-taste]] (household decisions measure the guard). Runtime escalation of a household item remains out unless it can be done without breaking this rule.
+- Adult MCP and adult Drift are *not* covered by this rule. Adults can use a frontier model against their own data if they choose to — the boundary is kids, not the household.
+
+## Amended — 2026-10-09
+
+The original consequences said the guard would run in shadow mode through several phases and then go live in one step. It went live in stages instead. Discovery surfacing is enforced: only a clear-yes reaches a kid. A kid's slate picks are enforced by a second pass after download. A kid's other requests, such as share-sheet requests, are still scored in shadow mode; enforcing those is next. The original also described the adults' privacy filter as if it existed; it is a requirement on a surface not yet built, and is now worded that way. The escalation trigger ("~200 parent decisions") is replaced by the pointers to 0014 and 0015.

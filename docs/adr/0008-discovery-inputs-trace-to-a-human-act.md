@@ -14,26 +14,33 @@ The principle has two halves and they're inseparable. The rejected half: no auto
 - **Two-zone Interests editor.** Declared interests are a ranked, draggable list (priority is the input; weight = `1/sqrt(rank)`). Inferred interests sit in a separate "Eddy noticed" band, ordered by signal strength, with no rank — they cannot be interleaved into the ranked list because they have no rank.
 - **Search-seed is decoupled from scoring-vocabulary.** A broad interest ("AI", "Running") serves as scoring vocabulary (connection axis) but generates no `ytsearch` query; search-term generation returns empty for interests too broad to yield good queries. This stops broad inferred-then-kept interests from polluting the gap-filler.
 - **No mandatory onboarding gate.** The "≥1 interest and ≥1 follow to proceed" requirement is dropped. An empty "Picked for you" is a valid cold state, carried by the request flow until follows accumulate.
-- **No kid/adult asymmetry.** The model is uniform across ages. A kid who follows gaming creators gets inferred interests from imported subs; a request-flow-only kid simply has no inferred interests yet — not by special-casing, but as a natural consequence of having no follows.
+- **No kid/adult asymmetry.** The model is uniform across ages. A kid who follows a few creators gets inferred interests from imported subs; a request-flow-only kid simply has no inferred interests yet — not by special-casing, but as a natural consequence of having no follows.
 
 ## Considered and rejected
 
 - **Auto-promotion from behaviour.** Watching a lot of X auto-adds X as an interest (the YouTube/TikTok default). Rejected: it is the capture loop by definition, and it makes the system, not the user, the author of the profile.
 - **Inference replaces declaration** (the original framing of issue #150). Rejected: inference is structurally backward-looking — it can only reflect what you already follow and watch. Declaration is the only forward-looking input ("I want to get into woodworking"), and the only cold-start seed. The two are complementary, not redundant.
 
-## Built since (Tier 2 inference — issue #181, 2026-05-31)
+## Amended — 2026-05-31: Tier 2 inference built (issue #181)
 
 **Tier 2 inference is now built.** The deferral was tripped exactly as anticipated: a kid following dozens of creators in one niche got the parent's adult seed topics (`economics`, `philosophy`, `news_analysis`) force-fit onto those channels, because `inferChannelInterests` could only *pick from the existing catalogue*. Specificity had drifted broad.
 
 Inference now grows the vocabulary **bottom-up from content**, mirroring how a declared `user_added` interest is created on demand:
 
-1. **Describe** — Gemma free-labels the channel's primary topic from its name + recent titles, unbiased by the catalogue (1–3 word label, or "unclear" ⇒ insert nothing).
+1. **Describe** — the local model free-labels the channel's primary topic from its name + recent titles, unbiased by the catalogue (1–3 word label, or "unclear" ⇒ insert nothing).
 2. **Canonicalise** — that free label is matched against the existing vocabulary on *semantic sameness* (not nearest-fit from a closed list, and explicitly allowed to find no match). This is the crux: it collapses "sourdough bread" / "sourdough baking" onto one `sourdough` id, so the inferred-interest follower-count and the `MAX_PER_INTEREST` diversity cap keep aggregating correctly.
 3. **Create on demand** — a genuine miss inserts a new `interests` row (`source='inferred'`) and enqueues the existing search-terms job. The new interest is still subject to every prior consequence: it is **inert until Kept**, and a kid's Keep still routes through the guard. So bottom-up vocabulary growth adds no kid-safety surface at inference time — the human-act boundary is unchanged.
 
 The pre-seeded catalogue is therefore no longer a *forced* inference target. The seed rows that existed **only** as inference targets (declared by nobody) and were the leak fodder — `news_analysis`, `programming`, `camping` — were removed (migration 038); declared seeds stay. The add-interest browse grid (`GET /interests/`) was already unused and was removed; declared interests are added freeform (`/user-add`) or by Keeping an inference.
 
 This supersedes the "Tier 2 inference" deferral below; the "specificity prompt at Keep" alternative remains unbuilt and unneeded for now.
+
+**How #150 and #181 resolved, in short:**
+
+- Interests are both declared and inferred; neither replaces the other.
+- Inferred interests are inert until kept. **Remove** writes a suppression row so the proposal is never re-derived; it does not unfollow anyone, and the follow still yields that person's outputs.
+- The vocabulary is canonicalised bottom-up from content rather than seeded and force-fit.
+- For a kid, adding an interest — typed or kept — is scored by the guard. The score is recorded, not yet enforced ([[0018-the-guard-goes-live-in-stages]]).
 
 ## Deferred
 
