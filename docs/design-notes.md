@@ -51,7 +51,7 @@ Picks are the exception — a reason-line (not a content description) explains w
 
 ## Why the Picked voice lives outside the card
 
-On picks specifically, a short sentence explains why Eddy surfaced the item. *"I thought you'd like this one — you mentioned Steve Mould does a good job of explaining physical things."*
+On picks specifically, a short sentence explains why Eddy surfaced the item. *"I thought you'd like this one — you mentioned Bench Physics does a good job of explaining physical things."*
 
 Originally rendered inside the card, as a second line of italic serif under the title. Moved to sit **above** the card, flush left at the feed margin, first-person.
 

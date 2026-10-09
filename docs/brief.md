@@ -54,25 +54,25 @@ If any decision below contradicts these rules, the decision is wrong.
 | User | Role | Notes |
 |---|---|---|
 | Steve | Parent, primary admin | Full profile, MCP access |
-| Son 1 (12) | Kid | iPhone + WhatsApp + iMessage. Parent-managed profile. |
-| Son 2 (10) | Kid | iPhone + iMessage. Parent-managed profile. |
-| Partner | Parent | Added when she opts in. DNS blocking also gated on this. |
+| Boy1 | Kid | Phone. Parent-managed profile. |
+| Boy2 | Kid | Phone. Parent-managed profile. |
+| Partner | Parent | Added when they opt in. DNS blocking also gated on this. |
 
-Partner's profile and the Pi-hole blocker both wait for her explicit buy-in.
+The partner's profile and the Pi-hole blocker both wait for their explicit buy-in.
 
 ---
 
 ## 3. Hardware & network
 
-**M4 Mac Mini (16GB, macOS, WiFi)** — Eddy API, PWA, SQLite, Ollama with Gemma 4 E4B.
+**M4** (Apple Silicon Mac, WiFi) — Eddy API, PWA, SQLite, Ollama with Gemma 4 E4B.
 
-**2012 Mac Mini (16GB i7, Ubuntu Server 24.04, Ethernet next to router)** — existing Plex + arr stack (untouched by Eddy). Adds: download worker, Redis, nginx, Pi-hole (later).
+**Ubuntu box** (older always-on machine, Ubuntu Server, wired) — existing Plex + arr stack (untouched by Eddy). Adds: download worker, Redis, nginx, Pi-hole (later).
 
 **Storage on Ubuntu:**
 - HDD — existing Plex library, untouched
 - SSD — `$VIDEO_OUTPUT_PATH` for video files, `$THUMB_OUTPUT_PATH` for selected thumbnails (see `.env.example`). Eddy owns. yt-dlp writes, Eddy recycles, Plex and nginx read.
 
-**Network:** BT Home Hub 2. Tailscale across both machines and all family devices. HH2 cannot push DNS to DHCP clients — Pi-hole will only reach Tailscale-joined devices. Fine, stated explicitly.
+**Network:** a consumer ISP router. Tailscale across both machines and all family devices. The router cannot push custom DNS to DHCP clients — Pi-hole will only reach Tailscale-joined devices. Fine, stated explicitly.
 
 **TV devices:** Apple TV on Tailscale. Fire Stick and Fire OS TV not on Tailscale — parent grants overrides by local IP.
 
@@ -120,10 +120,10 @@ Ubuntu worker never writes SQLite directly — it reports results via M4's inter
 Every client-facing interaction is plain HTTP with a clean JSON contract. No PWA-only cleverness in the data layer.
 
 **Canonical URL paths** are documented once and used everywhere. Protocol is variable:
-- `https://eddyhq.app/feed` — PWA
+- `https://eddy.example.com/feed` — PWA
 - `eddy://feed` — native shell (Section 21)
 
-Same paths both forms. Switching consumers is a protocol prefix change, not a route rewrite. Custom scheme only — universal links would need a publicly reachable `apple-app-site-association`, and `eddyhq.app` is tailnet-only.
+Same paths both forms. Switching consumers is a protocol prefix change, not a route rewrite. Custom scheme only — universal links would need a publicly reachable `apple-app-site-association`, and `eddy.example.com` is tailnet-only.
 
 ---
 
@@ -141,11 +141,11 @@ Trusted human judgement is becoming the scarce resource (see Section 1). Organis
 
 It also makes Eddy's reasoning honest. Gemma isn't deciding what's good; the people you've chosen to trust are. Gemma's job is routing between their output and you, filtered lightly for relevance.
 
-**For adults,** a person usually has three or four outputs across media. Following Tyler means his blog, his podcast, his books, and the things he recommends.
+**For adults,** a person usually has three or four outputs across media. Following Sam means their blog, their podcast, their books, and the things they recommend.
 
-**For kids in v1,** a person's outputs are effectively just a YouTube channel — a 10-year-old follows MrBeast, and under the hood it's a channel subscription. The data model is uniform across ages; the UI complexity for kids is deliberately thin. As a kid grows into other media, the infrastructure is already there.
+**For kids in v1,** a person's outputs are effectively just a YouTube channel — a kid follows a favourite YouTuber, and under the hood it's a channel subscription. The data model is uniform across ages; the UI complexity for kids is deliberately thin. As a kid grows into other media, the infrastructure is already there.
 
-Most YouTube channels a kid follows *are* a person — MrBeast, DanTDM, Dream. A few are collections (Dude Perfect, family channels). A `person_type` flag (individual, duo, group, studio) handles the distinction; mechanics don't change.
+Most YouTube channels a kid follows *are* a person. A few are collections (trick-shot groups, family channels). A `person_type` flag (individual, duo, group, studio) handles the distinction; mechanics don't change.
 
 **Person-level transparency is a literacy tool.** Kids see: who they follow, when they started following, roughly how often they've engaged. Qualitative and observational ("you've been really into this creator lately") never quantitative and ranked ("Dream: 312 hours"). Adults see richer detail on their own following. The rule against surveillance surfaces on kids' screens applies.
 
@@ -177,7 +177,7 @@ Shortcut structure:
 2. `POST [base]/requests` with the URL — responds `202` with `{ requestId, status, message, pwaUrl }`. `message` is the kid-facing confirmation (*"Got it, Boy1. Working on it."*); `pwaUrl` is an absolute link to the user's feed
 3. `Open URL pwaUrl`
 
-`[base]` is a Shortcut variable. Today: `https://eddyhq.app`. The native shell replaces this route with a real share extension and keeps an App Intent for anyone who prefers the Shortcut (Section 21).
+`[base]` is a Shortcut variable. Today: `https://eddy.example.com`. The native shell replaces this route with a real share extension and keeps an App Intent for anyone who prefers the Shortcut (Section 21).
 
 The share extension uses the same endpoint and the same response, and needs nothing more from it: it shows `message` inline in the share sheet and dismisses — the kid stays in YouTube, which is the point. It never opens a URL, so there is no per-request landing route and none is planned. `pwaUrl` exists only for the Shortcut (it is an absolute LAN address, which a client-agnostic API shouldn't hand out) and is removed when the Shortcut is retired.
 
@@ -210,7 +210,7 @@ Soft daily cap per kid: **10 requests/day**, resets 6am. Over the cap, everythin
 
 ### Time-sensitive content
 
-Livestreams, football matches, reaction content where the social moment is *now* — these hit the override path (Section 11), not the pipeline. Parent grants temporary direct YouTube access on the requesting device for N minutes.
+Livestreams, live sport, reaction content where the social moment is *now* — these hit the override path (Section 11), not the pipeline. Parent grants temporary direct YouTube access on the requesting device for N minutes.
 
 ---
 
@@ -451,10 +451,10 @@ The feed is *what was offered to me*. Drift is *what did I do with it*. Differen
 
 ### Structure
 
-Today is structured as three short stretches in a fixed order — **You asked → From people you follow → Picked for you**. Past days are unified lists by date.
+Today is structured as two stretches in a fixed order — **You asked → Today**, where *Today* is one composed stream mixing follows and picks (ADR-0009). Past days are unified lists by date.
 
 - **Provenance lives on the card, not in section headers.** Every card carries a small pill (dot + short label): *You asked* (amber), creator name (teal) for follows, *Picked* (terracotta) for picks. Cards are self-describing wherever they appear — Saved, search, history, Drift — without needing a header above them.
-- **Section dividers are structural, not categorical.** Today shows small serif labels with a hairline rule for the *You asked* and *From people you follow* sections. The Picks section has no divider label — its cluster intro line ("I thought you'd like this one…") *is* the section opener (see `docs/design-notes.md`).
+- **Section dividers are structural, not categorical.** Today labels its two stretches, *You asked* and *Today*; within *Today*, the provenance pill on each card says where it came from, and each card's Eddy voice line sits above it as its introduction (see `docs/design-notes.md`).
 - **Single-source days suppress dividers.** A day with only requests just reads as a list — there's nothing to divide.
 - **Past days don't use dividers at all.** Past days are unified by date.
 
@@ -493,13 +493,13 @@ Tap destinations:
 - Paper → Safari
 - Book → user-configured destination (Amazon/Bookshop/library/Libby/Kindle)
 
-Card shows: thumbnail, interest pill, source (person name where known), headline, one-sentence personal hook, duration/read time/page count. Past-day cards also show "Watched Xh later" if applicable.
+Card shows: thumbnail, interest pill, source (person name where known), the creator's own title as the headline, duration/read time/page count. Past-day cards also show "Watched Xh later" if applicable.
 
-### Personal hook
+### The title leads
 
-Every card has a hook line beneath the headline. Max 15 words, direct, specific not generic. Gemma-generated in batches (10-20 items per inference call). Falls back to one-line description if generation fails.
+The creator's own title leads every card. Eddy does not generate a hook line to sit under or replace it — that design was dropped.
 
-Where the "no recommendation without a visible reason" rule lives. Generic hooks ("you might like this") are a system failure and should fall back to description.
+The "no recommendation without a visible reason" rule lives in the Eddy voice line instead: the one-sentence *why* that scoring writes for follows, back-catalogue and picks alike, shown above the card in the *Today* stream and in the video's detail sheet. A generic why ("you might like this") is a system failure.
 
 ### Interactions
 
@@ -597,9 +597,9 @@ Every item surfaced by discovery (not requests, not direct outputs from people y
 
 Where a followed person is involved, the reasoning routes through them wherever possible:
 
-Adult: *"Tyler recommended this book twice in the last six months, and it's on something you've been reading about."*
+Adult: *"Sam recommended this book twice in the last six months, and it's on something you've been reading about."*
 
-Kid: *"DanTDM doesn't usually make redstone videos, but this one's exactly the kind of thing you finished last week."*
+Kid: *"This creator doesn't usually make build tutorials, but this one's exactly the kind of thing you finished last week."*
 
 If Gemma can't explain why, the item doesn't surface.
 
@@ -617,7 +617,7 @@ v2 deferred:
 - Curated external lists (Reddit, HackerNews, Awesome-X repos). Ship without; add if discovery quality proves thin.
 - Social signal (Twitter/X posts by followed people, shared links).
 
-**Not using:** YouTube Data API. Keeps discovery yt-dlp-only, avoids Google Cloud entanglement.
+**YouTube Data API v3** — discovery's metadata reads (search, channel uploads, durations, channel info) go through it when `DISCOVERY_SOURCE=api` (ADR-0011, #189), and follow polling moved to it from RSS (#200). This reverses the original yt-dlp-only plan: the API takes metadata traffic off the residential IP. Downloads stay on yt-dlp.
 
 ### The engine
 
@@ -641,7 +641,7 @@ For each active user:
   3. Guard pipeline for kids
        - Clear-yes → surface. Uncertain → parent queue. Clear-no → logged.
   4. Apply daily cap
-       - Kids: 3-5 items. Adults: 10-20. Surplus retained for tomorrow.
+       - Per-user daily_pick_cap, role-blind (ADR-0009). Surplus retained for tomorrow.
 ```
 
 ### Scoring axes and time sensitivity
@@ -757,7 +757,7 @@ Same data, richer view:
 - All kid-facing signals
 - Request approval/rejection summary
 - People trending up/down
-- Profile adjustment candidates — *"Son 1 dismissed 8/10 football videos this week; suggest reducing football weight?"* Never auto-applied.
+- Profile adjustment candidates — *"Boy1 dismissed 8/10 videos on one interest this week; suggest reducing its weight?"* Never auto-applied.
 - Red-flag surface (sharp diversity drop, late-night request spike) as a quiet notification, not a push
 
 ### Adult Drift
@@ -790,7 +790,7 @@ This is the reason blocking is worth doing — every block becomes a redirect, n
 
 ### Override
 
-Livestreams, football, time-sensitive moments. Parent grants temporary YouTube access per device for N minutes:
+Livestreams, live sport, time-sensitive moments. Parent grants temporary YouTube access per device for N minutes:
 
 - Kid taps "Request YouTube time" in PWA
 - Notification to both parents with actions: `[30 min] [1 hour] [Deny]` (top priority, bypasses DND)
@@ -814,9 +814,9 @@ One system for everyone, every event class. Everything in the codebase calls `no
 
 ### Transport
 
-**Today: log-only.** ntfy was removed on 2026-09-19 — unused after the first week, and its certificate had been expired since 2026-07-12, so every send had been failing for ten weeks without anyone noticing (ADR-0003 amendment). `notify()` still fires on every event and writes it to the structured log; nothing reaches a device. Every event below is specified, none is delivered.
+**APNs, through the native iOS shell** (Section 21, ADR-0013) — shipped in #203, #204 and #210. Not a second channel alongside anything — the one transport behind `notify()`. Payloads that transit Apple carry an opaque message id and placeholder copy only; the Notification Service Extension fetches the real content from the M4 over Tailscale (Section 14, ADR-0004). With no APNs key configured, `notify()` falls back to writing the event to the structured log.
 
-**Next: APNs, through the native iOS shell** (Section 21, ADR-0013). Not a second channel alongside anything — the first real transport behind `notify()`. Payloads that transit Apple carry an opaque message id and placeholder copy only; the Notification Service Extension fetches the real content from the M4 over Tailscale (Section 14, ADR-0004).
+ntfy, the previous transport, was removed on 2026-09-19 — unused after the first week, and its certificate had been expired since 2026-07-12, so every send had been failing for ten weeks without anyone noticing (ADR-0003 amendment).
 
 Phase 6 (guard live) depends on it: an uncertain verdict has to reach a parent to be adjudicated.
 
@@ -826,7 +826,7 @@ Priorities are relative, and map onto whatever the transport offers — `max` is
 
 | Event | Recipient | Priority | Actions |
 |---|---|---|---|
-| Guard escalation | parents | `max` | `[Approve] [Deny]` |
+| Guard escalation | parents | `max` | `[Allow] [Unsafe] [Not for us]` (ADR-0015) |
 | Override request | parents | `max` | `[30 min] [1 hour] [Deny]` |
 | Override granted | kid | `default` | Tap → open PWA |
 | Override expiring (10 min) | kid | `high` | Tap → open PWA |
@@ -836,7 +836,7 @@ Priorities are relative, and map onto whatever the transport offers — `max` is
 | Pipeline failure cluster | Steve | `high` | `[Update & retry] [Investigate]` |
 | Weekly Drift ready | per-user | `low` | Tap → open Drift view |
 
-Events land with their phases. Five kinds exist in code today — `video_ready`, `parent_review`, and three ops alerts to Steve: `download_alert`, `circuit_open`, `download_failure_streak`. Override events arrive with Phase 9, Drift with Phase 8.
+Events land with their phases. Five kinds exist in code today — `video_ready`, `parent_review`, and three ops alerts to the parent: `download_alert`, `circuit_open`, `download_failure_streak`. Override events arrive with Phase 9, Drift with Phase 8.
 
 ### Signed-token action endpoints
 
@@ -844,12 +844,14 @@ Action buttons call back without a full auth flow.
 
 When Eddy sends a notification with actions:
 1. Generate short-lived signed token (HMAC-SHA256, 1h TTL, single-use)
-2. Action URL: `https://eddy.tail-xxxx.ts.net/action/{handler}?token={token}`
+2. Action URL: `https://<eddy-host>/action/{handler}?token={token}`
 3. Endpoint validates signature + TTL, looks up token in `used_tokens`, runs handler if unused, marks used, returns confirmation or PWA deep-link
 
 Same pattern for every action across every notification.
 
-### Parent PIN on approvals
+### Parent PIN on approvals (deferred)
+
+> **Not built.** No PIN exists in code today; approvals rely on the signed token and the parent's device. What follows is the intended design, kept for when it is picked up.
 
 Approvals require a parent PIN. Signed tokens prove the device received the notification; the PIN proves the parent is the one acting. Without it, anyone holding the parent's unlocked phone — including the kid — can approve content the guard escalated.
 
@@ -869,7 +871,7 @@ One PIN per parent, stored as scrypt hash. Same PIN across every approval surfac
 notify(user_id: string, event: EventType, payload: EventPayload): Promise<void>
 ```
 
-Everything else in the codebase calls this. Today it logs; the native shell adds APNs *behind this interface* (Section 21). Narrow interface, not a plugin abstraction — swapping the transport touches one module and nothing else.
+Everything else in the codebase calls this. APNs sits *behind this interface* (Section 21), with the structured log as the fallback when no key is configured. Narrow interface, not a plugin abstraction — swapping the transport touches one module and nothing else.
 
 > The implemented signature is `notify(event: NotificationEvent, recipient: string)` — event-first, with the payload folded into a discriminated union on `event.kind`. Treat the code as canonical.
 
@@ -1249,7 +1251,7 @@ Only if 6+ months of parent-decision data from Phase 6 justifies it. Spec in Sec
 
 ## 18. Out of scope for v1
 
-- Partner profile — added when she opts in
+- Partner profile — added when they opt in
 - TikTok replacement — blocked via Pi-hole, no pipeline
 - Plex-to-Jellyfin migration
 - Hosted / SaaS version
@@ -1268,15 +1270,15 @@ Only if 6+ months of parent-decision data from Phase 6 justifies it. Spec in Sec
 
 Resolve before or during the relevant phase.
 
-1. **Gemma inference throughput on M4 with 16GB RAM.** Can it handle scoring + hook generation + triage + recommendation detection on a busy day without swap? Instrument in Phase 3, adjust batch sizes if needed.
-2. **Whole-house DNS coverage (Phase 9 decision).** HH2 can't push DNS to DHCP clients. Tailscale-only may be sufficient once kids are using share-sheet for most requests. If not: Pi-hole-as-DHCP (fragile but free) or router replacement (~£140 for UniFi Cloud Gateway Ultra). Decide at start of Phase 9.
-3. ~~**Eddy domain name.**~~ **Resolved** — `eddyhq.app` is live over HTTPS behind Caddy, tailnet-only. Custom scheme rather than universal links follows from that; see Section 4.
+1. **Gemma inference throughput within the M4's memory.** Can it handle scoring + hook generation + triage + recommendation detection on a busy day without swap? Instrument in Phase 3, adjust batch sizes if needed.
+2. **Whole-house DNS coverage (Phase 9 decision).** The router can't push custom DNS to DHCP clients. Tailscale-only may be sufficient once kids are using share-sheet for most requests. If not: Pi-hole-as-DHCP (fragile but free) or router replacement (~£140 for UniFi Cloud Gateway Ultra). Decide at start of Phase 9.
+3. ~~**Eddy domain name.**~~ **Resolved** — `eddy.example.com` is live over HTTPS behind Caddy, tailnet-only. Custom scheme rather than universal links follows from that; see Section 4.
 4. **Recommendation detection quality.** Gemma extracting book/article/podcast recommendations from a person's text output is the novel piece in Phase 5/7. Signal quality unknown until tested on real data. If poor, fall back to "new outputs only" for followed-person discovery and revisit.
 5. **Kid person-level UI tone.** "You've been really into this creator lately" is the intended register. Exact phrasing matters — reviewing with kids during Phase 5 is part of the work, not an afterthought.
 
 ### Known dependencies
 
-- **APNs** — once the native shell ships (Section 21), Apple's push infrastructure is the only path from Eddy to a device. Single point of failure outside our control, and deliberately the only one: no fallback channel (ADR-0003). Until then there is no push dependency, because there is no push.
+- **APNs** — with the native shell shipped (Section 21), Apple's push infrastructure is the only path from Eddy to a device. Single point of failure outside our control, and deliberately the only one: no fallback channel (ADR-0003).
 - **yt-dlp + bgutil-ytdlp-pot-provider** — active arms race with YouTube. Both well-maintained, typical fix times 24-48h. Mitigation is operational (Section 6 Reliability). No credible architectural alternative.
 
 ---
@@ -1286,7 +1288,7 @@ Resolve before or during the relevant phase.
 - **Name:** Eddy — a current that moves differently to the main flow
 - **Weekly summary name:** Drift
 - **Repo:** `eddy-hq/eddy`
-- **Licence:** MIT
+- **Licence:** not yet chosen. There is no LICENSE file; decide before the repo goes public.
 - **Open source:** when stable (post-Phase 8). Per-household native builds require per-household Apple Developer accounts — consistent with self-hosted ethos.
 
 ---
@@ -1305,7 +1307,7 @@ A thin native app that wraps the existing PWA. Not a second client. Decision and
 - **Fallback screen** when Tailscale isn't connected. The one thing a web page can't explain well.
 - **User identity in the Keychain**, injected into the web view. Today identity is a `?userId=` query param that every page re-appends by hand; the shell makes it survive.
 
-**PWA (unchanged):** every screen. Feed, player, request landing, saved, search, profile, person view, admin. The web view loads `https://eddyhq.app` over the tailnet — it never serves bundled local HTML, because every PWA fetch is origin-relative.
+**PWA (unchanged):** every screen. Feed, player, request landing, saved, search, profile, person view, admin. The web view loads `https://eddy.example.com` over the tailnet — it never serves bundled local HTML, because every PWA fetch is origin-relative.
 
 No native feed. No native player. No second design system.
 
@@ -1338,7 +1340,7 @@ Stages 4–5 follow stage 3 directly. They used to wait for Phase 6, on the reas
 Ad hoc provisioning, not TestFlight (ADR-0013 for why).
 
 - Register each device's UDID; 12-month provisioning profile.
-- OTA install manifest served from `eddyhq.app` behind Caddy, tailnet-only like everything else.
+- OTA install manifest served from `eddy.example.com` behind Caddy, tailnet-only like everything else.
 - Yearly re-sign, with a watchdog warning a month before profile expiry.
 - Each self-hosting household signs with its own Apple Developer account.
 
@@ -1359,7 +1361,7 @@ The aim is a guard shaped like Luna-2 / Jev — text in, one calibrated probabil
 
 1. **Harness** — replays labelled items through any guard configuration and reports clear-yes / clear-no precision and uncertain rate, split by label source and rubric version.
 2. **Public floor benchmark** — the universal floor (sexual, graphic, disturbing) measured on public data: the Samba test split first (public, has subtitles), Disturbed YouTube for Kids (access by request). Contenders: today's Gemma prompt (baseline), ShieldGemma text, ShieldGemma 2 on thumbnails, and any open Jev-like model worth trying. Visual signal is cheap: Gemma 4 E4B already scores frames in the thumbnail picker, and a candidate's YouTube auto-frames are plain image URLs before any download (confirm they sit outside the ADR-0012 yt-dlp budget). Token probabilities are available (checked 2026-10-02, Ollama 0.34.3, `gemma4:e4b`): `/api/generate` with `logprobs: true` and `top_logprobs: N` returns a log-probability per output token, and works alongside `think: false` and a JSON `format` schema. The values are the model's raw distribution before the schema constrains it, so a rubric score is read from the score digit's token and renormalised over the allowed values (0–3). Unlike household results, this number is publishable.
-3. **Public pool** — 10–20K public videos from the Data API across genres 10–13-year-olds watch, plus public-dataset hard positives. Never seeded from or joined to Eddy's data. Metadata only — no transcript fetching; transcripts come only from datasets that ship them (Samba includes subtitles).
+3. **Public pool** — 10–20K public videos from the Data API across genres the household's kids watch, plus public-dataset hard positives. Never seeded from or joined to Eddy's data. Metadata only — no transcript fetching; transcripts come only from datasets that ship them (Samba includes subtitles).
 4. **Frontier teacher** labels the pool against the rubric, offline. Steve audits ~300 as gold; iterate the rubric until teacher–gold agreement holds.
 5. **Student** — a small head over an embedding model first, LoRA on a small open model if that falls short. Evaluated on gold, the public benchmark, and household decisions. Adopted only if it beats the incumbent.
 6. **Loop** — student-uncertain items route into Phase 6a's escalations; those decisions become new gold.
