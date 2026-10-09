@@ -99,8 +99,8 @@ beforeAll(() => {
   const insertUser = db.prepare(
     'INSERT INTO users (user_id, display_name, role, age_gate, birth_year, created_at) VALUES (?, ?, ?, ?, ?, ?)',
   );
-  insertUser.run(KID_1, 'Boy1', 'kid', 1, 2012, NOW.toISOString());
-  insertUser.run(KID_2, 'Boy2', 'kid', 1, 2016, NOW.toISOString());
+  insertUser.run(KID_1, 'kid_1', 'kid', 1, 2012, NOW.toISOString());
+  insertUser.run(KID_2, 'kid_2', 'kid', 1, 2016, NOW.toISOString());
   insertUser.run(PARENT, 'Parent', 'parent', 0, null, NOW.toISOString());
 });
 
@@ -304,7 +304,7 @@ describe('Escalations', () => {
     seedCandidate('c-k2', { userId: KID_2, yt: 'shared' });
     const [card] = queue().cards;
     expect(queue().cards).toHaveLength(1);
-    expect(card!.subjects.map((s) => s.kidName).sort()).toEqual(['Boy1', 'Boy2']);
+    expect(card!.subjects.map((s) => s.kidName).sort()).toEqual(['kid_1', 'kid_2']);
     expect(card!.subjects.find((s) => s.userId === KID_2)!.ageBand).toBe('10-12');
   });
 
@@ -892,7 +892,7 @@ describe('Review (#223)', () => {
     expect(def.cards[0]).toMatchObject({
       title: 'Placeholder title', channel: 'Placeholder channel', youtubeId: 'yes-blocked',
       thumbnailUrl: 'https://i.ytimg.com/vi/yes-blocked/mqdefault.jpg',
-      subjects: [{ subjectType: 'candidate', subjectId: 'yes-blocked', kidName: 'Boy1', ageBand: '10-12' }],
+      subjects: [{ subjectType: 'candidate', subjectId: 'yes-blocked', kidName: 'kid_1', ageBand: '10-12' }],
       decision: {
         decisionId: 'd-yes-blocked', guardVerdict: 'clear_yes', firstVerdict: 'clear_no', verdict: 'clear_no',
         firstReason: { dimensions: ['violence'], text: 'Placeholder note' }, revision: null,
