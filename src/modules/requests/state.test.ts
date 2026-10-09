@@ -398,7 +398,7 @@ describe('shared files', () => {
 
 describe('mark_recycled', () => {
   const FILE_PATH = '/mnt/ssd/eddy/videos/recycled.mp4';
-  const NGINX_URL = 'http://mediaserver/videos/recycled.mp4';
+  const NGINX_URL = 'http://worker-host/videos/recycled.mp4';
 
   function insertRecyclable(opts: {
     request_id: string;
@@ -522,7 +522,7 @@ describe('mark_recycled', () => {
 
 describe('mark_restored', () => {
   const FILE_PATH = '/mnt/ssd/eddy/videos/restored.mp4';
-  const NGINX_URL = 'http://mediaserver/videos/restored.mp4';
+  const NGINX_URL = 'http://worker-host/videos/restored.mp4';
   const THUMB_URL = 'https://m4.local/thumbs/restored.jpg';
   const FIELDS = {
     filePath: FILE_PATH,
@@ -1348,7 +1348,7 @@ describe('create_candidate', () => {
 
   it('persists whyText onto the request so the detail page can render it later', async () => {
     const requestId = 'req-cc-why';
-    const WHY = 'Because Steve Mould has been on your radar this month.';
+    const WHY = 'Because Bench Physics has been on your radar this month.';
     const { settled } = state.apply({
       kind: 'create_candidate',
       requestId,
@@ -1394,8 +1394,8 @@ describe('create_parent_pick', () => {
     transcript: null,
     durationSecs: 120,
     filePath: SHARED,
-    nginxUrl: 'http://mediaserver/videos/pp1xxxxxxxx.mp4',
-    thumbnailUrl: 'http://mediaserver/thumbs/pp1xxxxxxxx.jpg',
+    nginxUrl: 'http://worker-host/videos/pp1xxxxxxxx.mp4',
+    thumbnailUrl: 'http://worker-host/thumbs/pp1xxxxxxxx.jpg',
     publishedAt: '2026-09-01T00:00:00.000Z',
     fileSizeBytes: 1234,
   };
@@ -1465,7 +1465,7 @@ describe('mark_parent_picked', () => {
     transcript: null,
     durationSecs: 120,
     filePath: SHARED,
-    nginxUrl: 'http://mediaserver/videos/pp2xxxxxxxx.mp4',
+    nginxUrl: 'http://worker-host/videos/pp2xxxxxxxx.mp4',
     thumbnailUrl: null,
     publishedAt: null,
     fileSizeBytes: 1234,

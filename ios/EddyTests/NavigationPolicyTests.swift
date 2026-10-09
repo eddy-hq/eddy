@@ -2,7 +2,7 @@ import XCTest
 @testable import Eddy
 
 final class NavigationPolicyTests: XCTestCase {
-    private let origin = WebOrigin(url: URL(string: "https://eddyhq.app")!)!
+    private let origin = WebOrigin(url: URL(string: "https://eddy.example.com")!)!
 
     private func decide(
         _ string: String,
@@ -18,9 +18,9 @@ final class NavigationPolicyTests: XCTestCase {
     }
 
     func testAllowsTheConfiguredOrigin() {
-        XCTAssertEqual(decide("https://eddyhq.app/feed?userId=x"), .allow)
-        XCTAssertEqual(decide("https://eddyhq.app/watch/abc"), .allow)
-        XCTAssertEqual(decide("https://eddyhq.app:443/feed"), .allow)
+        XCTAssertEqual(decide("https://eddy.example.com/feed?userId=x"), .allow)
+        XCTAssertEqual(decide("https://eddy.example.com/watch/abc"), .allow)
+        XCTAssertEqual(decide("https://eddy.example.com:443/feed"), .allow)
         XCTAssertEqual(decide("https://EDDYHQ.APP/feed"), .allow)
     }
 
@@ -28,12 +28,12 @@ final class NavigationPolicyTests: XCTestCase {
 
     func testBlocksSubdomainAndSuffixLookAlikes() {
         for hostile in [
-            "https://eddyhq.app.evil.example/feed",
-            "https://evil.example/eddyhq.app",
-            "https://eddyhq.app.co/feed",
+            "https://eddy.example.com.evil.example/feed",
+            "https://evil.example/eddy.example.com",
+            "https://eddy.example.com.co/feed",
             "https://notedyhq.app/feed",
-            "https://sub.eddyhq.app/feed",
-            "https://eddyhq.app-evil.example/",
+            "https://sub.eddy.example.com/feed",
+            "https://eddy.example.com-evil.example/",
         ] {
             XCTAssertEqual(decide(hostile, userInitiated: false), .block, hostile)
             XCTAssertEqual(decide(hostile, userInitiated: true), .openExternally, hostile)
@@ -42,17 +42,17 @@ final class NavigationPolicyTests: XCTestCase {
 
     func testRefusesEmbeddedCredentialTricks() {
         for hostile in [
-            "https://eddyhq.app@evil.example/feed",
-            "https://eddyhq.app:pass@evil.example/feed",
-            "https://user@eddyhq.app/feed",
+            "https://eddy.example.com@evil.example/feed",
+            "https://eddy.example.com:pass@evil.example/feed",
+            "https://user@eddy.example.com/feed",
         ] {
             XCTAssertNotEqual(decide(hostile), .allow, hostile)
         }
     }
 
     func testWrongSchemeOrPortIsNotTheSameOrigin() {
-        XCTAssertNotEqual(decide("http://eddyhq.app/feed"), .allow)
-        XCTAssertNotEqual(decide("https://eddyhq.app:8443/feed"), .allow)
+        XCTAssertNotEqual(decide("http://eddy.example.com/feed"), .allow)
+        XCTAssertNotEqual(decide("https://eddy.example.com:8443/feed"), .allow)
     }
 
     func testUserTappedOffSiteLinkLeavesTheApp() {
@@ -99,6 +99,6 @@ final class NavigationPolicyTests: XCTestCase {
             )
         }
         XCTAssertEqual(check("http://eddy.example.ts.net:8080/feed"), .allow)
-        XCTAssertEqual(check("https://eddyhq.app/feed"), .block)
+        XCTAssertEqual(check("https://eddy.example.com/feed"), .block)
     }
 }

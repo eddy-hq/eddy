@@ -3,7 +3,7 @@ import XCTest
 @testable import Eddy
 
 final class WebNavigationPolicyTests: XCTestCase {
-    private let origin = WebOrigin(url: URL(string: "https://eddyhq.app")!)!
+    private let origin = WebOrigin(url: URL(string: "https://eddy.example.com")!)!
 
     private func decide(
         _ string: String,
@@ -23,9 +23,9 @@ final class WebNavigationPolicyTests: XCTestCase {
     }
 
     func testOnOriginNavigationIsAllowed() {
-        XCTAssertEqual(decide("https://eddyhq.app/feed?userId=x"), .allow)
-        XCTAssertEqual(decide("https://eddyhq.app/watch/abc", type: .backForward), .allow)
-        XCTAssertEqual(decide("https://eddyhq.app/saved", type: .other), .allow)
+        XCTAssertEqual(decide("https://eddy.example.com/feed?userId=x"), .allow)
+        XCTAssertEqual(decide("https://eddy.example.com/watch/abc", type: .backForward), .allow)
+        XCTAssertEqual(decide("https://eddy.example.com/saved", type: .other), .allow)
     }
 
     func testTappedOffSiteLinkLeavesTheApp() {
@@ -39,7 +39,7 @@ final class WebNavigationPolicyTests: XCTestCase {
         // The boundary that matters: a page can't walk the web view off-origin
         // on its own, only a person can send a link out of the app.
         XCTAssertEqual(decide("https://www.youtube.com/watch?v=abc", type: .other), .block)
-        XCTAssertEqual(decide("https://eddyhq.app.evil.example/", type: .other), .block)
+        XCTAssertEqual(decide("https://eddy.example.com.evil.example/", type: .other), .block)
     }
 
     func testDangerousSchemesAreNeverHandedToTheSystem() {
@@ -53,8 +53,8 @@ final class WebNavigationPolicyTests: XCTestCase {
     func testOnOriginNewWindowLoadsInTheExistingWebView() {
         // Never a second web view: the shell is one view, one back stack.
         XCTAssertEqual(
-            decide("https://eddyhq.app/watch/abc", mainFrame: false, newWindow: true),
-            .loadInPlace(URL(string: "https://eddyhq.app/watch/abc")!)
+            decide("https://eddy.example.com/watch/abc", mainFrame: false, newWindow: true),
+            .loadInPlace(URL(string: "https://eddy.example.com/watch/abc")!)
         )
     }
 

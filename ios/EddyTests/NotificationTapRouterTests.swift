@@ -42,7 +42,7 @@ final class NotificationTapRouterTests: XCTestCase {
     /// Absolute URLs are refused rather than compared against the origin —
     /// Eddy's own host included. There is one shape the server sends.
     func testAbsoluteURLsAreIgnored() {
-        XCTAssertNil(NotificationTapRouter.deepLink(forActionPath: "https://eddyhq.app/watch/abc"))
+        XCTAssertNil(NotificationTapRouter.deepLink(forActionPath: "https://eddy.example.com/watch/abc"))
         XCTAssertNil(NotificationTapRouter.deepLink(forActionPath: "http://evil.example/watch/abc"))
     }
 

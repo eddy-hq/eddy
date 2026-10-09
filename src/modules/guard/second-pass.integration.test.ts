@@ -97,7 +97,7 @@ beforeAll(() => {
   const insertUser = db.prepare(
     'INSERT INTO users (user_id, display_name, role, age_gate, birth_year, created_at) VALUES (?, ?, ?, ?, ?, ?)',
   );
-  insertUser.run(KID_ID, 'Boy1', 'kid', 1, 2013, now);
+  insertUser.run(KID_ID, 'Boy1', 'kid', 1, 2012, now);
   insertUser.run(ADULT_ID, 'Parent', 'parent', 0, null, now);
 });
 
@@ -152,7 +152,7 @@ async function workerDownloaded(requestId: string, transcript: string | null = T
     requestId,
     youtubeId: requestId,
     filePath: `/videos/${requestId}.mp4`,
-    nginxUrl: `http://mediaserver/videos/${requestId}.mp4`,
+    nginxUrl: `http://worker-host/videos/${requestId}.mp4`,
     thumbnailUrl: null,
     title: 'Placeholder title',
     channel: 'Placeholder channel',

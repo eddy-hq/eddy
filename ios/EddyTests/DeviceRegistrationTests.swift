@@ -4,7 +4,7 @@ import XCTest
 /// The wire shape of `POST /devices` and `DELETE /devices/{id}`. The contract
 /// lives on the server; this is the half of it the shell is responsible for.
 final class DeviceRegistrationTests: XCTestCase {
-    private let base = URL(string: "https://eddyhq.app")!
+    private let base = URL(string: "https://eddy.example.com")!
     private let userId = "018f3a7c-1b2c-7d3e-8f40-51627384950a"
     private let deviceId = "018f3a7c-1b2c-7d3e-8f40-5162738495ff"
     private let token = String(repeating: "a", count: 64)
@@ -27,7 +27,7 @@ final class DeviceRegistrationTests: XCTestCase {
 
     func testRegistersAtTheDevicesEndpoint() throws {
         let request = try DeviceRegistrationClient(baseURL: base).makeRegisterRequest(registration(deviceId: nil))
-        XCTAssertEqual(request.url?.absoluteString, "https://eddyhq.app/devices")
+        XCTAssertEqual(request.url?.absoluteString, "https://eddy.example.com/devices")
         XCTAssertEqual(request.httpMethod, "POST")
         XCTAssertEqual(request.value(forHTTPHeaderField: "Content-Type"), "application/json")
     }
@@ -53,7 +53,7 @@ final class DeviceRegistrationTests: XCTestCase {
     func testDeregistersAsTheOwner() throws {
         let request = try DeviceRegistrationClient(baseURL: base)
             .makeDeregisterRequest(deviceId: deviceId, userId: userId)
-        XCTAssertEqual(request.url?.absoluteString, "https://eddyhq.app/devices/\(deviceId)?userId=\(userId)")
+        XCTAssertEqual(request.url?.absoluteString, "https://eddy.example.com/devices/\(deviceId)?userId=\(userId)")
         XCTAssertEqual(request.httpMethod, "DELETE")
     }
 

@@ -99,7 +99,7 @@ function insertReq(opts: {
     requestId.slice(0, 11),
     opts.status,
     `/videos/${requestId}.mp4`,
-    `http://mediaserver/videos/${requestId}.mp4`,
+    `http://worker-host/videos/${requestId}.mp4`,
     opts.size,
     opts.fileState ?? 'live',
     opts.savedAt ?? null,

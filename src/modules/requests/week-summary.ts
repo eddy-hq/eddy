@@ -4,7 +4,7 @@
 // triage, discovery scoring). It produces the one-line editorial summary that
 // sits on each Tier 4 week-row — the prototype tone:
 //
-//   "38 items · mostly Minecraft, a run of Steve Mould"
+//   "38 items · mostly chess, a run of Bench Physics"
 //
 // Cadence (acceptance is explicit): summaries are NOT generated on the feed
 // path. They are cached in `tier4_week_summaries` keyed on (user_id,

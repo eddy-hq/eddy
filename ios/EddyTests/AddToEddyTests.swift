@@ -13,7 +13,7 @@ private final class IntentTransport: HTTPTransport, @unchecked Sendable {
 
     init(status: Int, body: String) {
         let response = HTTPURLResponse(
-            url: URL(string: "https://eddyhq.app/requests")!,
+            url: URL(string: "https://eddy.example.com/requests")!,
             statusCode: status,
             httpVersion: "HTTP/1.1",
             headerFields: nil
@@ -40,11 +40,11 @@ final class AddToEddyTests: XCTestCase {
     private let userId = "018f3a7c-1b2c-7d3e-8f40-51627384950a"
     private let accepted = """
     {"requestId":"018f3a7c-1b2c-7d3e-8f40-51627384950b","status":"downloading",
-     "message":"Got it, Boy1. Working on it.","pwaUrl":"https://eddyhq.app/feed?userId=x"}
+     "message":"Got it, Boy1. Working on it.","pwaUrl":"https://eddy.example.com/feed?userId=x"}
     """
 
     private func config() throws -> AppConfig {
-        try AppConfig(baseURLString: "https://eddyhq.app", version: "1.0 (1)")
+        try AppConfig(baseURLString: "https://eddy.example.com", version: "1.0 (1)")
     }
 
     // MARK: - The intent's own decisions

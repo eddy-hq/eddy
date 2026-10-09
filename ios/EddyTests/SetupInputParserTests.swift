@@ -13,12 +13,12 @@ final class SetupInputParserTests: XCTestCase {
     }
 
     func testPastedEddyLink() {
-        XCTAssertEqual(SetupInputParser.parse("https://eddyhq.app/feed?userId=\(userId)"), userId)
+        XCTAssertEqual(SetupInputParser.parse("https://eddy.example.com/feed?userId=\(userId)"), userId)
     }
 
     func testPastedLinkWithOtherParameters() {
         XCTAssertEqual(
-            SetupInputParser.parse("https://eddyhq.app/watch/abc?t=30&userId=\(userId)&x=1"),
+            SetupInputParser.parse("https://eddy.example.com/watch/abc?t=30&userId=\(userId)&x=1"),
             userId
         )
     }
@@ -30,16 +30,16 @@ final class SetupInputParserTests: XCTestCase {
     /// The PWA treats `user=` as an alias for `userId=` (BottomNav.tsx), so a
     /// link pasted from an older screen still works.
     func testUserAlias() {
-        XCTAssertEqual(SetupInputParser.parse("https://eddyhq.app/feed?user=\(userId)"), userId)
+        XCTAssertEqual(SetupInputParser.parse("https://eddy.example.com/feed?user=\(userId)"), userId)
     }
 
     func testCaseInsensitiveKey() {
-        XCTAssertEqual(SetupInputParser.parse("https://eddyhq.app/feed?UserID=\(userId)"), userId)
+        XCTAssertEqual(SetupInputParser.parse("https://eddy.example.com/feed?UserID=\(userId)"), userId)
     }
 
     func testLinkBuriedInSharedText() {
         XCTAssertEqual(
-            SetupInputParser.parse("Here you go — https://eddyhq.app/feed?userId=\(userId) — enjoy"),
+            SetupInputParser.parse("Here you go — https://eddy.example.com/feed?userId=\(userId) — enjoy"),
             userId
         )
     }
@@ -48,7 +48,7 @@ final class SetupInputParserTests: XCTestCase {
         XCTAssertNil(SetupInputParser.parse(""))
         XCTAssertNil(SetupInputParser.parse("   "))
         XCTAssertNil(SetupInputParser.parse("hello"))
-        XCTAssertNil(SetupInputParser.parse("https://eddyhq.app/feed"))
+        XCTAssertNil(SetupInputParser.parse("https://eddy.example.com/feed"))
         XCTAssertNil(SetupInputParser.parse("userId=not-a-uuid"))
         XCTAssertNil(SetupInputParser.parse("018f3a7c1b2c7d3e8f4051627384950a"), "unhyphenated is not accepted")
     }

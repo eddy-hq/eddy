@@ -3,7 +3,7 @@ import { thumbnailSrc } from './thumbnailSrc';
 
 describe('thumbnailSrc', () => {
   it('uses the server thumbnail URL when present', () => {
-    expect(thumbnailSrc('https://eddyhq.app/thumbs/abc.jpg')).toBe('https://eddyhq.app/thumbs/abc.jpg');
+    expect(thumbnailSrc('https://eddy.example.com/thumbs/abc.jpg')).toBe('https://eddy.example.com/thumbs/abc.jpg');
   });
 
   it('returns null (neutral placeholder) when the URL is null or undefined', () => {

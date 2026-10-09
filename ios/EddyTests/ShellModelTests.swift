@@ -24,7 +24,7 @@ private struct StubVerifier: IdentityVerifier {
 @MainActor
 final class ShellModelTests: XCTestCase {
     private let userId = "018f3a7c-1b2c-7d3e-8f40-51627384950a"
-    private let config = try! AppConfig(baseURLString: "https://eddyhq.app", version: "1.0 (1)")
+    private let config = try! AppConfig(baseURLString: "https://eddy.example.com", version: "1.0 (1)")
 
     private func model(
         seed: String? = nil,
@@ -51,12 +51,12 @@ final class ShellModelTests: XCTestCase {
         XCTAssertEqual(model.state, .loading)
         model.start()
         XCTAssertEqual(model.pendingLoad?.url.absoluteString,
-                       "https://eddyhq.app/feed?userId=\(userId)")
+                       "https://eddy.example.com/feed?userId=\(userId)")
     }
 
     func testSetupVerifiesBeforeSaving() async {
         let model = model(verifier: .known)
-        let result = await model.completeSetup(with: "https://eddyhq.app/feed?userId=\(userId)")
+        let result = await model.completeSetup(with: "https://eddy.example.com/feed?userId=\(userId)")
         XCTAssertEqual(result, .ok)
         XCTAssertEqual(model.userId, userId)
         XCTAssertEqual(model.state, .loading)
@@ -99,7 +99,7 @@ final class ShellModelTests: XCTestCase {
         model.start()
         model.handle(URL(string: "eddy://watch/abc?t=30")!)
         XCTAssertEqual(model.pendingLoad?.url.absoluteString,
-                       "https://eddyhq.app/watch/abc?t=30&userId=\(userId)")
+                       "https://eddy.example.com/watch/abc?t=30&userId=\(userId)")
     }
 
     func testDeepLinkBeforeSetupIsIgnored() {
@@ -170,7 +170,7 @@ final class ShellModelTests: XCTestCase {
         model.handle(URL(string: "eddy://saved")!)
         XCTAssertEqual(model.state, .loading)
         XCTAssertEqual(model.pendingLoad?.url.absoluteString,
-                       "https://eddyhq.app/saved?userId=\(userId)")
+                       "https://eddy.example.com/saved?userId=\(userId)")
     }
 
     func testAFirstLoadThatNeverAnswersTimesOut() async throws {
@@ -226,7 +226,7 @@ final class ShellModelTests: XCTestCase {
         model.handle(URL(string: "eddy://watch/abc")!)
         model.start()
         XCTAssertEqual(model.pendingLoad?.url.absoluteString,
-                       "https://eddyhq.app/watch/abc?userId=\(userId)")
+                       "https://eddy.example.com/watch/abc?userId=\(userId)")
     }
 
     /// A custom-scheme link is unauthenticated. It may hand an identity to a

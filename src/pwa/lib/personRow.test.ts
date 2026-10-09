@@ -21,8 +21,8 @@ describe('followSubLine', () => {
 
 describe('personInitial', () => {
   it('returns the uppercased first character of the name', () => {
-    expect(personInitial('hermitcraft')).toBe('H');
-    expect(personInitial('Veritasium')).toBe('V');
+    expect(personInitial('harbourcraft')).toBe('H');
+    expect(personInitial('Curious Lab')).toBe('C');
   });
 
   it('trims leading whitespace before taking the initial', () => {
@@ -42,7 +42,7 @@ describe('avatarGradient', () => {
   });
 
   it('is deterministic — same seed always yields the same swatch', () => {
-    expect(avatarGradient('Veritasium')).toBe(avatarGradient('Veritasium'));
+    expect(avatarGradient('Curious Lab')).toBe(avatarGradient('Curious Lab'));
   });
 
   it('handles empty/missing seeds without throwing', () => {

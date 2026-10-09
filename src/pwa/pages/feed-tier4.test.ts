@@ -44,8 +44,8 @@ describe('itemsLabel', () => {
 
 describe('resolveSummary', () => {
   it('uses the editorial summary when present', () => {
-    expect(resolveSummary('mostly Minecraft, a run of Steve Mould', 38)).toBe(
-      'mostly Minecraft, a run of Steve Mould',
+    expect(resolveSummary('mostly chess, a run of Bench Physics', 38)).toBe(
+      'mostly chess, a run of Bench Physics',
     );
   });
 

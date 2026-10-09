@@ -61,7 +61,7 @@ final class DeepLinkRouterTests: XCTestCase {
     }
 
     func testNonEddySchemesAreNotOurs() {
-        XCTAssertNil(parse("https://eddyhq.app/feed"))
+        XCTAssertNil(parse("https://eddy.example.com/feed"))
         XCTAssertNil(parse("shortcuts://run-shortcut"))
     }
 

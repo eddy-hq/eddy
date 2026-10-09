@@ -83,9 +83,9 @@ beforeAll(() => {
   const insertUser = db.prepare(
     'INSERT INTO users (user_id, display_name, role, age_gate, birth_year, created_at) VALUES (?, ?, ?, ?, ?, ?)',
   );
-  insertUser.run(KID_ID, 'Boy1', 'kid', 1, 2013, now);
+  insertUser.run(KID_ID, 'Boy1', 'kid', 1, 2012, now);
   insertUser.run(PARENT_ID, 'Parent', 'parent', 0, null, now);
-  insertUser.run(KID_2_ID, 'Boy2', 'kid', 1, 2015, now);
+  insertUser.run(KID_2_ID, 'Boy2', 'kid', 1, 2016, now);
   db.prepare('INSERT INTO blocked_channels (channel_id, display_name, blocked_by, blocked_at) VALUES (?, ?, ?, ?)')
     .run(BLOCKED_ID, 'Placeholder blocked channel', PARENT_ID, now);
 });
@@ -185,7 +185,7 @@ describe('a block that lands while the download is in flight', () => {
       requestId,
       youtubeId: 'sharedvideo',
       filePath: '/videos/sharedvideo.mp4',
-      nginxUrl: 'http://mediaserver/videos/sharedvideo.mp4',
+      nginxUrl: 'http://worker-host/videos/sharedvideo.mp4',
       thumbnailUrl: null,
       title: 'Placeholder title',
       channel: 'Placeholder blocked channel',

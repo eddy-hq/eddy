@@ -4,12 +4,12 @@ import XCTest
 final class AppConfigTests: XCTestCase {
     func testLoadsBaseURLAndVersionFromInfoDictionary() throws {
         let config = try AppConfig.load(from: [
-            "EddyBaseURL": "https://eddyhq.app",
+            "EddyBaseURL": "https://eddy.example.com",
             "CFBundleShortVersionString": "1.0",
             "CFBundleVersion": "7",
         ])
-        XCTAssertEqual(config.baseURL.absoluteString, "https://eddyhq.app")
-        XCTAssertEqual(config.origin, WebOrigin(url: URL(string: "https://eddyhq.app")!))
+        XCTAssertEqual(config.baseURL.absoluteString, "https://eddy.example.com")
+        XCTAssertEqual(config.origin, WebOrigin(url: URL(string: "https://eddy.example.com")!))
         XCTAssertEqual(config.version, "1.0 (7)")
     }
 
@@ -20,8 +20,8 @@ final class AppConfigTests: XCTestCase {
     }
 
     func testTrimsWhitespace() throws {
-        let config = try AppConfig(baseURLString: "  https://eddyhq.app\n", version: "1")
-        XCTAssertEqual(config.origin.host, "eddyhq.app")
+        let config = try AppConfig(baseURLString: "  https://eddy.example.com\n", version: "1")
+        XCTAssertEqual(config.origin.host, "eddy.example.com")
     }
 
     func testRejectsMissingKey() {
@@ -40,11 +40,11 @@ final class AppConfigTests: XCTestCase {
     /// arrives unresolved or hostless, and the app must not start on it.
     func testRejectsUnresolvedBuildSetting() {
         XCTAssertThrowsError(try AppConfig(baseURLString: "$(EDDY_BASE_URL)", version: "1"))
-        XCTAssertThrowsError(try AppConfig(baseURLString: "https:eddyhq.app", version: "1"))
+        XCTAssertThrowsError(try AppConfig(baseURLString: "https:eddy.example.com", version: "1"))
     }
 
     func testRejectsNonWebScheme() {
-        XCTAssertThrowsError(try AppConfig(baseURLString: "ftp://eddyhq.app", version: "1")) { error in
+        XCTAssertThrowsError(try AppConfig(baseURLString: "ftp://eddy.example.com", version: "1")) { error in
             XCTAssertEqual(error as? AppConfig.ConfigError, .unsupportedScheme("ftp"))
         }
     }

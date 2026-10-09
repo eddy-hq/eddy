@@ -12,7 +12,7 @@ private final class StubTransport: HTTPTransport, @unchecked Sendable {
 
     init(status: Int, body: String) {
         let response = HTTPURLResponse(
-            url: URL(string: "https://eddyhq.app/notifications/x")!,
+            url: URL(string: "https://eddy.example.com/notifications/x")!,
             statusCode: status,
             httpVersion: "HTTP/1.1",
             headerFields: ["Content-Type": "application/json"]
@@ -31,7 +31,7 @@ private final class StubTransport: HTTPTransport, @unchecked Sendable {
 }
 
 final class NotificationContentClientTests: XCTestCase {
-    private let base = URL(string: "https://eddyhq.app")!
+    private let base = URL(string: "https://eddy.example.com")!
     private let userId = "018f3a7c-1b2c-7d3e-8f40-51627384950a"
     private let messageId = "018f3a7c-1b2c-7d3e-8f40-51627384950b"
 
@@ -46,7 +46,7 @@ final class NotificationContentClientTests: XCTestCase {
             .makeRequest(messageId: messageId, userId: userId)
         XCTAssertEqual(
             request.url?.absoluteString,
-            "https://eddyhq.app/notifications/\(messageId)?userId=\(userId)"
+            "https://eddy.example.com/notifications/\(messageId)?userId=\(userId)"
         )
         XCTAssertEqual(request.httpMethod, "GET")
     }
