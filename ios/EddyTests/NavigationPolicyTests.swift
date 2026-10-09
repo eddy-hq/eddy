@@ -21,7 +21,7 @@ final class NavigationPolicyTests: XCTestCase {
         XCTAssertEqual(decide("https://eddy.example.com/feed?userId=x"), .allow)
         XCTAssertEqual(decide("https://eddy.example.com/watch/abc"), .allow)
         XCTAssertEqual(decide("https://eddy.example.com:443/feed"), .allow)
-        XCTAssertEqual(decide("https://EDDYHQ.APP/feed"), .allow)
+        XCTAssertEqual(decide("https://EDDY.EXAMPLE.COM/feed"), .allow)
     }
 
     // MARK: - Kid safety: the web view is not a browser
@@ -31,7 +31,7 @@ final class NavigationPolicyTests: XCTestCase {
             "https://eddy.example.com.evil.example/feed",
             "https://evil.example/eddy.example.com",
             "https://eddy.example.com.co/feed",
-            "https://notedyhq.app/feed",
+            "https://noteddy.example.com/feed",
             "https://sub.eddy.example.com/feed",
             "https://eddy.example.com-evil.example/",
         ] {
