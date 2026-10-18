@@ -185,13 +185,42 @@ interface PoolRow {
   guard_verdict: 'clear_yes' | 'clear_no';
 }
 
+// True when the subject's current verdict came from a rubric-scored guard run
+// (ADR-0017): its latest guard_eval row has rubric scores and the verdict the
+// subject carries. Matching:
+// - by the subject's own id only (candidate_id / request_id). Older candidate
+//   rows carry only a URL, which both kids' pools can share, and predate the
+//   rubric anyway, so a candidate with no own row never qualifies.
+// - latest by COALESCE(scored_at, created_at), then eval_id (UUID v7, so time
+//   ordered) to break a same-instant tie. A re-run (a parked candidate
+//   re-judged, a slate pick's download-time second pass) writes a newer row
+//   that replaces the verdict, so only the newest row speaks for it.
+// - the row's verdict must equal the subject's, so a verdict set some other
+//   way (an age-restricted rule row has no scores either) never counts.
+// No row, or a latest row without scores, is false: never a fallback.
+// Known gap: a measurement-only re-run (rerun-parked --population decided)
+// writes guard_eval rows that are indistinguishable from applied ones and
+// never touches the live verdict, so the latest row can be one that was not
+// applied. The verdict match catches the disagreeing case; an agreeing one
+// still counts. Exact provenance needs an applied-run marker (a migration).
+const RUBRIC_SCORED_VERDICT = (alias: string, idCol: string, evalCol: string) => `
+  EXISTS (SELECT 1 FROM guard_eval e
+           WHERE e.eval_id = (SELECT e2.eval_id FROM guard_eval e2
+                               WHERE e2.${evalCol} = ${alias}.${idCol}
+                               ORDER BY COALESCE(e2.scored_at, e2.created_at) DESC, e2.eval_id DESC
+                               LIMIT 1)
+             AND e.rubric_scores_json IS NOT NULL
+             AND e.gemma_verdict = ${alias}.guard_verdict)`;
+
 // Subjects a draw may pick: kids' candidates and requests carrying a clear
 // guard verdict since `from`, not yet decided (for that kid and video, under
 // any subject) and not already drawn today. Picked candidates ('requested')
 // are left to their request, which carries the download-time verdict.
 // Kid-initiated requests are in: they are shadow-mode, so a Spot check on one
-// records a label only.
-function readDrawPool(from: string, day: string): PoolRow[] {
+// records a label only. `rubricOnly` (catch-up) keeps only subjects whose
+// verdict came from the current rubric guard: the audit set needs labels on
+// the prompt that runs today, not on retired ones.
+function readDrawPool(from: string, day: string, rubricOnly: boolean): PoolRow[] {
   const decidedVideo = (alias: string, ytCol: string) => `
     NOT EXISTS (SELECT 1 FROM guard_decisions d
                  WHERE d.user_id = ${alias}.user_id AND d.youtube_id = ${alias}.${ytCol})`;
@@ -210,6 +239,7 @@ function readDrawPool(from: string, day: string): PoolRow[] {
        AND ${decidedVideo('cp', 'external_id')}
        AND ${notDrawnToday('cp', 'candidate', 'candidate_id')}
        AND ${CANDIDATE_NOT_BLOCKED}
+       AND (@rubricOnly = 0 OR ${RUBRIC_SCORED_VERDICT('cp', 'candidate_id', 'candidate_id')})
     UNION ALL
     SELECT 'request', r.request_id, r.user_id, r.guard_verdict
       FROM requests r
@@ -224,11 +254,14 @@ function readDrawPool(from: string, day: string): PoolRow[] {
        AND ${decidedVideo('r', 'youtube_id')}
        AND ${notDrawnToday('r', 'request', 'request_id')}
        AND ${REQUEST_NOT_BLOCKED}
-  `).all({ from, day }) as PoolRow[];
+       AND (@rubricOnly = 0 OR ${RUBRIC_SCORED_VERDICT('r', 'request_id', 'request_id')})
+  `).all({ from, day, rubricOnly: rubricOnly ? 1 : 0 }) as PoolRow[];
 }
 
 // Draw one batch into guard_spot_checks. Deterministic for a given day,
 // source and batch number, so a retried draw picks the same subjects.
+// Spot checks sample every clear verdict of the last week; catch-up draws
+// only rubric-scored verdicts, and draws nothing when there are none.
 function drawBatch(
   now: Date,
   source: 'spot_check' | 'catch_up',
@@ -241,7 +274,7 @@ function drawBatch(
       'SELECT COUNT(*) AS n FROM guard_spot_checks WHERE day = ? AND source = ?',
     ).get(day, source) as { n: number }).n;
     const rand = prng(hash32(`${day}:${source}:${batch}`));
-    const pool = readDrawPool(from, day);
+    const pool = readDrawPool(from, day, source === 'catch_up');
     const key = (r: PoolRow) => `${r.subject_type}:${r.subject_id}`;
     const picks = [
       ...drawSample(pool.filter((r) => r.guard_verdict === 'clear_yes'), mix.clear_yes, key, rand),

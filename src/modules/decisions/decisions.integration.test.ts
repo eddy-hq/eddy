@@ -150,7 +150,7 @@ function seedRequest(id: string, opts: {
 
 function seedEval(opts: {
   url: string; verdict: string; candidateId?: string | null; requestId?: string | null;
-  userId?: string | null; scores?: boolean; at?: string;
+  userId?: string | null; scores?: boolean; at?: string; promptVersion?: string;
 }): string {
   const id = `eval-${Math.random().toString(36).slice(2)}`;
   const scores = opts.scores
@@ -160,9 +160,9 @@ function seedEval(opts: {
     INSERT INTO guard_eval
       (eval_id, request_id, url, gemma_verdict, gemma_reason, prompt_version, request_type,
        rubric_scores_json, user_id, candidate_id, scored_at, created_at)
-    VALUES (?, ?, ?, ?, 'Placeholder reason', 'candidate-v3', ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, 'Placeholder reason', ?, ?, ?, ?, ?, ?, ?)
   `).run(
-    id, opts.requestId ?? null, opts.url, opts.verdict,
+    id, opts.requestId ?? null, opts.url, opts.verdict, opts.promptVersion ?? 'candidate-v3',
     opts.requestId ? 'video' : 'candidate', scores,
     opts.userId ?? null, opts.candidateId ?? null, opts.at ?? daysAgo(1), opts.at ?? daysAgo(1),
   );
@@ -393,6 +393,14 @@ describe('Escalations', () => {
   });
 });
 
+const url = (yt: string) => `https://www.youtube.com/watch?v=${yt}`;
+
+// A candidate whose clear verdict came from the rubric guard (ADR-0017).
+function seedRubricCandidate(id: string, verdict: 'clear_yes' | 'clear_no', at: string, userId = KID_1): void {
+  seedCandidate(id, { userId, status: verdict === 'clear_yes' ? 'scored' : 'guard_rejected', verdict, createdAt: at });
+  seedEval({ url: url(id), verdict, candidateId: id, userId, scores: true, at, promptVersion: 'candidate-v4.1' });
+}
+
 describe('Spot checks', () => {
   function seedRecentVerdicts(): void {
     for (let i = 0; i < 6; i++) seedCandidate(`yes${i}`, { status: 'scored', verdict: 'clear_yes', createdAt: daysAgo(2) });
@@ -517,8 +525,8 @@ describe('Spot checks', () => {
   it('catch-up draws further batches from older history', async () => {
     // One full batch, then a short one of 3 clear-yes and 2 clear-no.
     const { clear_yes: yes, clear_no: no } = CATCH_UP_BATCH_MIX;
-    for (let i = 0; i < yes + 3; i++) seedCandidate(`old-yes${i}`, { status: 'scored', verdict: 'clear_yes', createdAt: daysAgo(60) });
-    for (let i = 0; i < no + 2; i++) seedCandidate(`old-no${i}`, { status: 'guard_rejected', verdict: 'clear_no', createdAt: daysAgo(60) });
+    for (let i = 0; i < yes + 3; i++) seedRubricCandidate(`old-yes${i}`, 'clear_yes', daysAgo(60));
+    for (let i = 0; i < no + 2; i++) seedRubricCandidate(`old-no${i}`, 'clear_no', daysAgo(60));
     expect(queue().cards).toHaveLength(0);
 
     const first = queue('catch_up', 'spot_checks').cards;
@@ -532,6 +540,79 @@ describe('Spot checks', () => {
     expect(second.length).toBe(5);
     expect(second.map((c) => c.key)).not.toEqual(expect.arrayContaining(first.map((c) => c.key)));
     expect(decisions().every((d) => d['source'] === 'catch_up')).toBe(true);
+  });
+});
+
+// Catch-up feeds the harness's audit set, so it draws only verdicts from the
+// current rubric guard; daily Spot checks still sample every clear verdict.
+describe('Catch-up draws only rubric-scored verdicts', () => {
+  const drawnIds = (source: 'spot_check' | 'catch_up') => (db.prepare(
+    'SELECT subject_id FROM guard_spot_checks WHERE source = ? ORDER BY subject_id',
+  ).all(source) as Array<{ subject_id: string }>).map((r) => r.subject_id);
+
+  // Clear-yes subjects, one of each kind: rubric-scored candidate, v2-scored
+  // candidate, v1-scored request, and a request whose latest row is unscored.
+  function seedMixed(at: string): void {
+    seedRubricCandidate('rubric-c', 'clear_yes', at);
+
+    seedCandidate('v2-c', { status: 'scored', verdict: 'clear_yes', createdAt: at });
+    seedEval({ url: url('v2-c'), verdict: 'clear_yes', candidateId: 'v2-c', at, promptVersion: 'candidate-v2' });
+
+    seedRequest('v1-r', { status: 'ready', verdict: 'clear_yes', requestedAt: at });
+    seedEval({ url: url('v1-r'), verdict: 'clear_yes', requestId: 'v1-r', userId: KID_1, at, promptVersion: 'v1' });
+
+    // Scored by the rubric first, then re-judged by an older prompt: the
+    // latest row is what the verdict came from.
+    seedRequest('rescored-r', { status: 'ready', verdict: 'clear_yes', requestedAt: at });
+    seedEval({ url: url('rescored-r'), verdict: 'clear_yes', requestId: 'rescored-r', userId: KID_1,
+      scores: true, at: daysAgo(70), promptVersion: 'candidate-transcript-v4.1' });
+    seedEval({ url: url('rescored-r'), verdict: 'clear_yes', requestId: 'rescored-r', userId: KID_1,
+      at, promptVersion: 'v1' });
+  }
+
+  it('draws a rubric-scored candidate and request, and never a v1/v2-scored one', () => {
+    seedMixed(daysAgo(60));
+    seedRequest('rubric-r', { status: 'watched', verdict: 'clear_yes', requestedAt: daysAgo(60) });
+    seedEval({ url: url('rubric-r'), verdict: 'clear_yes', requestId: 'rubric-r', userId: KID_1,
+      scores: true, at: daysAgo(60), promptVersion: 'candidate-transcript-v4.1' });
+
+    const cards = queue('catch_up', 'spot_checks').cards;
+    expect(cards.every((c) => c.source === 'catch_up')).toBe(true);
+    // Blind: the verdict stays hidden until answered.
+    expect(cards.every((c) => c.subjects.every((s) => s.guard === null))).toBe(true);
+    expect(drawnIds('catch_up')).toEqual(['rubric-c', 'rubric-r']);
+  });
+
+  it('uses the latest row: a verdict re-judged by the rubric qualifies', () => {
+    seedCandidate('rejudged', { status: 'scored', verdict: 'clear_yes', createdAt: daysAgo(60) });
+    seedEval({ url: url('rejudged'), verdict: 'uncertain', candidateId: 'rejudged', at: daysAgo(61), promptVersion: 'candidate-v2' });
+    seedEval({ url: url('rejudged'), verdict: 'clear_yes', candidateId: 'rejudged', scores: true, at: daysAgo(60), promptVersion: 'candidate-v4.1' });
+    queue('catch_up', 'spot_checks');
+    expect(drawnIds('catch_up')).toEqual(['rejudged']);
+  });
+
+  it('skips a rubric row whose verdict is not the one the subject carries', () => {
+    seedCandidate('mismatch', { status: 'scored', verdict: 'clear_yes', createdAt: daysAgo(60) });
+    seedEval({ url: url('mismatch'), verdict: 'uncertain', candidateId: 'mismatch', scores: true, at: daysAgo(60), promptVersion: 'candidate-v4.1' });
+    expect(queue('catch_up', 'spot_checks').cards).toEqual([]);
+  });
+
+  it('draws nothing rather than falling back to older prompts', () => {
+    seedCandidate('v2-c', { status: 'scored', verdict: 'clear_yes', createdAt: daysAgo(60) });
+    seedEval({ url: url('v2-c'), verdict: 'clear_yes', candidateId: 'v2-c', at: daysAgo(60), promptVersion: 'candidate-v2' });
+    seedCandidate('no-eval', { status: 'guard_rejected', verdict: 'clear_no', createdAt: daysAgo(60) });
+    // An older URL-only row could belong to either kid's pool: not matched.
+    seedCandidate('url-only', { status: 'scored', verdict: 'clear_yes', createdAt: daysAgo(60) });
+    seedEval({ url: url('url-only'), verdict: 'clear_yes', scores: true, at: daysAgo(60), promptVersion: 'candidate-v4.1' });
+
+    expect(queue('catch_up', 'spot_checks').cards).toEqual([]);
+    expect(drawnIds('catch_up')).toEqual([]);
+  });
+
+  it('leaves daily Spot checks drawing every clear verdict, rubric-scored or not', () => {
+    seedMixed(daysAgo(2));
+    queue();
+    expect(drawnIds('spot_check')).toEqual(['rescored-r', 'rubric-c', 'v1-r', 'v2-c']);
   });
 });
 
