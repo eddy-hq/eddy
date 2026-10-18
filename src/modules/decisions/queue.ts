@@ -198,6 +198,11 @@ interface PoolRow {
 // - the row's verdict must equal the subject's, so a verdict set some other
 //   way (an age-restricted rule row has no scores either) never counts.
 // No row, or a latest row without scores, is false: never a fallback.
+// Known gap: a measurement-only re-run (rerun-parked --population decided)
+// writes guard_eval rows that are indistinguishable from applied ones and
+// never touches the live verdict, so the latest row can be one that was not
+// applied. The verdict match catches the disagreeing case; an agreeing one
+// still counts. Exact provenance needs an applied-run marker (a migration).
 const RUBRIC_SCORED_VERDICT = (alias: string, idCol: string, evalCol: string) => `
   EXISTS (SELECT 1 FROM guard_eval e
            WHERE e.eval_id = (SELECT e2.eval_id FROM guard_eval e2
