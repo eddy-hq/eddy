@@ -34,6 +34,8 @@ interface OllamaGenerateRequest {
   keep_alive?: string;
   truncate?: boolean;
   shift?: boolean;
+  logprobs?: boolean;
+  top_logprobs?: number;
 }
 
 interface OllamaGenerateResponse {
@@ -45,26 +47,30 @@ interface OllamaTagsResponse {
   models: Array<{ name: string }>;
 }
 
-export async function ollamaGenerate(
+function buildGenerateBody(
   prompt: string,
-  model = config.OLLAMA_GUARD_MODEL,
+  model: string,
   images?: string[],
   options?: OllamaOptions,
   format?: OllamaFormat,
-): Promise<string> {
+): OllamaGenerateRequest {
+  const body: OllamaGenerateRequest = { model, prompt, stream: false };
+  if (images?.length) body.images = images;
+  if (options) {
+    const { think, keep_alive, truncate, shift, ...modelOptions } = options;
+    if (Object.keys(modelOptions).length > 0) body.options = modelOptions;
+    if (think !== undefined) body.think = think;
+    if (keep_alive !== undefined) body.keep_alive = keep_alive;
+    if (truncate !== undefined) body.truncate = truncate;
+    if (shift !== undefined) body.shift = shift;
+  }
+  if (format) body.format = format;
+  return body;
+}
+
+async function postGenerate(body: OllamaGenerateRequest): Promise<unknown> {
   let response: Response;
   try {
-    const body: OllamaGenerateRequest = { model, prompt, stream: false };
-    if (images?.length) body.images = images;
-    if (options) {
-      const { think, keep_alive, truncate, shift, ...modelOptions } = options;
-      if (Object.keys(modelOptions).length > 0) body.options = modelOptions;
-      if (think !== undefined) body.think = think;
-      if (keep_alive !== undefined) body.keep_alive = keep_alive;
-      if (truncate !== undefined) body.truncate = truncate;
-      if (shift !== undefined) body.shift = shift;
-    }
-    if (format) body.format = format;
     response = await fetch(`${config.OLLAMA_URL}/api/generate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -78,8 +84,56 @@ export async function ollamaGenerate(
     throw new GuardError(`Ollama returned ${response.status}: ${await response.text()}`);
   }
 
-  const data = (await response.json()) as OllamaGenerateResponse;
+  return response.json();
+}
+
+export async function ollamaGenerate(
+  prompt: string,
+  model = config.OLLAMA_GUARD_MODEL,
+  images?: string[],
+  options?: OllamaOptions,
+  format?: OllamaFormat,
+): Promise<string> {
+  const data = (await postGenerate(buildGenerateBody(prompt, model, images, options, format))) as OllamaGenerateResponse;
   return data.response;
+}
+
+// One output token's log-probability, as /api/generate returns it with
+// `logprobs: true` (checked on Ollama 0.34.3). `token` is the decoded text and
+// `bytes` its raw UTF-8 bytes, which can hold part of a multi-byte character.
+// `top_logprobs` are the most likely tokens at that position, the chosen one
+// normally among them. The values are the model's distribution before a JSON
+// `format` schema constrains the choice.
+export interface OllamaTokenLogprob {
+  token: string;
+  logprob: number;
+  bytes?: number[];
+  top_logprobs?: Array<{ token: string; logprob: number; bytes?: number[] }>;
+}
+
+export interface OllamaLogprobResult {
+  response: string;
+  logprobs: OllamaTokenLogprob[];
+}
+
+// ollamaGenerate, also asking for each output token's log-probability and its
+// `topLogprobs` most likely alternatives. Used offline by the guard harness,
+// never by the live guard. A response without logprobs is an error.
+export async function ollamaGenerateWithLogprobs(
+  prompt: string,
+  model: string,
+  options: OllamaOptions,
+  format: OllamaFormat,
+  topLogprobs: number,
+): Promise<OllamaLogprobResult> {
+  const body = buildGenerateBody(prompt, model, undefined, options, format);
+  body.logprobs = true;
+  body.top_logprobs = topLogprobs;
+  const data = (await postGenerate(body)) as Partial<OllamaLogprobResult>;
+  if (typeof data.response !== 'string' || !Array.isArray(data.logprobs)) {
+    throw new GuardError('Ollama returned no logprobs');
+  }
+  return { response: data.response, logprobs: data.logprobs };
 }
 
 // Extract a JSON {...} or [...] block from a possibly-prose-wrapped Ollama

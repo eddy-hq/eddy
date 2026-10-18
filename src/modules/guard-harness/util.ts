@@ -65,12 +65,20 @@ export interface HarnessItem {
   channelHistory: ChannelHistory | null;
 }
 
+// The model's probability of each rubric score, index = score (0–3), read
+// from its token probabilities and renormalised over the four (logprob.ts).
+export type ScoreDistribution = readonly [number, number, number, number];
+
 // What an adapter returns for one item. `scores` and `probability` are
 // optional: a verdict-only configuration (v3) carries neither.
+// `distributions` comes from a logprob adapter only: one per rubric dimension,
+// null where the score's token couldn't be located. Results cached before it
+// existed carry none.
 export interface AdapterJudgement {
   verdict: GuardVerdictLabel;
   scores?: Record<string, number>;
   probability?: number;
+  distributions?: Record<string, ScoreDistribution | null>;
 }
 
 // One guard configuration under test.
@@ -309,5 +317,17 @@ export function parseHarnessResult(raw: unknown, line: number): HarnessResult {
   if (typeof raw['adapterId'] !== 'string' || !raw['adapterId']) bad('adapterId');
   if (typeof raw['itemId'] !== 'string' || !raw['itemId']) bad('itemId');
   if (!isVerdictLabel(raw['verdict'])) bad('verdict');
+  const distributions = raw['distributions'];
+  if (distributions !== undefined) {
+    if (!isObject(distributions)) bad('distributions');
+    for (const d of Object.values(distributions as Record<string, unknown>)) {
+      if (d !== null && !isScoreDistribution(d)) bad('distributions');
+    }
+  }
   return raw as unknown as HarnessResult;
+}
+
+function isScoreDistribution(d: unknown): d is ScoreDistribution {
+  return Array.isArray(d) && d.length === 4
+    && d.every((p) => typeof p === 'number' && Number.isFinite(p) && p >= 0 && p <= 1);
 }

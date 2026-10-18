@@ -98,6 +98,25 @@ describe('runHarness', () => {
     expect(keys).toEqual(['adapterId', 'durationMs', 'evaluatedAt', 'itemId', 'verdict']);
   });
 
+  it('caches score distributions, and reads results without them', async () => {
+    const distributions = { violence: [0.5, 0.5, 0, 0] as const, language: null };
+    await runHarness({
+      items: [item('a')], adapter: stub(async () => ({ verdict: 'clear_yes', distributions })), resultsPath, now: OUTSIDE,
+    });
+    await runHarness({ items: [item('b')], adapter: stub(async () => ({ verdict: 'clear_no' })), resultsPath, now: OUTSIDE });
+    const [a, b] = readResults(resultsPath);
+    expect(a!.distributions).toEqual(distributions);
+    expect(b!.distributions).toBeUndefined();
+  });
+
+  it('rejects a malformed distribution in the cache', () => {
+    const row = { adapterId: 'x', itemId: 'a', verdict: 'clear_yes', durationMs: 1, evaluatedAt: 'x' };
+    writeFileSync(resultsPath, `${JSON.stringify({ ...row, distributions: { violence: [0.5, 0.5] } })}\n`);
+    expect(() => readResults(resultsPath)).toThrow(GuardHarnessError);
+    writeFileSync(resultsPath, `${JSON.stringify({ ...row, distributions: [] })}\n`);
+    expect(() => readResults(resultsPath)).toThrow(GuardHarnessError);
+  });
+
   it('does not cache a model failure, and stops after repeated ones', async () => {
     const items = Array.from({ length: 8 }, (_, i) => item(`i${i}`));
     const failing = stub(async () => { throw new AdapterScoringError('no answer'); });

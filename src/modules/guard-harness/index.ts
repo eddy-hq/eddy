@@ -18,7 +18,26 @@ import {
   type HarnessItem,
 } from './util';
 
-export { DEFAULT_ADAPTER, adapterNames, getAdapter } from './adapters';
+export {
+  DEFAULT_ADAPTER,
+  DEFAULT_LOGPROB_ADAPTER,
+  INCUMBENT_ADAPTER,
+  adapterNames,
+  getAdapter,
+  loadRubricLimits,
+} from './adapters';
+export {
+  RELIABILITY_EDGES,
+  TAU_GRID,
+  calibratedVerdict,
+  calibrationReport,
+  meetsTargets,
+  pOver,
+  type CalibrationPoint,
+  type CalibrationReport,
+  type ReliabilityBin,
+} from './calibrate';
+export { calibrationChartHtml, writeCalibrationChart } from './calibration-chart';
 export { RECOVER_BATCH_SIZE, recoverInputs, selectMissingCandidates, type FetchVideos, type RecoverReport } from './recover';
 export {
   LIVE_UNCERTAIN_DAYS,
@@ -77,7 +96,14 @@ export {
   type HarnessResult,
   type ItemInputs,
   type RecoveredInput,
+  type ScoreDistribution,
 } from './util';
+
+// Where calibrate writes its chart: harness/calibration-<dataset>.html
+// beside the DB.
+export function calibrationChartPath(databasePath: string, datasetPath: string): string {
+  return path.join(harnessDir(databasePath), `calibration-${path.basename(datasetPath, '.jsonl')}.html`);
+}
 
 // Snapshot the decisions in the DB at `databasePath` into a new dataset file
 // in the harness dir beside it, using any recovered inputs there. Opens the

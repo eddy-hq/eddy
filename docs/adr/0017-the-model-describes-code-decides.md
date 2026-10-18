@@ -41,4 +41,4 @@ Each step can only make the verdict stricter. A missing or unrecognised age band
 
 - **Retire `v3`.** Make the rubric prompt the code default and remove the switch once the harness ([[0019-guard-changes-must-beat-the-incumbent-on-replay]]) has nothing left to compare it with.
 - **Kid requests and kid-typed interests** still use a verdict prompt. Moving them onto the rubric is undecided.
-- **Calibrated scores.** A score read from the model's token probabilities could be thresholded where a self-reported number can't. Not built.
+- **Calibrated scores.** A score read from the model's token probabilities could be thresholded where a self-reported number can't. Not built in the live guard. 2026-10-18: a harness adapter (`gemma-v4.1-logprob`) reads each dimension's distribution over 0–3 on replay, and `guard:harness -- calibrate` measures a threshold on the probability of a score over its limit. It can only tighten a verdict; adopting it is a [[0019-guard-changes-must-beat-the-incumbent-on-replay]] decision.

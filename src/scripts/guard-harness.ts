@@ -7,6 +7,7 @@
  *                                   [--concurrency N] [--force]
  * npm run guard:harness -- report   [--adapter gemma-v4] [--dataset FILE]
  * npm run guard:harness -- report --live [--dataset FILE]
+ * npm run guard:harness -- calibrate [--adapter gemma-v4.1-logprob] [--dataset FILE]
  *
  * Measures a guard configuration against the parent's decisions (brief §22,
  * issue #220).
@@ -29,7 +30,11 @@
  *   run       replays the newest dataset (or --dataset) through an adapter,
  *             caching each verdict in harness/results-dataset-YYYY-MM-DD.jsonl.
  *             Resumable. Refuses to start inside a discovery window unless
- *             --force. Writes nothing to the DB.
+ *             --force. Writes nothing to the DB. Adapters: gemma-v4 (the
+ *             incumbent rubric guard, candidate-v4.1) and gemma-v4.1-logprob
+ *             (the same call with Ollama's token probabilities on, storing
+ *             each dimension's distribution over 0–3 beside the verdict;
+ *             offline only, the live guard doesn't use it).
  *   report    confusion matrix and the three metrics, with Wilson 95%
  *             intervals, against the brief's thresholds, on safety only: a
  *             Block counts as clear-no when the parent said Unsafe; Not for
@@ -47,25 +52,44 @@
  *             includes offline re-runs (guard:rerun-parked), which guard_eval
  *             can't tell apart from live verdicts. Adds a conservative clear-yes precision
  *             counting every Block, any kind, as a miss.
+ *   calibrate tests whether the logprob adapter's score probabilities separate
+ *             Unsafe from Allowed items the rubric guard passes (brief §22
+ *             step 2), on safety labels only, as report. p_over is the
+ *             largest probability over the dimensions of a score above the
+ *             item's limit; a clear_yes with p_over >= τ, or with a
+ *             dimension unread, becomes uncertain (it only tightens). Prints
+ *             a τ sweep on the non-holdout items, picks τ* there (the loosest
+ *             τ with clear-yes precision >= 95% and uncertain <= 30%), tests
+ *             τ* once on the holdout, and prints a reliability table, with
+ *             the incumbent (gemma-v4) on the same items as the baseline.
+ *             Run both adapters first. Writes an HTML chart (aggregates only)
+ *             to harness/calibration-<dataset>.html beside the DB, mode 0600.
  *
  * Output is counts and metrics only — no titles, channels or reasons
  * (ADR-0004).
  */
 import 'dotenv/config';
+import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { config } from '../config';
 import {
   DEFAULT_ADAPTER,
+  DEFAULT_LOGPROB_ADAPTER,
   GUARD_VERDICTS,
   GuardHarnessError,
   HOLDOUT_PERCENT,
   HUMAN_LABELS,
+  INCUMBENT_ADAPTER,
   LIVE_UNCERTAIN_DAYS,
   MAX_CONCURRENCY,
   SPLIT_NAMES,
   THRESHOLDS,
+  calibrationChartHtml,
+  calibrationChartPath,
+  calibrationReport,
   getAdapter,
   latestDatasetPath,
+  loadRubricLimits,
   liveReport,
   liveUncertainRatesFromFile,
   readDataset,
@@ -76,14 +100,16 @@ import {
   runHarness,
   snapshotToFile,
   summariseDataset,
+  writeCalibrationChart,
+  type CalibrationPoint,
   type ConfusionMatrix,
   type Interval,
   type LiveScore,
   type SafetyScore,
 } from '../modules/guard-harness/index';
 
-type Command = 'recover' | 'snapshot' | 'run' | 'report';
-const COMMANDS: readonly string[] = ['recover', 'snapshot', 'run', 'report'];
+type Command = 'recover' | 'snapshot' | 'run' | 'report' | 'calibrate';
+const COMMANDS: readonly string[] = ['recover', 'snapshot', 'run', 'report', 'calibrate'];
 
 interface Args {
   command: Command;
@@ -105,7 +131,7 @@ function positiveInt(flag: string, raw: string | undefined): number {
 function parseArgs(argv: readonly string[]): Args {
   const [command, ...rest] = argv;
   if (command === undefined || !COMMANDS.includes(command)) {
-    throw new GuardHarnessError('Usage: guard:harness -- recover | snapshot | run | report [options]');
+    throw new GuardHarnessError('Usage: guard:harness -- recover | snapshot | run | report | calibrate [options]');
   }
   const args: Args = {
     command: command as Command, adapter: DEFAULT_ADAPTER, adapterGiven: false, concurrency: 1, force: false, live: false,
@@ -126,7 +152,12 @@ function parseArgs(argv: readonly string[]): Args {
   if (args.command === 'recover' && rest.some((a) => a !== '--force')) {
     throw new GuardHarnessError('recover takes only --force');
   }
-  if (args.command === 'report' && (args.limit !== undefined || args.force || args.concurrency !== 1)) {
+  if (args.command === 'calibrate' && !args.adapterGiven) args.adapter = DEFAULT_LOGPROB_ADAPTER;
+  if (args.command === 'calibrate' && args.adapter === INCUMBENT_ADAPTER) {
+    throw new GuardHarnessError(`calibrate needs a logprob adapter; ${INCUMBENT_ADAPTER} is its baseline`);
+  }
+  if ((args.command === 'report' || args.command === 'calibrate')
+    && (args.limit !== undefined || args.force || args.concurrency !== 1)) {
     throw new GuardHarnessError('--limit, --concurrency and --force apply to run only');
   }
   if (args.live && args.command !== 'report') throw new GuardHarnessError('--live applies to report only');
@@ -346,6 +377,91 @@ function liveReportCommand(args: Args): void {
   }
 }
 
+// One calibration row: n, clear-yes precision with its interval, Unsafe
+// passed as clear-yes, uncertain rate.
+function calibrationLine(name: string, p: CalibrationPoint): string {
+  const cy = clearRow(p.matrix, 'clear_yes');
+  const un = uncertainCounts(p.matrix);
+  const passed = `${p.unsafePassed}/${p.unsafeTotal}`;
+  return `  ${name.padEnd(30)}${String(p.metrics.total).padStart(5)}  `
+    + withInterval(p.metrics.clearYesPrecision, p.intervals.clearYesPrecision, cy.num, cy.den)
+    + passed.padStart(13).padEnd(17)
+    + withInterval(p.metrics.uncertainRate, p.intervals.uncertainRate, un.num, un.den);
+}
+
+function calibrationHeader(): void {
+  console.log(`  ${''.padEnd(30)}${'n'.padStart(5)}  ${'clear-yes precision (95% CI)'.padEnd(CELL)}${'unsafe passed'.padStart(13).padEnd(17)}uncertain rate (95% CI)`);
+}
+
+async function calibrate(args: Args): Promise<void> {
+  const adapter = await getAdapter(args.adapter);
+  const incumbent = await getAdapter(INCUMBENT_ADAPTER);
+  const limitsFor = await loadRubricLimits();
+  const file = datasetPath(args);
+  const r = calibrationReport({
+    items: readDataset(file),
+    results: readResults(resultsPathFor(file)),
+    adapterId: adapter.id,
+    baselineAdapterId: incumbent.id,
+    limitsFor,
+  });
+  const t = THRESHOLDS;
+  console.log(`Dataset:  ${path.basename(file)}`);
+  console.log(`Adapter:  ${r.adapterId}`);
+  console.log(`Baseline: ${incumbent.id}`);
+  console.log(`Scored:   ${r.scored} of ${r.datasetItems} items`);
+  console.log(`  safety labels, non-holdout          ${String(r.nonHoldoutItems).padStart(5)}`);
+  console.log(`  safety labels, holdout              ${String(r.holdoutItems).padStart(5)}`);
+  console.log(`  not for us (excluded)               ${String(r.excluded.notForUs).padStart(5)}`);
+  console.log(`  block, kind not recorded (excluded) ${String(r.excluded.unrecorded).padStart(5)}`);
+  console.log(`  clear_yes with a dimension unread   ${String(r.clearYesWithoutPOver.nonHoldout).padStart(5)} non-holdout, ${r.clearYesWithoutPOver.holdout} holdout (uncertain at every τ)`);
+  if (r.scored === 0) {
+    console.log(`\nNo results for ${r.adapterId}: run it first (guard:harness -- run --adapter ${args.adapter}).`);
+    return;
+  }
+  const b = r.baseline;
+  if (b && b.covered < b.of) {
+    console.log(`\nThe baseline has results for ${b.covered} of ${b.of} of these items; its rows cover those only.`);
+  }
+
+  console.log(`\nBaseline and plain verdicts (plain: decoded scores, no τ). Targets: clear-yes >= ${t.clearYesPrecision * 100}%, uncertain ${t.uncertainRate.min * 100}-${t.uncertainRate.max * 100}%`);
+  calibrationHeader();
+  if (b) console.log(calibrationLine('incumbent, non-holdout', b.nonHoldout));
+  console.log(calibrationLine('plain, non-holdout', r.plain.nonHoldout));
+  if (b) console.log(calibrationLine('incumbent, holdout', b.holdout));
+  console.log(calibrationLine('plain, holdout', r.plain.holdout));
+
+  console.log('\nThreshold sweep, non-holdout: a clear_yes with p_over >= τ becomes uncertain');
+  calibrationHeader();
+  for (const p of r.sweep) {
+    const meets = p.tau === r.tauStar ? '  <- τ*' : '';
+    console.log(calibrationLine(`τ = ${String(p.tau)}`, p) + meets);
+  }
+  if (r.tauStar === null || !r.holdoutAtTauStar) {
+    console.log(`\nτ*: none — no τ on the grid gives clear-yes >= ${t.clearYesPrecision * 100}% with uncertain <= ${t.uncertainRate.max * 100}% on non-holdout.`);
+  } else {
+    console.log(`\nτ* = ${r.tauStar}: the loosest τ meeting clear-yes >= ${t.clearYesPrecision * 100}% and uncertain <= ${t.uncertainRate.max * 100}% on non-holdout.`);
+    console.log('Holdout at τ* — the honest test (τ* was chosen without it):');
+    calibrationHeader();
+    console.log(calibrationLine(`τ* = ${r.tauStar}, holdout`, r.holdoutAtTauStar));
+  }
+
+  console.log('\nReliability, non-holdout items whose plain verdict is clear_yes: p_over against the');
+  console.log('observed Unsafe rate (Wilson 95% interval)');
+  console.log(`  ${'p_over bin'.padEnd(16)}${'n'.padStart(5)}${'unsafe'.padStart(8)}  ${'Unsafe rate (95% CI)'.padEnd(CELL)}mean p_over`);
+  for (const bin of r.reliability) {
+    const name = `[${bin.low}, ${bin.high}${bin.high === 1 ? ']' : ')'}`;
+    console.log(`  ${name.padEnd(16)}${String(bin.n).padStart(5)}${String(bin.unsafe).padStart(8)}  `
+      + withInterval(bin.rate, bin.interval, bin.unsafe, bin.n) + pct(bin.meanPOver));
+  }
+  console.log(`  ${'unread'.padEnd(16)}${String(r.clearYesWithoutPOver.nonHoldout).padStart(5)}`);
+
+  const chart = calibrationChartPath(config.DATABASE_PATH, file);
+  mkdirSync(path.dirname(chart), { recursive: true });
+  writeCalibrationChart(chart, calibrationChartHtml(r, path.basename(file), new Date()));
+  console.log(`\nChart: ${chart}`);
+}
+
 async function main(): Promise<number> {
   const args = parseArgs(process.argv.slice(2));
   if (args.command === 'recover') return recover(args);
@@ -354,6 +470,10 @@ async function main(): Promise<number> {
     return 0;
   }
   if (args.command === 'run') return run(args);
+  if (args.command === 'calibrate') {
+    await calibrate(args);
+    return 0;
+  }
   if (args.live) liveReportCommand(args);
   else await adapterReport(args);
   return 0;
