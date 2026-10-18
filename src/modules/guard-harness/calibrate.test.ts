@@ -210,6 +210,22 @@ describe('calibration chart', () => {
     expect(html).not.toMatch(/\b(a1|hu0|unrec|kid_1)\b/);
   });
 
+  it('widens the axes to a holdout result outside the non-holdout range rather than clamping it', () => {
+    const holdout = r.holdoutAtTauStar!;
+    const worse = {
+      ...r,
+      holdoutAtTauStar: { ...holdout, metrics: { ...holdout.metrics, clearYesPrecision: 0, uncertainRate: 0.9 } },
+    };
+    const out = calibrationChartHtml(worse, 'dataset-2026-10-02.jsonl', new Date('2026-10-18T19:00:00Z'));
+    // The holdout diamonds, in chart order: precision, then uncertain rate.
+    const ys = [...out.matchAll(/width="10" height="10" fill="#c43d4b" transform="rotate\(45 [\d.]+ ([\d.]+)\)"/g)].map((m) => Number(m[1]));
+    const plotHeight = 300 - 52 - 62;
+    // 0% precision sits on the axis floor (now 0%), 90% uncertain at the top (now 90%).
+    expect(ys).toEqual([plotHeight, 0]);
+    expect(out).toContain('>0%</text>');
+    expect(out).toContain('>90%</text>');
+  });
+
   it('is written mode 0600, even over an existing file', () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'guard-calibration-'));
     try {

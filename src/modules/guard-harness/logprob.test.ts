@@ -114,6 +114,22 @@ describe('scoreDistributions on crafted token streams', () => {
     expect(d['attitude']).toEqual([0, 0, 0.3 / 0.9, 0.6 / 0.9].map((p) => expect.closeTo(p, 10)));
   });
 
+  it('ignores alternatives that continue the number past the digit', () => {
+    const { response, logprobs } = tokens(rubricPieces({
+      comm: [' ', { t: '0', top: [['0', ln(0.1)], ['1.5', ln(0.5)], ['0e2', ln(0.2)], ['2x', ln(0.1)], ['1', ln(0.1)]] }],
+    }));
+    const d = scoreDistributions(response, logprobs, KEYS);
+    expect(d['commercial']).toEqual([0.5, 0.5, 0, 0].map((p) => expect.closeTo(p, 10)));
+  });
+
+  it('accepts an alternative that ends at a JSON boundary', () => {
+    const { response, logprobs } = tokens(rubricPieces({
+      comm: [' ', { t: '0', top: [['0', ln(0.4)], ['1}', ln(0.2)], ['2 ', ln(0.2)], ['3\n', ln(0.2)]] }],
+    }));
+    const d = scoreDistributions(response, logprobs, KEYS);
+    expect(d['commercial']).toEqual([0.4, 0.2, 0.2, 0.2].map((p) => expect.closeTo(p, 10)));
+  });
+
   it('counts the chosen token when top_logprobs leaves it out', () => {
     const { response, logprobs } = tokens(rubricPieces({ subs: [' ', '1'] }));
     const subs = logprobs.find((l, i) => l.token === '1' && logprobs[i - 3]?.token === 'subs')!;

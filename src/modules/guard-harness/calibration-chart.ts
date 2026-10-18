@@ -203,27 +203,33 @@ function row(name: string, p: CalibrationPoint | null): string {
 }
 
 export function calibrationChartHtml(r: CalibrationReport, datasetName: string, generatedAt: Date): string {
-  const precisions = r.sweep.map((p) => p.metrics.clearYesPrecision).filter((v): v is number => v !== null);
+  // Axis ranges cover every value plotted — the sweep, the incumbent line
+  // and the holdout point — so nothing is clamped into view.
+  const known = (vs: Array<number | null | undefined>): number[] => vs.filter((v): v is number => v !== null && v !== undefined);
   const baselineP = r.baseline?.nonHoldout.metrics.clearYesPrecision ?? null;
-  const floor = Math.min(0.9, ...precisions, ...(baselineP !== null ? [baselineP] : []));
-  const precisionAxisMin = Math.max(0, Math.floor(floor * 20) / 20);
-  const precisionAxis: Axis = { min: precisionAxisMin, max: 1, ticks: ticks(precisionAxisMin, 1, 0.05) };
-  const uncertain = r.sweep.map((p) => p.metrics.uncertainRate).filter((v): v is number => v !== null);
-  const uMax = Math.min(1, Math.ceil(Math.max(0.5, ...uncertain, r.baseline?.nonHoldout.metrics.uncertainRate ?? 0) * 10) / 10);
-  const uncertainAxis: Axis = { min: 0, max: uMax, ticks: ticks(0, uMax, 0.1) };
+  const holdoutP = r.holdoutAtTauStar?.metrics.clearYesPrecision ?? null;
+  const precisions = known([...r.sweep.map((p) => p.metrics.clearYesPrecision), baselineP, holdoutP]);
+  const precisionAxisMin = Math.max(0, Math.floor(Math.min(0.9, ...precisions) * 20) / 20);
+  const precisionStep = 1 - precisionAxisMin > 0.3 ? 0.1 : 0.05;
+  const precisionAxis: Axis = { min: precisionAxisMin, max: 1, ticks: ticks(precisionAxisMin, 1, precisionStep) };
+  const baselineU = r.baseline?.nonHoldout.metrics.uncertainRate ?? null;
+  const holdoutU = r.holdoutAtTauStar?.metrics.uncertainRate ?? null;
+  const uncertain = known([...r.sweep.map((p) => p.metrics.uncertainRate), baselineU, holdoutU]);
+  const uMax = Math.min(1, Math.ceil(Math.max(0.5, ...uncertain) * 10) / 10);
+  const uncertainAxis: Axis = { min: 0, max: uMax, ticks: ticks(0, uMax, uMax > 0.6 ? 0.2 : 0.1) };
   const t = THRESHOLDS;
 
   const precisionChart = sweepChart(
     r, 'Clear-yes precision against τ', 'clear-yes precision',
     { colour: COLOUR.primary, value: (p) => p.metrics.clearYesPrecision },
     precisionAxis, [[t.clearYesPrecision, `target ≥ ${t.clearYesPrecision * 100}%`]],
-    baselineP, r.holdoutAtTauStar?.metrics.clearYesPrecision ?? null,
+    baselineP, holdoutP,
   );
   const uncertainChart = sweepChart(
     r, 'Uncertain rate against τ', 'uncertain rate',
     { colour: COLOUR.secondary, value: (p) => p.metrics.uncertainRate },
     uncertainAxis, [[t.uncertainRate.max, `ceiling ${t.uncertainRate.max * 100}%`], [t.uncertainRate.min, `floor ${t.uncertainRate.min * 100}%`]],
-    r.baseline?.nonHoldout.metrics.uncertainRate ?? null, r.holdoutAtTauStar?.metrics.uncertainRate ?? null,
+    baselineU, holdoutU,
   );
 
   const verdict = r.tauStar === null

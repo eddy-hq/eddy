@@ -116,9 +116,9 @@ const SCORE_DIGITS = ['0', '1', '2', '3'] as const;
 // The distribution over 0–3 for the single-digit value at `offset`, read from
 // the token carrying it. The token may carry other text around the digit (a
 // leading space, a trailing comma); an alternative counts for digit d only if
-// it is the same text with d in the digit's place, followed by no further
-// digit. Alternatives that don't line up count as no mass. Null if no token
-// covers the offset.
+// it is the same text up to the digit, then d, then nothing or a JSON
+// boundary (whitespace, ',', '}', ']'). Alternatives that don't line up count
+// as no mass. Null if no token covers the offset.
 function digitDistribution(spans: readonly Span[], text: string, offset: number): ScoreDistribution | null {
   const span = spans.find((s) => s.start <= offset && offset < s.end);
   if (!span) return null;
@@ -133,7 +133,9 @@ function digitDistribution(spans: readonly Span[], text: string, offset: number)
     if (!piece.startsWith(prefix)) continue;
     const digit = SCORE_DIGITS.indexOf(piece[prefix.length] as (typeof SCORE_DIGITS)[number]);
     if (digit < 0) continue;
-    if (/^[0-9]/.test(piece.slice(prefix.length + 1))) continue;
+    // The digit must end the value: nothing after it, or a JSON boundary.
+    // '12', '1.5', '0e2' or '2x' is not a score of 1, 1, 0 or 2.
+    if (!/^(|[\s,}\]][\s\S]*)$/.test(piece.slice(prefix.length + 1))) continue;
     mass[digit]! += Math.exp(logprob);
   }
   const total = mass.reduce((a, b) => a + b, 0);
