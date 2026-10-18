@@ -21,7 +21,7 @@ import {
   MIN_QUALITY_SCORE,
   type RankerCandidate,
 } from '../modules/discovery/ranker';
-import { kidGuardClause } from '../modules/discovery/surface';
+import { kidGuardClause, liveInterestSql } from '../modules/discovery/surface';
 
 runMigrations();
 seedUsers();
@@ -120,6 +120,7 @@ for (const user of users) {
     LEFT JOIN interests i ON i.id = c.interest_id
     WHERE c.user_id = ? AND c.status = 'scored' ${guardClause}
       AND c.surfaced_date IS NULL
+      AND ${liveInterestSql('c')}
   `).all(user.user_id) as Candidate[];
 
   if (rows.length === 0) {

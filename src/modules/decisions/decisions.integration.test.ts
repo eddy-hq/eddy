@@ -150,7 +150,7 @@ function seedRequest(id: string, opts: {
 
 function seedEval(opts: {
   url: string; verdict: string; candidateId?: string | null; requestId?: string | null;
-  userId?: string | null; scores?: boolean; at?: string;
+  userId?: string | null; scores?: boolean; at?: string; promptVersion?: string;
 }): string {
   const id = `eval-${Math.random().toString(36).slice(2)}`;
   const scores = opts.scores
@@ -160,9 +160,9 @@ function seedEval(opts: {
     INSERT INTO guard_eval
       (eval_id, request_id, url, gemma_verdict, gemma_reason, prompt_version, request_type,
        rubric_scores_json, user_id, candidate_id, scored_at, created_at)
-    VALUES (?, ?, ?, ?, 'Placeholder reason', 'candidate-v3', ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, 'Placeholder reason', ?, ?, ?, ?, ?, ?, ?)
   `).run(
-    id, opts.requestId ?? null, opts.url, opts.verdict,
+    id, opts.requestId ?? null, opts.url, opts.verdict, opts.promptVersion ?? 'candidate-v3',
     opts.requestId ? 'video' : 'candidate', scores,
     opts.userId ?? null, opts.candidateId ?? null, opts.at ?? daysAgo(1), opts.at ?? daysAgo(1),
   );
@@ -393,6 +393,14 @@ describe('Escalations', () => {
   });
 });
 
+const url = (yt: string) => `https://www.youtube.com/watch?v=${yt}`;
+
+// A candidate whose clear verdict came from the rubric guard (ADR-0017).
+function seedRubricCandidate(id: string, verdict: 'clear_yes' | 'clear_no', at: string, userId = KID_1): void {
+  seedCandidate(id, { userId, status: verdict === 'clear_yes' ? 'scored' : 'guard_rejected', verdict, createdAt: at });
+  seedEval({ url: url(id), verdict, candidateId: id, userId, scores: true, at, promptVersion: 'candidate-v4.1' });
+}
+
 describe('Spot checks', () => {
   function seedRecentVerdicts(): void {
     for (let i = 0; i < 6; i++) seedCandidate(`yes${i}`, { status: 'scored', verdict: 'clear_yes', createdAt: daysAgo(2) });
@@ -517,8 +525,8 @@ describe('Spot checks', () => {
   it('catch-up draws further batches from older history', async () => {
     // One full batch, then a short one of 3 clear-yes and 2 clear-no.
     const { clear_yes: yes, clear_no: no } = CATCH_UP_BATCH_MIX;
-    for (let i = 0; i < yes + 3; i++) seedCandidate(`old-yes${i}`, { status: 'scored', verdict: 'clear_yes', createdAt: daysAgo(60) });
-    for (let i = 0; i < no + 2; i++) seedCandidate(`old-no${i}`, { status: 'guard_rejected', verdict: 'clear_no', createdAt: daysAgo(60) });
+    for (let i = 0; i < yes + 3; i++) seedRubricCandidate(`old-yes${i}`, 'clear_yes', daysAgo(60));
+    for (let i = 0; i < no + 2; i++) seedRubricCandidate(`old-no${i}`, 'clear_no', daysAgo(60));
     expect(queue().cards).toHaveLength(0);
 
     const first = queue('catch_up', 'spot_checks').cards;
@@ -532,6 +540,79 @@ describe('Spot checks', () => {
     expect(second.length).toBe(5);
     expect(second.map((c) => c.key)).not.toEqual(expect.arrayContaining(first.map((c) => c.key)));
     expect(decisions().every((d) => d['source'] === 'catch_up')).toBe(true);
+  });
+});
+
+// Catch-up feeds the harness's audit set, so it draws only verdicts from the
+// current rubric guard; daily Spot checks still sample every clear verdict.
+describe('Catch-up draws only rubric-scored verdicts', () => {
+  const drawnIds = (source: 'spot_check' | 'catch_up') => (db.prepare(
+    'SELECT subject_id FROM guard_spot_checks WHERE source = ? ORDER BY subject_id',
+  ).all(source) as Array<{ subject_id: string }>).map((r) => r.subject_id);
+
+  // Clear-yes subjects, one of each kind: rubric-scored candidate, v2-scored
+  // candidate, v1-scored request, and a request whose latest row is unscored.
+  function seedMixed(at: string): void {
+    seedRubricCandidate('rubric-c', 'clear_yes', at);
+
+    seedCandidate('v2-c', { status: 'scored', verdict: 'clear_yes', createdAt: at });
+    seedEval({ url: url('v2-c'), verdict: 'clear_yes', candidateId: 'v2-c', at, promptVersion: 'candidate-v2' });
+
+    seedRequest('v1-r', { status: 'ready', verdict: 'clear_yes', requestedAt: at });
+    seedEval({ url: url('v1-r'), verdict: 'clear_yes', requestId: 'v1-r', userId: KID_1, at, promptVersion: 'v1' });
+
+    // Scored by the rubric first, then re-judged by an older prompt: the
+    // latest row is what the verdict came from.
+    seedRequest('rescored-r', { status: 'ready', verdict: 'clear_yes', requestedAt: at });
+    seedEval({ url: url('rescored-r'), verdict: 'clear_yes', requestId: 'rescored-r', userId: KID_1,
+      scores: true, at: daysAgo(70), promptVersion: 'candidate-transcript-v4.1' });
+    seedEval({ url: url('rescored-r'), verdict: 'clear_yes', requestId: 'rescored-r', userId: KID_1,
+      at, promptVersion: 'v1' });
+  }
+
+  it('draws a rubric-scored candidate and request, and never a v1/v2-scored one', () => {
+    seedMixed(daysAgo(60));
+    seedRequest('rubric-r', { status: 'watched', verdict: 'clear_yes', requestedAt: daysAgo(60) });
+    seedEval({ url: url('rubric-r'), verdict: 'clear_yes', requestId: 'rubric-r', userId: KID_1,
+      scores: true, at: daysAgo(60), promptVersion: 'candidate-transcript-v4.1' });
+
+    const cards = queue('catch_up', 'spot_checks').cards;
+    expect(cards.every((c) => c.source === 'catch_up')).toBe(true);
+    // Blind: the verdict stays hidden until answered.
+    expect(cards.every((c) => c.subjects.every((s) => s.guard === null))).toBe(true);
+    expect(drawnIds('catch_up')).toEqual(['rubric-c', 'rubric-r']);
+  });
+
+  it('uses the latest row: a verdict re-judged by the rubric qualifies', () => {
+    seedCandidate('rejudged', { status: 'scored', verdict: 'clear_yes', createdAt: daysAgo(60) });
+    seedEval({ url: url('rejudged'), verdict: 'uncertain', candidateId: 'rejudged', at: daysAgo(61), promptVersion: 'candidate-v2' });
+    seedEval({ url: url('rejudged'), verdict: 'clear_yes', candidateId: 'rejudged', scores: true, at: daysAgo(60), promptVersion: 'candidate-v4.1' });
+    queue('catch_up', 'spot_checks');
+    expect(drawnIds('catch_up')).toEqual(['rejudged']);
+  });
+
+  it('skips a rubric row whose verdict is not the one the subject carries', () => {
+    seedCandidate('mismatch', { status: 'scored', verdict: 'clear_yes', createdAt: daysAgo(60) });
+    seedEval({ url: url('mismatch'), verdict: 'uncertain', candidateId: 'mismatch', scores: true, at: daysAgo(60), promptVersion: 'candidate-v4.1' });
+    expect(queue('catch_up', 'spot_checks').cards).toEqual([]);
+  });
+
+  it('draws nothing rather than falling back to older prompts', () => {
+    seedCandidate('v2-c', { status: 'scored', verdict: 'clear_yes', createdAt: daysAgo(60) });
+    seedEval({ url: url('v2-c'), verdict: 'clear_yes', candidateId: 'v2-c', at: daysAgo(60), promptVersion: 'candidate-v2' });
+    seedCandidate('no-eval', { status: 'guard_rejected', verdict: 'clear_no', createdAt: daysAgo(60) });
+    // An older URL-only row could belong to either kid's pool: not matched.
+    seedCandidate('url-only', { status: 'scored', verdict: 'clear_yes', createdAt: daysAgo(60) });
+    seedEval({ url: url('url-only'), verdict: 'clear_yes', scores: true, at: daysAgo(60), promptVersion: 'candidate-v4.1' });
+
+    expect(queue('catch_up', 'spot_checks').cards).toEqual([]);
+    expect(drawnIds('catch_up')).toEqual([]);
+  });
+
+  it('leaves daily Spot checks drawing every clear verdict, rubric-scored or not', () => {
+    seedMixed(daysAgo(2));
+    queue();
+    expect(drawnIds('spot_check')).toEqual(['rescored-r', 'rubric-c', 'v1-r', 'v2-c']);
   });
 });
 
@@ -887,7 +968,7 @@ describe('Review (#223)', () => {
     const def = (await review()).body as ReviewBody;
     expect(def.filter).toBe('disagreements');
     expect(def.cards.map((c) => c.key)).toEqual(['d-yes-blocked', 'd-no-allowed']);
-    expect(def.counts).toEqual({ disagreements: 2, all: 4 });
+    expect(def.counts).toEqual({ disagreements: 2, untagged: 2, all: 4 });
     expect(def.reasons.dimensions).toHaveLength(DIMENSIONS.length);
     expect(def.cards[0]).toMatchObject({
       title: 'Placeholder title', channel: 'Placeholder channel', youtubeId: 'yes-blocked',
@@ -1449,7 +1530,45 @@ describe('Block kinds (#227)', () => {
       seedBlock('d-x', 'candidate', 'c-x', null);
       const res = await supertest(app).get(`/parent/decisions/review?userId=${PARENT}`);
       expect((res.body.cards as Array<{ key: string }>).map((c) => c.key).sort()).toEqual(['d-n', 'd-u', 'd-x']);
-      expect(res.body.counts).toEqual({ disagreements: 3, all: 3 });
+      expect(res.body.counts).toEqual({ disagreements: 3, untagged: 1, all: 3 });
+    });
+
+    it('lists exactly the current Blocks with no kind under untagged', async () => {
+      for (const id of ['first', 'tagged', 'to-allow', 'back', 'kinded', 'allow']) {
+        seedCandidate(`c-${id}`, { status: 'dismissed', verdict: 'clear_yes' });
+      }
+      // A first-pass Block with no kind: listed.
+      seedBlock('d-first', 'candidate', 'c-first', null);
+      // Tagged by a kind-only revision: not listed.
+      seedBlock('d-tagged', 'candidate', 'c-tagged', null);
+      expect((await revise('d-tagged', 'clear_no', 'unsafe')).body.effect).toBe('label_only');
+      // Revised to Allow: no longer a Block.
+      seedBlock('d-to-allow', 'candidate', 'c-to-allow', null);
+      expect((await revise('d-to-allow', 'clear_yes')).status).toBe(200);
+      // Tagged first, then Allow, then Block with no kind: the kind comes from
+      // the latest row, so it is untagged again.
+      seedBlock('d-back', 'candidate', 'c-back', 'unsafe');
+      expect((await revise('d-back', 'clear_yes')).status).toBe(200);
+      expect((await revise('d-back', 'clear_no')).status).toBe(200);
+      // A first-pass Block with a kind, and a plain Allow: not listed.
+      seedBlock('d-kinded', 'candidate', 'c-kinded', 'not_for_us');
+      seedBlock('d-allow', 'candidate', 'c-allow', null);
+      db.prepare("UPDATE guard_decisions SET human_verdict = 'clear_yes', block_kind = NULL WHERE decision_id = 'd-allow'").run();
+
+      const res = await supertest(app).get(`/parent/decisions/review?userId=${PARENT}&filter=untagged`);
+      expect(res.status).toBe(200);
+      expect(res.body.filter).toBe('untagged');
+      expect((res.body.cards as Array<{ key: string }>).map((c) => c.key).sort()).toEqual(['d-back', 'd-first']);
+      expect((res.body.cards as Array<{ decision: { verdict: string; blockKind: string | null } }>)
+        .every((c) => c.decision.verdict === 'clear_no' && c.decision.blockKind === null)).toBe(true);
+      expect(res.body.counts).toMatchObject({ untagged: 2, all: 6 });
+
+      // Tagging one from the list takes it off, and changes nothing live.
+      const tag = await revise('d-first', 'clear_no', 'not_for_us');
+      expect(tag.body.effect).toBe('label_only');
+      const after = await supertest(app).get(`/parent/decisions/review?userId=${PARENT}&filter=untagged`);
+      expect((after.body.cards as Array<{ key: string }>).map((c) => c.key)).toEqual(['d-back']);
+      expect(after.body.counts).toMatchObject({ untagged: 1, all: 6 });
     });
   });
 });

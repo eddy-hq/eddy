@@ -74,6 +74,8 @@ beforeAll(() => {
 });
 
 beforeEach(() => {
+  db.exec('DELETE FROM guard_decisions');
+  db.exec('DELETE FROM guard_spot_checks');
   db.exec('DELETE FROM candidate_pool');
   db.exec('DELETE FROM user_interests');
   db.prepare(
@@ -147,4 +149,57 @@ describe('removeUserInterest', () => {
     ).all(OTHER_USER) as Array<{ candidate_id: string }>;
     expect(rows.map((r) => r.candidate_id)).toEqual(['c-other']);
   });
+
+  // A parent's decision or a drawn spot check is a guard label; the harness
+  // needs its candidate row (ADR-0019), so removing the interest keeps it.
+  it('keeps decided and drawn candidates, deleting only the undecided ones', () => {
+    insertCandidate({ candidate_id: 'c-decided', interest_id: INTEREST_ID, status: 'guard_rejected' });
+    insertCandidate({ candidate_id: 'c-drawn', interest_id: INTEREST_ID, status: 'scored' });
+    insertCandidate({ candidate_id: 'c-undecided', interest_id: INTEREST_ID, status: 'scored' });
+    insertDecision('c-decided');
+    insertSpotCheck('candidate', 'c-drawn');
+
+    removeUserInterest(USER_ID, INTEREST_ID);
+
+    const rows = db.prepare(
+      'SELECT candidate_id FROM candidate_pool WHERE user_id = ? ORDER BY candidate_id'
+    ).all(USER_ID) as Array<{ candidate_id: string }>;
+    expect(rows.map((r) => r.candidate_id)).toEqual(['c-decided', 'c-drawn']);
+  });
+
+  it('protects candidate subjects only, not a request with the same id', () => {
+    insertCandidate({ candidate_id: 'c-shared-id', interest_id: INTEREST_ID, status: 'scored' });
+    insertSpotCheck('request', 'c-shared-id');
+
+    removeUserInterest(USER_ID, INTEREST_ID);
+
+    const rows = db.prepare(
+      'SELECT candidate_id FROM candidate_pool WHERE user_id = ?'
+    ).all(USER_ID) as Array<{ candidate_id: string }>;
+    expect(rows).toEqual([]);
+  });
 });
+
+function insertDecision(candidateId: string): void {
+  db.prepare(`
+    INSERT INTO guard_decisions
+      (decision_id, subject_type, subject_id, user_id, url, age_band,
+       rubric_version, source, human_verdict, decided_by, decided_at)
+    VALUES (?, 'candidate', ?, ?, ?, '10-12', 'v4', 'escalation', 'clear_no', ?, ?)
+  `).run(
+    `decision-${candidateId}`,
+    candidateId,
+    USER_ID,
+    `https://www.youtube.com/watch?v=${candidateId}`,
+    OTHER_USER,
+    new Date().toISOString(),
+  );
+}
+
+function insertSpotCheck(subjectType: 'candidate' | 'request', subjectId: string): void {
+  db.prepare(`
+    INSERT INTO guard_spot_checks
+      (day, subject_type, subject_id, user_id, source, guard_verdict, created_at)
+    VALUES (?, ?, ?, ?, 'spot_check', 'clear_yes', ?)
+  `).run(new Date().toISOString().slice(0, 10), subjectType, subjectId, USER_ID, new Date().toISOString());
+}

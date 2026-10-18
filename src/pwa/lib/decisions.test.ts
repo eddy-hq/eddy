@@ -38,6 +38,12 @@ import {
   mergeReviewPage,
   reviseInList,
   matchesReviewFilter,
+  isUntaggedBlock,
+  nextCardKey,
+  reviewEmptyText,
+  reviewFilterOptions,
+  reviseCounts,
+  shouldLoadNextPage,
   revisionBody,
   revisionEffectLabel,
   storedReasonSummary,
@@ -470,6 +476,73 @@ describe('Review', () => {
     const kept = reviseInList(list, staying);
     expect(kept).toMatchObject({ loadId: list.loadId, nextOffset: 3 });
     expect(kept.cards.map((c) => c.decision.verdict)).toEqual(['clear_no', 'clear_yes', 'clear_no']);
+  });
+
+  describe('Untagged', () => {
+    const revised = { revisedAt: '2026-09-26T00:00:00.000Z', effect: 'label_only' as const, count: 1 };
+    const untagged = (key: string) => reviewCard(key, { verdict: 'clear_no', blockKind: null });
+    const tagged = (key: string) => reviewCard(key, { verdict: 'clear_no', blockKind: 'unsafe', revision: revised });
+
+    it('lists current Blocks with no kind, whatever the first answer', () => {
+      const cards = [
+        untagged('first'),
+        // From an older server: no kind field at all.
+        reviewCard('older'),
+        tagged('tagged'),
+        reviewCard('allowed', { firstVerdict: 'clear_no', verdict: 'clear_yes', revision: revised }),
+        reviewCard('reblocked', { firstVerdict: 'clear_no', firstBlockKind: 'unsafe', verdict: 'clear_no', blockKind: null, revision: revised }),
+      ];
+      expect(cards.filter((c) => matchesReviewFilter(c, 'untagged')).map((c) => c.key))
+        .toEqual(['first', 'older', 'reblocked']);
+      expect(isUntaggedBlock(tagged('t').decision)).toBe(false);
+    });
+
+    it('shows the untagged count on its filter, and nothing on an older server', () => {
+      expect(reviewFilterOptions({ disagreements: 3, untagged: 269, all: 900 })).toEqual([
+        ['disagreements', 'Disagreements'], ['untagged', 'Untagged (269)'], ['all', 'All decisions'],
+      ]);
+      expect(reviewFilterOptions({ disagreements: 3, all: 900 })[1]).toEqual(['untagged', 'Untagged']);
+      expect(reviewFilterOptions(undefined)[1]).toEqual(['untagged', 'Untagged']);
+      expect(reviewEmptyText('untagged')).toBe('Every Block has its kind.');
+      expect(reviewEmptyText('disagreements')).toBe('No disagreements with the guard.');
+      expect(reviewEmptyText('all')).toBe('No decisions yet.');
+    });
+
+    it('counts down as Blocks are tagged, and moves disagreements only when they change', () => {
+      const counts = { disagreements: 2, untagged: 5, all: 9 };
+      expect(reviseCounts(counts, untagged('a'), tagged('a'))).toEqual({ disagreements: 2, untagged: 4, all: 9 });
+      // To Allow against a clear-no guard: no longer untagged, now a disagreement.
+      const agreed = reviewCard('a', { guardVerdict: 'clear_no', verdict: 'clear_no', blockKind: null });
+      expect(reviseCounts(counts, agreed, reviewCard('a', { guardVerdict: 'clear_no', verdict: 'clear_yes', revision: revised })))
+        .toEqual({ disagreements: 3, untagged: 4, all: 9 });
+      // An Allow made a Block with no kind joins Untagged.
+      expect(reviseCounts(counts, reviewCard('a', { verdict: 'clear_yes' }), untagged('a')))
+        .toEqual({ disagreements: 2, untagged: 6, all: 9 });
+      // An older server's missing count stays missing.
+      expect(reviseCounts({ disagreements: 2, all: 9 }, untagged('a'), tagged('a'))).toEqual({ disagreements: 2, all: 9 });
+    });
+
+    it('takes a tagged card off the list and its count, with the next one up', () => {
+      const cards = ['a', 'b', 'c'].map(untagged);
+      const list = freshReviewList(null, {
+        filter: 'untagged', cards, reasons: opts, counts: { disagreements: 3, untagged: 40, all: 40 }, nextOffset: 3,
+      });
+      const after = reviseInList(list, tagged('b'));
+      expect(after.cards.map((c) => c.key)).toEqual(['a', 'c']);
+      expect(after.counts.untagged).toBe(39);
+      expect(after.nextOffset).toBe(2);
+      expect(nextCardKey(list.cards, after.cards, 'b')).toBe('c');
+      // The last loaded card has no next one on screen.
+      expect(nextCardKey(after.cards, reviseInList(after, tagged('c')).cards, 'c')).toBeNull();
+      // A card that stays brings nothing into view.
+      expect(nextCardKey(list.cards, reviseInList({ ...list, filter: 'all' }, tagged('b')).cards, 'b')).toBeNull();
+    });
+
+    it('loads the next page once every loaded card is tagged', () => {
+      expect(shouldLoadNextPage({ cards: [], nextOffset: 0 })).toBe(true);
+      expect(shouldLoadNextPage({ cards: [], nextOffset: null })).toBe(false);
+      expect(shouldLoadNextPage({ cards: [untagged('a')], nextOffset: 1 })).toBe(false);
+    });
   });
 
   it('appends a page without repeating cards already shown', () => {

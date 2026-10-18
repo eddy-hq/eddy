@@ -1,7 +1,7 @@
 import { db } from '../../db/client';
 import { config } from '../../config';
 import { rank, isPicked, type RankerCandidate, type Verdict, type Disposition } from './ranker';
-import { kidGuardClause } from './surface';
+import { kidGuardClause, liveInterestSql } from './surface';
 
 interface UserRow { user_id: string; role: string; age_gate: number; display_name: string; daily_pick_cap: number | null; }
 
@@ -117,6 +117,7 @@ function buildSection(user: UserRow): Section {
       AND c.status = 'scored'
       AND c.surfaced_date IS NULL
       AND c.why_text IS NOT NULL
+      AND ${liveInterestSql('c')}
       ${guardClause}
       AND NOT EXISTS (
         SELECT 1 FROM requests r
