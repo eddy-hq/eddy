@@ -154,7 +154,9 @@ export function requireParentDevice(req: Request, _res: Response, next: NextFunc
 // hash, enough to tell two clients' credentials apart and to match a
 // device row, not enough to stand in for one.
 function logRefused(req: Request, reason: string, hashPrefix?: string): void {
-  logger.warn({ method: req.method, path: req.path, reason, hashPrefix }, 'Credential refused');
+  // The full path, not the router-relative one, and never the query string.
+  const path = req.originalUrl.split('?')[0];
+  logger.warn({ method: req.method, path, reason, hashPrefix }, 'Credential refused');
 }
 
 function authenticate(req: Request): Binding {
