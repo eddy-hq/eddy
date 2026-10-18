@@ -1,7 +1,7 @@
 import express, { type NextFunction, type Request, type Response } from 'express';
 import 'express-async-errors';
 import supertest from 'supertest';
-import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // ─── Module mocks ────────────────────────────────────────────────────────────
 //
@@ -1376,5 +1376,109 @@ describe('POST /requests/:id/send', () => {
 
     expect(resp.status).toBe(400);
     expect(applyMock).not.toHaveBeenCalled();
+  });
+});
+
+// ─── DELETE /requests/:id — hard delete keeps labelled requests ─────────────
+//
+// A request a parent has decided on, or that is drawn as a spot check, is a
+// guard label's subject (ADR-0019): the hard delete refuses it with 409 and
+// leaves the row and its guard_eval verdicts in place.
+
+describe('DELETE /requests/:id', () => {
+  beforeEach(() => {
+    db.exec('DELETE FROM guard_decisions');
+    db.exec('DELETE FROM guard_spot_checks');
+  });
+
+  // guard_eval references requests, so clear it before the outer beforeEach
+  // empties requests.
+  afterEach(() => {
+    db.exec('DELETE FROM guard_eval');
+  });
+
+  function insertDecision(requestId: string): void {
+    db.prepare(`
+      INSERT INTO guard_decisions
+        (decision_id, subject_type, subject_id, user_id, url, age_band,
+         rubric_version, source, human_verdict, decided_by, decided_at)
+      VALUES (?, 'request', ?, ?, ?, '10-12', 'v4', 'escalation', 'clear_no', ?, ?)
+    `).run(
+      `decision-${requestId}`,
+      requestId,
+      USER_ID,
+      `https://www.youtube.com/watch?v=${requestId}`,
+      OTHER_USER_ID,
+      new Date().toISOString(),
+    );
+  }
+
+  function insertSpotCheck(subjectType: 'request' | 'candidate', subjectId: string): void {
+    db.prepare(`
+      INSERT INTO guard_spot_checks
+        (day, subject_type, subject_id, user_id, source, guard_verdict, created_at)
+      VALUES (?, ?, ?, ?, 'spot_check', 'clear_yes', ?)
+    `).run(new Date().toISOString().slice(0, 10), subjectType, subjectId, USER_ID, new Date().toISOString());
+  }
+
+  function requestExists(requestId: string): boolean {
+    return db.prepare('SELECT 1 FROM requests WHERE request_id = ?').get(requestId) !== undefined;
+  }
+
+  it('deletes an undecided request', async () => {
+    insertRequestRow({ request_id: 'del-plain', status: 'ready' });
+
+    const resp = await request('DELETE', '/requests/del-plain');
+
+    expect(resp.status).toBe(204);
+    expect(requestExists('del-plain')).toBe(false);
+  });
+
+  it('refuses a decided request with 409 and keeps the row', async () => {
+    insertRequestRow({ request_id: 'del-decided', status: 'rejected' });
+    insertDecision('del-decided');
+
+    const resp = await request('DELETE', '/requests/del-decided');
+
+    expect(resp.status).toBe(409);
+    expect(requestExists('del-decided')).toBe(true);
+  });
+
+  it('refuses a request drawn as a spot check with 409 and keeps the row', async () => {
+    insertRequestRow({ request_id: 'del-drawn', status: 'ready' });
+    insertSpotCheck('request', 'del-drawn');
+
+    const resp = await request('DELETE', '/requests/del-drawn');
+
+    expect(resp.status).toBe(409);
+    expect(requestExists('del-drawn')).toBe(true);
+  });
+
+  it('re-checks after cancelling the queue job: a request drawn meanwhile is kept', async () => {
+    insertRequestRow({ request_id: 'del-race', status: 'downloading' });
+    db.prepare(`
+      INSERT INTO guard_eval (eval_id, request_id, url, gemma_verdict, created_at)
+      VALUES ('eval-del-race', 'del-race', 'https://www.youtube.com/watch?v=del-race', 'clear_yes', ?)
+    `).run(new Date().toISOString());
+    vi.mocked(downloadQueue.getJob).mockImplementationOnce(async () => {
+      insertSpotCheck('request', 'del-race');
+      return undefined;
+    });
+
+    const resp = await request('DELETE', '/requests/del-race');
+
+    expect(resp.status).toBe(409);
+    expect(requestExists('del-race')).toBe(true);
+    expect(db.prepare('SELECT 1 FROM guard_eval WHERE request_id = ?').get('del-race')).toBeDefined();
+  });
+
+  it('only protects request subjects, not a candidate with the same id', async () => {
+    insertRequestRow({ request_id: 'del-shared-id', status: 'ready' });
+    insertSpotCheck('candidate', 'del-shared-id');
+
+    const resp = await request('DELETE', '/requests/del-shared-id');
+
+    expect(resp.status).toBe(204);
+    expect(requestExists('del-shared-id')).toBe(false);
   });
 });

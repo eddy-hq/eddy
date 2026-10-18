@@ -35,8 +35,13 @@ async function cancelRequest(id: string): Promise<void> {
   if (!res.ok && res.status !== 409) throw new Error(`Cancel failed: ${res.status}`);
 }
 
+// DELETE answers 409 when the request is a guard label (a parent decision or
+// a drawn spot check): the row is kept so the guard harness can replay it.
+class KeptAsLabelError extends Error {}
+
 async function deleteRequest(id: string): Promise<void> {
   const res = await fetch(`/requests/${id}`, { method: 'DELETE' });
+  if (res.status === 409) throw new KeptAsLabelError('Kept: this is a guard label.');
   if (!res.ok) throw new Error(`Delete failed: ${res.status}`);
 }
 
@@ -91,6 +96,7 @@ function PipelineRow({
   onAction: () => void;
 }) {
   const [busy, setBusy] = useState<'cancel' | 'delete' | 'retry' | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const isActive = ['downloading', 'guard_review', 'parent_review', 'pending', 'approved'].includes(item.status);
   const isRetryable = RETRYABLE.has(item.status);
 
@@ -102,8 +108,12 @@ function PipelineRow({
 
   async function handleDelete() {
     setBusy('delete');
+    setNotice(null);
     try { await deleteRequest(item.request_id); onAction(); }
-    catch { setBusy(null); }
+    catch (err) {
+      setBusy(null);
+      setNotice(err instanceof KeptAsLabelError ? err.message : 'Could not delete.');
+    }
   }
 
   async function handleRetry() {
@@ -148,6 +158,7 @@ function PipelineRow({
           {item.jobState ? ` · queue: ${item.jobState}` : ''}
           {item.rejection_reason ? ` · ${item.rejection_reason}` : ''}
         </p>
+        {notice && <p style={{ color: 'var(--dismiss)', fontSize: 13, marginTop: 3 }}>{notice}</p>}
       </div>
 
       {/* Actions */}

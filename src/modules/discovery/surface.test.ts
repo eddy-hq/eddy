@@ -17,6 +17,7 @@ vi.mock('../../logger', () => ({
 
 vi.mock('../../queue', () => ({
   redis: {},
+  interestsQueue: { add: vi.fn() },
   discoveryQueue: { add: vi.fn() },
   guardQueue: {},
   downloadQueue: {},
@@ -32,6 +33,7 @@ vi.mock('../../ytdlp', () => ({
 import { db } from '../../db/client';
 import { runMigrations } from '../../db/migrate';
 import { surfaceForToday, readScoredCandidatesByBucket } from './surface';
+import { removeUserInterest } from '../interests';
 
 // Role-blind default cap (ADR-0009). surfaceForToday now takes the per-user
 // cap as a third argument; tests pass it explicitly.
@@ -533,5 +535,74 @@ describe('readScoredCandidatesByBucket — kid guard recheck covers every bucket
 
     const rows = readScoredCandidatesByBucket(KID_USER_ID, 1);
     expect(rows.map((r) => r.candidate_id)).toEqual(['sub-needs-guard']);
+  });
+});
+
+// removeUserInterest keeps a candidate a parent has decided on (the guard
+// harness needs its inputs, ADR-0019), but the kept row must never reach the
+// kid's slate: a subscription ranks at full weight whatever its interest's
+// rank, so only the query-level live-interest exclusion keeps it out.
+describe('surfaceForToday — candidates tagged with a removed interest', () => {
+  const REMOVABLE_INTEREST = '99999999-9999-7999-8999-999999999999';
+
+  beforeAll(() => {
+    db.prepare(`
+      INSERT INTO interests (id, label, search_terms, category, source)
+      VALUES (?, 'kites', '["x"]', 'tech', 'seed')
+    `).run(REMOVABLE_INTEREST);
+  });
+
+  beforeEach(() => {
+    db.exec('DELETE FROM guard_decisions');
+    db.prepare(`
+      INSERT OR REPLACE INTO user_interests (user_id, interest_id, rank, expertise, liked, added_at)
+      VALUES (?, ?, 7, 'comfortable', 1, ?)
+    `).run(KID_USER_ID, REMOVABLE_INTEREST, new Date().toISOString());
+    insertCandidate({
+      candidateId: 'kept-sub', sourceType: 'subscription',
+      guardVerdict: 'clear_yes', interestId: REMOVABLE_INTEREST,
+    });
+    db.prepare(`
+      INSERT INTO guard_decisions
+        (decision_id, subject_type, subject_id, user_id, url, age_band,
+         rubric_version, source, human_verdict, decided_by, decided_at)
+      VALUES ('decision-kept-sub', 'candidate', 'kept-sub', ?, ?, '10-12', 'v4',
+              'spot_check', 'clear_yes', ?, ?)
+    `).run(
+      KID_USER_ID, 'https://www.youtube.com/watch?v=kept-sub',
+      ADULT_USER_ID, new Date().toISOString(),
+    );
+  });
+
+  it('surfaces a decided clear_yes subscription while its interest is still declared', () => {
+    const ids = surfaceForToday(KID_USER_ID, true, CAP).map((v) => v.candidate.candidateId);
+    expect(ids).toContain('kept-sub');
+  });
+
+  it('does not surface the same candidate once the interest is removed, though the row is kept', () => {
+    removeUserInterest(KID_USER_ID, REMOVABLE_INTEREST);
+
+    const kept = db.prepare('SELECT status FROM candidate_pool WHERE candidate_id = ?')
+      .get('kept-sub') as { status: string } | undefined;
+    expect(kept?.status).toBe('scored');
+
+    const ids = surfaceForToday(KID_USER_ID, true, CAP).map((v) => v.candidate.candidateId);
+    expect(ids).not.toContain('kept-sub');
+  });
+
+  it('still surfaces a candidate with no interest_id', () => {
+    removeUserInterest(KID_USER_ID, REMOVABLE_INTEREST);
+    insertCandidate({ candidateId: 'no-interest-sub', sourceType: 'subscription', guardVerdict: 'clear_yes' });
+
+    const ids = surfaceForToday(KID_USER_ID, true, CAP).map((v) => v.candidate.candidateId);
+    expect(ids).toContain('no-interest-sub');
+  });
+
+  it('leaves the removed-interest candidate out of the kid guard recheck', () => {
+    removeUserInterest(KID_USER_ID, REMOVABLE_INTEREST);
+    db.prepare('UPDATE candidate_pool SET guard_verdict = NULL WHERE candidate_id = ?').run('kept-sub');
+
+    const rows = readScoredCandidatesByBucket(KID_USER_ID, 5);
+    expect(rows.map((r) => r.candidate_id)).not.toContain('kept-sub');
   });
 });
