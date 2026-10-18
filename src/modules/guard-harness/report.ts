@@ -193,8 +193,14 @@ export interface PromptUncertainRate {
   interval: Interval | null;
 }
 
-// The uncertain rate the live guard actually ran at, per prompt version, from
-// every guard_eval row written in the last `days` days. Counts only.
+// The uncertain rate per prompt version over every guard_eval row written in
+// the last `days` days. Counts only.
+//
+// Not live traffic alone: guard:rerun-parked writes its offline re-runs to
+// guard_eval under the same prompt versions (even without --apply), and no
+// column tells them apart. A re-run of a selected backlog therefore moves
+// this figure without any live verdict changing. The CLI says so; filtering
+// them out needs provenance on guard_eval, which is a migration.
 export function liveUncertainRates(
   source: Database,
   now: Date,

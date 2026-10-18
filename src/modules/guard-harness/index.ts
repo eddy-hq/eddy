@@ -120,7 +120,8 @@ export function latestDatasetPath(databasePath: string): string {
   return path.join(dir, latest);
 }
 
-// The live guard's uncertain rate per prompt version over the last 14 days,
+// The uncertain rate of every recorded guard verdict per prompt version over
+// the last 14 days (offline re-runs included; see liveUncertainRates),
 // from guard_eval. Opens the DB read-only.
 export function liveUncertainRatesFromFile(databasePath: string, now: Date = new Date()): PromptUncertainRate[] {
   const source = openReadOnlyDatabase(databasePath);

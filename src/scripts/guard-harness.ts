@@ -41,9 +41,11 @@
  *             calls) on the same safety rules, split by prompt family (every
  *             'v4' version as the rubric family), label source, holdout and
  *             inputs. Precision for the clear verdicts only: the uncertain
- *             rate can't be read from decisions, so the live rate per prompt
- *             version over the last 14 days is read from guard_eval instead
- *             (DB opened read-only). Adds a conservative clear-yes precision
+ *             rate can't be read from decisions, so the rate over every
+ *             verdict recorded in guard_eval in the last 14 days is printed
+ *             per prompt version instead (DB opened read-only). That
+ *             includes offline re-runs (guard:rerun-parked), which guard_eval
+ *             can't tell apart from live verdicts. Adds a conservative clear-yes precision
  *             counting every Block, any kind, as a miss.
  *
  * Output is counts and metrics only — no titles, channels or reasons
@@ -333,8 +335,10 @@ function liveReportCommand(args: Args): void {
   for (const [k, s] of Object.entries(r.byLabelSource)) console.log(liveLine(k, s));
 
   console.log('\nThe uncertain rate cannot be read from decisions: every escalation is decided, but clear');
-  console.log('verdicts are only sampled. Instead, the live rate per prompt version, from guard_eval');
-  console.log(`over the last ${LIVE_UNCERTAIN_DAYS} days:`);
+  console.log('verdicts are only sampled. Instead, the rate per prompt version over every verdict');
+  console.log(`recorded in guard_eval in the last ${LIVE_UNCERTAIN_DAYS} days. Not live traffic alone: offline`);
+  console.log('re-runs (guard:rerun-parked) write there under the same prompt versions and cannot be');
+  console.log('told apart, so a backlog re-run moves this figure without any live verdict changing.');
   const rates = liveUncertainRatesFromFile(config.DATABASE_PATH);
   if (rates.length === 0) console.log('  no guard verdicts in that window');
   for (const u of rates) {

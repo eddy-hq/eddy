@@ -146,7 +146,7 @@ describe('liveReport', () => {
 });
 
 describe('liveUncertainRates', () => {
-  it('counts uncertain verdicts per prompt version over the last 14 days', () => {
+  it('counts uncertain verdicts per prompt version over the last 14 days, offline re-runs included', () => {
     const db = new Database(':memory:');
     try {
       const migrations = path.join(__dirname, '../../db/migrations');
@@ -171,6 +171,15 @@ describe('liveUncertainRates', () => {
       ]);
       expect(rates[0]!.rate).toBeCloseTo(0.25);
       expect(rates[0]!.interval!.low).toBeLessThan(0.25);
+
+      // An offline re-run (guard:rerun-parked) writes a row shaped exactly
+      // like a live candidate verdict, so it is counted: the CLI labels the
+      // figure as every recorded verdict, not live traffic alone.
+      db.prepare(`
+        INSERT INTO guard_eval (eval_id, url, gemma_verdict, prompt_version, request_type, user_id, candidate_id, created_at)
+        VALUES ('e-rerun', 'https://example.invalid/x', 'uncertain', 'candidate-v4.1', 'candidate', 'kid_1', 'c-parked', ?)
+      `).run('2026-10-18T06:00:00.000Z');
+      expect(liveUncertainRates(db, now)[0]).toMatchObject({ promptVersion: 'candidate-v4.1', total: 5, uncertain: 2 });
     } finally {
       db.close();
     }
