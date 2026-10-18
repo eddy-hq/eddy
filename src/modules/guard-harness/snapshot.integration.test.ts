@@ -19,7 +19,7 @@ vi.mock('../../logger', () => ({
 import { db } from '../../db/client';
 import { runMigrations } from '../../db/migrate';
 import { buildSnapshot, channelHistoryAsOf, summariseDataset } from './snapshot';
-import { HOLDOUT_PERCENT, isHoldout, parseHarnessItem } from './util';
+import { HOLDOUT_PERCENT, isHoldout, parseHarnessItem, type RecoveredInput } from './util';
 
 const KID_1 = '11111111-1111-7111-8111-111111111111';
 const KID_2 = '22222222-2222-7222-8222-222222222222';
@@ -43,6 +43,7 @@ beforeAll(() => {
 beforeEach(() => {
   db.exec('DELETE FROM guard_decision_revisions');
   db.exec('DELETE FROM guard_decisions');
+  db.exec('DELETE FROM guard_eval');
   db.exec('DELETE FROM candidate_pool');
   db.exec('DELETE FROM requests');
   db.exec('DELETE FROM video_metadata');
@@ -81,14 +82,22 @@ function seedMetadata(yt: string, opts: { ageRestricted?: boolean; madeForKids?:
 
 function seedDecision(id: string, subjectType: 'candidate' | 'request', subjectId: string, opts: {
   yt?: string | null; label?: 'clear_yes' | 'clear_no'; decidedAt?: string; blockKind?: 'unsafe' | 'not_for_us' | null;
+  evalId?: string | null;
 } = {}): void {
   db.prepare(`
     INSERT INTO guard_decisions (decision_id, subject_type, subject_id, user_id, url, youtube_id, age_band,
                                  rubric_version, source, guard_verdict, human_verdict, decided_by, decided_at,
-                                 block_kind)
-    VALUES (?, ?, ?, ?, 'https://example.invalid/placeholder', ?, '10-12', 'rubric-v1.3', 'escalation', 'uncertain', ?, ?, ?, ?)
+                                 block_kind, eval_id)
+    VALUES (?, ?, ?, ?, 'https://example.invalid/placeholder', ?, '10-12', 'rubric-v1.3', 'escalation', 'uncertain', ?, ?, ?, ?, ?)
   `).run(id, subjectType, subjectId, KID_1, opts.yt === undefined ? `yt-${subjectId}` : opts.yt,
-    opts.label ?? 'clear_yes', PARENT, opts.decidedAt ?? DECIDED_AT, opts.blockKind ?? null);
+    opts.label ?? 'clear_yes', PARENT, opts.decidedAt ?? DECIDED_AT, opts.blockKind ?? null, opts.evalId ?? null);
+}
+
+function recoveredInput(decisionId: string, youtubeId: string, opts: { title?: string; channel?: string } = {}): RecoveredInput {
+  return {
+    decisionId, youtubeId, title: opts.title ?? 'Recovered title', channel: opts.channel ?? 'Recovered channel',
+    channelId: 'UC-placeholder', fetchedAt: AFTER,
+  };
 }
 
 describe('channel history as of the decision', () => {
@@ -369,5 +378,80 @@ describe('block kinds (#227)', () => {
     } finally {
       old.close();
     }
+  });
+});
+
+describe('recovered inputs', () => {
+  it('builds a pruned candidate from its recovered input and video_metadata', () => {
+    seedMetadata('yt-gone', { madeForKids: false });
+    seedDecision('d1', 'candidate', 'c-gone', { yt: 'yt-gone', label: 'clear_no' });
+    seedRequest('r-recovered-channel', { channel: 'Recovered channel', decidedAt: BEFORE });
+    seedRequest('r-other-channel', { decidedAt: BEFORE });
+
+    const r = buildSnapshot(db, new Map([['d1', recoveredInput('d1', 'yt-gone')]]));
+    expect(r.dropped.subject_missing).toBe(0);
+    expect(r.items).toHaveLength(1);
+    expect(r.items[0]).toMatchObject({
+      itemId: 'd1', inputs: 'recovered', title: 'Recovered title', channel: 'Recovered channel',
+      tags: ['tag-a', 'tag-b'], categoryId: '27', madeForKids: false,
+      // History with the recovered channel only.
+      channelHistory: { approved: 1, rejected: 0 },
+    });
+  });
+
+  it('finds metadata by the recovered id when the decision has none', () => {
+    seedMetadata('yt-gone');
+    seedDecision('d1', 'candidate', 'c-gone', { yt: null });
+    const r = buildSnapshot(db, new Map([['d1', recoveredInput('d1', 'yt-gone')]]));
+    expect(r.items.map((i) => i.itemId)).toEqual(['d1']);
+  });
+
+  it('marks items from their own row as original, and counts only unrecovered ones as subject_missing', () => {
+    seedCandidate('c-ok');
+    seedMetadata('yt-c-ok');
+    seedDecision('d-ok', 'candidate', 'c-ok');
+    seedMetadata('yt-gone');
+    seedDecision('d-recovered', 'candidate', 'c-gone', { yt: 'yt-gone' });
+    seedDecision('d-lost', 'candidate', 'c-lost');
+    // A recovered input with a blank title is no title, and one without
+    // metadata is no metadata.
+    seedDecision('d-blank', 'candidate', 'c-blank', { yt: 'yt-blank' });
+    seedDecision('d-nometa', 'candidate', 'c-nometa', { yt: 'yt-nometa' });
+
+    const r = buildSnapshot(db, new Map([
+      ['d-recovered', recoveredInput('d-recovered', 'yt-gone')],
+      ['d-blank', recoveredInput('d-blank', 'yt-blank', { title: '  ' })],
+      ['d-nometa', recoveredInput('d-nometa', 'yt-nometa')],
+    ]));
+    expect(r.items.map((i) => [i.itemId, i.inputs])).toEqual([['d-ok', 'original'], ['d-recovered', 'recovered']]);
+    expect(r.dropped).toEqual({ subject_missing: 1, no_title: 1, no_metadata: 1 });
+    expect(summariseDataset(r.items).byInputs).toEqual({ original: 1, recovered: 1 });
+  });
+
+  it('reads a dataset line frozen before recovery as original inputs with no live prompt version', () => {
+    const line = { itemId: 'd1', label: 'clear_yes', title: 't', ageBand: '10-12', holdout: false, tags: [], channelHistory: null };
+    expect(parseHarnessItem(line, 1)).toMatchObject({ inputs: 'original', livePromptVersion: null });
+    expect(() => parseHarnessItem({ ...line, inputs: 'guessed' }, 1)).toThrow(/inputs/);
+  });
+});
+
+describe('live prompt version', () => {
+  it("records the prompt version of the decision's eval row, null when there is none", () => {
+    db.prepare(`
+      INSERT INTO guard_eval (eval_id, url, gemma_verdict, prompt_version, created_at)
+      VALUES ('e1', 'https://example.invalid/placeholder', 'uncertain', 'candidate-v4.1', ?)
+    `).run(BEFORE);
+    seedCandidate('c1');
+    seedMetadata('yt-c1');
+    seedDecision('d1', 'candidate', 'c1', { evalId: 'e1' });
+    seedCandidate('c2');
+    seedMetadata('yt-c2');
+    seedDecision('d2', 'candidate', 'c2');
+    seedCandidate('c3');
+    seedMetadata('yt-c3');
+    seedDecision('d3', 'candidate', 'c3', { evalId: 'e-missing' });
+    expect(buildSnapshot(db).items.map((i) => [i.itemId, i.livePromptVersion, i.guardVerdict])).toEqual([
+      ['d1', 'candidate-v4.1', 'uncertain'], ['d2', null, 'uncertain'], ['d3', null, 'uncertain'],
+    ]);
   });
 });

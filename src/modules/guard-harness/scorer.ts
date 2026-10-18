@@ -103,3 +103,47 @@ export function scoreSafety(items: readonly LabelledVerdict[]): {
   }
   return { ...scorePairs(pairs), excluded };
 }
+
+// ── Confidence intervals ─────────────────────────────────────────────────────
+
+export interface Interval {
+  low: number;
+  high: number;
+}
+
+// z for a two-sided 95% interval.
+const Z95 = 1.959963984540054;
+
+// Wilson score interval for a proportion: successes out of n. Stays inside
+// [0, 1] and behaves on small counts and at 0% or 100%, where the normal
+// approximation collapses to a point. Null when n is zero.
+export function wilsonInterval(successes: number, n: number, z: number = Z95): Interval | null {
+  if (n <= 0) return null;
+  const p = successes / n;
+  const z2 = z * z;
+  const denom = 1 + z2 / n;
+  const centre = (p + z2 / (2 * n)) / denom;
+  const half = (z * Math.sqrt((p * (1 - p)) / n + z2 / (4 * n * n))) / denom;
+  // Exact at the edges, where floating point would leave 1e-16 off.
+  return {
+    low: successes <= 0 ? 0 : Math.max(0, centre - half),
+    high: successes >= n ? 1 : Math.min(1, centre + half),
+  };
+}
+
+export interface MetricIntervals {
+  clearYesPrecision: Interval | null;
+  clearNoPrecision: Interval | null;
+  uncertainRate: Interval | null;
+}
+
+// Wilson 95% intervals for the three metrics, on the same numerators and
+// denominators as metricsFromMatrix.
+export function metricIntervals(m: ConfusionMatrix): MetricIntervals {
+  const total = GUARD_VERDICTS.reduce((sum, v) => sum + rowTotal(m, v), 0);
+  return {
+    clearYesPrecision: wilsonInterval(m.clear_yes.clear_yes, rowTotal(m, 'clear_yes')),
+    clearNoPrecision: wilsonInterval(m.clear_no.clear_no, rowTotal(m, 'clear_no')),
+    uncertainRate: wilsonInterval(rowTotal(m, 'uncertain'), total),
+  };
+}

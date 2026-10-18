@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
   confusionMatrix,
+  metricIntervals,
   metricsFromMatrix,
   safetyLabel,
   scorePairs,
   scoreSafety,
+  wilsonInterval,
   type LabelledVerdict,
   type ScoredPair,
 } from './scorer';
@@ -103,5 +105,34 @@ describe('safety scoring (#227)', () => {
     const r = scoreSafety(labelled([['clear_yes', 'clear_no', 'not_for_us', 2], ['clear_no', 'clear_no', null, 1]]));
     expect(r.excluded).toEqual({ notForUs: 2, unrecorded: 1 });
     expect(r.metrics).toEqual({ total: 0, clearYesPrecision: null, clearNoPrecision: null, uncertainRate: null });
+  });
+});
+
+describe('Wilson intervals', () => {
+  it('matches known 95% intervals, including at 0% and 100%', () => {
+    const mid = wilsonInterval(5, 10)!;
+    expect(mid.low).toBeCloseTo(0.2366, 4);
+    expect(mid.high).toBeCloseTo(0.7634, 4);
+    const none = wilsonInterval(0, 10)!;
+    expect(none.low).toBe(0);
+    expect(none.high).toBeCloseTo(0.2775, 4);
+    const all = wilsonInterval(10, 10)!;
+    expect(all.low).toBeCloseTo(0.7225, 4);
+    expect(all.high).toBe(1);
+  });
+
+  it('is null with no denominator', () => {
+    expect(wilsonInterval(0, 0)).toBeNull();
+  });
+
+  it('gives each metric its interval on the same counts', () => {
+    const m = confusionMatrix(pairs([
+      ['clear_yes', 'clear_yes', 19], ['clear_yes', 'clear_no', 1],
+      ['uncertain', 'clear_yes', 5],
+    ]));
+    const i = metricIntervals(m);
+    expect(i.clearYesPrecision).toEqual(wilsonInterval(19, 20));
+    expect(i.clearNoPrecision).toBeNull();
+    expect(i.uncertainRate).toEqual(wilsonInterval(5, 25));
   });
 });
