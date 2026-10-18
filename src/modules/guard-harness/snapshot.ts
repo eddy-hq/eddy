@@ -15,13 +15,14 @@
 // lives here rather than as a read helper in each owner.
 import type { Database } from 'better-sqlite3';
 import type { ChannelHistory } from '../guard/index';
-import { isHoldout, type BlockKind, type HarnessItem, type HumanLabel } from './util';
+import { isHoldout, type BlockKind, type HarnessItem, type HumanLabel, type ItemInputs, type RecoveredInput } from './util';
 
 export type DropReason = 'subject_missing' | 'no_title' | 'no_metadata';
 
 export interface SnapshotResult {
   items: HarnessItem[];
   decisions: number;
+  // subject_missing counts only items with no recovered input.
   dropped: Record<DropReason, number>;
 }
 
@@ -35,6 +36,7 @@ interface DecisionRow {
   rubric_version: string;
   source: string;
   guard_verdict: string | null;
+  live_prompt_version: string | null;
   human_verdict: HumanLabel;
   block_kind: BlockKind | null;
   decided_at: string;
@@ -53,6 +55,8 @@ interface DecisionRow {
   vm_age_restricted: number | null;
   vm_made_for_kids: number | null;
 }
+
+type MetadataRow = Pick<DecisionRow, 'vm_description' | 'vm_tags_json' | 'vm_category_id' | 'vm_age_restricted' | 'vm_made_for_kids'>;
 
 function parseTags(json: string | null): string[] {
   if (!json) return [];
@@ -128,6 +132,7 @@ function selectDecisions(source: Database): DecisionRow[] {
   return source.prepare(`
     SELECT d.decision_id, d.subject_type, d.subject_id, d.user_id, d.youtube_id, d.age_band,
            d.rubric_version, d.source, d.guard_verdict, d.human_verdict, d.decided_at,
+           ge.prompt_version                                        AS live_prompt_version,
            ${kinds ? 'd.block_kind' : 'NULL'}                       AS block_kind,
            ${latest('human_verdict')}                               AS revised_verdict,
            ${revisionKinds ? latest('block_kind') : 'NULL'}         AS revised_block_kind,
@@ -145,6 +150,7 @@ function selectDecisions(source: Database): DecisionRow[] {
     LEFT JOIN candidate_pool cp ON d.subject_type = 'candidate' AND cp.candidate_id = d.subject_id
     LEFT JOIN requests r        ON d.subject_type = 'request'   AND r.request_id   = d.subject_id
     LEFT JOIN video_metadata vm ON vm.youtube_id = COALESCE(d.youtube_id, cp.external_id, r.youtube_id)
+    LEFT JOIN guard_eval ge     ON ge.eval_id = d.eval_id
     WHERE d.human_verdict IN ('clear_yes', 'clear_no')
     ORDER BY d.decided_at ASC, d.decision_id ASC
   `).all() as DecisionRow[];
@@ -157,28 +163,55 @@ function currentBlockKind(row: DecisionRow): BlockKind | null {
   return (revised ? row.revised_block_kind : row.block_kind) ?? null;
 }
 
+function metadataFor(source: Database, youtubeId: string): MetadataRow | undefined {
+  return source.prepare(`
+    SELECT description AS vm_description, tags_json AS vm_tags_json, category_id AS vm_category_id,
+           age_restricted AS vm_age_restricted, made_for_kids AS vm_made_for_kids
+    FROM video_metadata WHERE youtube_id = ?
+  `).get(youtubeId) as MetadataRow | undefined;
+}
+
 // Build the dataset from a read-only source. Items without what the candidate
-// guard needs — the subject row, a title, a video_metadata row — are dropped
-// and counted by reason.
-export function buildSnapshot(source: Database): SnapshotResult {
+// guard needs — the subject row (or a recovered input for a pruned
+// candidate), a title, a video_metadata row — are dropped and counted by
+// reason. `recovered` is keyed by decision id.
+export function buildSnapshot(
+  source: Database,
+  recovered: ReadonlyMap<string, RecoveredInput> = new Map(),
+): SnapshotResult {
   const dropped: Record<DropReason, number> = { subject_missing: 0, no_title: 0, no_metadata: 0 };
   const items: HarnessItem[] = [];
   const rows = selectDecisions(source);
 
   for (const row of rows) {
-    if (!row.subject_found) { dropped.subject_missing += 1; continue; }
-    const title = row.title?.trim() ?? '';
+    let inputs: ItemInputs = 'original';
+    let rawTitle = row.title;
+    let rawChannel = row.channel;
+    let youtubeId = row.item_youtube_id;
+    let meta: MetadataRow | undefined = row.vm_found ? row : undefined;
+    if (!row.subject_found) {
+      const r = row.subject_type === 'candidate' ? recovered.get(row.decision_id) : undefined;
+      if (!r) { dropped.subject_missing += 1; continue; }
+      inputs = 'recovered';
+      rawTitle = r.title;
+      rawChannel = r.channel;
+      // The recovered video is the decided one; look its metadata up by it
+      // when the decision's own id found none.
+      youtubeId = row.item_youtube_id ?? r.youtubeId;
+      if (!meta) meta = metadataFor(source, youtubeId);
+    }
+    const title = rawTitle?.trim() ?? '';
     if (!title) { dropped.no_title += 1; continue; }
-    if (!row.vm_found) { dropped.no_metadata += 1; continue; }
+    if (!meta) { dropped.no_metadata += 1; continue; }
 
-    const channel = row.channel?.trim() || null;
+    const channel = rawChannel?.trim() || null;
     const channelHistory = channel
       ? channelHistoryAsOf(source, {
         userId: row.user_id,
         channel,
         asOf: row.decided_at,
         excludeRequestId: row.subject_type === 'request' ? row.subject_id : null,
-        excludeYoutubeId: row.item_youtube_id,
+        excludeYoutubeId: youtubeId,
       })
       : null;
 
@@ -196,6 +229,8 @@ export function buildSnapshot(source: Database): SnapshotResult {
       decisionSource: row.source,
       rubricVersion: row.rubric_version,
       guardVerdict: row.guard_verdict,
+      livePromptVersion: row.live_prompt_version ?? null,
+      inputs,
       decidedAt: row.decided_at,
       holdout: isHoldout(row.decision_id),
       ageBand: row.age_band,
@@ -203,11 +238,11 @@ export function buildSnapshot(source: Database): SnapshotResult {
       channel,
       // The second pass's fallback: the request's own description when the
       // Data API row has none.
-      description: row.vm_description ?? row.request_description ?? null,
-      tags: parseTags(row.vm_tags_json),
-      categoryId: row.vm_category_id,
-      madeForKids: row.vm_made_for_kids === null ? null : row.vm_made_for_kids === 1,
-      ageRestricted: row.vm_age_restricted === 1,
+      description: meta.vm_description ?? row.request_description ?? null,
+      tags: parseTags(meta.vm_tags_json),
+      categoryId: meta.vm_category_id,
+      madeForKids: meta.vm_made_for_kids === null ? null : meta.vm_made_for_kids === 1,
+      ageRestricted: meta.vm_age_restricted === 1,
       channelHistory,
     });
   }
@@ -225,10 +260,13 @@ export function summariseDataset(items: readonly HarnessItem[]): {
   // Blocks by kind: unsafe, not_for_us, unrecorded.
   byBlockKind: Record<string, number>;
   bySubjectType: Record<string, number>;
+  // Where the title and channel came from: original or recovered.
+  byInputs: Record<string, number>;
 } {
   const byLabel: Record<string, number> = {};
   const byBlockKind: Record<string, number> = {};
   const bySubjectType: Record<string, number> = {};
+  const byInputs: Record<string, number> = {};
   let holdout = 0;
   let revised = 0;
   for (const item of items) {
@@ -238,8 +276,9 @@ export function summariseDataset(items: readonly HarnessItem[]): {
       byBlockKind[kind] = (byBlockKind[kind] ?? 0) + 1;
     }
     bySubjectType[item.subjectType] = (bySubjectType[item.subjectType] ?? 0) + 1;
+    byInputs[item.inputs] = (byInputs[item.inputs] ?? 0) + 1;
     if (item.holdout) holdout += 1;
     if (item.revisedAt) revised += 1;
   }
-  return { total: items.length, holdout, revised, byLabel, byBlockKind, bySubjectType };
+  return { total: items.length, holdout, revised, byLabel, byBlockKind, bySubjectType, byInputs };
 }

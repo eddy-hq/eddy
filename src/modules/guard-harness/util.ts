@@ -22,6 +22,9 @@ export type HumanLabel = 'clear_yes' | 'clear_no';
 // What a parent's Block meant (#227). Only 'unsafe' counts as clear-no in the
 // safety metrics; 'not_for_us' and an unrecorded kind are left out of them.
 export type BlockKind = 'unsafe' | 'not_for_us';
+// Where an item's title and channel came from: the candidate or request row
+// ('original'), or the Data API after that row was pruned ('recovered').
+export type ItemInputs = 'original' | 'recovered';
 
 // One parent decision, frozen with the inputs the guard would have seen when
 // the parent decided. `itemId` is the decision id.
@@ -43,6 +46,10 @@ export interface HarnessItem {
   // RUBRIC_VERSION and the guard verdict the subject carried when decided.
   rubricVersion: string;
   guardVerdict: string | null;
+  // guard_eval.prompt_version of the verdict the parent was shown (through
+  // guard_decisions.eval_id); null when the decision recorded no eval row.
+  livePromptVersion: string | null;
+  inputs: ItemInputs;
   decidedAt: string;
   holdout: boolean;
   ageBand: string;
@@ -97,7 +104,7 @@ export const THRESHOLDS = {
 } as const;
 
 // Share of decisions held out (never used as precedent; scored separately in
-// the next slice).
+// every report).
 export const HOLDOUT_PERCENT = 20;
 const HOLDOUT_SALT = 'guard-harness-holdout-v1';
 
@@ -133,6 +140,12 @@ export function inDiscoveryWindow(now: Date): boolean {
 // Harness files live beside the DB, e.g. ~/data/eddy/harness/.
 export function harnessDir(databasePath: string): string {
   return path.join(path.dirname(path.resolve(databasePath)), 'harness');
+}
+
+// Titles and channels fetched back from the Data API for decided candidates
+// whose candidate_pool row has since been pruned. Beside the datasets.
+export function recoveredInputsPath(databasePath: string): string {
+  return path.join(harnessDir(databasePath), 'recovered-inputs.jsonl');
 }
 
 export function datasetFileName(now: Date): string {
@@ -222,12 +235,70 @@ export function parseHarnessItem(raw: unknown, line: number): HarnessItem {
   const blockKind = raw['blockKind'];
   if (blockKind !== undefined && blockKind !== null && blockKind !== 'unsafe' && blockKind !== 'not_for_us') bad('blockKind');
   if (raw['label'] === 'clear_yes' && blockKind) bad('blockKind');
+  // Datasets frozen before recovery carry neither: every item in them came
+  // from its original row, and the live prompt version wasn't read.
+  const inputs = raw['inputs'];
+  if (inputs !== undefined && inputs !== 'original' && inputs !== 'recovered') bad('inputs');
+  const livePromptVersion = raw['livePromptVersion'];
+  if (livePromptVersion !== undefined && livePromptVersion !== null && typeof livePromptVersion !== 'string') {
+    bad('livePromptVersion');
+  }
   return {
     ...raw,
     firstPassLabel: firstPass ?? raw['label'],
     revisedAt: revisedAt ?? null,
     blockKind: blockKind ?? null,
+    inputs: inputs ?? 'original',
+    livePromptVersion: livePromptVersion ?? null,
   } as unknown as HarnessItem;
+}
+
+// One recovered input, keyed by decision id. Content (title, channel) lives
+// only in this file beside the DB; nothing prints it.
+export interface RecoveredInput {
+  decisionId: string;
+  youtubeId: string;
+  title: string;
+  channel: string;
+  channelId: string;
+  fetchedAt: string;
+}
+
+export function parseRecoveredInput(raw: unknown, line: number): RecoveredInput {
+  const bad = (field: string): never => {
+    throw new GuardHarnessError(`Recovered inputs line ${line} has an invalid ${field}`);
+  };
+  if (!isObject(raw)) return bad('shape');
+  for (const field of ['decision_id', 'youtube_id', 'title', 'channel', 'channel_id', 'fetched_at']) {
+    if (typeof raw[field] !== 'string') bad(field);
+  }
+  if (!raw['decision_id']) bad('decision_id');
+  return {
+    decisionId: raw['decision_id'] as string,
+    youtubeId: raw['youtube_id'] as string,
+    title: raw['title'] as string,
+    channel: raw['channel'] as string,
+    channelId: raw['channel_id'] as string,
+    fetchedAt: raw['fetched_at'] as string,
+  };
+}
+
+export function serialiseRecoveredInput(r: RecoveredInput): Record<string, string> {
+  return {
+    decision_id: r.decisionId,
+    youtube_id: r.youtubeId,
+    title: r.title,
+    channel: r.channel,
+    channel_id: r.channelId,
+    fetched_at: r.fetchedAt,
+  };
+}
+
+// Keyed by decision id; a later line for the same decision wins.
+export function readRecoveredInputs(file: string): Map<string, RecoveredInput> {
+  const out = new Map<string, RecoveredInput>();
+  for (const r of readJsonl(file, parseRecoveredInput)) out.set(r.decisionId, r);
+  return out;
 }
 
 export function parseHarnessResult(raw: unknown, line: number): HarnessResult {

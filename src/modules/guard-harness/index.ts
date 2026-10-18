@@ -1,35 +1,59 @@
 // Guard harness (brief §22 step 1, issue #220): measure a guard configuration
-// against the parent's decisions. Snapshot → run → report; see
+// against the parent's decisions. Recover → snapshot → run → report; see
 // src/scripts/guard-harness.ts for the CLI.
 import { existsSync, mkdirSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import { openReadOnlyDatabase } from '../../db/read-only';
+import { liveUncertainRates, type PromptUncertainRate } from './report';
 import { buildSnapshot, type SnapshotResult } from './snapshot';
-import { scoreSafety, type ConfusionMatrix, type LabelledVerdict, type Metrics, type SafetyExcluded } from './scorer';
 import {
   datasetFileName,
   GuardHarnessError,
   harnessDir,
   parseHarnessItem,
   readJsonl,
+  readRecoveredInputs,
+  recoveredInputsPath,
   writeJsonl,
   type HarnessItem,
-  type HarnessResult,
 } from './util';
 
 export { DEFAULT_ADAPTER, adapterNames, getAdapter } from './adapters';
+export { RECOVER_BATCH_SIZE, recoverInputs, selectMissingCandidates, type FetchVideos, type RecoverReport } from './recover';
+export {
+  LIVE_UNCERTAIN_DAYS,
+  RUBRIC_FAMILY,
+  SPLIT_NAMES,
+  liveReport,
+  liveUncertainRates,
+  promptFamily,
+  reportForAdapter,
+  scoreLive,
+  scoreSegment,
+  type AdapterReport,
+  type ConservativeClearYes,
+  type LiveReport,
+  type LiveScore,
+  type PromptUncertainRate,
+  type SafetyScore,
+  type Splits,
+} from './report';
 export { MAX_CONCURRENCY, readResults, runHarness, type RunReport } from './runner';
 export { buildSnapshot, channelHistoryAsOf, summariseDataset, type DropReason, type SnapshotResult } from './snapshot';
 export {
   GUARD_VERDICTS,
   HUMAN_LABELS,
   confusionMatrix,
+  metricIntervals,
   metricsFromMatrix,
   safetyLabel,
   scorePairs,
   scoreSafety,
+  wilsonInterval,
   type ConfusionMatrix,
+  type Interval,
   type LabelledVerdict,
+  type MetricIntervals,
   type Metrics,
   type SafetyExcluded,
   type SafetyLabel,
@@ -44,29 +68,34 @@ export {
   harnessDir,
   inDiscoveryWindow,
   isHoldout,
+  recoveredInputsPath,
   resultsPathFor,
   type AdapterJudgement,
   type BlockKind,
   type HarnessAdapter,
   type HarnessItem,
   type HarnessResult,
+  type ItemInputs,
+  type RecoveredInput,
 } from './util';
 
 // Snapshot the decisions in the DB at `databasePath` into a new dataset file
-// in the harness dir beside it. Opens the DB read-only. Refuses to overwrite
-// an existing dataset: a snapshot is frozen once written.
+// in the harness dir beside it, using any recovered inputs there. Opens the
+// DB read-only. Refuses to overwrite an existing dataset: a snapshot is
+// frozen once written.
 export function snapshotToFile(databasePath: string, now: Date = new Date()): SnapshotResult & { datasetPath: string } {
   const dir = harnessDir(databasePath);
   const datasetPath = path.join(dir, datasetFileName(now));
   if (existsSync(datasetPath)) {
     throw new GuardHarnessError(`${path.basename(datasetPath)} already exists — a snapshot is frozen once written`);
   }
+  const recovered = readRecoveredInputs(recoveredInputsPath(databasePath));
   const source = openReadOnlyDatabase(databasePath);
   let result: SnapshotResult;
   try {
     // One read transaction, so the decisions and the history they are
     // checked against come from the same moment.
-    result = source.transaction(() => buildSnapshot(source))();
+    result = source.transaction(() => buildSnapshot(source, recovered))();
   } finally {
     source.close();
   }
@@ -91,33 +120,14 @@ export function latestDatasetPath(databasePath: string): string {
   return path.join(dir, latest);
 }
 
-export interface AdapterReport {
-  adapterId: string;
-  datasetItems: number;
-  // Items with a result for this adapter, excluded ones included.
-  scored: number;
-  // The safety matrix and metrics: Allow and Unsafe labels only.
-  matrix: ConfusionMatrix;
-  metrics: Metrics;
-  // Scored items left out of the safety metrics: Not for us, and Blocks
-  // whose kind wasn't recorded.
-  excluded: SafetyExcluded;
-}
-
-// Score one adapter's cached results against the dataset's labels, on safety
-// only (#227). Results for items not in the dataset are ignored.
-export function reportForAdapter(
-  items: readonly HarnessItem[],
-  results: readonly HarnessResult[],
-  adapterId: string,
-): AdapterReport {
-  const verdicts = new Map<string, HarnessResult['verdict']>();
-  for (const r of results) if (r.adapterId === adapterId) verdicts.set(r.itemId, r.verdict);
-  const labelled: LabelledVerdict[] = [];
-  for (const item of items) {
-    const verdict = verdicts.get(item.itemId);
-    if (verdict) labelled.push({ verdict, label: item.label, blockKind: item.blockKind });
+// The uncertain rate of every recorded guard verdict per prompt version over
+// the last 14 days (offline re-runs included; see liveUncertainRates),
+// from guard_eval. Opens the DB read-only.
+export function liveUncertainRatesFromFile(databasePath: string, now: Date = new Date()): PromptUncertainRate[] {
+  const source = openReadOnlyDatabase(databasePath);
+  try {
+    return liveUncertainRates(source, now);
+  } finally {
+    source.close();
   }
-  const { matrix, metrics, excluded } = scoreSafety(labelled);
-  return { adapterId, datasetItems: items.length, scored: labelled.length, matrix, metrics, excluded };
 }

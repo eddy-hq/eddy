@@ -38,5 +38,10 @@ The rule: **a guard configuration replaces the incumbent only if it beats it on 
 ## Deferred
 
 - **More adapters.** Only the rubric guard is wired in; the older verdict prompt and off-the-shelf floor models are next.
-- **Scoring the holdout separately.** Items are marked; the report doesn't yet split them out.
 - **Retrieved precedents.** Past decisions shown to the guard as examples are designed, not built. The holdout is never to be used as precedent, so it stays an honest test.
+
+## Amended — 2026-10-18
+
+The first Deferred list included scoring the holdout separately. The report now does: both the replay report and a new live report give every figure for the holdout and the rest beside the overall one, with Wilson 95% intervals throughout, so that item is no longer deferred.
+
+Two gaps in the measurement are closed alongside it. Decided candidates whose candidate row had been pruned were dropped from the snapshot; `recover` now fetches their title and channel back from the Data API into a file beside the database, and the snapshot rebuilds them from it, marked as recovered inputs and reported separately, because a title or channel can have changed since the parent decided. And the report can now score the guard verdict each decision recorded at the time (`report --live`, no model calls), split by prompt family and label source. That report gives precision for clear verdicts only: escalations are all decided while clear verdicts are only sampled, so the uncertain rate is read from guard verdicts recorded over the last 14 days instead. Those include offline re-runs of the parked backlog, which write to the same table under the same prompt versions with nothing to tell them apart, so the report labels the figure as all recorded verdicts rather than live traffic alone. Nothing else in the decision changes.
