@@ -4,6 +4,7 @@ import { ValidationError, NotFoundError } from '../../errors';
 import { resolveUserById } from '../users';
 import { normalizeUserAddedInterest } from './normalize';
 import { getInferredInterests, suppressInferredInterest, keepInferredInterest } from './inferred';
+import { notDecidedOrDrawnSql } from '../decision-subjects';
 
 interface MineRow {
   interest_id: string;
@@ -38,7 +39,9 @@ interestsRouter.post('/select', (req: Request, res: Response) => {
 // Drop the interest from the user's profile and cascade to in-flight
 // candidates carrying that interest_id. Without the cascade those rows
 // linger as orphaned dead-weight in scoring (rank-999 against MIN_WEIGHTED)
-// — see issue #70. Surfaced/dismissed/requested rows are history and stay.
+// — see issue #70. Surfaced/dismissed/requested rows are history and stay,
+// and so does any candidate a parent has decided on or that is drawn as a spot
+// check: deleting it would orphan the label (ADR-0019, subject_missing).
 export function removeUserInterest(userId: string, interestId: string): void {
   const removeInterest = db.prepare(
     'DELETE FROM user_interests WHERE user_id = ? AND interest_id = ?'
@@ -47,6 +50,7 @@ export function removeUserInterest(userId: string, interestId: string): void {
     DELETE FROM candidate_pool
     WHERE user_id = ? AND interest_id = ?
       AND status IN ('pending', 'scored', 'guard_pending', 'guard_rejected')
+      AND ${notDecidedOrDrawnSql('candidate', 'candidate_pool.candidate_id')}
   `);
   db.transaction(() => {
     removeInterest.run(userId, interestId);

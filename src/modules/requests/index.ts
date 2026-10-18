@@ -3,13 +3,14 @@ import { v7 as uuidv7 } from 'uuid';
 import { z } from 'zod';
 import { db } from '../../db/client';
 import { logger } from '../../logger';
-import { ValidationError, NotFoundError } from '../../errors';
+import { ValidationError, NotFoundError, ConflictError } from '../../errors';
 import { config } from '../../config';
 import { downloadQueue, redis } from '../../queue';
 import { getNotifications } from '../notifications';
 import { resolveUserByIdOrName } from '../users';
 import { actorOf } from '../devices';
 import { toPublicMediaUrl } from '../media';
+import { notDecidedOrDrawnSql } from '../decision-subjects';
 // State machine lives in `./state` (pure dispatcher) with production wiring in
 // `./state-default` (default ports + `getRequestsState` accessor). The router
 // reaches `apply` via the accessor so the registered (or test-injected) state
@@ -492,13 +493,22 @@ requestsRouter.post('/admin/week-summaries/regenerate', async (req: Request, res
   res.json(result);
 });
 
-// DELETE /requests/:id — hard-delete a request record
+// DELETE /requests/:id — hard-delete a request record. Refused (409) when a
+// parent has decided on the request or it is drawn as a spot check: the row
+// and its guard_eval verdicts are the label's inputs (ADR-0019). Soft delete
+// (status 'deleted') still frees the file.
 requestsRouter.delete('/:id', async (req: Request, res: Response) => {
   const requestId = req.params['id'];
 
-  const row = db.prepare(`SELECT status FROM requests WHERE request_id = ?`).get(requestId) as
-    | { status: string } | undefined;
+  const row = db.prepare(`
+    SELECT status, ${notDecidedOrDrawnSql('request', 'requests.request_id')} AS deletable
+    FROM requests WHERE request_id = ?
+  `).get(requestId) as
+    | { status: string; deletable: number } | undefined;
   if (!row) throw new NotFoundError('request');
+  if (!row.deletable) {
+    throw new ConflictError('request has a parent decision or a drawn spot check; it is kept as a guard label');
+  }
 
   // If still active, cancel queue job first
   if (['downloading', 'guard_review', 'parent_review', 'pending', 'approved'].includes(row.status)) {

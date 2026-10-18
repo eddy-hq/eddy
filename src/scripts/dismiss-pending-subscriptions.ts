@@ -1,9 +1,11 @@
 // One-off cleanup: dismiss pending channel_subscription requests created before
-// the first-poll cap was introduced. Removes BullMQ jobs and DB rows.
+// the first-poll cap was introduced. Removes BullMQ jobs and DB rows. Rows a
+// parent has decided on or that are drawn as a spot check are kept as labels.
 import { db } from '../db/client';
 import { runMigrations } from '../db/migrate';
 import { downloadQueue } from '../queue';
 import { logger } from '../logger';
+import { notDecidedOrDrawnSql } from '../modules/decision-subjects';
 
 async function run(): Promise<void> {
   runMigrations();
@@ -12,6 +14,7 @@ async function run(): Promise<void> {
     SELECT request_id, channel, youtube_id
     FROM requests
     WHERE source = 'channel_subscription' AND status = 'pending'
+      AND ${notDecidedOrDrawnSql('request', 'requests.request_id')}
     ORDER BY channel, added_at
   `).all() as Array<{ request_id: string; channel: string; youtube_id: string }>;
 
