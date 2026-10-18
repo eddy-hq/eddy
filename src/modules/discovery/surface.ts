@@ -49,6 +49,7 @@ export function readScoredCandidatesByBucket(
       FROM candidate_pool
       WHERE user_id = ? AND status = 'scored' AND guard_verdict IS NULL
         AND ${notBlockedChannelSql('candidate_pool.channel_id', 'candidate_pool.channel')}
+        AND ${liveInterestSql('candidate_pool')}
     )
     SELECT candidate_id, title, url, channel, external_id FROM ranked WHERE rn <= ?
   `);
@@ -91,6 +92,23 @@ export function kidGuardClause(isKid: boolean): string {
   return isKid
     ? `AND c.guard_verdict = 'clear_yes' AND ${notBlockedChannelSql('c.channel_id', 'c.channel')}`
     : '';
+}
+
+// A candidate tagged with an interest the user has since removed never
+// surfaces. removeUserInterest deletes most such rows, but keeps any a parent
+// has decided on or that is drawn as a spot check (the guard harness needs
+// their inputs, ADR-0019). Those kept rows can still be status 'scored' with a
+// clear_yes verdict — or be put back there by a later Allow — and a
+// subscription or back-catalogue row ranks at full weight regardless of the
+// interest's rank, so without this they could reach a kid's slate. Excluding
+// at query time rather than changing the row's status means no later status
+// change can resurface them. Rows with no interest_id are unaffected. Shared
+// with the guard recheck and the preview so they agree with surfacing.
+export function liveInterestSql(alias: string): string {
+  return `(${alias}.interest_id IS NULL OR EXISTS (
+    SELECT 1 FROM user_interests live_ui
+    WHERE live_ui.user_id = ${alias}.user_id AND live_ui.interest_id = ${alias}.interest_id
+  ))`;
 }
 
 // Per-user slate size (ADR-0009). The numbers are role-blind — the only
@@ -146,6 +164,7 @@ export function surfaceForToday(userId: string, isKid: boolean, cap: number): Ve
     WHERE c.user_id = ? AND c.status = 'scored' ${eligibleGuard}
       AND c.surfaced_date IS NULL
       AND c.why_text IS NOT NULL
+      AND ${liveInterestSql('c')}
       AND NOT EXISTS (
         SELECT 1 FROM requests r
         WHERE r.user_id = c.user_id AND r.youtube_id = c.external_id
