@@ -298,7 +298,7 @@ export function agreement(human: HumanVerdict, guardVerdict: string | null): 'ag
 // Past decisions, re-checked and changed. A change is a revision: the first
 // answer stays recorded, the latest revision is the current answer.
 
-export type ReviewFilter = 'disagreements' | 'all';
+export type ReviewFilter = 'disagreements' | 'untagged' | 'all';
 export type RevisionEffect = 'removed' | 'blocked' | 'eligible' | 'label_only';
 
 export interface StoredReason {
@@ -324,11 +324,18 @@ export interface ReviewCard extends DecisionCard {
   decision: ReviewDecision;
 }
 
+// Untagged is absent from an older server.
+export interface ReviewCounts {
+  disagreements: number;
+  untagged?: number;
+  all: number;
+}
+
 export interface ReviewPage {
   filter: ReviewFilter;
   cards: ReviewCard[];
   reasons: ReasonOptions;
-  counts: { disagreements: number; all: number };
+  counts: ReviewCounts;
   nextOffset: number | null;
 }
 
@@ -343,8 +350,33 @@ export interface RevisionOutcome {
 
 export const REVIEW_FILTER_LABEL: Record<ReviewFilter, string> = {
   disagreements: 'Disagreements',
+  untagged: 'Untagged',
   all: 'All decisions',
 };
+
+export const REVIEW_FILTERS: readonly ReviewFilter[] = ['disagreements', 'untagged', 'all'];
+
+// The filter control's options. Untagged carries its count, so the parent
+// sees the backlog shrink as they tag.
+export function reviewFilterOptions(counts: ReviewCounts | undefined): Array<[ReviewFilter, string]> {
+  return REVIEW_FILTERS.map((f) => {
+    const n = f === 'untagged' ? counts?.untagged : undefined;
+    return [f, n === undefined ? REVIEW_FILTER_LABEL[f] : `${REVIEW_FILTER_LABEL[f]} (${n})`];
+  });
+}
+
+export function reviewEmptyText(filter: ReviewFilter): string {
+  switch (filter) {
+    case 'disagreements': return 'No disagreements with the guard.';
+    case 'untagged': return 'Every Block has its kind.';
+    case 'all': return 'No decisions yet.';
+  }
+}
+
+// A current Block with no kind recorded: what Untagged lists.
+export function isUntaggedBlock(decision: ReviewDecision): boolean {
+  return decision.verdict === 'clear_no' && (decision.blockKind ?? null) === null;
+}
 
 // The guard gave a clear verdict and the parent the other one. An uncertain
 // or missing guard verdict (an Escalation) is never a disagreement.
@@ -358,6 +390,7 @@ export function isDisagreement(guardVerdict: string | null, verdict: HumanVerdic
 export function matchesReviewFilter(card: ReviewCard, filter: ReviewFilter): boolean {
   if (filter === 'all') return true;
   const d = card.decision;
+  if (filter === 'untagged') return isUntaggedBlock(d);
   return isDisagreement(d.guardVerdict, d.firstVerdict) || isDisagreement(d.guardVerdict, d.verdict);
 }
 
@@ -437,6 +470,8 @@ export interface ReviewList {
   filter: ReviewFilter;
   cards: ReviewCard[];
   nextOffset: number | null;
+  // The summary counts, as of the first page and kept current as cards change.
+  counts: ReviewCounts;
 }
 
 // Only a different filter retires the list on screen: re-selecting the
@@ -446,7 +481,10 @@ export function isFilterSwitch(current: ReviewFilter, next: ReviewFilter): boole
 }
 
 export function freshReviewList(previous: ReviewList | null, page: ReviewPage): ReviewList {
-  return { loadId: (previous?.loadId ?? 0) + 1, filter: page.filter, cards: page.cards, nextOffset: page.nextOffset };
+  return {
+    loadId: (previous?.loadId ?? 0) + 1, filter: page.filter, cards: page.cards, nextOffset: page.nextOffset,
+    counts: page.counts,
+  };
 }
 
 // A changed card back into the list. When it leaves the filter, the server's
@@ -454,14 +492,45 @@ export function freshReviewList(previous: ReviewList | null, page: ReviewPage): 
 // back one (else the next unseen decision is skipped), and any page already
 // in flight, asked for at the old offset, is retired.
 export function reviseInList(list: ReviewList, updated: ReviewCard): ReviewList {
+  const before = list.cards.find((c) => c.key === updated.key);
+  const counts = before ? reviseCounts(list.counts, before, updated) : list.counts;
   const cards = applyRevision(list.cards, updated, list.filter);
-  if (cards.length === list.cards.length) return { ...list, cards };
+  if (cards.length === list.cards.length) return { ...list, cards, counts };
   return {
     ...list,
     loadId: list.loadId + 1,
     cards,
+    counts,
     nextOffset: list.nextOffset === null ? null : Math.max(0, list.nextOffset - 1),
   };
+}
+
+// The summary counts after one card changed: each filter's count moves by
+// whether the card joined or left it. An unknown count stays unknown.
+export function reviseCounts(counts: ReviewCounts, before: ReviewCard, after: ReviewCard): ReviewCounts {
+  const delta = (f: ReviewFilter) => Number(matchesReviewFilter(after, f)) - Number(matchesReviewFilter(before, f));
+  return {
+    ...counts,
+    disagreements: Math.max(0, counts.disagreements + delta('disagreements')),
+    ...(counts.untagged === undefined ? {} : { untagged: Math.max(0, counts.untagged + delta('untagged')) }),
+  };
+}
+
+// The card to bring into view once `removedKey` left the list: the first
+// card after it that is still listed. None when the card stayed or was the
+// last loaded (the next page, or "Show more", takes its place).
+export function nextCardKey(before: readonly ReviewCard[], after: readonly ReviewCard[], removedKey: string): string | null {
+  if (after.some((c) => c.key === removedKey)) return null;
+  const i = before.findIndex((c) => c.key === removedKey);
+  if (i < 0) return null;
+  const remaining = new Set(after.map((c) => c.key));
+  return before.slice(i + 1).find((c) => remaining.has(c.key))?.key ?? null;
+}
+
+// Every loaded card has gone (tagged one by one) but more wait on the
+// server: fetch the next page without a "Show more" tap.
+export function shouldLoadNextPage(list: Pick<ReviewList, 'cards' | 'nextOffset'>): boolean {
+  return list.cards.length === 0 && list.nextOffset !== null;
 }
 
 // A "Show more" page lands only on the list it was asked for: a response

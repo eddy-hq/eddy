@@ -13,7 +13,7 @@ import { readDecisionQueue } from './queue';
 import { blockChannelFromCard } from './block-channel';
 import { readReview, reviseDecision } from './review';
 import { readGuardInputs, type GuardInputsRef } from './guard-inputs';
-import { BLOCK_KINDS, REASON_TEXT_MAX, REVIEW_PAGE, type DecisionReason } from './util';
+import { BLOCK_KINDS, REASON_TEXT_MAX, REVIEW_FILTERS, REVIEW_PAGE, type DecisionReason } from './util';
 
 export {
   readDecisionQueue,
@@ -40,6 +40,7 @@ export {
   readReviewCard,
   reviseDecision,
   type ReviewCard,
+  type ReviewCounts,
   type ReviewDecision,
   type ReviewPage,
   type RevisionEffect,
@@ -109,7 +110,7 @@ const blockChannelBody = z.object({
 
 const reviewQuery = z.object({
   userId: z.string().min(1).optional(),
-  filter: z.enum(['disagreements', 'all']).default('disagreements'),
+  filter: z.enum(REVIEW_FILTERS).default('disagreements'),
   offset: z.coerce.number().int().min(0).default(0),
   limit: z.coerce.number().int().min(1).max(REVIEW_PAGE).default(REVIEW_PAGE),
 });
@@ -186,7 +187,7 @@ decisionsRouter.post('/block-channel', async (req: Request, res: Response) => {
   res.json(await blockChannelFromCard(parentId, body.subjects, body.reason || null, new Date(), toReason(body)));
 });
 
-// GET /parent/decisions/review?userId=<parent>&filter=disagreements|all&offset=<n>&limit=<n>
+// GET /parent/decisions/review?userId=<parent>&filter=disagreements|untagged|all&offset=<n>&limit=<n>
 // Past decisions for Review (#223), newest first.
 decisionsRouter.get('/review', (req: Request, res: Response) => {
   const q = parse(reviewQuery, req.query);

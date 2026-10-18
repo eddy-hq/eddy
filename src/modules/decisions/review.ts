@@ -75,11 +75,17 @@ export interface ReviewCard extends DecisionCard {
   decision: ReviewDecision;
 }
 
+export interface ReviewCounts {
+  disagreements: number;
+  untagged: number;
+  all: number;
+}
+
 export interface ReviewPage {
   filter: ReviewFilter;
   cards: ReviewCard[];
   reasons: ReasonOptions;
-  counts: { disagreements: number; all: number };
+  counts: ReviewCounts;
   // Offset of the next page, or null when this is the last.
   nextOffset: number | null;
 }
@@ -124,6 +130,18 @@ const REVIEWED = `
 const DISAGREES = `
   (x.guard_verdict IN ('clear_yes', 'clear_no')
    AND (x.guard_verdict != x.human_verdict OR x.guard_verdict != x.current_verdict))`;
+
+// A current Block with no kind recorded. The current kind comes from the same
+// row as the current verdict, so a kind-only revision tags it, and a change to
+// Allow and back to Block without a kind leaves it untagged again.
+const UNTAGGED = `
+  (x.current_verdict = 'clear_no' AND x.current_block_kind IS NULL)`;
+
+const FILTER_WHERE: Record<ReviewFilter, string> = {
+  disagreements: DISAGREES,
+  untagged: UNTAGGED,
+  all: '1 = 1',
+};
 
 interface ReviewRow {
   decision_id: string;
@@ -253,13 +271,15 @@ function toCards(rows: readonly ReviewRow[]): ReviewCard[] {
   return rows.map((r) => toCard(r, revisions.get(r.decision_id) ?? []));
 }
 
-function countDecisions(): { disagreements: number; all: number } {
+function countDecisions(): ReviewCounts {
   const row = db.prepare(`
     WITH ${REVIEWED}
-    SELECT COUNT(*) AS total, COALESCE(SUM(CASE WHEN ${DISAGREES} THEN 1 ELSE 0 END), 0) AS disagreements
+    SELECT COUNT(*) AS total,
+           COALESCE(SUM(CASE WHEN ${DISAGREES} THEN 1 ELSE 0 END), 0) AS disagreements,
+           COALESCE(SUM(CASE WHEN ${UNTAGGED} THEN 1 ELSE 0 END), 0) AS untagged
       FROM reviewed x
-  `).get() as { total: number; disagreements: number };
-  return { disagreements: row.disagreements, all: row.total };
+  `).get() as { total: number; disagreements: number; untagged: number };
+  return { disagreements: row.disagreements, untagged: row.untagged, all: row.total };
 }
 
 export interface ReviewOptions {
@@ -268,12 +288,12 @@ export interface ReviewOptions {
   limit?: number;
 }
 
-// Past decisions, newest first: disagreements by default, or every decision
-// (escalations included).
+// Past decisions, newest first: disagreements by default, current Blocks with
+// no kind recorded, or every decision (escalations included).
 export function readReview(opts: ReviewOptions): ReviewPage {
   const limit = opts.limit ?? REVIEW_PAGE;
   const offset = opts.offset ?? 0;
-  const where = opts.filter === 'all' ? '1 = 1' : DISAGREES;
+  const where = FILTER_WHERE[opts.filter];
   // One extra row says whether another page follows.
   const rows = selectRows(where, {}, { limit: limit + 1, offset });
   const more = rows.length > limit;

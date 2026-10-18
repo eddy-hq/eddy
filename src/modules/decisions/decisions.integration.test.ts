@@ -968,7 +968,7 @@ describe('Review (#223)', () => {
     const def = (await review()).body as ReviewBody;
     expect(def.filter).toBe('disagreements');
     expect(def.cards.map((c) => c.key)).toEqual(['d-yes-blocked', 'd-no-allowed']);
-    expect(def.counts).toEqual({ disagreements: 2, all: 4 });
+    expect(def.counts).toEqual({ disagreements: 2, untagged: 2, all: 4 });
     expect(def.reasons.dimensions).toHaveLength(DIMENSIONS.length);
     expect(def.cards[0]).toMatchObject({
       title: 'Placeholder title', channel: 'Placeholder channel', youtubeId: 'yes-blocked',
@@ -1530,7 +1530,45 @@ describe('Block kinds (#227)', () => {
       seedBlock('d-x', 'candidate', 'c-x', null);
       const res = await supertest(app).get(`/parent/decisions/review?userId=${PARENT}`);
       expect((res.body.cards as Array<{ key: string }>).map((c) => c.key).sort()).toEqual(['d-n', 'd-u', 'd-x']);
-      expect(res.body.counts).toEqual({ disagreements: 3, all: 3 });
+      expect(res.body.counts).toEqual({ disagreements: 3, untagged: 1, all: 3 });
+    });
+
+    it('lists exactly the current Blocks with no kind under untagged', async () => {
+      for (const id of ['first', 'tagged', 'to-allow', 'back', 'kinded', 'allow']) {
+        seedCandidate(`c-${id}`, { status: 'dismissed', verdict: 'clear_yes' });
+      }
+      // A first-pass Block with no kind: listed.
+      seedBlock('d-first', 'candidate', 'c-first', null);
+      // Tagged by a kind-only revision: not listed.
+      seedBlock('d-tagged', 'candidate', 'c-tagged', null);
+      expect((await revise('d-tagged', 'clear_no', 'unsafe')).body.effect).toBe('label_only');
+      // Revised to Allow: no longer a Block.
+      seedBlock('d-to-allow', 'candidate', 'c-to-allow', null);
+      expect((await revise('d-to-allow', 'clear_yes')).status).toBe(200);
+      // Tagged first, then Allow, then Block with no kind: the kind comes from
+      // the latest row, so it is untagged again.
+      seedBlock('d-back', 'candidate', 'c-back', 'unsafe');
+      expect((await revise('d-back', 'clear_yes')).status).toBe(200);
+      expect((await revise('d-back', 'clear_no')).status).toBe(200);
+      // A first-pass Block with a kind, and a plain Allow: not listed.
+      seedBlock('d-kinded', 'candidate', 'c-kinded', 'not_for_us');
+      seedBlock('d-allow', 'candidate', 'c-allow', null);
+      db.prepare("UPDATE guard_decisions SET human_verdict = 'clear_yes', block_kind = NULL WHERE decision_id = 'd-allow'").run();
+
+      const res = await supertest(app).get(`/parent/decisions/review?userId=${PARENT}&filter=untagged`);
+      expect(res.status).toBe(200);
+      expect(res.body.filter).toBe('untagged');
+      expect((res.body.cards as Array<{ key: string }>).map((c) => c.key).sort()).toEqual(['d-back', 'd-first']);
+      expect((res.body.cards as Array<{ decision: { verdict: string; blockKind: string | null } }>)
+        .every((c) => c.decision.verdict === 'clear_no' && c.decision.blockKind === null)).toBe(true);
+      expect(res.body.counts).toMatchObject({ untagged: 2, all: 6 });
+
+      // Tagging one from the list takes it off, and changes nothing live.
+      const tag = await revise('d-first', 'clear_no', 'not_for_us');
+      expect(tag.body.effect).toBe('label_only');
+      const after = await supertest(app).get(`/parent/decisions/review?userId=${PARENT}&filter=untagged`);
+      expect((after.body.cards as Array<{ key: string }>).map((c) => c.key)).toEqual(['d-back']);
+      expect(after.body.counts).toMatchObject({ untagged: 1, all: 6 });
     });
   });
 });

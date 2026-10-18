@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { AnimatePresence, motion } from 'framer-motion';
@@ -40,12 +40,15 @@ import {
   type ReasonOptions,
   type ShownEval,
   type CardSubject,
-  REVIEW_FILTER_LABEL,
   answerLine,
   freshReviewList,
   isFilterSwitch,
   mergeReviewPage,
+  nextCardKey,
+  reviewEmptyText,
+  reviewFilterOptions,
   reviseInList,
+  shouldLoadNextPage,
   changeLabel,
   changeOptions,
   revisionBody,
@@ -728,6 +731,11 @@ function Review({ userId }: { userId: string }) {
   // One card's reason picker open at a time, with its draft.
   const [reasonKey, setReasonKey] = useState<string | null>(null);
   const [reason, setReason] = useState<ReasonDraft>(EMPTY_REASON);
+  // The card to scroll to once a changed card has left the list.
+  const [focusKey, setFocusKey] = useState<string | null>(null);
+  const listRef = useRef<ReviewList | null>(null);
+  listRef.current = list;
+  const cardEls = useRef(new Map<string, HTMLDivElement>());
 
   const { data, isLoading, error: loadError, dataUpdatedAt } = useQuery({
     queryKey: ['decisions-review', userId, filter],
@@ -778,12 +786,27 @@ function Review({ userId }: { userId: string }) {
     }
   }, [userId, list, loadingMore]);
 
+  // Tagging down the list empties the loaded page: bring in the next one
+  // without a tap. Not after a failed load, so an error doesn't loop.
+  useEffect(() => {
+    if (list && list.filter === filter && shouldLoadNextPage(list) && !loadingMore && !error) void loadMore();
+  }, [list, filter, loadingMore, error, loadMore]);
+
+  // The card that took a changed card's place, brought into view.
+  useEffect(() => {
+    if (!focusKey) return;
+    cardEls.current.get(focusKey)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    setFocusKey(null);
+  }, [focusKey]);
+
   const change = useCallback(async (card: ReviewCard, answer: Answer) => {
     if (busyKey) return;
     setBusyKey(card.key);
     setError(null);
     try {
       const outcome = await postRevision(userId, card, answer, reasonKey === card.key ? reason : EMPTY_REASON);
+      const current = listRef.current;
+      setFocusKey(current ? nextCardKey(current.cards, reviseInList(current, outcome.card).cards, outcome.card.key) : null);
       setList((l) => (l ? reviseInList(l, outcome.card) : l));
       setReasonKey(null);
       setReason(EMPTY_REASON);
@@ -795,18 +818,19 @@ function Review({ userId }: { userId: string }) {
     }
   }, [busyKey, userId, reasonKey, reason]);
 
-  const counts = data?.counts;
+  // Kept current as cards change, so Untagged counts down as the parent tags.
+  const counts = list?.counts ?? data?.counts;
   return (
     <>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
         <Segmented<ReviewFilter>
-          options={[['disagreements', REVIEW_FILTER_LABEL.disagreements], ['all', REVIEW_FILTER_LABEL.all]]}
+          options={reviewFilterOptions(counts)}
           value={filter}
           onChange={switchFilter}
         />
         {counts && (
           <p style={{ fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)' }}>
-            {counts.disagreements} disagreements · {counts.all} decisions. A change to Unsafe or Not for us takes effect now, and giving a Block its kind changes nothing live; a change to Allow only frees a video still waiting in the pool.
+            {counts.disagreements} disagreements · {counts.untagged !== undefined && `${counts.untagged} untagged Blocks · `}{counts.all} decisions. A change to Unsafe or Not for us takes effect now, and giving a Block its kind changes nothing live; a change to Allow only frees a video still waiting in the pool.
           </p>
         )}
       </div>
@@ -817,26 +841,34 @@ function Review({ userId }: { userId: string }) {
       {flash && <p style={{ textAlign: 'center', fontSize: 'var(--text-sm)', color: 'var(--text-secondary)' }}>{flash}</p>}
 
       {cards.map((card) => (
-        <ReviewItem
+        <div
           key={card.key}
-          userId={userId}
-          card={card}
-          reasons={data?.reasons}
-          busy={busyKey !== null}
-          reasonOpen={reasonKey === card.key}
-          reason={reason}
-          onToggleReason={() => {
-            setReason(EMPTY_REASON);
-            setReasonKey((k) => (k === card.key ? null : card.key));
+          ref={(el) => {
+            if (el) cardEls.current.set(card.key, el);
+            else cardEls.current.delete(card.key);
           }}
-          onReasonChange={setReason}
-          onChange={(a) => void change(card, a)}
-        />
+          style={{ scrollMarginTop: 12 }}
+        >
+          <ReviewItem
+            userId={userId}
+            card={card}
+            reasons={data?.reasons}
+            busy={busyKey !== null}
+            reasonOpen={reasonKey === card.key}
+            reason={reason}
+            onToggleReason={() => {
+              setReason(EMPTY_REASON);
+              setReasonKey((k) => (k === card.key ? null : card.key));
+            }}
+            onReasonChange={setReason}
+            onChange={(a) => void change(card, a)}
+          />
+        </div>
       ))}
 
-      {!isLoading && data && cards.length === 0 && (
+      {!isLoading && data && cards.length === 0 && nextOffset === null && (
         <p style={{ color: 'var(--text-secondary)', textAlign: 'center', padding: '40px 0' }}>
-          {filter === 'disagreements' ? 'No disagreements with the guard.' : 'No decisions yet.'}
+          {reviewEmptyText(filter)}
         </p>
       )}
 

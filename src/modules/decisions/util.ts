@@ -53,9 +53,12 @@ export function reasonColumns(reason: DecisionReason | null | undefined): {
   };
 }
 
-// Review (#223): past decisions, a page at a time, newest first.
+// Review (#223): past decisions, a page at a time, newest first. Untagged:
+// current Blocks with no kind recorded, so a parent can tag them (the guard is
+// measured on Unsafe only, ADR-0015).
 export const REVIEW_PAGE = 30;
-export type ReviewFilter = 'disagreements' | 'all';
+export const REVIEW_FILTERS = ['disagreements', 'untagged', 'all'] as const;
+export type ReviewFilter = (typeof REVIEW_FILTERS)[number];
 
 // Stored reason columns back to the API shape; null when none was given.
 export function reasonFromColumns(dimensionsJson: string | null, text: string | null): DecisionReason | null {
