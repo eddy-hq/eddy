@@ -149,15 +149,28 @@ export function requireParentDevice(req: Request, _res: Response, next: NextFunc
   }
 }
 
-function authenticate(req: Request): Binding {
-  const credential = credentialFromHeaders({
-    authorization: req.get('authorization'),
-    cookie: req.get('cookie'),
-  });
-  if (!credential) throw new UnauthenticatedError();
+// Why a request was refused, for diagnosing a client that sends the wrong
+// thing. Never the credential: at most the first 8 hex characters of its
+// hash, enough to tell two clients' credentials apart and to match a
+// device row, not enough to stand in for one.
+function logRefused(req: Request, reason: string, hashPrefix?: string): void {
+  logger.warn({ method: req.method, path: req.path, reason, hashPrefix }, 'Credential refused');
+}
 
-  const device = findDeviceByCredentialHash(hashCredential(credential));
-  if (!device) throw new UnauthenticatedError();
+function authenticate(req: Request): Binding {
+  const authorization = req.get('authorization');
+  const credential = credentialFromHeaders({ authorization, cookie: req.get('cookie') });
+  if (!credential) {
+    logRefused(req, authorization ? 'bearer_malformed' : 'missing_or_malformed_cookie');
+    throw new UnauthenticatedError();
+  }
+
+  const hash = hashCredential(credential);
+  const device = findDeviceByCredentialHash(hash);
+  if (!device) {
+    logRefused(req, authorization ? 'bearer_unknown' : 'cookie_unknown', hash.slice(0, 8));
+    throw new UnauthenticatedError();
+  }
 
   return { actor: resolveUserById(device.ownerUserId), deviceId: device.deviceId };
 }
