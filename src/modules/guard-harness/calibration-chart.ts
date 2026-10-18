@@ -3,7 +3,7 @@
 // Aggregate numbers only — no item ids, titles, channels or reasons
 // (ADR-0004). Written beside the DB, mode 0600.
 import { chmodSync, writeFileSync } from 'node:fs';
-import type { CalibrationPoint, CalibrationReport } from './calibrate';
+import { meetsTargets, type CalibrationPoint, type CalibrationReport } from './calibrate';
 import { THRESHOLDS } from './util';
 
 const W = 520;
@@ -21,6 +21,7 @@ const COLOUR = {
   target: '#2e9d5b',
   baseline: '#8a5cc7',
   holdout: '#c43d4b',
+  cap: '#b8860b',
 };
 
 function esc(text: string): string {
@@ -159,6 +160,7 @@ function sweepChart(
   targets: Array<[number, string]>,
   baselineValue: number | null,
   holdoutValue: number | null,
+  cap: number | null = null,
 ): string {
   const tauMax = Math.max(...r.sweep.map((p) => p.tau ?? 0), 0.5);
   const xAxis: Axis = { min: 0, max: tauMax, ticks: ticks(0, tauMax, 0.1) };
@@ -171,6 +173,7 @@ function sweepChart(
   const path = pts.map(([t, v], i) => `${i === 0 ? 'M' : 'L'}${x(t)},${y(clamp(v))}`).join(' ');
   let body = yGrid(axis, y, (v) => pct(v, 0)) + xTicks(xAxis, x, (v) => fmt(v));
   for (const [v, label] of targets) body += hLine(y(v), COLOUR.target, label, false, 'start');
+  if (cap !== null) body += hLine(y(clamp(cap)), COLOUR.cap, `cap ${pct(cap, 0)} (picks τ*)`, true, 'end');
   if (baselineValue !== null) {
     body += hLine(y(clamp(baselineValue)), COLOUR.baseline, `incumbent ${pct(baselineValue)}`, true, 'end');
   }
@@ -179,8 +182,9 @@ function sweepChart(
   const entries: Array<[string, string, Mark]> = [
     ['non-holdout', series.colour, 'line'],
     ['incumbent', COLOUR.baseline, 'dash'],
-    ['target', COLOUR.target, 'line'],
+    ['target (reference)', COLOUR.target, 'line'],
   ];
+  if (cap !== null) entries.push(['cap', COLOUR.cap, 'dash']);
   if (r.tauStar !== null) {
     const tx = x(r.tauStar);
     body += `<line x1="${tx}" x2="${tx}" y1="0" y2="${PH}" stroke="${COLOUR.ink}" stroke-dasharray="2 3"/>`
@@ -214,7 +218,7 @@ export function calibrationChartHtml(r: CalibrationReport, datasetName: string, 
   const precisionAxis: Axis = { min: precisionAxisMin, max: 1, ticks: ticks(precisionAxisMin, 1, precisionStep) };
   const baselineU = r.baseline?.nonHoldout.metrics.uncertainRate ?? null;
   const holdoutU = r.holdoutAtTauStar?.metrics.uncertainRate ?? null;
-  const uncertain = known([...r.sweep.map((p) => p.metrics.uncertainRate), baselineU, holdoutU]);
+  const uncertain = known([...r.sweep.map((p) => p.metrics.uncertainRate), baselineU, holdoutU, r.uncertainCap]);
   const uMax = Math.min(1, Math.ceil(Math.max(0.5, ...uncertain) * 10) / 10);
   const uncertainAxis: Axis = { min: 0, max: uMax, ticks: ticks(0, uMax, uMax > 0.6 ? 0.2 : 0.1) };
   const t = THRESHOLDS;
@@ -229,12 +233,22 @@ export function calibrationChartHtml(r: CalibrationReport, datasetName: string, 
     r, 'Uncertain rate against τ', 'uncertain rate',
     { colour: COLOUR.secondary, value: (p) => p.metrics.uncertainRate },
     uncertainAxis, [[t.uncertainRate.max, `ceiling ${t.uncertainRate.max * 100}%`], [t.uncertainRate.min, `floor ${t.uncertainRate.min * 100}%`]],
-    baselineU, holdoutU,
+    baselineU, holdoutU, r.uncertainCap,
   );
 
-  const verdict = r.tauStar === null
-    ? 'No τ on the grid meets clear-yes precision ≥ 95% with uncertain ≤ 30% on the non-holdout items.'
-    : `τ* = ${fmt(r.tauStar)}: the loosest τ meeting both targets on the non-holdout items. The holdout row is the honest test.`;
+  const cap = pct(r.uncertainCap, 0);
+  const rule = `Rule (pre-registered, non-holdout only): of the τ whose uncertain rate is at most ${cap}, take the fewest Unsafe passed as clear-yes; τ* is the loosest τ reaching that minimum. The targets (clear-yes ≥ ${t.clearYesPrecision * 100}%, uncertain ${t.uncertainRate.min * 100}–${t.uncertainRate.max * 100}%) are shown for reference and don't pick τ*.`;
+  let verdict: string;
+  if (r.tauStar === null) {
+    verdict = `No τ on the grid keeps the uncertain rate at or under ${cap} on the non-holdout items, so there is no τ*.`;
+  } else {
+    const atStar = r.sweep.find((p) => p.tau === r.tauStar);
+    const met = atStar ? meetsTargets(atStar) : null;
+    const yesNo = (ok: boolean | undefined) => (ok ? 'met' : 'not met');
+    verdict = `τ* = ${fmt(r.tauStar)}: ${r.minUnsafePassed} Unsafe passed on the non-holdout items. `
+      + `For reference: clear-yes ≥ ${t.clearYesPrecision * 100}% ${yesNo(met?.clearYesPrecision)}, `
+      + `uncertain ${t.uncertainRate.min * 100}–${t.uncertainRate.max * 100}% ${yesNo(met?.uncertainRate)}. The holdout rows are the honest test.`;
+  }
 
   return `<!doctype html>
 <html lang="en-GB">
@@ -261,6 +275,7 @@ export function calibrationChartHtml(r: CalibrationReport, datasetName: string, 
 <body>
 <h1>Guard calibration: score probabilities against parent safety labels</h1>
 <p class="sub">${esc(datasetName)} · adapter ${esc(r.adapterId)} · generated ${esc(generatedAt.toISOString().slice(0, 10))}</p>
+<p>${esc(rule)}</p>
 <p>${esc(verdict)}</p>
 <table>
 <thead><tr><th>verdicts</th><th>n</th><th>clear-yes precision (95% CI)</th><th>Unsafe passed as clear-yes</th><th>uncertain rate</th></tr></thead>
@@ -278,7 +293,7 @@ ${precisionChart}
 ${uncertainChart}
 ${reliabilityChart(r)}
 </div>
-<p class="method">p_over is the largest probability, over the eight rubric dimensions, that the model's score is above the item's age-band limit, read from the score digit's token probabilities and renormalised over 0–3. A clear_yes becomes uncertain when p_over ≥ τ or a dimension's probabilities could not be read; nothing else changes, so the calibrated verdict is never looser than the plain one. Safety labels only: Allow is clear-yes, Unsafe is clear-no; Not for us and unrecorded Blocks are left out. τ* is chosen on the non-holdout items and tested once on the holdout. Aggregate counts only.</p>
+<p class="method">p_over is the largest probability, over the eight rubric dimensions, that the model's score is above the item's age-band limit, read from the score digit's token probabilities and renormalised over 0–3. A clear_yes becomes uncertain when p_over ≥ τ or a dimension's probabilities could not be read; nothing else changes, so the calibrated verdict is never looser than the plain one. Safety labels only: Allow is clear-yes, Unsafe is clear-no; Not for us and unrecorded Blocks are left out. τ* is chosen on the non-holdout items by the rule above and tested once on the holdout. Aggregate counts only.</p>
 </body>
 </html>
 `;

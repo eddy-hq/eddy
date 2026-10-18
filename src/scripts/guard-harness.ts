@@ -8,6 +8,7 @@
  * npm run guard:harness -- report   [--adapter gemma-v4] [--dataset FILE]
  * npm run guard:harness -- report --live [--dataset FILE]
  * npm run guard:harness -- calibrate [--adapter gemma-v4.1-logprob] [--dataset FILE]
+ *                                   [--uncertain-cap PERCENT]
  *
  * Measures a guard configuration against the parent's decisions (brief §22,
  * issue #220).
@@ -58,9 +59,13 @@
  *             largest probability over the dimensions of a score above the
  *             item's limit; a clear_yes with p_over >= τ, or with a
  *             dimension unread, becomes uncertain (it only tightens). Prints
- *             a τ sweep on the non-holdout items, picks τ* there (the loosest
- *             τ with clear-yes precision >= 95% and uncertain <= 30%), tests
- *             τ* once on the holdout, and prints a reliability table, with
+ *             a τ sweep on the non-holdout items and picks τ* there by a
+ *             pre-registered rule: of the τ whose uncertain rate is at most
+ *             --uncertain-cap (default 20%), the fewest Unsafe passed as
+ *             clear_yes, and the loosest τ reaching it (none if no τ is under
+ *             the cap). The brief's targets are shown against τ* for
+ *             reference but don't pick it. Tests τ* once on the holdout
+ *             beside the incumbent there, and prints a reliability table, with
  *             the incumbent (gemma-v4) on the same items as the baseline.
  *             Run both adapters first. Writes an HTML chart (aggregates only)
  *             to harness/calibration-<dataset>.html beside the DB, mode 0600.
@@ -90,6 +95,7 @@ import {
   getAdapter,
   latestDatasetPath,
   loadRubricLimits,
+  meetsTargets,
   liveReport,
   liveUncertainRatesFromFile,
   readDataset,
@@ -120,12 +126,21 @@ interface Args {
   concurrency: number;
   force: boolean;
   live: boolean;
+  uncertainCap?: number;
 }
 
 function positiveInt(flag: string, raw: string | undefined): number {
   const n = Number(raw);
   if (raw === undefined || !Number.isInteger(n) || n <= 0) throw new GuardHarnessError(`${flag} needs a positive integer`);
   return n;
+}
+
+function percent(flag: string, raw: string | undefined): number {
+  const n = Number(raw);
+  if (raw === undefined || raw.trim() === '' || !Number.isFinite(n) || n < 0 || n > 100) {
+    throw new GuardHarnessError(`${flag} needs a percentage from 0 to 100`);
+  }
+  return n / 100;
 }
 
 function parseArgs(argv: readonly string[]): Args {
@@ -146,6 +161,7 @@ function parseArgs(argv: readonly string[]): Args {
     else if (a === '--concurrency') args.concurrency = positiveInt('--concurrency', rest[++i]);
     else if (a === '--force') args.force = true;
     else if (a === '--live') args.live = true;
+    else if (a === '--uncertain-cap') args.uncertainCap = percent('--uncertain-cap', rest[++i]);
     else throw new GuardHarnessError(`Unknown argument: ${a}`);
   }
   if (args.command === 'snapshot' && rest.length > 0) throw new GuardHarnessError('snapshot takes no options');
@@ -159,6 +175,9 @@ function parseArgs(argv: readonly string[]): Args {
   if ((args.command === 'report' || args.command === 'calibrate')
     && (args.limit !== undefined || args.force || args.concurrency !== 1)) {
     throw new GuardHarnessError('--limit, --concurrency and --force apply to run only');
+  }
+  if (args.uncertainCap !== undefined && args.command !== 'calibrate') {
+    throw new GuardHarnessError('--uncertain-cap applies to calibrate only');
   }
   if (args.live && args.command !== 'report') throw new GuardHarnessError('--live applies to report only');
   if (args.live && args.adapterGiven) {
@@ -178,6 +197,9 @@ function printCounts(title: string, counts: Record<string, number>): void {
 const pct = (v: number | null): string => (v === null ? '   n/a' : `${(v * 100).toFixed(1).padStart(5)}%`);
 
 const CELL = 34;
+
+// 0.2 -> "20", 0.125 -> "12.5".
+const fmtPct = (v: number): string => Number((v * 100).toFixed(2)).toString();
 
 // " 51.0% [45.2, 56.7]     92/180", or n/a with no denominator.
 function withInterval(value: number | null, interval: Interval | null, num: number, den: number): string {
@@ -404,6 +426,7 @@ async function calibrate(args: Args): Promise<void> {
     adapterId: adapter.id,
     baselineAdapterId: incumbent.id,
     limitsFor,
+    ...(args.uncertainCap !== undefined ? { uncertainCap: args.uncertainCap } : {}),
   });
   const t = THRESHOLDS;
   console.log(`Dataset:  ${path.basename(file)}`);
@@ -431,18 +454,27 @@ async function calibrate(args: Args): Promise<void> {
   if (b) console.log(calibrationLine('incumbent, holdout', b.holdout));
   console.log(calibrationLine('plain, holdout', r.plain.holdout));
 
+  const cap = `${fmtPct(r.uncertainCap)}%`;
   console.log('\nThreshold sweep, non-holdout: a clear_yes with p_over >= τ becomes uncertain');
   calibrationHeader();
   for (const p of r.sweep) {
-    const meets = p.tau === r.tauStar ? '  <- τ*' : '';
-    console.log(calibrationLine(`τ = ${String(p.tau)}`, p) + meets);
+    const marker = p.tau === r.tauStar ? '  <- τ*' : (p.metrics.uncertainRate ?? 1) > r.uncertainCap ? '  (over cap)' : '';
+    console.log(calibrationLine(`τ = ${String(p.tau)}`, p) + marker);
   }
+  console.log(`\nRule (pre-registered, non-holdout only): of the τ whose uncertain rate is at most ${cap},`);
+  console.log('take the fewest Unsafe passed as clear_yes; τ* is the loosest τ reaching that minimum.');
   if (r.tauStar === null || !r.holdoutAtTauStar) {
-    console.log(`\nτ*: none — no τ on the grid gives clear-yes >= ${t.clearYesPrecision * 100}% with uncertain <= ${t.uncertainRate.max * 100}% on non-holdout.`);
+    console.log(`τ*: none — no τ on the grid keeps the uncertain rate at or under ${cap} on non-holdout.`);
   } else {
-    console.log(`\nτ* = ${r.tauStar}: the loosest τ meeting clear-yes >= ${t.clearYesPrecision * 100}% and uncertain <= ${t.uncertainRate.max * 100}% on non-holdout.`);
-    console.log('Holdout at τ* — the honest test (τ* was chosen without it):');
+    const atStar = r.sweep.find((p) => p.tau === r.tauStar)!;
+    const met = meetsTargets(atStar);
+    const yesNo = (ok: boolean) => (ok ? 'met' : 'not met');
+    console.log(`τ* = ${r.tauStar}: ${r.minUnsafePassed} Unsafe passed on non-holdout, uncertain ${pct(atStar.metrics.uncertainRate).trim()}.`);
+    console.log(`  For reference (not used to pick τ*): clear-yes >= ${t.clearYesPrecision * 100}% ${yesNo(met.clearYesPrecision)}; `
+      + `uncertain ${t.uncertainRate.min * 100}-${t.uncertainRate.max * 100}% ${yesNo(met.uncertainRate)}.`);
+    console.log('Holdout at τ* — the honest test (τ* was chosen without it), beside the incumbent there:');
     calibrationHeader();
+    if (b) console.log(calibrationLine('incumbent, holdout', b.holdout));
     console.log(calibrationLine(`τ* = ${r.tauStar}, holdout`, r.holdoutAtTauStar));
   }
 

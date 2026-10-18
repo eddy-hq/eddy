@@ -27,11 +27,13 @@ export {
   loadRubricLimits,
 } from './adapters';
 export {
+  DEFAULT_UNCERTAIN_CAP,
   RELIABILITY_EDGES,
   TAU_GRID,
   calibratedVerdict,
   calibrationReport,
   meetsTargets,
+  pickTauStar,
   pOver,
   type CalibrationPoint,
   type CalibrationReport,
