@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { ollamaGenerate, parseOllamaJson } from './ollama';
+import { ollamaGenerate, ollamaGenerateWithLogprobs, parseOllamaJson } from './ollama';
 
 vi.mock('./config', () => ({
   config: { OLLAMA_URL: 'http://localhost:11434', OLLAMA_GUARD_MODEL: 'gemma4:e4b', NODE_ENV: 'test' },
@@ -95,6 +95,39 @@ describe('ollamaGenerate request body', () => {
       const body = JSON.parse((fetchMock.mock.calls[0] as unknown as [string, { body: string }])[1].body) as Record<string, unknown>;
       expect(body).toMatchObject({ truncate: false, shift: false, think: false, keep_alive: '30m' });
       expect(body['options']).toEqual({ temperature: 0, num_predict: 10 });
+      expect(body).not.toHaveProperty('logprobs');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
+describe('ollamaGenerateWithLogprobs', () => {
+  const logprobs = [{ token: '{}', logprob: -0.1, top_logprobs: [{ token: '{}', logprob: -0.1 }] }];
+
+  it('sends the same body as ollamaGenerate plus logprobs and top_logprobs', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ response: '{}', done: true, logprobs }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const out = await ollamaGenerateWithLogprobs('prompt', 'gemma4:e4b', {
+        temperature: 0, num_predict: 10, think: false, truncate: false, shift: false,
+      }, { type: 'object' }, 5);
+      const body = JSON.parse((fetchMock.mock.calls[0] as unknown as [string, { body: string }])[1].body) as Record<string, unknown>;
+      expect(body).toMatchObject({
+        model: 'gemma4:e4b', prompt: 'prompt', stream: false, think: false, truncate: false, shift: false,
+        format: { type: 'object' }, logprobs: true, top_logprobs: 5,
+      });
+      expect(body['options']).toEqual({ temperature: 0, num_predict: 10 });
+      expect(out).toEqual({ response: '{}', logprobs });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('throws when the response carries no logprobs', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ response: '{}', done: true }), { status: 200 })));
+    try {
+      await expect(ollamaGenerateWithLogprobs('p', 'm', {}, 'json', 5)).rejects.toThrow('no logprobs');
     } finally {
       vi.unstubAllGlobals();
     }

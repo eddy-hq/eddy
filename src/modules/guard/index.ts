@@ -44,10 +44,14 @@ export {
   CANDIDATE_V4_PROMPT_VERSION,
   SECOND_PASS_V4_PROMPT_VERSION,
   SECOND_PASS_V4_NO_TRANSCRIPT_PROMPT_VERSION,
+  DIMENSION_OUTPUT_KEYS,
   RUBRIC_PROMPT_PREFIX,
+  RUBRIC_SCORES_SCHEMA,
   buildRubricPrompt,
   cleanDescription,
   formatTags,
+  parseRubricOutput,
+  type RubricPromptInput,
 } from './rubric-prompt';
 export { categoryName } from './metadata';
 export { shownEvalById, shownEvalForCandidate, shownEvalForRequest, labelGuardEval, type ShownEval } from './labels';
@@ -431,7 +435,8 @@ function recordGuardEval(verdict: GuardVerdict, ctx: RunGuardCtx, rubric?: Rubri
 
 // Same call options as the verdict prompts, with room for the longer score
 // object (~110 tokens measured; truncated output would be a scoring error).
-const RUBRIC_CALL_OPTIONS = { ...GUARD_CALL_OPTIONS, num_predict: 256 };
+// Exported for the guard harness, which replays the same call.
+export const RUBRIC_CALL_OPTIONS = { ...GUARD_CALL_OPTIONS, num_predict: 256 };
 
 // A v4 verdict: the model's scores plus the rule decision on them. `rubric`
 // is null when the model never produced a valid score set.
@@ -616,6 +621,21 @@ export interface JudgeCandidateInput {
   url?: string;
 }
 
+// The rubric prompt input judgeCandidate builds for a candidate. Shared with
+// the guard harness so a replay sends the same prompt.
+export function candidateRubricInput(input: JudgeCandidateInput): RubricPromptInput {
+  return {
+    title: input.title,
+    channel: input.channel?.trim() ?? '',
+    description: input.description ?? '',
+    tags: input.tags ?? [],
+    category: categoryName(input.categoryId),
+    madeForKids: input.madeForKids ?? null,
+    channelHistory: input.channelHistory,
+    transcript: null,
+  };
+}
+
 // Judge a discovery candidate with no side effects: one model call (none for
 // an age-restricted video, a clear_no by rule) and nothing written to
 // guard_eval or any other table. evaluateCandidate records what this returns.
@@ -630,16 +650,7 @@ export async function judgeCandidate(input: JudgeCandidateInput): Promise<Candid
   const log: JudgeLogCtx = { requestId: null, url: input.url };
 
   if (input.prompt === 'v4') {
-    const verdict = await judgeRubric({
-      title: input.title,
-      channel,
-      description: input.description ?? '',
-      tags: input.tags ?? [],
-      category: categoryName(input.categoryId),
-      madeForKids: input.madeForKids ?? null,
-      channelHistory: input.channelHistory,
-      transcript: null,
-    }, input.ageBand, 'discovery', log);
+    const verdict = await judgeRubric(candidateRubricInput(input), input.ageBand, 'discovery', log);
     return { ...verdict, promptVersion };
   }
 

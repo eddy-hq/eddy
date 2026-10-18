@@ -86,6 +86,7 @@ export async function runHarness(opts: RunOptions): Promise<RunReport> {
           verdict: judgement.verdict,
           ...(judgement.scores ? { scores: judgement.scores } : {}),
           ...(judgement.probability !== undefined ? { probability: judgement.probability } : {}),
+          ...(judgement.distributions ? { distributions: judgement.distributions } : {}),
           durationMs,
           evaluatedAt: now().toISOString(),
         };
