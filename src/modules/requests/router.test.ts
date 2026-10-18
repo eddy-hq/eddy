@@ -1,7 +1,7 @@
 import express, { type NextFunction, type Request, type Response } from 'express';
 import 'express-async-errors';
 import supertest from 'supertest';
-import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // ─── Module mocks ────────────────────────────────────────────────────────────
 //
@@ -1391,6 +1391,12 @@ describe('DELETE /requests/:id', () => {
     db.exec('DELETE FROM guard_spot_checks');
   });
 
+  // guard_eval references requests, so clear it before the outer beforeEach
+  // empties requests.
+  afterEach(() => {
+    db.exec('DELETE FROM guard_eval');
+  });
+
   function insertDecision(requestId: string): void {
     db.prepare(`
       INSERT INTO guard_decisions
@@ -1446,6 +1452,24 @@ describe('DELETE /requests/:id', () => {
 
     expect(resp.status).toBe(409);
     expect(requestExists('del-drawn')).toBe(true);
+  });
+
+  it('re-checks after cancelling the queue job: a request drawn meanwhile is kept', async () => {
+    insertRequestRow({ request_id: 'del-race', status: 'downloading' });
+    db.prepare(`
+      INSERT INTO guard_eval (eval_id, request_id, url, gemma_verdict, created_at)
+      VALUES ('eval-del-race', 'del-race', 'https://www.youtube.com/watch?v=del-race', 'clear_yes', ?)
+    `).run(new Date().toISOString());
+    vi.mocked(downloadQueue.getJob).mockImplementationOnce(async () => {
+      insertSpotCheck('request', 'del-race');
+      return undefined;
+    });
+
+    const resp = await request('DELETE', '/requests/del-race');
+
+    expect(resp.status).toBe(409);
+    expect(requestExists('del-race')).toBe(true);
+    expect(db.prepare('SELECT 1 FROM guard_eval WHERE request_id = ?').get('del-race')).toBeDefined();
   });
 
   it('only protects request subjects, not a candidate with the same id', async () => {

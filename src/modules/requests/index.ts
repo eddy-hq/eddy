@@ -496,19 +496,25 @@ requestsRouter.post('/admin/week-summaries/regenerate', async (req: Request, res
 // DELETE /requests/:id — hard-delete a request record. Refused (409) when a
 // parent has decided on the request or it is drawn as a spot check: the row
 // and its guard_eval verdicts are the label's inputs (ADR-0019). Soft delete
-// (status 'deleted') still frees the file.
+// (status 'deleted') still frees the file. Checked again inside the delete's
+// transaction, as the request can be decided or drawn while the queue job is
+// being cancelled.
+const LABELLED_REQUEST_MESSAGE =
+  'request has a parent decision or a drawn spot check; it is kept as a guard label';
+
+function readDeletableRequest(requestId: string): { status: string; deletable: number } | undefined {
+  return db.prepare(`
+    SELECT status, ${notDecidedOrDrawnSql('request', 'requests.request_id')} AS deletable
+    FROM requests WHERE request_id = ?
+  `).get(requestId) as { status: string; deletable: number } | undefined;
+}
+
 requestsRouter.delete('/:id', async (req: Request, res: Response) => {
   const requestId = req.params['id'];
 
-  const row = db.prepare(`
-    SELECT status, ${notDecidedOrDrawnSql('request', 'requests.request_id')} AS deletable
-    FROM requests WHERE request_id = ?
-  `).get(requestId) as
-    | { status: string; deletable: number } | undefined;
+  const row = readDeletableRequest(requestId);
   if (!row) throw new NotFoundError('request');
-  if (!row.deletable) {
-    throw new ConflictError('request has a parent decision or a drawn spot check; it is kept as a guard label');
-  }
+  if (!row.deletable) throw new ConflictError(LABELLED_REQUEST_MESSAGE);
 
   // If still active, cancel queue job first
   if (['downloading', 'guard_review', 'parent_review', 'pending', 'approved'].includes(row.status)) {
@@ -519,8 +525,13 @@ requestsRouter.delete('/:id', async (req: Request, res: Response) => {
     try { await redis.del(`eddy:progress:${requestId}`); } catch { /* best-effort */ }
   }
 
-  db.prepare(`DELETE FROM guard_eval WHERE request_id = ?`).run(requestId);
-  db.prepare(`DELETE FROM requests WHERE request_id = ?`).run(requestId);
+  db.transaction(() => {
+    const current = readDeletableRequest(requestId);
+    if (!current) throw new NotFoundError('request');
+    if (!current.deletable) throw new ConflictError(LABELLED_REQUEST_MESSAGE);
+    db.prepare(`DELETE FROM guard_eval WHERE request_id = ?`).run(requestId);
+    db.prepare(`DELETE FROM requests WHERE request_id = ?`).run(requestId);
+  }).immediate();
   logger.info({ requestId }, 'Request deleted');
   res.status(204).end();
 });
