@@ -103,19 +103,6 @@ app.use(
 // credential in the first place.
 // The admin routes are parent-only and name a household member as the subject
 // (week-summary regeneration), so they take the parent gate instead.
-// What a share answered, for diagnosing a client that reports a failure the
-// server never saw as one. Status, timing and whether a credential header
-// came with it; never the body or the credential.
-app.use('/requests', (req: Request, res: Response, next: NextFunction) => {
-  if (req.method === 'POST' && req.path === '/') {
-    const started = Date.now();
-    const hasBearer = Boolean(req.get('authorization'));
-    res.on('finish', () => {
-      logger.info({ status: res.statusCode, ms: Date.now() - started, hasBearer }, 'Share POST answered');
-    });
-  }
-  next();
-});
 app.use(
   '/requests',
   (req: Request, res: Response, next: NextFunction) =>
