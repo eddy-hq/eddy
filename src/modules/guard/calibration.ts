@@ -141,9 +141,16 @@ function digitDistribution(spans: readonly Span[], text: string, offset: number)
   const span = spans.find((s) => s.start <= offset && offset < s.end);
   if (!span) return null;
   if (!Array.isArray(span.token.top_logprobs) || span.token.top_logprobs.length === 0) return null;
+  const candidates = [...span.token.top_logprobs, span.token];
+  // A log-probability is a number; -Infinity is a probability of 0. Anything
+  // else (missing, null, NaN, +Infinity) is a malformed reading, and dropping
+  // it would leave the rest to renormalise to false certainty. A tiny
+  // positive value from float rounding is accepted as near 0.
+  if (!candidates.every((alt) => typeof alt?.logprob === 'number' && !Number.isNaN(alt.logprob)
+    && alt.logprob !== Number.POSITIVE_INFINITY)) return null;
   const prefix = text.slice(span.start, offset);
   const seen = new Map<string, number>();
-  for (const alt of [...(span.token.top_logprobs ?? []), span.token]) {
+  for (const alt of candidates) {
     const piece = tokenBytes(alt);
     if (!seen.has(piece) && Number.isFinite(alt.logprob)) seen.set(piece, alt.logprob);
   }

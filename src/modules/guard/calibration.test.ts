@@ -206,6 +206,24 @@ describe('scoreDistributions on crafted token streams', () => {
     expect(Object.values(scoreDistributions(RECORDED_RESPONSE.response, empty, KEYS)).every((v) => v === null)).toBe(true);
   });
 
+  it('gives null when non-empty alternatives carry malformed probabilities, the chosen one finite', () => {
+    for (const bad of [undefined, null, Number.NaN, Number.POSITIVE_INFINITY, '-0.5']) {
+      const logprobs = RECORDED_RESPONSE.logprobs.map((l) => (l.top_logprobs
+        ? { ...l, top_logprobs: l.top_logprobs.map((a) => ({ ...a, logprob: bad as unknown as number })) }
+        : l));
+      const d = scoreDistributions(RECORDED_RESPONSE.response, logprobs, KEYS);
+      expect(Object.values(d).every((v) => v === null), String(bad)).toBe(true);
+    }
+  });
+
+  it('gives null when only one alternative is malformed', () => {
+    const logprobs = RECORDED_RESPONSE.logprobs.map((l) => (l.top_logprobs
+      ? { ...l, top_logprobs: l.top_logprobs.map((a, i) => (i === 1 ? { token: a.token, bytes: a.bytes } : a)) }
+      : l)) as typeof RECORDED_RESPONSE.logprobs;
+    const d = scoreDistributions(RECORDED_RESPONSE.response, logprobs, KEYS);
+    expect(Object.values(d).every((v) => v === null)).toBe(true);
+  });
+
   it('gives every dimension null when the tokens do not rebuild the response', () => {
     const { response, logprobs } = tokens(rubricPieces());
     const d = scoreDistributions(`${response} `, logprobs, KEYS);
