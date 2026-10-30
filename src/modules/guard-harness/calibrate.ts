@@ -10,9 +10,18 @@
 // closed: a missing distribution counts as not provably under.
 //
 // τ* is pre-registered and picked on non-holdout only: among the τ on the grid
-// whose uncertain rate is at most a cap U (default 20%), find the fewest Unsafe
-// items passed as clear_yes; τ* is the loosest τ reaching that minimum. If no
-// τ is under the cap there is no τ*. The brief's targets (clear-yes ≥ 95%,
+// whose projected live uncertain rate is at most a cap U (default 20%), find
+// the fewest Unsafe items passed as clear_yes; τ* is the loosest τ reaching
+// that minimum. If no τ is under the cap there is no τ*.
+//
+// The cap reads a projected live rate, not the labelled items' (ADR-0019,
+// amended 2026-10-30). Every escalation is decided but clear verdicts are only
+// sampled, so labelled items over-represent escalations. The projection is the
+// live candidate prompt's uncertain share, plus its clear-yes share times the
+// fraction of audited clear-yes items (live verdict clear_yes, replayed
+// clear_yes, non-holdout, any label) that τ would escalate. Calibration only
+// turns a clear_yes into uncertain, so that is the whole change, and labels
+// play no part in it. The brief's targets (clear-yes ≥ 95%,
 // uncertain 10–30%) are reported against τ* for reference but don't pick it:
 // when the incumbent already meets them, "loosest τ meeting the targets" is
 // the loosest τ, which changes nothing and leaves the holdout nothing to test.
@@ -81,6 +90,15 @@ export const DEFAULT_UNCERTAIN_CAP = 0.2;
 // Reliability bins over p_over: [low, high), the last closed.
 export const RELIABILITY_EDGES: readonly number[] = [0, 0.01, 0.05, 0.1, 0.2, 0.3, 0.5, 1];
 
+// The live candidate prompt's verdict counts over a recent window
+// (guard_eval), for the projected uncertain rate.
+export interface LiveRates {
+  promptVersion: string;
+  total: number;
+  uncertain: number;
+  clearYes: number;
+}
+
 interface Row {
   itemId: string;
   holdout: boolean;
@@ -91,6 +109,10 @@ interface Row {
 
 export interface CalibrationPoint extends SafetyScore {
   tau: number | null;
+  // Sweep points only: the live uncertain rate this τ is projected to give,
+  // which the cap applies to. Null off the sweep or with no live rates or
+  // audited items to project from.
+  projectedUncertainRate: number | null;
   // Unsafe items the verdicts passed as clear_yes, of all Unsafe items.
   unsafePassed: number;
   unsafeTotal: number;
@@ -131,8 +153,12 @@ export interface CalibrationReport {
   plain: { nonHoldout: CalibrationPoint; holdout: CalibrationPoint };
   baseline: Baseline | null;
   sweep: CalibrationPoint[];
-  // The uncertain-rate cap τ* was chosen under.
+  // The uncertain-rate cap τ* was chosen under, on the projected live rate.
   uncertainCap: number;
+  // What the projection was made from: the live rates, and the audited
+  // clear-yes items (live and replayed clear_yes, non-holdout) it scales.
+  live: LiveRates | null;
+  auditedClearYes: number;
   // The fewest Unsafe passed as clear_yes by any τ under the cap on
   // non-holdout; null when no τ is under it.
   minUnsafePassed: number | null;
@@ -155,6 +181,7 @@ function point(rows: readonly Row[], verdictOf: (r: Row) => GuardVerdictLabel, t
   return {
     ...score,
     tau,
+    projectedUncertainRate: null,
     unsafePassed: score.matrix.clear_yes.clear_no,
     unsafeTotal: rows.filter((r) => r.label === 'clear_no').length,
   };
@@ -171,13 +198,13 @@ export function meetsTargets(p: SafetyScore): { clearYesPrecision: boolean; unce
   };
 }
 
-// The selection rule: of the points with uncertain rate ≤ cap, the fewest
-// Unsafe passed, and the loosest τ reaching it.
+// The selection rule: of the points with projected live uncertain rate ≤ cap,
+// the fewest Unsafe passed, and the loosest τ reaching it.
 export function pickTauStar(
   sweep: readonly CalibrationPoint[],
   uncertainCap: number,
 ): { tauStar: number | null; minUnsafePassed: number | null } {
-  const eligible = sweep.filter((p) => p.tau !== null && p.metrics.uncertainRate !== null && p.metrics.uncertainRate <= uncertainCap);
+  const eligible = sweep.filter((p) => p.tau !== null && p.projectedUncertainRate !== null && p.projectedUncertainRate <= uncertainCap);
   if (eligible.length === 0) return { tauStar: null, minUnsafePassed: null };
   const min = Math.min(...eligible.map((p) => p.unsafePassed));
   const tauStar = Math.max(...eligible.filter((p) => p.unsafePassed === min).map((p) => p.tau!));
@@ -217,8 +244,24 @@ export interface CalibrationInput {
   baselineAdapterId: string | null;
   limitsFor: (ageBand: string) => Limits;
   grid?: readonly number[];
-  // Ceiling on the non-holdout uncertain rate τ* may cost; default 20%.
+  // Ceiling on the projected live uncertain rate τ* may cost; default 20%.
   uncertainCap?: number;
+  // The live candidate prompt's recent verdict counts; null leaves nothing to
+  // project from, so no τ*.
+  live: LiveRates | null;
+}
+
+// The live uncertain rate τ is projected to give: today's live uncertain share,
+// plus the live clear-yes share τ would escalate, estimated from the audited
+// clear-yes items. Null when there is nothing to project from.
+export function projectedUncertainRate(
+  live: LiveRates | null,
+  auditedPOver: readonly (number | null)[],
+  tau: number,
+): number | null {
+  if (!live || live.total === 0 || auditedPOver.length === 0) return null;
+  const escalated = auditedPOver.filter((p) => tighten('clear_yes', p, tau) === 'uncertain').length;
+  return live.uncertain / live.total + (live.clearYes / live.total) * (escalated / auditedPOver.length);
 }
 
 export function calibrationReport(input: CalibrationInput): CalibrationReport {
@@ -232,10 +275,15 @@ export function calibrationReport(input: CalibrationInput): CalibrationReport {
   const excluded = { notForUs: 0, unrecorded: 0 };
   let scored = 0;
   const rows: Row[] = [];
+  // p_over of the audited clear-yes items the projection scales by.
+  const audited: (number | null)[] = [];
   for (const item of input.items) {
     const result = mine.get(item.itemId);
     if (!result) continue;
     scored += 1;
+    if (!item.holdout && item.guardVerdict === 'clear_yes' && result.verdict === 'clear_yes') {
+      audited.push(pOver(result.distributions, input.limitsFor(item.ageBand)));
+    }
     const label = safetyLabel(item.label, item.blockKind);
     if (label === 'not_for_us') excluded.notForUs += 1;
     else if (label === 'unrecorded') excluded.unrecorded += 1;
@@ -253,7 +301,10 @@ export function calibrationReport(input: CalibrationInput): CalibrationReport {
   const holdout = rows.filter((r) => r.holdout);
   const plainOf = (r: Row) => r.plain;
 
-  const sweep = (input.grid ?? TAU_GRID).map((tau) => point(nonHoldout, tauVerdict(tau), tau));
+  const sweep = (input.grid ?? TAU_GRID).map((tau) => ({
+    ...point(nonHoldout, tauVerdict(tau), tau),
+    projectedUncertainRate: projectedUncertainRate(input.live, audited, tau),
+  }));
   const uncertainCap = input.uncertainCap ?? DEFAULT_UNCERTAIN_CAP;
   const { tauStar, minUnsafePassed } = pickTauStar(sweep, uncertainCap);
 
@@ -283,6 +334,8 @@ export function calibrationReport(input: CalibrationInput): CalibrationReport {
     baseline,
     sweep,
     uncertainCap,
+    live: input.live,
+    auditedClearYes: audited.length,
     minUnsafePassed,
     tauStar,
     holdoutAtTauStar: tauStar !== null ? point(holdout, tauVerdict(tauStar), tauStar) : null,

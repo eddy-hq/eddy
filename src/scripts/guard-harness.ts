@@ -60,10 +60,16 @@
  *             item's limit; a clear_yes with p_over >= τ, or with a
  *             dimension unread, becomes uncertain (it only tightens). Prints
  *             a τ sweep on the non-holdout items and picks τ* there by a
- *             pre-registered rule: of the τ whose uncertain rate is at most
- *             --uncertain-cap (default 20%), the fewest Unsafe passed as
- *             clear_yes, and the loosest τ reaching it (none if no τ is under
- *             the cap). The brief's targets are shown against τ* for
+ *             pre-registered rule: of the τ whose projected live uncertain
+ *             rate is at most --uncertain-cap (default 20%), the fewest Unsafe
+ *             passed as clear_yes, and the loosest τ reaching it (none if no
+ *             τ is under the cap). The projection (ADR-0019, 2026-10-30) is
+ *             the live candidate prompt's uncertain share over the last 14
+ *             days of guard_eval, plus its clear-yes share times the fraction
+ *             of audited clear-yes items (live and replayed clear_yes,
+ *             non-holdout) τ escalates; the labelled items' own uncertain rate
+ *             over-represents escalations and is shown beside it but doesn't
+ *             pick τ*. The brief's targets are shown against τ* for
  *             reference but don't pick it. Tests τ* once on the holdout
  *             beside the incumbent there, and prints a reliability table, with
  *             the incumbent (gemma-v4) on the same items as the baseline.
@@ -97,6 +103,7 @@ import {
   loadRubricLimits,
   meetsTargets,
   liveReport,
+  liveRatesFromFile,
   liveUncertainRatesFromFile,
   readDataset,
   readResults,
@@ -420,12 +427,16 @@ async function calibrate(args: Args): Promise<void> {
   const incumbent = await getAdapter(INCUMBENT_ADAPTER);
   const limitsFor = await loadRubricLimits();
   const file = datasetPath(args);
+  // The live candidate prompt the cap's projection reads (ADR-0019, 2026-10-30).
+  const { CANDIDATE_V4_PROMPT_VERSION } = await import('../modules/guard/index');
+  const live = liveRatesFromFile(config.DATABASE_PATH, CANDIDATE_V4_PROMPT_VERSION);
   const r = calibrationReport({
     items: readDataset(file),
     results: readResults(resultsPathFor(file)),
     adapterId: adapter.id,
     baselineAdapterId: incumbent.id,
     limitsFor,
+    live,
     ...(args.uncertainCap !== undefined ? { uncertainCap: args.uncertainCap } : {}),
   });
   const t = THRESHOLDS;
@@ -455,21 +466,30 @@ async function calibrate(args: Args): Promise<void> {
   console.log(calibrationLine('plain, holdout', r.plain.holdout));
 
   const cap = `${fmtPct(r.uncertainCap)}%`;
-  console.log('\nThreshold sweep, non-holdout: a clear_yes with p_over >= τ becomes uncertain');
-  calibrationHeader();
-  for (const p of r.sweep) {
-    const marker = p.tau === r.tauStar ? '  <- τ*' : (p.metrics.uncertainRate ?? 1) > r.uncertainCap ? '  (over cap)' : '';
-    console.log(calibrationLine(`τ = ${String(p.tau)}`, p) + marker);
+  console.log('\nProjected live uncertain rate (the cap applies to this, not to the labelled rate above):');
+  if (r.live) {
+    console.log(`  live ${r.live.promptVersion}, last ${LIVE_UNCERTAIN_DAYS} days: ${r.live.uncertain}/${r.live.total} uncertain, ${r.live.clearYes}/${r.live.total} clear_yes`
+      + ' (offline re-runs included)');
+  } else {
+    console.log(`  no live verdicts for the candidate prompt in the last ${LIVE_UNCERTAIN_DAYS} days: nothing to project from`);
   }
-  console.log(`\nRule (pre-registered, non-holdout only): of the τ whose uncertain rate is at most ${cap},`);
+  console.log(`  audited clear-yes items it scales by (live and replayed clear_yes, non-holdout): ${r.auditedClearYes}`);
+  console.log('\nThreshold sweep, non-holdout: a clear_yes with p_over >= τ becomes uncertain');
+  console.log(`  ${''.padEnd(30)}${'n'.padStart(5)}  ${'clear-yes precision (95% CI)'.padEnd(CELL)}${'unsafe passed'.padStart(13).padEnd(17)}${'labelled uncertain (95% CI)'.padEnd(CELL)}projected live`);
+  for (const p of r.sweep) {
+    const marker = p.tau === r.tauStar ? '  <- τ*' : (p.projectedUncertainRate ?? 1) > r.uncertainCap ? '  (over cap)' : '';
+    console.log(calibrationLine(`τ = ${String(p.tau)}`, p) + pct(p.projectedUncertainRate) + marker);
+  }
+  console.log(`\nRule (pre-registered, non-holdout only): of the τ whose projected live uncertain rate is at most ${cap},`);
   console.log('take the fewest Unsafe passed as clear_yes; τ* is the loosest τ reaching that minimum.');
   if (r.tauStar === null || !r.holdoutAtTauStar) {
-    console.log(`τ*: none — no τ on the grid keeps the uncertain rate at or under ${cap} on non-holdout.`);
+    console.log(`τ*: none — no τ on the grid keeps the projected live uncertain rate at or under ${cap}.`);
   } else {
     const atStar = r.sweep.find((p) => p.tau === r.tauStar)!;
     const met = meetsTargets(atStar);
     const yesNo = (ok: boolean) => (ok ? 'met' : 'not met');
-    console.log(`τ* = ${r.tauStar}: ${r.minUnsafePassed} Unsafe passed on non-holdout, uncertain ${pct(atStar.metrics.uncertainRate).trim()}.`);
+    console.log(`τ* = ${r.tauStar}: ${r.minUnsafePassed} Unsafe passed on non-holdout, projected live uncertain ${pct(atStar.projectedUncertainRate).trim()}`
+      + ` (labelled ${pct(atStar.metrics.uncertainRate).trim()}).`);
     console.log(`  For reference (not used to pick τ*): clear-yes >= ${t.clearYesPrecision * 100}% ${yesNo(met.clearYesPrecision)}; `
       + `uncertain ${t.uncertainRate.min * 100}-${t.uncertainRate.max * 100}% ${yesNo(met.uncertainRate)}.`);
     console.log('Holdout at τ* — the honest test (τ* was chosen without it), beside the incumbent there:');

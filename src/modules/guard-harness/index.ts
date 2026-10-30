@@ -4,6 +4,7 @@
 import { existsSync, mkdirSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import { openReadOnlyDatabase } from '../../db/read-only';
+import type { LiveRates } from './calibrate';
 import { liveUncertainRates, type PromptUncertainRate } from './report';
 import { buildSnapshot, type SnapshotResult } from './snapshot';
 import {
@@ -35,7 +36,9 @@ export {
   meetsTargets,
   pickTauStar,
   pOver,
+  projectedUncertainRate,
   type CalibrationPoint,
+  type LiveRates,
   type CalibrationReport,
   type ReliabilityBin,
 } from './calibrate';
@@ -158,4 +161,11 @@ export function liveUncertainRatesFromFile(databasePath: string, now: Date = new
   } finally {
     source.close();
   }
+}
+
+// One prompt version's recent verdict counts, for calibrate's projected live
+// uncertain rate; null when it wrote nothing in the window.
+export function liveRatesFromFile(databasePath: string, promptVersion: string, now: Date = new Date()): LiveRates | null {
+  const r = liveUncertainRatesFromFile(databasePath, now).find((x) => x.promptVersion === promptVersion);
+  return r ? { promptVersion, total: r.total, uncertain: r.uncertain, clearYes: r.clearYes } : null;
 }

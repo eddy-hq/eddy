@@ -189,6 +189,7 @@ export interface PromptUncertainRate {
   promptVersion: string | null;
   total: number;
   uncertain: number;
+  clearYes: number;
   rate: number | null;
   interval: Interval | null;
 }
@@ -210,16 +211,18 @@ export function liveUncertainRates(
   const rows = source.prepare(`
     SELECT prompt_version,
            COUNT(*)                                             AS total,
-           COUNT(CASE WHEN gemma_verdict = 'uncertain' THEN 1 END) AS uncertain
+           COUNT(CASE WHEN gemma_verdict = 'uncertain' THEN 1 END) AS uncertain,
+           COUNT(CASE WHEN gemma_verdict = 'clear_yes' THEN 1 END) AS clear_yes
     FROM guard_eval
     WHERE created_at >= ?
     GROUP BY prompt_version
     ORDER BY prompt_version
-  `).all(since) as Array<{ prompt_version: string | null; total: number; uncertain: number }>;
+  `).all(since) as Array<{ prompt_version: string | null; total: number; uncertain: number; clear_yes: number }>;
   return rows.map((r) => ({
     promptVersion: r.prompt_version,
     total: r.total,
     uncertain: r.uncertain,
+    clearYes: r.clear_yes,
     rate: r.total > 0 ? r.uncertain / r.total : null,
     interval: wilsonInterval(r.uncertain, r.total),
   }));

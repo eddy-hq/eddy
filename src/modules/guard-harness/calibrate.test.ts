@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { DIMENSION_KEYS, LIMITS, limitsBandFor } from '../guard/rubric';
-import { calibratedVerdict, calibrationReport, meetsTargets, pickTauStar, pOver, reliabilityBins, TAU_GRID, type CalibrationPoint } from './calibrate';
+import { calibratedVerdict, calibrationReport, meetsTargets, pickTauStar, pOver, projectedUncertainRate, reliabilityBins, TAU_GRID, type CalibrationPoint, type LiveRates } from './calibrate';
 import { calibrationChartHtml, writeCalibrationChart } from './calibration-chart';
 import type { BlockKind, GuardVerdictLabel, HarnessItem, HarnessResult, HumanLabel, ScoreDistribution } from './util';
 
@@ -12,6 +12,9 @@ import type { BlockKind, GuardVerdictLabel, HarnessItem, HarnessResult, HumanLab
 const limitsFor = (ageBand: string) => LIMITS[limitsBandFor(ageBand)];
 
 const SURE_ZERO: ScoreDistribution = [1, 0, 0, 0];
+
+// Live candidate traffic: 5% uncertain, 90% clear-yes.
+const LIVE: LiveRates = { promptVersion: 'candidate-v4.1', total: 100, uncertain: 5, clearYes: 90 };
 
 // Every dimension certain of 0, with overrides.
 function dists(over: Record<string, ScoreDistribution | null> = {}): Record<string, ScoreDistribution | null> {
@@ -125,8 +128,8 @@ function scenario() {
 
 describe('calibrationReport', () => {
   const { items, results } = scenario();
-  // A 30% cap here: every τ ≤ 0.3 costs 7/31 uncertain.
-  const r = calibrationReport({ items, results, adapterId: 'logprob', baselineAdapterId: 'incumbent', limitsFor, uncertainCap: 0.3 });
+  // A 30% cap here, which every τ is under.
+  const r = calibrationReport({ items, results, adapterId: 'logprob', baselineAdapterId: 'incumbent', limitsFor, uncertainCap: 0.3, live: LIVE });
 
   it('scores safety labels only, by split', () => {
     expect(r.datasetItems).toBe(items.length);
@@ -173,20 +176,42 @@ describe('calibrationReport', () => {
     expect(r.holdoutAtTauStar!.unsafePassed).toBe(0);
   });
 
-  it('defaults the cap to 20%, which here only the looser τ meet', () => {
-    // τ <= 0.3 costs 7/31 = 22.6% uncertain; 0.4 and 0.5 cost 5/31 and pass 2.
-    const d = calibrationReport({ items, results, adapterId: 'logprob', baselineAdapterId: null, limitsFor });
+  it('projects the live uncertain rate from the audited clear-yes items, whatever their label', () => {
+    // Audited: the 25 non-holdout items replayed clear_yes with a live clear_yes
+    // (20 Allowed, 2 Unsafe, Not for us, unrecorded, unread). τ <= 0.3
+    // escalates 3 of them (the Unsafe pair and the unread), 0.4 and up 1.
+    expect(r.auditedClearYes).toBe(25);
+    expect(r.live).toEqual(LIVE);
+    expect(r.sweep.find((p) => p.tau === 0.3)!.projectedUncertainRate).toBeCloseTo(0.05 + 0.9 * (3 / 25), 10);
+    expect(r.sweep.find((p) => p.tau === 0.4)!.projectedUncertainRate).toBeCloseTo(0.05 + 0.9 * (1 / 25), 10);
+    // Off the sweep there is nothing to project.
+    expect(r.plain.nonHoldout.projectedUncertainRate).toBeNull();
+    expect(r.holdoutAtTauStar!.projectedUncertainRate).toBeNull();
+  });
+
+  it('applies the default 20% cap to the projected live rate, not the labelled rate', () => {
+    // τ <= 0.3 costs 7/31 = 22.6% of the labelled items, over the cap, but a
+    // projected 15.8% live: still eligible, and it passes no Unsafe.
+    const d = calibrationReport({ items, results, adapterId: 'logprob', baselineAdapterId: null, limitsFor, live: LIVE });
     expect(d.uncertainCap).toBe(0.2);
-    expect(d.minUnsafePassed).toBe(2);
-    expect(d.tauStar).toBe(0.5);
+    expect(d.sweep.find((p) => p.tau === 0.3)!.metrics.uncertainRate!).toBeGreaterThan(0.2);
+    expect(d.minUnsafePassed).toBe(0);
+    expect(d.tauStar).toBe(0.3);
   });
 
   it('says when no τ is under the cap', () => {
-    const none = calibrationReport({ items, results, adapterId: 'logprob', baselineAdapterId: null, limitsFor, uncertainCap: 0.1 });
+    // The loosest τ still projects 8.6%.
+    const none = calibrationReport({ items, results, adapterId: 'logprob', baselineAdapterId: null, limitsFor, uncertainCap: 0.05, live: LIVE });
     expect(none.minUnsafePassed).toBeNull();
     expect(none.tauStar).toBeNull();
     expect(none.holdoutAtTauStar).toBeNull();
     expect(none.baseline).toBeNull();
+  });
+
+  it('has no τ* with no live rates to project from', () => {
+    const blind = calibrationReport({ items, results, adapterId: 'logprob', baselineAdapterId: null, limitsFor, live: null });
+    expect(blind.sweep.every((p) => p.projectedUncertainRate === null)).toBe(true);
+    expect(blind.tauStar).toBeNull();
   });
 
   it('bins non-holdout clear_yes items by p_over', () => {
@@ -200,8 +225,9 @@ describe('calibrationReport', () => {
 });
 
 // The shape of the first household run (non-holdout): Unsafe passed 6 at
-// τ 0.02–0.04 with uncertain over 20%, 7 at 0.05–0.15 under it, then 8, 9, 10
-// as τ loosens. With the default 20% cap the rule picks 0.15.
+// τ 0.02–0.04 with labelled uncertain over 20%, 7 at 0.05–0.15 under it, then
+// 8, 9, 10 as τ loosens. With the cap on the labelled rate the rule picked
+// 0.15; on the projected live rate, 0.02–0.04 project about 10.7%.
 function householdShape() {
   const items: HarnessItem[] = [];
   const results: HarnessResult[] = [];
@@ -234,7 +260,9 @@ function householdShape() {
 
 describe('τ* selection', () => {
   const { items, results } = householdShape();
-  const r = calibrationReport({ items, results, adapterId: 'logprob', baselineAdapterId: 'incumbent', limitsFor });
+  const r = calibrationReport({ items, results, adapterId: 'logprob', baselineAdapterId: 'incumbent', limitsFor, live: LIVE });
+  // A 10% cap, which 0.02–0.04 project over.
+  const tight = calibrationReport({ items, results, adapterId: 'logprob', baselineAdapterId: 'incumbent', limitsFor, live: LIVE, uncertainCap: 0.1 });
   const at = (tau: number) => r.sweep.find((p) => p.tau === tau)!;
 
   it('reproduces the household sweep shape', () => {
@@ -248,20 +276,28 @@ describe('τ* selection', () => {
     expect(meetsTargets(r.baseline!.nonHoldout).clearYesPrecision).toBe(true);
   });
 
-  it('picks the loosest τ with the fewest Unsafe passed under the 20% cap', () => {
+  it('keeps a τ whose labelled rate is over the 20% cap when its projected live rate is under it', () => {
+    // 220 audited clear-yes items; τ 0.04 escalates 14 of them.
+    expect(at(0.04).projectedUncertainRate).toBeCloseTo(0.05 + 0.9 * (14 / 220), 10);
     expect(r.uncertainCap).toBe(0.2);
-    expect(r.minUnsafePassed).toBe(7);
-    expect(r.tauStar).toBe(0.15);
+    expect(r.minUnsafePassed).toBe(6);
+    expect(r.tauStar).toBe(0.04);
+  });
+
+  it('picks the loosest τ with the fewest Unsafe passed under a tighter cap', () => {
+    expect(tight.sweep.find((p) => p.tau === 0.05)!.projectedUncertainRate).toBeCloseTo(0.05 + 0.9 * (8 / 220), 10);
+    expect(tight.minUnsafePassed).toBe(7);
+    expect(tight.tauStar).toBe(0.15);
   });
 
   it('tests τ* once on holdout, beside the incumbent there', () => {
-    expect(r.holdoutAtTauStar!.tau).toBe(0.15);
-    expect(r.holdoutAtTauStar!.unsafePassed).toBe(0);
-    expect(r.baseline!.holdout.unsafePassed).toBe(1);
+    expect(tight.holdoutAtTauStar!.tau).toBe(0.15);
+    expect(tight.holdoutAtTauStar!.unsafePassed).toBe(0);
+    expect(tight.baseline!.holdout.unsafePassed).toBe(1);
   });
 
   it('reports no τ* when no τ meets the cap', () => {
-    const none = calibrationReport({ items, results, adapterId: 'logprob', baselineAdapterId: 'incumbent', limitsFor, uncertainCap: 0.05 });
+    const none = calibrationReport({ items, results, adapterId: 'logprob', baselineAdapterId: 'incumbent', limitsFor, uncertainCap: 0.05, live: LIVE });
     expect(none.tauStar).toBeNull();
     expect(none.minUnsafePassed).toBeNull();
     expect(none.holdoutAtTauStar).toBeNull();
@@ -269,8 +305,8 @@ describe('τ* selection', () => {
 });
 
 describe('pickTauStar', () => {
-  const pt = (tau: number, unsafePassed: number, uncertainRate: number | null): CalibrationPoint =>
-    ({ tau, unsafePassed, metrics: { uncertainRate } }) as unknown as CalibrationPoint;
+  const pt = (tau: number, unsafePassed: number, projected: number | null): CalibrationPoint =>
+    ({ tau, unsafePassed, projectedUncertainRate: projected, metrics: { uncertainRate: 0.99 } }) as unknown as CalibrationPoint;
 
   it('resolves ties at the minimum to the loosest τ, wherever they sit in the sweep', () => {
     const sweep = [pt(0.3, 2, 0.1), pt(0.1, 2, 0.15), pt(0.2, 2, 0.12), pt(0.4, 3, 0.05)];
@@ -287,6 +323,20 @@ describe('pickTauStar', () => {
   });
 });
 
+describe('projectedUncertainRate', () => {
+  it('adds the live clear-yes share τ escalates to the live uncertain share, failing closed on unread', () => {
+    // 4 audited: one unread, one at 0.3, two at 0.01. τ 0.2 escalates 2 of 4.
+    expect(projectedUncertainRate(LIVE, [null, 0.3, 0.01, 0.01], 0.2)).toBeCloseTo(0.05 + 0.9 * 0.5, 10);
+    expect(projectedUncertainRate(LIVE, [0.01, 0.01], 0.2)).toBeCloseTo(0.05, 10);
+  });
+
+  it('is null with nothing to project from', () => {
+    expect(projectedUncertainRate(null, [0.01], 0.2)).toBeNull();
+    expect(projectedUncertainRate({ ...LIVE, total: 0, uncertain: 0, clearYes: 0 }, [0.01], 0.2)).toBeNull();
+    expect(projectedUncertainRate(LIVE, [], 0.2)).toBeNull();
+  });
+});
+
 describe('reliabilityBins', () => {
   it('closes the last bin at 1', () => {
     const row = (p: number) => ({ itemId: 'x', holdout: false, label: 'clear_no' as const, plain: 'clear_yes' as const, pOver: p });
@@ -297,7 +347,7 @@ describe('reliabilityBins', () => {
 
 describe('calibration chart', () => {
   const { items, results } = scenario();
-  const r = calibrationReport({ items, results, adapterId: 'logprob', baselineAdapterId: 'incumbent', limitsFor, uncertainCap: 0.3 });
+  const r = calibrationReport({ items, results, adapterId: 'logprob', baselineAdapterId: 'incumbent', limitsFor, uncertainCap: 0.3, live: LIVE });
   const html = calibrationChartHtml(r, 'dataset-2026-10-02.jsonl', new Date('2026-10-18T19:00:00Z'));
 
   it('is self-contained HTML with the three charts and aggregates only', () => {
@@ -307,26 +357,27 @@ describe('calibration chart', () => {
     // The rule in words, and the cap line it was picked under.
     expect(html).toContain('Rule (pre-registered, non-holdout only)');
     expect(html).toContain('cap 30% (picks τ*)');
+    expect(html).toContain('Projected live uncertain rate against τ');
     expect(html).not.toMatch(/<script|https?:\/\/|src=/);
     // No item content or ids.
     expect(html).not.toContain('Placeholder');
     expect(html).not.toMatch(/\b(a1|hu0|unrec|kid_1)\b/);
   });
 
-  it('widens the axes to a holdout result outside the non-holdout range rather than clamping it', () => {
+  it('widens the precision axis to a holdout result outside the non-holdout range rather than clamping it', () => {
     const holdout = r.holdoutAtTauStar!;
     const worse = {
       ...r,
       holdoutAtTauStar: { ...holdout, metrics: { ...holdout.metrics, clearYesPrecision: 0, uncertainRate: 0.9 } },
     };
     const out = calibrationChartHtml(worse, 'dataset-2026-10-02.jsonl', new Date('2026-10-18T19:00:00Z'));
-    // The holdout diamonds, in chart order: precision, then uncertain rate.
+    // One holdout diamond, on the precision chart: the uncertain chart plots
+    // the projected live rate, which the holdout's labelled rate isn't.
     const ys = [...out.matchAll(/width="10" height="10" fill="#c43d4b" transform="rotate\(45 [\d.]+ ([\d.]+)\)"/g)].map((m) => Number(m[1]));
     const plotHeight = 300 - 52 - 62;
-    // 0% precision sits on the axis floor (now 0%), 90% uncertain at the top (now 90%).
-    expect(ys).toEqual([plotHeight, 0]);
+    // 0% precision sits on the axis floor (now 0%).
+    expect(ys).toEqual([plotHeight]);
     expect(out).toContain('>0%</text>');
-    expect(out).toContain('>90%</text>');
   });
 
   it('is written mode 0600, even over an existing file', () => {
