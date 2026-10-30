@@ -1,6 +1,6 @@
 # The model describes; code decides; only an explicit clear-yes reaches a kid
 
-**Status:** Accepted. Built for discovery candidates and the download-time second pass, behind `GUARD_CANDIDATE_PROMPT=v4`. The code default is still `v3`. Kid requests and kid-typed interests still use the older verdict prompt, in shadow mode.
+**Status:** Accepted. Built for discovery candidates and the download-time second pass, behind `GUARD_CANDIDATE_PROMPT=v4`; discovery candidates are also calibrated (amended 2026-10-30). The code default is still `v3`. Kid requests and kid-typed interests still use the older verdict prompt, in shadow mode.
 
 The first guard prompts asked a small local model for a verdict (`clear_yes`, `uncertain` or `clear_no`), a one-sentence reason and a confidence figure. That shape has two faults. The age limits live inside the model's head, so changing what a given age band may see means rewording a prompt and hoping. And the confidence figure is self-reported: it can't be thresholded, and nothing in Eddy ever used it to decide anything. A safety boundary needs a rule someone can read, test and version.
 
@@ -41,4 +41,17 @@ Each step can only make the verdict stricter. A missing or unrecognised age band
 
 - **Retire `v3`.** Make the rubric prompt the code default and remove the switch once the harness ([[0019-guard-changes-must-beat-the-incumbent-on-replay]]) has nothing left to compare it with.
 - **Kid requests and kid-typed interests** still use a verdict prompt. Moving them onto the rubric is undecided.
-- **Calibrated scores.** A score read from the model's token probabilities could be thresholded where a self-reported number can't. Not built in the live guard. 2026-10-18: a harness adapter (`gemma-v4.1-logprob`) reads each dimension's distribution over 0–3 on replay, and `guard:harness -- calibrate` measures a threshold on the probability of a score over its limit. It can only tighten a verdict; adopting it is a [[0019-guard-changes-must-beat-the-incumbent-on-replay]] decision.
+
+## Amended — 2026-10-30: calibrated scores on the discovery candidate guard
+
+Calibrated scores were deferred: a score read from the model's token probabilities could be thresholded where a self-reported number can't. On 2026-10-18 a harness adapter (`gemma-v4.1-logprob`) began reading each dimension's distribution over 0–3 on replay, and `guard:harness -- calibrate` measured a threshold on the probability of a score over its limit. It is now built for the discovery candidate first pass.
+
+The model still describes and code still decides. The rubric call for a discovery candidate also asks Ollama for token probabilities (same prompt, model, options and schema); `verdictFromScores` decides on the decoded scores exactly as before. Then p_over is the largest probability, over the eight dimensions, of a score above the kid's limit. A `clear_yes` with p_over at or above τ becomes `uncertain`, with the dimension and the numbers added to the reason a parent sees. Nothing else changes, so it only ever tightens. The token walk and the rule live in `src/modules/guard/calibration.ts`, which the harness replays through too.
+
+**τ = 0.04**, chosen by [[0019-guard-changes-must-beat-the-incumbent-on-replay]]'s pre-registered rule on non-holdout (2026-10-30 amendment). On the holdout, the one honest test (166 safety-labelled items), Unsafe passed as `clear_yes` fell from 4/40 under the incumbent to 2/40, and clear-yes precision rose from 96.7% [91.7, 98.7] to 98.1% [93.3, 99.5] (Wilson 95%). On non-holdout, Unsafe passed fell from 13/106 to 9/106. The cost is escalations: the projected live uncertain rate for the candidate prompt goes from 4.8% to about 12.5%, roughly 21 candidates a day, so about one Escalation a day becomes about 2.6.
+
+- **Fails closed.** A dimension whose probabilities can't be read counts as not provably under its limit, so the `clear_yes` escalates and a warning is logged; a systematic failure (an Ollama upgrade changing the logprobs shape) would show as every `clear_yes` escalating, not as anything passing. A failed or unparseable call is `uncertain`, as before.
+- **Configurable.** `GUARD_CALIBRATION_TAU` takes a number in (0, 1] or `off`; unset means 0.04, so the stricter guard is the default. `off` restores the plain rubric guard exactly.
+- **Recorded without a migration.** `rubric_scores_json` gains a `calibration` field (τ, p_over and the dimension reaching it) when calibration ran. `prompt_version` stays `candidate-v4.1`: the prompt hasn't changed.
+- **Not calibrated:** the download-time second pass and kid requests and interests. The second pass reads a transcript and was not measured; requests are in shadow mode.
+- **The harness keeps its plain baseline.** `gemma-v4` replays the rubric guard without τ under its unchanged id; the live configuration is "plain + τ", whose verdicts `calibrate` derives from the logprob adapter's results.
