@@ -166,8 +166,8 @@ describe('liveUncertainRates', () => {
       insert.run('e5', 'uncertain', 'candidate-v4.1', '2026-10-03T12:00:00.000Z');
       insert.run('e6', 'uncertain', 'v2', '2026-10-17T12:00:00.000Z');
       const rates = liveUncertainRates(db, now);
-      expect(rates.map((r) => [r.promptVersion, r.total, r.uncertain])).toEqual([
-        ['candidate-v4.1', 4, 1], ['v2', 1, 1],
+      expect(rates.map((r) => [r.promptVersion, r.total, r.uncertain, r.clearYes])).toEqual([
+        ['candidate-v4.1', 4, 1, 3], ['v2', 1, 1, 0],
       ]);
       expect(rates[0]!.rate).toBeCloseTo(0.25);
       expect(rates[0]!.interval!.low).toBeLessThan(0.25);

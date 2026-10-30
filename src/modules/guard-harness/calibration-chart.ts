@@ -216,9 +216,11 @@ export function calibrationChartHtml(r: CalibrationReport, datasetName: string, 
   const precisionAxisMin = Math.max(0, Math.floor(Math.min(0.9, ...precisions) * 20) / 20);
   const precisionStep = 1 - precisionAxisMin > 0.3 ? 0.1 : 0.05;
   const precisionAxis: Axis = { min: precisionAxisMin, max: 1, ticks: ticks(precisionAxisMin, 1, precisionStep) };
-  const baselineU = r.baseline?.nonHoldout.metrics.uncertainRate ?? null;
-  const holdoutU = r.holdoutAtTauStar?.metrics.uncertainRate ?? null;
-  const uncertain = known([...r.sweep.map((p) => p.metrics.uncertainRate), baselineU, holdoutU, r.uncertainCap]);
+  // The uncertain chart plots the projected live rate the cap applies to, with
+  // today's live rate as the incumbent line. The holdout's labelled rate is in
+  // the table; it isn't on this scale.
+  const liveU = r.live && r.live.total > 0 ? r.live.uncertain / r.live.total : null;
+  const uncertain = known([...r.sweep.map((p) => p.projectedUncertainRate), liveU, r.uncertainCap]);
   const uMax = Math.min(1, Math.ceil(Math.max(0.5, ...uncertain) * 10) / 10);
   const uncertainAxis: Axis = { min: 0, max: uMax, ticks: ticks(0, uMax, uMax > 0.6 ? 0.2 : 0.1) };
   const t = THRESHOLDS;
@@ -230,17 +232,17 @@ export function calibrationChartHtml(r: CalibrationReport, datasetName: string, 
     baselineP, holdoutP,
   );
   const uncertainChart = sweepChart(
-    r, 'Uncertain rate against τ', 'uncertain rate',
-    { colour: COLOUR.secondary, value: (p) => p.metrics.uncertainRate },
+    r, 'Projected live uncertain rate against τ', 'projected live uncertain rate',
+    { colour: COLOUR.secondary, value: (p) => p.projectedUncertainRate },
     uncertainAxis, [[t.uncertainRate.max, `ceiling ${t.uncertainRate.max * 100}%`], [t.uncertainRate.min, `floor ${t.uncertainRate.min * 100}%`]],
-    baselineU, holdoutU, r.uncertainCap,
+    liveU, null, r.uncertainCap,
   );
 
   const cap = pct(r.uncertainCap, 0);
-  const rule = `Rule (pre-registered, non-holdout only): of the τ whose uncertain rate is at most ${cap}, take the fewest Unsafe passed as clear-yes; τ* is the loosest τ reaching that minimum. The targets (clear-yes ≥ ${t.clearYesPrecision * 100}%, uncertain ${t.uncertainRate.min * 100}–${t.uncertainRate.max * 100}%) are shown for reference and don't pick τ*.`;
+  const rule = `Rule (pre-registered, non-holdout only): of the τ whose projected live uncertain rate is at most ${cap}, take the fewest Unsafe passed as clear-yes; τ* is the loosest τ reaching that minimum. The targets (clear-yes ≥ ${t.clearYesPrecision * 100}%, uncertain ${t.uncertainRate.min * 100}–${t.uncertainRate.max * 100}%) are shown for reference and don't pick τ*.`;
   let verdict: string;
   if (r.tauStar === null) {
-    verdict = `No τ on the grid keeps the uncertain rate at or under ${cap} on the non-holdout items, so there is no τ*.`;
+    verdict = `No τ on the grid keeps the projected live uncertain rate at or under ${cap}, so there is no τ*.`;
   } else {
     const atStar = r.sweep.find((p) => p.tau === r.tauStar);
     const met = atStar ? meetsTargets(atStar) : null;
@@ -278,7 +280,7 @@ export function calibrationChartHtml(r: CalibrationReport, datasetName: string, 
 <p>${esc(rule)}</p>
 <p>${esc(verdict)}</p>
 <table>
-<thead><tr><th>verdicts</th><th>n</th><th>clear-yes precision (95% CI)</th><th>Unsafe passed as clear-yes</th><th>uncertain rate</th></tr></thead>
+<thead><tr><th>verdicts</th><th>n</th><th>clear-yes precision (95% CI)</th><th>Unsafe passed as clear-yes</th><th>uncertain rate (labelled items)</th></tr></thead>
 <tbody>
 ${row('incumbent, non-holdout', r.baseline?.nonHoldout ?? null)}
 ${row('plain verdict, non-holdout', r.plain.nonHoldout)}
@@ -293,7 +295,7 @@ ${precisionChart}
 ${uncertainChart}
 ${reliabilityChart(r)}
 </div>
-<p class="method">p_over is the largest probability, over the eight rubric dimensions, that the model's score is above the item's age-band limit, read from the score digit's token probabilities and renormalised over 0–3. A clear_yes becomes uncertain when p_over ≥ τ or a dimension's probabilities could not be read; nothing else changes, so the calibrated verdict is never looser than the plain one. Safety labels only: Allow is clear-yes, Unsafe is clear-no; Not for us and unrecorded Blocks are left out. τ* is chosen on the non-holdout items by the rule above and tested once on the holdout. Aggregate counts only.</p>
+<p class="method">p_over is the largest probability, over the eight rubric dimensions, that the model's score is above the item's age-band limit, read from the score digit's token probabilities and renormalised over 0–3. A clear_yes becomes uncertain when p_over ≥ τ or a dimension's probabilities could not be read; nothing else changes, so the calibrated verdict is never looser than the plain one. Safety labels only: Allow is clear-yes, Unsafe is clear-no; Not for us and unrecorded Blocks are left out. τ* is chosen on the non-holdout items by the rule above and tested once on the holdout. The cap applies to a projected live uncertain rate, not to the labelled items' rate, because every escalation is decided while clear verdicts are only sampled: the live candidate prompt's uncertain share over the last 14 days, plus its clear-yes share times the fraction of audited clear-yes items (live clear_yes from that prompt version, replayed clear_yes, non-holdout) that τ escalates${r.live ? ` (${r.live.uncertain} uncertain and ${r.live.clearYes} clear-yes of ${r.live.total} live verdicts; ${r.auditedClearYes} audited items)` : ''}. Aggregate counts only.</p>
 </body>
 </html>
 `;
