@@ -2,14 +2,23 @@ import { v7 as uuidv7 } from 'uuid';
 import { Worker } from 'bullmq';
 import { db } from '../../db/client';
 import { logger } from '../../logger';
-import { ollamaGenerate, parseOllamaJson } from '../../ollama';
+import { ollamaGenerate, ollamaGenerateWithLogprobs, parseOllamaJson } from '../../ollama';
 import { config } from '../../config';
 import { GuardError } from '../../errors';
 import { redis, guardQueue } from '../../queue';
 import { getAgeBand } from '../users';
 import { categoryName, readVideoMetadata, type StoredVideoMetadata } from './metadata';
 import {
+  TOP_LOGPROBS,
+  describeCalibration,
+  pOverDetail,
+  scoreDistributions,
+  tightenVerdict,
+  type CalibrationOutcome,
+} from './calibration';
+import {
   CANDIDATE_V4_PROMPT_VERSION,
+  DIMENSION_OUTPUT_KEYS,
   RUBRIC_SCORES_SCHEMA,
   SECOND_PASS_V4_NO_TRANSCRIPT_PROMPT_VERSION,
   SECOND_PASS_V4_PROMPT_VERSION,
@@ -20,11 +29,13 @@ import {
   type RubricPromptInput,
 } from './rubric-prompt';
 import {
+  LIMITS,
   RUBRIC_VERSION,
   describeDriver,
   verdictFromScores,
   type RubricContext,
   type RubricDecision,
+  type RubricDimension,
   type RubricScores,
 } from './rubric';
 
@@ -40,6 +51,22 @@ export {
   type ThumbSafetyError,
 } from './thumb-safety';
 export * from './rubric';
+export {
+  TOP_LOGPROBS,
+  describeCalibration,
+  formatPercent,
+  pOver,
+  pOverDetail,
+  rebuildOutput,
+  scoreDistributions,
+  tightenVerdict,
+  topLevelValues,
+  type CalibratedVerdictLabel,
+  type CalibrationOutcome,
+  type Limits,
+  type POverDetail,
+  type ScoreDistribution,
+} from './calibration';
 export {
   CANDIDATE_V4_PROMPT_VERSION,
   SECOND_PASS_V4_PROMPT_VERSION,
@@ -339,10 +366,12 @@ interface RunGuardCtx {
 }
 
 // What a rubric-scored (v4) call adds to its guard_eval row. `decision` is
-// null when the model call failed and no scores exist.
+// null when the model call failed and no scores exist. `calibration` is set
+// only when the call ran with a τ and produced scores.
 interface RubricRecord {
   scores: RubricScores | null;
   decision: RubricDecision | null;
+  calibration?: CalibrationOutcome;
 }
 
 // Shared Gemma round-trip + parse + guard_eval insert. Used by every guard
@@ -397,6 +426,7 @@ function recordGuardEval(verdict: GuardVerdict, ctx: RunGuardCtx, rubric?: Rubri
       limitsBand: rubric.decision.limitsBand,
       context: rubric.decision.context,
       drivers: rubric.decision.drivers,
+      ...(rubric.calibration ? { calibration: rubric.calibration } : {}),
     })
     : null;
   db.prepare(`
@@ -439,9 +469,11 @@ function recordGuardEval(verdict: GuardVerdict, ctx: RunGuardCtx, rubric?: Rubri
 export const RUBRIC_CALL_OPTIONS = { ...GUARD_CALL_OPTIONS, num_predict: 256 };
 
 // A v4 verdict: the model's scores plus the rule decision on them. `rubric`
-// is null when the model never produced a valid score set.
+// is null when the model never produced a valid score set. `decision` is the
+// plain rule decision; with calibration the verdict can be stricter than it
+// (a clear_yes escalated to uncertain), and `calibration` says why.
 export interface RubricGuardVerdict extends GuardVerdict {
-  rubric: { scores: RubricScores; decision: RubricDecision } | null;
+  rubric: { scores: RubricScores; decision: RubricDecision; calibration?: CalibrationOutcome } | null;
 }
 
 // Rubric round-trip (candidate-v4 and its second-pass counterpart): the model
@@ -461,17 +493,36 @@ async function runRubricEvaluation(
 
 // The rubric round-trip, parse and rule decision, writing nothing. A failed
 // call comes back as uncertain with `rubric` null.
+//
+// With a calibration τ (discovery candidates only, ADR-0017 amended
+// 2026-10-30) the same call also asks for token probabilities, and a
+// clear_yes whose probability of any score over the kid's limit (p_over) is
+// at or above τ, or can't be read, becomes uncertain. It only tightens: a
+// clear_no or uncertain is never changed. With no τ the call is exactly the
+// plain one.
 async function judgeRubric(
   input: RubricPromptInput,
   ageBand: string,
   context: RubricContext,
   log: JudgeLogCtx,
+  calibrationTau: number | null = null,
 ): Promise<RubricGuardVerdict> {
+  // A number only: anything else (null, or a config without the key) is off.
+  const tau = typeof calibrationTau === 'number' ? calibrationTau : null;
   let parsed: ReturnType<typeof parseRubricOutput>;
+  let raw: string;
+  let logprobs: Awaited<ReturnType<typeof ollamaGenerateWithLogprobs>>['logprobs'] | null = null;
   try {
-    const raw = await ollamaGenerate(
-      buildRubricPrompt(input), undefined, undefined, RUBRIC_CALL_OPTIONS, RUBRIC_SCORES_SCHEMA,
-    );
+    const prompt = buildRubricPrompt(input);
+    if (tau !== null) {
+      const result = await ollamaGenerateWithLogprobs(
+        prompt, config.OLLAMA_GUARD_MODEL, RUBRIC_CALL_OPTIONS, RUBRIC_SCORES_SCHEMA, TOP_LOGPROBS,
+      );
+      raw = result.response;
+      logprobs = result.logprobs;
+    } else {
+      raw = await ollamaGenerate(prompt, undefined, undefined, RUBRIC_CALL_OPTIONS, RUBRIC_SCORES_SCHEMA);
+    }
     parsed = parseRubricOutput(raw);
     if (!parsed) throw new GuardError('Could not parse Gemma rubric scores');
   } catch (err) {
@@ -483,10 +534,39 @@ async function judgeRubric(
   // The model's reason, plus what the limits table found — so a verdict the
   // model didn't express (a flag, a limit it didn't know about) still names
   // its cause.
-  const reason = decision.drivers.length > 0
+  let reason = decision.drivers.length > 0
     ? `${parsed.reason} (${decision.drivers.map(describeDriver).join('; ')})`
     : parsed.reason;
-  return { verdict: decision.verdict, reason, confidence: 1, rubric: { scores: parsed.scores, decision } };
+  if (tau === null || logprobs === null) {
+    return { verdict: decision.verdict, reason, confidence: 1, rubric: { scores: parsed.scores, decision } };
+  }
+
+  const detail = pOverDetail(
+    scoreDistributions(raw, logprobs, DIMENSION_OUTPUT_KEYS),
+    LIMITS[decision.limitsBand],
+  );
+  const calibration: CalibrationOutcome = {
+    tau,
+    pOver: detail.pOver,
+    dimension: detail.dimension as RubricDimension | null,
+  };
+  const verdict = tightenVerdict(decision.verdict, detail.pOver, tau);
+  const escalated = verdict !== decision.verdict;
+  // A systematic failure here (an Ollama upgrade changing the logprobs shape)
+  // would escalate every clear_yes, so it is a warning, not an info line.
+  if (detail.unread.length > 0) {
+    logger.warn(
+      { tau, unread: detail.unread, plainVerdict: decision.verdict, escalated },
+      'Guard calibration could not read score probabilities',
+    );
+  }
+  if (escalated) {
+    reason = `${reason} (${describeCalibration(calibration)})`;
+    if (detail.pOver !== null) {
+      logger.info({ pOver: detail.pOver, tau, dimension: detail.dimension }, 'Guard calibration escalated a clear_yes');
+    }
+  }
+  return { verdict, reason, confidence: 1, rubric: { scores: parsed.scores, decision, calibration } };
 }
 
 export async function scoreForRequest(params: ScoreParams): Promise<GuardVerdict> {
@@ -592,6 +672,7 @@ export async function evaluateCandidate(params: CandidateEvalParams): Promise<Ca
     ageBand,
     channelHistory,
     prompt: promptId,
+    calibrationTau: config.GUARD_CALIBRATION_TAU,
     url: params.url,
   });
   // A v4 call that failed records like one, with no scores; v3 and the
@@ -617,13 +698,18 @@ export interface JudgeCandidateInput {
   // Null when the channel is unknown.
   channelHistory: ChannelHistory | null;
   prompt: CandidatePromptId;
+  // The calibration threshold τ for the v4 rubric call (ADR-0017, amended
+  // 2026-10-30), or null for the plain rubric guard. Live discovery passes
+  // GUARD_CALIBRATION_TAU; the harness's plain baseline passes null.
+  calibrationTau: number | null;
   // Log context for a failed model call only.
   url?: string;
 }
 
 // The rubric prompt input judgeCandidate builds for a candidate. Shared with
-// the guard harness so a replay sends the same prompt.
-export function candidateRubricInput(input: JudgeCandidateInput): RubricPromptInput {
+// the guard harness so a replay sends the same prompt, which τ plays no part
+// in.
+export function candidateRubricInput(input: Omit<JudgeCandidateInput, 'calibrationTau'>): RubricPromptInput {
   return {
     title: input.title,
     channel: input.channel?.trim() ?? '',
@@ -650,7 +736,7 @@ export async function judgeCandidate(input: JudgeCandidateInput): Promise<Candid
   const log: JudgeLogCtx = { requestId: null, url: input.url };
 
   if (input.prompt === 'v4') {
-    const verdict = await judgeRubric(candidateRubricInput(input), input.ageBand, 'discovery', log);
+    const verdict = await judgeRubric(candidateRubricInput(input), input.ageBand, 'discovery', log, input.calibrationTau);
     return { ...verdict, promptVersion };
   }
 

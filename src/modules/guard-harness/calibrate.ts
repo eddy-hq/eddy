@@ -28,9 +28,13 @@
 // when the incumbent already meets them, "loosest τ meeting the targets" is
 // the loosest τ, which changes nothing and leaves the holdout nothing to test.
 //
-// Harness only — the live guard doesn't use this. Safety labels only (Allow =
-// clear-yes, Unsafe = clear-no; Not for us and unrecorded left out), counts
-// and metrics only (ADR-0004).
+// p_over and the tightening rule live in the guard module (calibration.ts),
+// which the live candidate guard applies with τ from GUARD_CALIBRATION_TAU
+// (ADR-0017, amended 2026-10-30); this file sweeps and picks τ on replay.
+// Imported from that DB-free file directly: the guard index loads the DB.
+// Safety labels only (Allow = clear-yes, Unsafe = clear-no; Not for us and
+// unrecorded left out), counts and metrics only (ADR-0004).
+import { pOver, tightenVerdict as tighten, type Limits } from '../guard/calibration';
 import { scoreSegment, type SafetyScore } from './report';
 import { safetyLabel, wilsonInterval, type Interval } from './scorer';
 import {
@@ -42,28 +46,7 @@ import {
   type ScoreDistribution,
 } from './util';
 
-// Score limits by dimension for one age band (rubric.ts LIMITS).
-export type Limits = Readonly<Record<string, number>>;
-
-const MAX_SCORE = 3;
-
-// The largest probability, over the dimensions in `limits`, that the score is
-// above its limit. Null when any of them has no distribution.
-export function pOver(
-  distributions: Readonly<Record<string, ScoreDistribution | null>> | undefined,
-  limits: Limits,
-): number | null {
-  if (!distributions) return null;
-  let max = 0;
-  for (const [dimension, limit] of Object.entries(limits)) {
-    const d = distributions[dimension];
-    if (!d) return null;
-    let p = 0;
-    for (let s = limit + 1; s <= MAX_SCORE; s++) p += d[s] ?? 0;
-    max = Math.max(max, p);
-  }
-  return max;
-}
+export { pOver, type Limits };
 
 // The plain verdict tightened by τ: clear_yes stays clear_yes only when
 // p_over is known and below τ; anything else is unchanged.
@@ -74,11 +57,6 @@ export function calibratedVerdict(
   tau: number,
 ): GuardVerdictLabel {
   return tighten(plain, pOver(distributions, limits), tau);
-}
-
-function tighten(plain: GuardVerdictLabel, p: number | null, tau: number): GuardVerdictLabel {
-  if (plain !== 'clear_yes') return plain;
-  return p !== null && p < tau ? 'clear_yes' : 'uncertain';
 }
 
 // The thresholds the sweep reports, and τ* is picked from.

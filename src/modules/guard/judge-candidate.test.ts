@@ -66,6 +66,7 @@ function input(over: Partial<JudgeCandidateInput> = {}): JudgeCandidateInput {
     ageBand: '10-12',
     channelHistory: { approved: 3, rejected: 1 },
     prompt: 'v4',
+    calibrationTau: null,
     ...over,
   };
 }

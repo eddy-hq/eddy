@@ -1,7 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import type { OllamaTokenLogprob } from '../../ollama';
+import {
+  describeCalibration,
+  formatPercent,
+  pOver,
+  pOverDetail,
+  rebuildOutput,
+  scoreDistributions,
+  tightenVerdict,
+  topLevelValues,
+} from './calibration';
 import { RECORDED_RESPONSE } from './logprob-fixture';
-import { rebuildOutput, scoreDistributions, topLevelValues } from './logprob';
 
 // Mirrors DIMENSION_OUTPUT_KEYS (rubric-prompt.ts); the adapter test checks
 // the real mapping.
@@ -201,5 +210,53 @@ describe('scoreDistributions on crafted token streams', () => {
     }));
     logprobs.find((l) => l.token === '0')!.logprob = Number.NEGATIVE_INFINITY;
     expect(scoreDistributions(response, logprobs, KEYS)['language']).toBeNull();
+  });
+});
+
+describe('pOverDetail', () => {
+  const limits = { language: 2, violence: 1, attitude: 1 };
+
+  it('names the dimension reaching p_over, the first on a tie', () => {
+    const d = { language: [0.5, 0.2, 0.2, 0.1] as const, violence: [0.6, 0.3, 0.05, 0.05] as const, attitude: [0.9, 0, 0.1, 0] as const };
+    const r = pOverDetail(d, limits);
+    expect(r.pOver).toBeCloseTo(0.1, 10);
+    expect(r.dimension).toBe('language');
+    expect(r.unread).toEqual([]);
+    expect(pOver(d, limits)).toBe(r.pOver);
+  });
+
+  it('is null, with every unread dimension listed, when any is missing', () => {
+    const d = { language: [1, 0, 0, 0] as const, violence: null };
+    expect(pOverDetail(d, limits)).toEqual({ pOver: null, dimension: null, unread: ['violence', 'attitude'] });
+    expect(pOverDetail(undefined, limits)).toEqual({ pOver: null, dimension: null, unread: ['language', 'violence', 'attitude'] });
+  });
+});
+
+describe('tightenVerdict', () => {
+  it('only ever turns a clear_yes into uncertain, at or above τ or unread', () => {
+    expect(tightenVerdict('clear_yes', 0.039, 0.04)).toBe('clear_yes');
+    expect(tightenVerdict('clear_yes', 0.04, 0.04)).toBe('uncertain');
+    expect(tightenVerdict('clear_yes', null, 0.04)).toBe('uncertain');
+    expect(tightenVerdict('clear_no', null, 0.04)).toBe('clear_no');
+    expect(tightenVerdict('uncertain', 0, 0.04)).toBe('uncertain');
+  });
+});
+
+describe('describeCalibration', () => {
+  it('names the dimension and the numbers', () => {
+    expect(describeCalibration({ tau: 0.04, pOver: 0.072, dimension: 'violence' }))
+      .toBe('Violence: 7.2% chance over the limit, escalates at 4%');
+    expect(describeCalibration({ tau: 0.04, pOver: 0.35, dimension: 'dangerous' }))
+      .toBe('Dangerous acts: 35% chance over the limit, escalates at 4%');
+  });
+
+  it('says when the probabilities could not be read', () => {
+    expect(describeCalibration({ tau: 0.04, pOver: null, dimension: null })).toBe('Score probabilities unreadable: escalated');
+  });
+
+  it('keeps a value just over τ from reading as equal to it', () => {
+    expect(formatPercent(0.0412)).toBe('4.1%');
+    expect(formatPercent(0.04)).toBe('4%');
+    expect(formatPercent(0.123)).toBe('12%');
   });
 });

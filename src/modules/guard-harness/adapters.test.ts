@@ -25,8 +25,9 @@ import {
   buildRubricPrompt,
   parseRubricOutput,
 } from '../guard/rubric-prompt';
-import { gemmaLogprobAdapter, TOP_LOGPROBS, type LogprobGuard } from './adapters';
-import { RECORDED_RESPONSE } from './logprob-fixture';
+import { TOP_LOGPROBS } from '../guard/calibration';
+import { RECORDED_RESPONSE } from '../guard/logprob-fixture';
+import { gemmaLogprobAdapter, type LogprobGuard } from './adapters';
 import { AdapterScoringError, type HarnessItem } from './util';
 
 const RUBRIC_CALL_OPTIONS = { temperature: 0, num_predict: 256, think: false, keep_alive: '30m', truncate: false, shift: false };

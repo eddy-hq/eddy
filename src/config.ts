@@ -1,7 +1,7 @@
 import os from 'os';
 import path from 'path';
 import { z } from 'zod';
-import { isFiveFieldCron, isTimeZone } from './config-validators';
+import { isFiveFieldCron, isTimeZone, parseCalibrationTau } from './config-validators';
 
 const schema = z.object({
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
@@ -182,6 +182,23 @@ const schema = z.object({
   // rubric (docs/guard-rubric.md) and lets the limits table decide. Kid
   // requests (shadow mode) are unaffected.
   GUARD_CANDIDATE_PROMPT: z.enum(['v3', 'v4']).default('v3'),
+  // Calibration threshold τ for the discovery candidate rubric guard (ADR-0017,
+  // amended 2026-10-30; τ chosen on replay per ADR-0019). With the v4 prompt,
+  // a clear_yes whose probability of any score over the kid's limit is at or
+  // above τ (or unreadable) becomes uncertain. A number in (0, 1], or 'off'
+  // for the plain rubric guard. Unset defaults to 0.04. The second pass and
+  // kid requests are never calibrated.
+  GUARD_CALIBRATION_TAU: z.string().optional().transform((v, ctx) => {
+    const tau = parseCalibrationTau(v);
+    if (tau === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "GUARD_CALIBRATION_TAU must be a number greater than 0 and at most 1, or 'off'",
+      });
+      return z.NEVER;
+    }
+    return tau;
+  }),
   // ── Decisions nudge (Phase 6a) ───────────────────────────────────────────
   // When the daily "N decisions waiting" notification goes to the parent(s):
   // a five-field cron pattern read in DECISIONS_NUDGE_TZ. Sent only when

@@ -8,7 +8,8 @@
 import { config } from '../../config';
 import { ollamaGenerateWithLogprobs } from '../../ollama';
 import type { CandidatePromptId, RubricDimension, RubricScore } from '../guard/index';
-import { scoreDistributions } from './logprob';
+// DB-free, so imported directly rather than through the lazily loaded index.
+import { scoreDistributions, TOP_LOGPROBS } from '../guard/calibration';
 import { AdapterScoringError, GuardHarnessError, type HarnessAdapter, type HarnessItem } from './util';
 
 type GuardModule = typeof import('../guard/index');
@@ -27,14 +28,20 @@ function judgeInput(item: HarnessItem) {
   };
 }
 
-// The live candidate guard (Gemma) under a given prompt. A v4 id carries the
-// rubric version too, so a rubric edit re-evaluates rather than resuming over
-// results scored under the old rubric.
+// The live candidate guard (Gemma) under a given prompt, without calibration.
+// A v4 id carries the rubric version too, so a rubric edit re-evaluates rather
+// than resuming over results scored under the old rubric.
+//
+// The live guard now applies τ (GUARD_CALIBRATION_TAU) on top of this plain
+// verdict (ADR-0017, amended 2026-10-30). This adapter passes no τ, so
+// gemma-v4 stays the plain baseline under its unchanged id and its cached
+// results stay valid. The live configuration is "plain + τ": calibrate
+// derives its verdicts from the logprob adapter's results.
 function gemmaCandidateAdapter(guard: GuardModule, prompt: CandidatePromptId): HarnessAdapter {
   return {
     id: `gemma:${config.OLLAMA_GUARD_MODEL}:${guard.rerunVersionKey(prompt)}`,
     async judge(item: HarnessItem) {
-      const v = await guard.judgeCandidate({ ...judgeInput(item), prompt });
+      const v = await guard.judgeCandidate({ ...judgeInput(item), prompt, calibrationTau: null });
       if (v.reason === guard.GUARD_SCORING_ERROR_REASON) {
         throw new AdapterScoringError('The model never answered');
       }
@@ -49,9 +56,6 @@ function gemmaCandidateAdapter(guard: GuardModule, prompt: CandidatePromptId): H
 // How the logprob adapter reads the model's token probabilities. Part of its
 // id: a change re-evaluates rather than mixing results read two ways.
 export const LOGPROB_READ_VERSION = 'logprob-v1';
-// Alternatives asked for per token. The four score digits are normally the
-// top four at a score position (checked on Ollama 0.34.3).
-export const TOP_LOGPROBS = 5;
 
 // What the logprob adapter needs from the guard module. A test passes the
 // real rubric pieces without loading the DB.
@@ -72,7 +76,9 @@ export type LogprobGuard = Pick<
 // schema. The verdict is verdictFromScores on the decoded scores, exactly as
 // the incumbent decides, so the plain verdict is comparable. Beside it, each
 // dimension's distribution over 0–3 (null where its token couldn't be read)
-// for the calibration report. Offline only: the live guard is unchanged.
+// for the calibration report. It reads them for every item whatever τ the
+// live guard runs at, with the same token walk the live guard uses
+// (calibration.ts), so calibrate can sweep τ over one set of results.
 export function gemmaLogprobAdapter(
   guard: LogprobGuard,
   generate: typeof ollamaGenerateWithLogprobs = ollamaGenerateWithLogprobs,

@@ -8,7 +8,7 @@
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { EddyError } from '../../errors';
-import type { ChannelHistory } from '../guard/index';
+import type { ChannelHistory, ScoreDistribution } from '../guard/index';
 
 export class GuardHarnessError extends EddyError {
   constructor(message: string) {
@@ -66,8 +66,9 @@ export interface HarnessItem {
 }
 
 // The model's probability of each rubric score, index = score (0–3), read
-// from its token probabilities and renormalised over the four (logprob.ts).
-export type ScoreDistribution = readonly [number, number, number, number];
+// from its token probabilities and renormalised over the four (the guard
+// module's calibration.ts).
+export type { ScoreDistribution };
 
 // What an adapter returns for one item. `scores` and `probability` are
 // optional: a verdict-only configuration (v3) carries neither.

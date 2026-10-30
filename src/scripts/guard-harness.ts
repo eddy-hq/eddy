@@ -34,8 +34,11 @@
  *             --force. Writes nothing to the DB. Adapters: gemma-v4 (the
  *             incumbent rubric guard, candidate-v4.1) and gemma-v4.1-logprob
  *             (the same call with Ollama's token probabilities on, storing
- *             each dimension's distribution over 0–3 beside the verdict;
- *             offline only, the live guard doesn't use it).
+ *             each dimension's distribution over 0–3 beside the verdict).
+ *             The live discovery guard applies τ (GUARD_CALIBRATION_TAU) on
+ *             top of the plain verdict, reading probabilities the same way;
+ *             gemma-v4 stays the plain baseline, and calibrate derives the
+ *             live "plain + τ" verdicts from gemma-v4.1-logprob's results.
  *   report    confusion matrix and the three metrics, with Wilson 95%
  *             intervals, against the brief's thresholds, on safety only: a
  *             Block counts as clear-no when the parent said Unsafe; Not for
