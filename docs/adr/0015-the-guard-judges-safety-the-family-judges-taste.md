@@ -29,3 +29,7 @@ The rule: **the guard decides one question, whether a video is unsafe for this k
 ## Amended — 2026-10-09
 
 The original consequences said Not for us feeds the slate. That is the intent, but no ranking code reads the label yet, so the consequence now says so. Nothing else in the decision changes.
+
+## Amended — 2026-10-30: the Unsafe-only number
+
+The Deferred list said to revisit if Unsafe-only precision still missed the target. On the 2026-10-18 replay it doesn't. Scored on Allow against Unsafe alone, the same configuration the 51% was measured on (`candidate-v4.1+rubric-v1.3`) has a clear-yes precision of 96.6% on the holdout (134 items, Wilson 95% interval 91.6–98.7%) and 97.9% on the rest (526 items, 96.1–98.8%). That meets the 95% target, though the holdout's interval still reaches below it, so the Deferred item stays open until the lower bound clears too. The two runs used different snapshots: the later one has more decisions, revised labels and the recovered inputs of [[0019-guard-changes-must-beat-the-incumbent-on-replay]], so the gap between 51% and 96.6% comes from what was measured and on which items, not from a change in the guard. Nothing else in the decision changes.
