@@ -1,7 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import type { OllamaTokenLogprob } from '../../ollama';
+import {
+  describeCalibration,
+  formatPercent,
+  pOver,
+  pOverDetail,
+  rebuildOutput,
+  scoreDistributions,
+  tightenVerdict,
+  topLevelValues,
+} from './calibration';
 import { RECORDED_RESPONSE } from './logprob-fixture';
-import { rebuildOutput, scoreDistributions, topLevelValues } from './logprob';
 
 // Mirrors DIMENSION_OUTPUT_KEYS (rubric-prompt.ts); the adapter test checks
 // the real mapping.
@@ -189,6 +198,50 @@ describe('scoreDistributions on crafted token streams', () => {
     for (const dim of Object.keys(KEYS)) expect(d[dim], dim).not.toBeNull();
   });
 
+  it('gives null for a score token with a finite logprob but no alternatives', () => {
+    const logprobs = RECORDED_RESPONSE.logprobs.map((l) => ({ token: l.token, logprob: l.logprob, bytes: l.bytes }));
+    const d = scoreDistributions(RECORDED_RESPONSE.response, logprobs, KEYS);
+    expect(Object.values(d).every((v) => v === null)).toBe(true);
+    const empty = RECORDED_RESPONSE.logprobs.map((l) => ({ ...l, top_logprobs: [] }));
+    expect(Object.values(scoreDistributions(RECORDED_RESPONSE.response, empty, KEYS)).every((v) => v === null)).toBe(true);
+  });
+
+  it('gives null when non-empty alternatives carry malformed probabilities, the chosen one finite', () => {
+    for (const bad of [undefined, null, Number.NaN, Number.POSITIVE_INFINITY, '-0.5']) {
+      const logprobs = RECORDED_RESPONSE.logprobs.map((l) => (l.top_logprobs
+        ? { ...l, top_logprobs: l.top_logprobs.map((a) => ({ ...a, logprob: bad as unknown as number })) }
+        : l));
+      const d = scoreDistributions(RECORDED_RESPONSE.response, logprobs, KEYS);
+      expect(Object.values(d).every((v) => v === null), String(bad)).toBe(true);
+    }
+  });
+
+  it('gives null for positive or overflowing logprobs rather than NaN probabilities', () => {
+    for (const bad of [1000, 1, 0.01]) {
+      const logprobs = RECORDED_RESPONSE.logprobs.map((l) => (l.top_logprobs
+        ? { ...l, top_logprobs: l.top_logprobs.map((a) => ({ ...a, logprob: bad })) }
+        : l));
+      const d = scoreDistributions(RECORDED_RESPONSE.response, logprobs, KEYS);
+      expect(Object.values(d).every((v) => v === null), String(bad)).toBe(true);
+    }
+  });
+
+  it('accepts a logprob a float rounding above 0 as certain', () => {
+    const logprobs = RECORDED_RESPONSE.logprobs.map((l) => (l.token === '1' && l.top_logprobs
+      ? { ...l, logprob: 1e-9, top_logprobs: l.top_logprobs.map((a) => (a.token === '1' ? { ...a, logprob: 1e-9 } : a)) }
+      : l));
+    const d = scoreDistributions(RECORDED_RESPONSE.response, logprobs, KEYS);
+    expect(Object.values(d).every((v) => v !== null)).toBe(true);
+  });
+
+  it('gives null when only one alternative is malformed', () => {
+    const logprobs = RECORDED_RESPONSE.logprobs.map((l) => (l.top_logprobs
+      ? { ...l, top_logprobs: l.top_logprobs.map((a, i) => (i === 1 ? { token: a.token, bytes: a.bytes } : a)) }
+      : l)) as typeof RECORDED_RESPONSE.logprobs;
+    const d = scoreDistributions(RECORDED_RESPONSE.response, logprobs, KEYS);
+    expect(Object.values(d).every((v) => v === null)).toBe(true);
+  });
+
   it('gives every dimension null when the tokens do not rebuild the response', () => {
     const { response, logprobs } = tokens(rubricPieces());
     const d = scoreDistributions(`${response} `, logprobs, KEYS);
@@ -201,5 +254,62 @@ describe('scoreDistributions on crafted token streams', () => {
     }));
     logprobs.find((l) => l.token === '0')!.logprob = Number.NEGATIVE_INFINITY;
     expect(scoreDistributions(response, logprobs, KEYS)['language']).toBeNull();
+  });
+});
+
+describe('pOverDetail', () => {
+  const limits = { language: 2, violence: 1, attitude: 1 };
+
+  it('names the dimension reaching p_over, the first on a tie', () => {
+    const d = { language: [0.5, 0.2, 0.2, 0.1] as const, violence: [0.6, 0.3, 0.05, 0.05] as const, attitude: [0.9, 0, 0.1, 0] as const };
+    const r = pOverDetail(d, limits);
+    expect(r.pOver).toBeCloseTo(0.1, 10);
+    expect(r.dimension).toBe('language');
+    expect(r.unread).toEqual([]);
+    expect(pOver(d, limits)).toBe(r.pOver);
+  });
+
+  it('counts a distribution that is not four probabilities as unread', () => {
+    const d = {
+      language: [Number.NaN, 0, 0, 0] as unknown as readonly [number, number, number, number],
+      violence: [1, 0, 0, 0] as const,
+      attitude: [0.5, 0.5] as unknown as readonly [number, number, number, number],
+    };
+    expect(pOverDetail(d, limits)).toEqual({ pOver: null, dimension: null, unread: ['language', 'attitude'] });
+  });
+
+  it('is null, with every unread dimension listed, when any is missing', () => {
+    const d = { language: [1, 0, 0, 0] as const, violence: null };
+    expect(pOverDetail(d, limits)).toEqual({ pOver: null, dimension: null, unread: ['violence', 'attitude'] });
+    expect(pOverDetail(undefined, limits)).toEqual({ pOver: null, dimension: null, unread: ['language', 'violence', 'attitude'] });
+  });
+});
+
+describe('tightenVerdict', () => {
+  it('only ever turns a clear_yes into uncertain, at or above τ or unread', () => {
+    expect(tightenVerdict('clear_yes', 0.039, 0.04)).toBe('clear_yes');
+    expect(tightenVerdict('clear_yes', 0.04, 0.04)).toBe('uncertain');
+    expect(tightenVerdict('clear_yes', null, 0.04)).toBe('uncertain');
+    expect(tightenVerdict('clear_no', null, 0.04)).toBe('clear_no');
+    expect(tightenVerdict('uncertain', 0, 0.04)).toBe('uncertain');
+  });
+});
+
+describe('describeCalibration', () => {
+  it('names the dimension and the numbers', () => {
+    expect(describeCalibration({ tau: 0.04, pOver: 0.072, dimension: 'violence' }))
+      .toBe('Violence: 7.2% chance over the limit, escalates at 4%');
+    expect(describeCalibration({ tau: 0.04, pOver: 0.35, dimension: 'dangerous' }))
+      .toBe('Dangerous acts: 35% chance over the limit, escalates at 4%');
+  });
+
+  it('says when the probabilities could not be read', () => {
+    expect(describeCalibration({ tau: 0.04, pOver: null, dimension: null })).toBe('Score probabilities unreadable: escalated');
+  });
+
+  it('keeps a value just over τ from reading as equal to it', () => {
+    expect(formatPercent(0.0412)).toBe('4.1%');
+    expect(formatPercent(0.04)).toBe('4%');
+    expect(formatPercent(0.123)).toBe('12%');
   });
 });

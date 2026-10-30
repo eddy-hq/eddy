@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isFiveFieldCron, isTimeZone } from './config-validators';
+import { DEFAULT_GUARD_CALIBRATION_TAU, isFiveFieldCron, isTimeZone, parseCalibrationTau } from './config-validators';
 
 describe('isFiveFieldCron', () => {
   it('accepts ordinary five-field patterns', () => {
@@ -26,5 +26,31 @@ describe('isTimeZone', () => {
     expect(isTimeZone('Europe/London')).toBe(true);
     expect(isTimeZone('UTC')).toBe(true);
     expect(isTimeZone('Mars/Olympus')).toBe(false);
+  });
+});
+
+describe('parseCalibrationTau', () => {
+  it('defaults to 0.04 when unset or blank', () => {
+    expect(DEFAULT_GUARD_CALIBRATION_TAU).toBe(0.04);
+    expect(parseCalibrationTau(undefined)).toBe(0.04);
+    expect(parseCalibrationTau('')).toBe(0.04);
+    expect(parseCalibrationTau('  ')).toBe(0.04);
+  });
+
+  it('accepts a number in (0, 1]', () => {
+    expect(parseCalibrationTau('0.04')).toBe(0.04);
+    expect(parseCalibrationTau(' 0.3 ')).toBe(0.3);
+    expect(parseCalibrationTau('1')).toBe(1);
+    expect(parseCalibrationTau('1e-3')).toBe(0.001);
+  });
+
+  it("is null for 'off'", () => {
+    expect(parseCalibrationTau('off')).toBeNull();
+  });
+
+  it('refuses 0, negatives, anything over 1 and junk', () => {
+    for (const v of ['0', '0.0', '-0.1', '1.01', '4', 'Infinity', 'NaN', 'abc', '0.04abc', '4%', 'OFF', 'none', 'false']) {
+      expect(parseCalibrationTau(v), v).toBeUndefined();
+    }
   });
 });

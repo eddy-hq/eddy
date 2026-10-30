@@ -117,8 +117,9 @@ export interface OllamaLogprobResult {
 }
 
 // ollamaGenerate, also asking for each output token's log-probability and its
-// `topLogprobs` most likely alternatives. Used offline by the guard harness,
-// never by the live guard. A response without logprobs is an error.
+// `topLogprobs` most likely alternatives. Used by the calibrated discovery
+// candidate guard and the guard harness's logprob adapter. A response without
+// logprobs is an error.
 export async function ollamaGenerateWithLogprobs(
   prompt: string,
   model: string,
