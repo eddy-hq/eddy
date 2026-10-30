@@ -66,8 +66,8 @@
  *             τ is under the cap). The projection (ADR-0019, 2026-10-30) is
  *             the live candidate prompt's uncertain share over the last 14
  *             days of guard_eval, plus its clear-yes share times the fraction
- *             of audited clear-yes items (live and replayed clear_yes,
- *             non-holdout) τ escalates; the labelled items' own uncertain rate
+ *             of audited clear-yes items (live clear_yes from that prompt
+ *             version, replayed clear_yes, non-holdout) τ escalates; the labelled items' own uncertain rate
  *             over-represents escalations and is shown beside it but doesn't
  *             pick τ*. The brief's targets are shown against τ* for
  *             reference but don't pick it. Tests τ* once on the holdout
@@ -473,7 +473,7 @@ async function calibrate(args: Args): Promise<void> {
   } else {
     console.log(`  no live verdicts for the candidate prompt in the last ${LIVE_UNCERTAIN_DAYS} days: nothing to project from`);
   }
-  console.log(`  audited clear-yes items it scales by (live and replayed clear_yes, non-holdout): ${r.auditedClearYes}`);
+  console.log(`  audited clear-yes items it scales by (live clear_yes from ${r.live?.promptVersion ?? 'that prompt'}, replayed clear_yes, non-holdout): ${r.auditedClearYes}`);
   console.log('\nThreshold sweep, non-holdout: a clear_yes with p_over >= τ becomes uncertain');
   console.log(`  ${''.padEnd(30)}${'n'.padStart(5)}  ${'clear-yes precision (95% CI)'.padEnd(CELL)}${'unsafe passed'.padStart(13).padEnd(17)}${'labelled uncertain (95% CI)'.padEnd(CELL)}projected live`);
   for (const p of r.sweep) {

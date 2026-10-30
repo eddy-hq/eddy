@@ -79,7 +79,7 @@ function item(id: string, label: HumanLabel, blockKind: BlockKind | null, holdou
   return {
     itemId: id, subjectType: 'candidate', subjectId: `c-${id}`, userId: 'kid_1', label,
     firstPassLabel: label, revisedAt: null, blockKind, decisionSource: 'spot_check', rubricVersion: 'rubric-v1.3',
-    guardVerdict: 'clear_yes', livePromptVersion: null, inputs: 'original',
+    guardVerdict: 'clear_yes', livePromptVersion: 'candidate-v4.1', inputs: 'original',
     decidedAt: '2026-09-20T12:00:00.000Z', holdout, ageBand: '10-12',
     title: 'Placeholder title', channel: 'Placeholder channel', description: null, tags: [], categoryId: null,
     madeForKids: null, ageRestricted: false, channelHistory: null,
@@ -206,6 +206,28 @@ describe('calibrationReport', () => {
     expect(none.tauStar).toBeNull();
     expect(none.holdoutAtTauStar).toBeNull();
     expect(none.baseline).toBeNull();
+  });
+
+  it('counts only audits from the live prompt version being projected', () => {
+    // Two extra audits that would escalate at every τ: one from a request's
+    // transcript pass, one with no recorded prompt. Neither counts.
+    const extraItems = [...items];
+    const extraResults = [...results];
+    for (const [id, version] of [['tx', 'candidate-transcript-v4.1'], ['unk', null]] as const) {
+      extraItems.push({ ...item(id, 'clear_yes', null), livePromptVersion: version });
+      extraResults.push(result('logprob', id, 'clear_yes', 0.9));
+    }
+    const mixed = calibrationReport({ items: extraItems, results: extraResults, adapterId: 'logprob', baselineAdapterId: null, limitsFor, live: LIVE });
+    expect(mixed.auditedClearYes).toBe(25);
+    expect(mixed.sweep.map((p) => p.projectedUncertainRate)).toEqual(r.sweep.map((p) => p.projectedUncertainRate));
+    expect(mixed.tauStar).toBe(calibrationReport({ items, results, adapterId: 'logprob', baselineAdapterId: null, limitsFor, live: LIVE }).tauStar);
+  });
+
+  it('has no τ* when no audit matches the live prompt version', () => {
+    const other = calibrationReport({ items, results, adapterId: 'logprob', baselineAdapterId: null, limitsFor, live: { ...LIVE, promptVersion: 'candidate-v5' } });
+    expect(other.auditedClearYes).toBe(0);
+    expect(other.sweep.every((p) => p.projectedUncertainRate === null)).toBe(true);
+    expect(other.tauStar).toBeNull();
   });
 
   it('has no τ* with no live rates to project from', () => {

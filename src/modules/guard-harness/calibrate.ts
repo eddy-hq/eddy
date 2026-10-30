@@ -18,8 +18,10 @@
 // amended 2026-10-30). Every escalation is decided but clear verdicts are only
 // sampled, so labelled items over-represent escalations. The projection is the
 // live candidate prompt's uncertain share, plus its clear-yes share times the
-// fraction of audited clear-yes items (live verdict clear_yes, replayed
-// clear_yes, non-holdout, any label) that τ would escalate. Calibration only
+// fraction of audited clear-yes items (live verdict clear_yes from that same
+// prompt version, replayed clear_yes, non-holdout, any label) that τ would
+// escalate. An audit from another prompt, or of unknown provenance, samples a
+// different population and is left out. Calibration only
 // turns a clear_yes into uncertain, so that is the whole change, and labels
 // play no part in it. The brief's targets (clear-yes ≥ 95%,
 // uncertain 10–30%) are reported against τ* for reference but don't pick it:
@@ -156,7 +158,8 @@ export interface CalibrationReport {
   // The uncertain-rate cap τ* was chosen under, on the projected live rate.
   uncertainCap: number;
   // What the projection was made from: the live rates, and the audited
-  // clear-yes items (live and replayed clear_yes, non-holdout) it scales.
+  // clear-yes items (live clear_yes from the same prompt version, replayed
+  // clear_yes, non-holdout) it scales.
   live: LiveRates | null;
   auditedClearYes: number;
   // The fewest Unsafe passed as clear_yes by any τ under the cap on
@@ -281,7 +284,8 @@ export function calibrationReport(input: CalibrationInput): CalibrationReport {
     const result = mine.get(item.itemId);
     if (!result) continue;
     scored += 1;
-    if (!item.holdout && item.guardVerdict === 'clear_yes' && result.verdict === 'clear_yes') {
+    if (!item.holdout && item.guardVerdict === 'clear_yes' && result.verdict === 'clear_yes'
+      && input.live !== null && item.livePromptVersion === input.live.promptVersion) {
       audited.push(pOver(result.distributions, input.limitsFor(item.ageBand)));
     }
     const label = safetyLabel(item.label, item.blockKind);
