@@ -457,8 +457,8 @@ requestsRouter.get('/admin/pipeline', async (_req: Request, res: Response) => {
 // escalated (`failed`) download from the admin pipeline view. Same network
 // posture as /admin/pipeline (LAN-only, no signed token). Wraps the `retry`
 // transition, which cancels any stale BullMQ job and enqueues a fresh one.
-// The PWA admin page calls this rather than /internal/requests/:id/retry so
-// the worker/HMAC-and-LAN-ops surface stays separate from PWA-facing routes.
+// There is deliberately no /internal equivalent: /internal is HMAC-signed
+// worker traffic only, kept separate from PWA-facing routes.
 requestsRouter.post('/admin/:id/retry', async (req: Request, res: Response) => {
   const requestId = req.params['id']!;
   const { result, settled } = getRequestsState().apply({ kind: 'retry', requestId });

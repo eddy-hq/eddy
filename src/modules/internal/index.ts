@@ -1,7 +1,6 @@
-import { Router, Request, Response } from 'express';
+import { Router } from 'express';
 import { db } from '../../db/client';
 import { logger } from '../../logger';
-import { downloadQueue } from '../../queue';
 import { verifySignedJson } from '../../signed-channel';
 import {
   getRequestsState,
@@ -13,7 +12,6 @@ import {
 } from '../requests';
 import { PARENT_BLOCKED_REASON, currentParentBlock } from '../decisions';
 import { getNotifications, parseRelayPayload } from '../notifications';
-import { checkStuckDownloads } from '../watchdog';
 import { scoreForRequest, classifyThumbnail, classifyYtImage, enqueueDownloadSecondPass, scoreThumbnailSafety } from '../guard';
 import { ollamaGenerate } from '../../ollama';
 import { config } from '../../config';
@@ -265,91 +263,6 @@ internalRouter.post('/requests/:id/file-deleted', verifySignedJson<FileDeletedPa
   res.status(204).end();
 }));
 
-// GET /internal/health/queue — queue stats + stuck downloads (no auth — internal network only)
-internalRouter.get('/health/queue', async (_req: Request, res: Response) => {
-  const cutoff = new Date(Date.now() - 2 * 60 * 1000).toISOString();
-
-  const stuck = db.prepare(`
-    SELECT request_id, youtube_id, title, user_id, requested_at, status
-    FROM requests
-    WHERE status = 'downloading'
-      AND requested_at < ?
-    ORDER BY requested_at ASC
-  `).all(cutoff) as Array<{
-    request_id: string; youtube_id: string | null; title: string | null;
-    user_id: string; requested_at: string; status: string;
-  }>;
-
-  const stuckWithJobState = await Promise.all(
-    stuck.map(async (r) => {
-      let jobState: string | null = null;
-      try {
-        const job = await downloadQueue.getJob(r.request_id);
-        jobState = job ? await job.getState() : null;
-      } catch { /* Redis unavailable */ }
-      return {
-        requestId: r.request_id,
-        youtubeId: r.youtube_id,
-        title: r.title,
-        requestedAt: r.requested_at,
-        stuckMins: Math.round((Date.now() - new Date(r.requested_at).getTime()) / 60_000),
-        jobState,
-      };
-    })
-  );
-
-  let queueCounts = null;
-  try {
-    queueCounts = await downloadQueue.getJobCounts('waiting', 'active', 'failed', 'delayed', 'completed');
-  } catch { /* Redis unavailable */ }
-
-  res.json({
-    stuckCount: stuckWithJobState.filter((r) => r.jobState !== 'active').length,
-    downloading: stuckWithJobState,
-    queue: queueCounts,
-  });
-});
-
-// POST /internal/requests/:id/retry — re-enqueue a stuck or failed download
-internalRouter.post('/requests/:id/retry', async (req: Request, res: Response) => {
-  const requestId = req.params['id']!;
-  const { result, settled } = getRequestsState().apply({ kind: 'retry', requestId });
-  await settled;
-
-  if (!result.transitioned) {
-    if (result.currentStatus === null) {
-      return res.status(404).json({ error: 'NOT_FOUND', message: 'Request not found' });
-    }
-    return res.status(400).json({ error: 'INVALID_STATE', message: `Cannot retry a request in status '${result.currentStatus}'` });
-  }
-
-  // The retry event is best-effort about the BullMQ enqueue — a failed add()
-  // is logged-warned, not surfaced. The watchdog will pick up rows that end up
-  // `downloading` without a live job. So response wording reflects what's
-  // guaranteed (the transition), not the queue side-effect.
-  logger.info({ requestId }, 'Manual retry — request returned to downloading');
-  res.json({ ok: true, requestId, message: 'Retry requested' });
-});
-
-// GET /internal/backfill/pending-thumbs — list videos needing thumbnail generation (no HMAC, internal network only)
-// ?force=1 returns all live videos regardless of whether thumbnail_url is already set
-internalRouter.get('/backfill/pending-thumbs', (req: Request, res: Response) => {
-  const force = req.query['force'] === '1';
-  const rows = db.prepare(`
-    SELECT youtube_id, file_path, duration_secs, added_at
-    FROM requests
-    WHERE file_state = 'live'
-      AND status IN ('ready', 'watched')
-      AND file_path IS NOT NULL
-      AND youtube_id IS NOT NULL
-      AND duration_secs IS NOT NULL
-      ${force ? '' : 'AND thumbnail_url IS NULL'}
-    ORDER BY added_at DESC
-  `).all() as Array<{ youtube_id: string; file_path: string; duration_secs: number; added_at: string }>;
-
-  res.json({ pending: rows });
-});
-
 // POST /internal/backfill/thumb/:youtube_id — write generated thumbnail URL back to DB
 internalRouter.post('/backfill/thumb/:youtube_id', verifySignedJson<{ thumbnailUrl: string }>((req, res, payload) => {
   db.prepare(`
@@ -412,7 +325,6 @@ internalRouter.post('/thumb/score-frame', verifySignedJson<{ image: string; prom
   }
 }));
 
-// POST /internal/watchdog/run — trigger an immediate watchdog check (for testing/ops)
 // POST /internal/notify — the worker hands over an ops alert it cannot deliver
 // itself (no database, no APNs key). Only the two kinds the worker raises are
 // accepted; the M4's own notify() logs and delivers it. The reply goes before
@@ -427,13 +339,6 @@ internalRouter.post('/notify', verifySignedJson<unknown>(async (_req, res, paylo
   res.json({ ok: true });
   void getNotifications().notify(relayed.event, relayed.recipient);
 }));
-
-internalRouter.post('/watchdog/run', (_req: Request, res: Response) => {
-  void checkStuckDownloads().catch((err: unknown) => {
-    logger.error({ err }, 'Manual watchdog check failed');
-  });
-  res.json({ ok: true, message: 'Watchdog check triggered' });
-});
 
 interface GuardScorePayload {
   requestId: string;
