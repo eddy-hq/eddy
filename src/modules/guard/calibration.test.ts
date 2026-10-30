@@ -216,6 +216,24 @@ describe('scoreDistributions on crafted token streams', () => {
     }
   });
 
+  it('gives null for positive or overflowing logprobs rather than NaN probabilities', () => {
+    for (const bad of [1000, 1, 0.01]) {
+      const logprobs = RECORDED_RESPONSE.logprobs.map((l) => (l.top_logprobs
+        ? { ...l, top_logprobs: l.top_logprobs.map((a) => ({ ...a, logprob: bad })) }
+        : l));
+      const d = scoreDistributions(RECORDED_RESPONSE.response, logprobs, KEYS);
+      expect(Object.values(d).every((v) => v === null), String(bad)).toBe(true);
+    }
+  });
+
+  it('accepts a logprob a float rounding above 0 as certain', () => {
+    const logprobs = RECORDED_RESPONSE.logprobs.map((l) => (l.token === '1' && l.top_logprobs
+      ? { ...l, logprob: 1e-9, top_logprobs: l.top_logprobs.map((a) => (a.token === '1' ? { ...a, logprob: 1e-9 } : a)) }
+      : l));
+    const d = scoreDistributions(RECORDED_RESPONSE.response, logprobs, KEYS);
+    expect(Object.values(d).every((v) => v !== null)).toBe(true);
+  });
+
   it('gives null when only one alternative is malformed', () => {
     const logprobs = RECORDED_RESPONSE.logprobs.map((l) => (l.top_logprobs
       ? { ...l, top_logprobs: l.top_logprobs.map((a, i) => (i === 1 ? { token: a.token, bytes: a.bytes } : a)) }
@@ -249,6 +267,15 @@ describe('pOverDetail', () => {
     expect(r.dimension).toBe('language');
     expect(r.unread).toEqual([]);
     expect(pOver(d, limits)).toBe(r.pOver);
+  });
+
+  it('counts a distribution that is not four probabilities as unread', () => {
+    const d = {
+      language: [Number.NaN, 0, 0, 0] as unknown as readonly [number, number, number, number],
+      violence: [1, 0, 0, 0] as const,
+      attitude: [0.5, 0.5] as unknown as readonly [number, number, number, number],
+    };
+    expect(pOverDetail(d, limits)).toEqual({ pOver: null, dimension: null, unread: ['language', 'attitude'] });
   });
 
   it('is null, with every unread dimension listed, when any is missing', () => {

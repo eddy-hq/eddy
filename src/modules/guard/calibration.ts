@@ -129,6 +129,10 @@ export function topLevelValues(text: string): Map<string, { start: number; raw: 
 
 const SCORE_DIGITS = ['0', '1', '2', '3'] as const;
 
+// How far above 0 a log-probability may sit and still be read as float
+// rounding of a certain token.
+const LOGPROB_ROUNDING_TOLERANCE = 1e-6;
+
 // The distribution over 0–3 for the single-digit value at `offset`, read from
 // the token carrying it. The token may carry other text around the digit (a
 // leading space, a trailing comma); an alternative counts for digit d only if
@@ -142,12 +146,13 @@ function digitDistribution(spans: readonly Span[], text: string, offset: number)
   if (!span) return null;
   if (!Array.isArray(span.token.top_logprobs) || span.token.top_logprobs.length === 0) return null;
   const candidates = [...span.token.top_logprobs, span.token];
-  // A log-probability is a number; -Infinity is a probability of 0. Anything
-  // else (missing, null, NaN, +Infinity) is a malformed reading, and dropping
-  // it would leave the rest to renormalise to false certainty. A tiny
-  // positive value from float rounding is accepted as near 0.
-  if (!candidates.every((alt) => typeof alt?.logprob === 'number' && !Number.isNaN(alt.logprob)
-    && alt.logprob !== Number.POSITIVE_INFINITY)) return null;
+  // A log-probability is a number up to 0 (allowing float rounding just
+  // above it); -Infinity is a probability of 0. Anything else (missing, null,
+  // NaN, a positive value) is a malformed reading, and dropping it would
+  // leave the rest to renormalise to false certainty.
+  if (!candidates.every((alt) => typeof alt?.logprob === 'number' && alt.logprob <= LOGPROB_ROUNDING_TOLERANCE)) {
+    return null;
+  }
   const prefix = text.slice(span.start, offset);
   const seen = new Map<string, number>();
   for (const alt of candidates) {
@@ -165,8 +170,14 @@ function digitDistribution(spans: readonly Span[], text: string, offset: number)
     mass[digit]! += Math.exp(logprob);
   }
   const total = mass.reduce((a, b) => a + b, 0);
-  if (!(total > 0)) return null;
-  return mass.map((m) => m / total) as unknown as ScoreDistribution;
+  if (!(total > 0) || !Number.isFinite(total)) return null;
+  const dist = mass.map((m) => m / total);
+  if (!dist.every(isProbability)) return null;
+  return dist as unknown as ScoreDistribution;
+}
+
+function isProbability(p: unknown): boolean {
+  return typeof p === 'number' && Number.isFinite(p) && p >= 0 && p <= 1;
 }
 
 // One distribution per dimension, keyed by the caller's dimension names;
@@ -215,7 +226,9 @@ export function pOverDetail(
   const unread: string[] = [];
   for (const [key, limit] of Object.entries(limits)) {
     const d = distributions?.[key];
-    if (!d) {
+    // A distribution that isn't four probabilities can't be compared with τ:
+    // unread, never a silent 0.
+    if (!d || d.length !== 4 || !d.every(isProbability)) {
       unread.push(key);
       continue;
     }
