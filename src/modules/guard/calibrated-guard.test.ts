@@ -236,6 +236,38 @@ describe('judgeCandidate with calibration', () => {
     expect(warn).toHaveBeenCalledTimes(1);
   });
 
+  it('escalates when score tokens carry no alternatives (a finite chosen logprob alone is not a reading)', async () => {
+    const result = logprobResult();
+    for (const l of result.logprobs) {
+      if (/^[0-3]$/.test(l.token)) delete l.top_logprobs;
+    }
+    generateWithLogprobs.mockResolvedValue(result);
+    const v = await judgeCandidate(input());
+    expect(v.verdict).toBe('uncertain');
+    expect(v.rubric?.calibration?.pOver).toBeNull();
+    expect(warn.mock.calls[0]![0]).toMatchObject({ unread: Object.keys(DIMENSION_OUTPUT_KEYS), escalated: true });
+  });
+
+  it('escalates, and still returns a verdict, when a token entry is malformed', async () => {
+    const result = logprobResult();
+    result.logprobs[0] = { token: 5 as unknown as string, logprob: 0 };
+    generateWithLogprobs.mockResolvedValue(result);
+    const v = await judgeCandidate(input());
+    expect(v.verdict).toBe('uncertain');
+    expect(v.reason).toBe('Synthetic reason. (Score probabilities unreadable: escalated)');
+    expect(v.rubric?.calibration).toEqual({ tau: 0.04, pOver: null, dimension: null });
+    expect(warn.mock.calls.map((c) => c[1])).toContain('Guard calibration could not decode token probabilities');
+  });
+
+  it('a malformed token entry still records a verdict through evaluateCandidate', async () => {
+    const result = logprobResult();
+    result.logprobs[3] = { token: 'x', logprob: 0, top_logprobs: 'nonsense' as unknown as [] };
+    result.logprobs[0] = { token: null as unknown as string, logprob: 0 };
+    generateWithLogprobs.mockResolvedValue(result);
+    await evaluateCandidate({ candidateId: 'cand-m', userId: KID, url: 'https://example.invalid/m', title: TITLE });
+    expect(lastEval().gemma_verdict).toBe('uncertain');
+  });
+
   it('never changes a clear_no', async () => {
     // Violence 3 against a limit of 1: clear_no by rule.
     generateWithLogprobs.mockResolvedValue(logprobResult({ viol: [0, 0, 0.1, 0.9], att: 'unread' }));

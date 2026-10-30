@@ -198,6 +198,14 @@ describe('scoreDistributions on crafted token streams', () => {
     for (const dim of Object.keys(KEYS)) expect(d[dim], dim).not.toBeNull();
   });
 
+  it('gives null for a score token with a finite logprob but no alternatives', () => {
+    const logprobs = RECORDED_RESPONSE.logprobs.map((l) => ({ token: l.token, logprob: l.logprob, bytes: l.bytes }));
+    const d = scoreDistributions(RECORDED_RESPONSE.response, logprobs, KEYS);
+    expect(Object.values(d).every((v) => v === null)).toBe(true);
+    const empty = RECORDED_RESPONSE.logprobs.map((l) => ({ ...l, top_logprobs: [] }));
+    expect(Object.values(scoreDistributions(RECORDED_RESPONSE.response, empty, KEYS)).every((v) => v === null)).toBe(true);
+  });
+
   it('gives every dimension null when the tokens do not rebuild the response', () => {
     const { response, logprobs } = tokens(rubricPieces());
     const d = scoreDistributions(`${response} `, logprobs, KEYS);

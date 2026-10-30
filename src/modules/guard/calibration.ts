@@ -134,10 +134,13 @@ const SCORE_DIGITS = ['0', '1', '2', '3'] as const;
 // leading space, a trailing comma); an alternative counts for digit d only if
 // it is the same text up to the digit, then d, then nothing or a JSON
 // boundary (whitespace, ',', '}', ']'). Alternatives that don't line up count
-// as no mass. Null if no token covers the offset.
+// as no mass. Null if no token covers the offset, or if that token carries no
+// alternatives: the chosen digit alone would renormalise to certainty, which
+// is a missing reading, not a confident one.
 function digitDistribution(spans: readonly Span[], text: string, offset: number): ScoreDistribution | null {
   const span = spans.find((s) => s.start <= offset && offset < s.end);
   if (!span) return null;
+  if (!Array.isArray(span.token.top_logprobs) || span.token.top_logprobs.length === 0) return null;
   const prefix = text.slice(span.start, offset);
   const seen = new Map<string, number>();
   for (const alt of [...(span.token.top_logprobs ?? []), span.token]) {

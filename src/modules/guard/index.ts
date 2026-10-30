@@ -541,10 +541,23 @@ async function judgeRubric(
     return { verdict: decision.verdict, reason, confidence: 1, rubric: { scores: parsed.scores, decision } };
   }
 
-  const detail = pOverDetail(
-    scoreDistributions(raw, logprobs, DIMENSION_OUTPUT_KEYS),
-    LIMITS[decision.limitsBand],
-  );
+  // Ollama only promises an array: a malformed entry can throw inside the
+  // walk. That is unreadable probabilities (escalate and warn), never a
+  // thrown verdict that would leave the candidate unrecorded.
+  let distributions: ReturnType<typeof scoreDistributions> | undefined;
+  try {
+    distributions = scoreDistributions(raw, logprobs, DIMENSION_OUTPUT_KEYS);
+  } catch (err) {
+    // The error's name and code only: its message can quote token text, which
+    // is the model's answer about a kid's video.
+    const e = err as { name?: unknown; code?: unknown };
+    logger.warn(
+      { tau, errName: typeof e?.name === 'string' ? e.name : null, errCode: typeof e?.code === 'string' ? e.code : null },
+      'Guard calibration could not decode token probabilities',
+    );
+    distributions = undefined;
+  }
+  const detail = pOverDetail(distributions, LIMITS[decision.limitsBand]);
   const calibration: CalibrationOutcome = {
     tau,
     pOver: detail.pOver,
